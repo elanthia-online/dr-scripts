@@ -315,6 +315,264 @@ class TextSubs
     end
   end
 
+  # What a catalog section's `when:` gate is checked against: the guild and
+  # the character settings at the time the catalog is built, so the catalog
+  # itself never reads DRStats or get_settings.
+  #
+  # A gate is nil (always holds) or a Hash with one or more of these keys,
+  # every one of which must hold:
+  # - 'guilds' [Array<String>]: the guild is one of them;
+  # - 'not_guilds' [Array<String>]: the guild is none of them;
+  # - 'setting' [String]: that setting is set (neither nil nor false);
+  # - 'setting_off' [String]: that setting is nil or false.
+  #
+  # @example
+  #   context = TextSubs::Context.new(guild: 'Bard', settings: OpenStruct.new(herb_textsubs: true))
+  #   context.allows?('guilds' => ['Bard'], 'setting' => 'herb_textsubs') # => true
+  #   context.allows?('not_guilds' => ['Bard'])                          # => false
+  class Context
+    # @return [Array<String>] every guild DRStats can report, frozen
+    def self.guilds
+      ['Barbarian', 'Bard', 'Cleric', 'Commoner', 'Empath', 'Moon Mage', 'Necromancer', 'Paladin',
+       'Ranger', 'Thief', 'Trader', 'Warrior Mage'].freeze
+    end
+
+    # @return [Array<String>] the keys a gate may hold, frozen
+    def self.gate_keys
+      %w[guilds not_guilds setting setting_off].freeze
+    end
+
+    # Checks that a gate has the shape the class comment describes, so a typo
+    # in a key, a guild name or a setting name fails the load instead of
+    # quietly turning a section off.
+    #
+    # @param gate [Hash, nil] a section's `when:` value
+    # @return [nil]
+    # @raise [ArgumentError] naming what is wrong with the gate
+    def self.check_gate(gate)
+      return if gate.nil?
+      raise ArgumentError, "'when' must be a mapping, not #{gate.class}" unless gate.is_a?(Hash)
+      raise ArgumentError, "'when' is empty; leave it out for a section every character gets" if gate.empty?
+
+      unknown = gate.keys - gate_keys
+      raise ArgumentError, "unknown 'when' key(s) #{unknown.map(&:inspect).join(', ')}; it takes #{gate_keys.join(', ')}" unless unknown.empty?
+
+      gate.each { |key, value| key.start_with?('setting') ? check_setting(key, value) : check_guilds(key, value) }
+      nil
+    end
+
+    # @param key [String] 'guilds' or 'not_guilds'
+    # @param names [Object] the gate's value for key
+    # @return [nil]
+    # @raise [ArgumentError] unless names is a non-empty list of known guilds
+    def self.check_guilds(key, names)
+      raise ArgumentError, "'when' #{key} must be a non-empty list of guild names" unless names.is_a?(Array) && !names.empty? && names.all?(String)
+
+      unknown = names - guilds
+      raise ArgumentError, "'when' #{key} names unknown guild(s) #{unknown.map(&:inspect).join(', ')}" unless unknown.empty?
+    end
+
+    # @param key [String] 'setting' or 'setting_off'
+    # @param name [Object] the gate's value for key
+    # @return [nil]
+    # @raise [ArgumentError] unless name is a non-empty String
+    def self.check_setting(key, name)
+      raise ArgumentError, "'when' #{key} must be a setting name" unless name.is_a?(String) && !name.empty?
+    end
+    private_class_method :check_guilds, :check_setting
+
+    # @param guild [String, nil] what DRStats.guild reports
+    # @param settings [#[]] the character settings (get_settings), read by name
+    # @return [Context]
+    def initialize(guild:, settings:)
+      @guild = guild
+      @settings = settings
+    end
+
+    # @return [String, nil] the guild the catalog is built for
+    attr_reader :guild
+
+    # @param gate [Hash, nil] a section's `when:` value
+    # @return [Boolean] whether every condition of the gate holds
+    # @raise [ArgumentError] when the gate is malformed (see check_gate)
+    def allows?(gate)
+      self.class.check_gate(gate)
+      return true if gate.nil?
+
+      gate.all? do |key, value|
+        case key
+        when 'guilds' then value.include?(guild)
+        when 'not_guilds' then !value.include?(guild)
+        when 'setting' then setting?(value)
+        else !setting?(value)
+        end
+      end
+    end
+
+    private
+
+    # @param name [String] a settings key
+    # @return [Boolean] true unless the setting is nil or false
+    def setting?(name)
+      @settings[name] ? true : false
+    end
+  end
+
+  # Turns the data of data/base-textsubs.yaml into the ordered list of subs a
+  # character gets. It is pure: it reads only the data and a Context, never a
+  # file, a setting or DRStats, and it changes neither.
+  #
+  # Schema 1 is the mapping under the file's top-level `textsubs:` key:
+  #   schema: 1
+  #   sections:
+  #     - name: 'Necromancer butchery'   # unique
+  #       when:                          # optional, see Context
+  #         guilds: ['Necromancer']
+  #       kind: 'pairs'                  # optional, 'pairs' by default
+  #       subs:
+  #         - ['regex source', 'gsub replacement']
+  #
+  # The other kind, 'guild_spells_link', is the one sub whose replacement
+  # names the character's guild. Its fields are pattern, preresult, prelink,
+  # poslink and posresult, and it expands to
+  #   [pattern, preresult + TextSubs.wiki_link(prelink + guild page + poslink, guild) + posresult]
+  #
+  # Sections run in file order and subs in list order; both orders are kept,
+  # because two subs that match the same line apply in that order. Every key
+  # is checked, so an unknown key, kind or guild name fails the whole load.
+  class Catalog
+    # @return [Integer] the schema this script reads
+    def self.schema
+      1
+    end
+
+    # @return [Hash{String=>Array<String>}] each section kind and the fields
+    #   it needs, all frozen
+    def self.kinds
+      { 'pairs'             => %w[subs].freeze,
+        'guild_spells_link' => %w[pattern preresult prelink poslink posresult].freeze }.freeze
+    end
+
+    # @return [Array<String>] the keys every kind of section may hold, frozen
+    def self.section_keys
+      %w[name when kind].freeze
+    end
+
+    # The subs data gives a character, in order.
+    #
+    # @param data [Hash, nil] the `textsubs:` value of get_data('textsubs');
+    #   nil when the file is missing or did not parse
+    # @param context [TextSubs::Context] the guild and settings to gate on
+    # @return [Array<Array(String, String, Hash)>] [regex source, replacement,
+    #   meta] for each sub, where meta is a frozen { section: name }
+    # @raise [ArgumentError] naming the first problem found anywhere in data,
+    #   including in sections context does not select
+    # @example
+    #   data = { 'schema' => 1, 'sections' => [{ 'name' => 'all', 'subs' => [['fine', 'FINE']] }] }
+    #   TextSubs::Catalog.entries(data, context) # => [['fine', 'FINE', { section: 'all' }]]
+    def self.entries(data, context)
+      check(data).select { |section| context.allows?(section['when']) }
+                 .flat_map { |section| expand(section, context) }
+    end
+
+    # @param data [Object] the `textsubs:` value
+    # @return [Array<Hash>] its sections, every one checked
+    # @raise [ArgumentError] naming the first problem found
+    def self.check(data)
+      raise ArgumentError, "no 'textsubs:' mapping (the file is missing or did not parse)" unless data.is_a?(Hash)
+
+      unknown = data.keys - %w[schema sections]
+      raise ArgumentError, "unknown top-level key(s) #{unknown.map(&:inspect).join(', ')}" unless unknown.empty?
+      raise ArgumentError, "schema #{data['schema'].inspect}, but this textsubs.lic reads schema #{schema}" unless data['schema'] == schema
+
+      sections = data['sections']
+      raise ArgumentError, "'sections' must be a non-empty list" unless sections.is_a?(Array) && !sections.empty?
+
+      sections.each_with_index { |section, index| check_section(section, index) }
+      names = sections.map { |section| section['name'] }
+      repeated = names.tally.select { |_, count| count > 1 }.keys
+      raise ArgumentError, "section name(s) used more than once: #{repeated.map(&:inspect).join(', ')}" unless repeated.empty?
+
+      sections
+    end
+
+    # @param section [Object] one element of 'sections'
+    # @param index [Integer] its position, for the message
+    # @return [nil]
+    # @raise [ArgumentError] naming the section and what is wrong with it
+    def self.check_section(section, index)
+      raise ArgumentError, 'is not a mapping' unless section.is_a?(Hash)
+      raise ArgumentError, "has no 'name'" unless section['name'].is_a?(String) && !section['name'].empty?
+
+      kind = section.fetch('kind', 'pairs')
+      fields = kinds[kind]
+      raise ArgumentError, "has unknown kind #{kind.inspect}; kinds are #{kinds.keys.join(', ')}" unless fields
+
+      unknown = section.keys - section_keys - fields
+      raise ArgumentError, "has unknown key(s) #{unknown.map(&:inspect).join(', ')}" unless unknown.empty?
+
+      missing = fields - section.keys
+      raise ArgumentError, "has no #{missing.join(', ')}" unless missing.empty?
+
+      Context.check_gate(section['when'])
+      kind == 'pairs' ? check_pairs(section['subs']) : check_link(section)
+      nil
+    rescue ArgumentError => e
+      label = section.is_a?(Hash) && section['name'].is_a?(String) ? " (#{section['name']})" : ''
+      raise ArgumentError, "section #{index + 1}#{label} #{e.message}"
+    end
+
+    # @param subs [Object] a pairs section's 'subs'
+    # @return [nil]
+    # @raise [ArgumentError] unless subs is a non-empty list of
+    #   [pattern, replacement] String pairs whose patterns compile
+    def self.check_pairs(subs)
+      raise ArgumentError, "'subs' must be a non-empty list" unless subs.is_a?(Array) && !subs.empty?
+
+      subs.each_with_index do |pair, index|
+        unless pair.is_a?(Array) && pair.size == 2 && pair.all?(String)
+          raise ArgumentError, "sub #{index + 1} must be a ['pattern', 'replacement'] pair of quoted strings, not #{pair.inspect}"
+        end
+
+        check_pattern(pair.first)
+      end
+      nil
+    end
+
+    # @param section [Hash] a guild_spells_link section
+    # @return [nil]
+    # @raise [ArgumentError] unless every field is a String and the pattern compiles
+    def self.check_link(section)
+      kinds['guild_spells_link'].each do |field|
+        raise ArgumentError, "'#{field}' must be a quoted string, not #{section[field].inspect}" unless section[field].is_a?(String)
+      end
+      check_pattern(section['pattern'])
+    end
+
+    # @param pattern [String] regex source
+    # @return [nil]
+    # @raise [ArgumentError] when it does not compile
+    def self.check_pattern(pattern)
+      Regexp.new(pattern)
+      nil
+    rescue RegexpError => e
+      raise ArgumentError, "pattern #{pattern.inspect} does not compile: #{e.message}"
+    end
+
+    # @param section [Hash] a checked section
+    # @param context [TextSubs::Context]
+    # @return [Array<Array(String, String, Hash)>] its subs
+    def self.expand(section, context)
+      meta = { section: section['name'] }.freeze
+      return section['subs'].map { |pattern, replacement| [pattern, replacement, meta] } unless section['kind'] == 'guild_spells_link'
+
+      guild = context.guild.to_s
+      link = TextSubs.wiki_link(section['prelink'] + guild.tr(' ', '_') + section['poslink'], guild)
+      [[section['pattern'], section['preresult'] + link + section['posresult'], meta]]
+    end
+    private_class_method :check, :check_section, :check_pairs, :check_link, :check_pattern, :expand
+  end
+
   # Whether any front end receives game output right now. It mirrors lich-5's
   # Game#client_write_targets: a non-empty detachable client registry, else the
   # legacy single detachable client, else the primary client ($_CLIENT_, nil
@@ -376,8 +634,56 @@ class TextSubs
   def self.elanthipedia(text, pretext = '', postext = '', prelink = '', poslink = '', preresult = '\1', posresult = '\3')
     target = "(#{pretext})" + "(#{text})" + "(#{postext})"
     hyperlink = prelink + text.gsub(" ", "_") + poslink
-    result = preresult + "<a href=\"https://elanthipedia.play.net/#{hyperlink}\">#{text}</a>" + posresult
+    result = preresult + wiki_link(hyperlink, text) + posresult
     store(target, result)
+  end
+
+  # The anchor tag that links text to an Elanthipedia page, shared by
+  # elanthipedia and the catalog's guild spell list link.
+  #
+  # @param page [String] the page path after the site root, used as is
+  # @param text [String] what the link shows
+  # @return [String] the <a href="...">text</a> markup
+  # @example
+  #   TextSubs.wiki_link('Category:Bard_spells', 'Bard')
+  #   # => "<a href=\"https://elanthipedia.play.net/Category:Bard_spells\">Bard</a>"
+  def self.wiki_link(page, text)
+    "<a href=\"https://elanthipedia.play.net/#{page}\">#{text}</a>"
+  end
+
+  # Where get_data('textsubs') reads a user's own copy of the catalog: a file
+  # in data/custom replaces the shipped data/base-textsubs.yaml wholesale.
+  #
+  # @param script_dir [String] Lich's SCRIPT_DIR
+  # @return [String, nil] the path of data/custom/base-textsubs.yaml when that
+  #   file exists, else nil
+  def self.catalog_override(script_dir)
+    path = File.join(script_dir, 'data', 'custom', 'base-textsubs.yaml')
+    File.file?(path) ? path : nil
+  end
+
+  # Adds the built-in subs the catalog data gives the character, in order,
+  # through add. Data that cannot be used adds nothing at all, never part of a
+  # catalog, and the caller shows the message this returns: the script then
+  # runs with the private_textsubs and shit-list subs alone.
+  #
+  # @param data [Hash, nil] the `textsubs:` value of get_data('textsubs')
+  # @param context [TextSubs::Context] the guild and settings to gate on
+  # @param file [String] the file the data came from, named in the message
+  # @return [String, nil] nil once every sub is added, else the one message
+  #   that says why none was
+  # @example A file left over from an older dr-scripts
+  #   TextSubs.add_catalog({ 'schema' => 0 }, context, file: 'data/base-textsubs.yaml')
+  #   # => "No built-in subs: data/base-textsubs.yaml cannot be used (schema 0, ...). ..."
+  def self.add_catalog(data, context, file:)
+    entries = Catalog.entries(data, context)
+  rescue ArgumentError => e
+    "No built-in subs: #{file} cannot be used (#{e.message}). This textsubs.lic needs a 'textsubs:' mapping " \
+      "with schema: #{Catalog.schema}; update dr-scripts, or fix or remove a copy in data/custom. " \
+      'Only private_textsubs and shit-list subs are active.'
+  else
+    entries.each { |source, replacement, _meta| add(source, replacement) }
+    nil
   end
 
   # The one writer of the catalog, shared by add and elanthipedia: it writes

@@ -2,6 +2,7 @@ require 'delegate'
 require 'fileutils'
 require 'json'
 require 'tmpdir'
+require 'yaml'
 require_relative '../test/textsubs_corpus'
 
 # textsubs.lic builds its whole substitution catalog at top level: the entry
@@ -1558,6 +1559,366 @@ RSpec.describe 'textsubs.lic' do
       TextSubs.elanthipedia('Salt\\&Pepper', '^', ':')
       expect(TextSubs.apply(+'Salt&Pepper:'))
         .to eq('<a href="https://elanthipedia.play.net/SaltSalt&Pepper:Pepper">SaltSalt&Pepper:Pepper</a>:')
+    end
+  end
+
+  describe 'TextSubs.wiki_link' do
+    it 'is the anchor elanthipedia puts between preresult and posresult' do
+      TextSubs.clear
+      TextSubs.elanthipedia('Fae Arts', '^', ':', 'Category:', '_spellbook', '[', ']')
+      expect(TextSubs.subs.values)
+        .to eq(["[#{TextSubs.wiki_link('Category:Fae_Arts_spellbook', 'Fae Arts')}]"])
+      expect(TextSubs.wiki_link('Category:Fae_Arts_spellbook', 'Fae Arts'))
+        .to eq('<a href="https://elanthipedia.play.net/Category:Fae_Arts_spellbook">Fae Arts</a>')
+    end
+  end
+
+  describe 'TextSubs::Context' do
+    let(:settings) { OpenStruct.new(herb_textsubs: true, textsubs_spell_links: false, textsubs_use_plat_grouping: nil) }
+
+    def context_for(guild)
+      TextSubs::Context.new(guild: guild, settings: settings)
+    end
+
+    it 'lets a section without a gate through for every guild, and for a guild not known yet' do
+      expect([context_for('Bard'), context_for(nil)].map { |context| context.allows?(nil) }).to eq([true, true])
+    end
+
+    it 'lets a guilds gate through only for a guild it names' do
+      gate = { 'guilds' => ['Moon Mage', 'Trader'] }
+      expect(%w[Trader Bard].map { |guild| context_for(guild).allows?(gate) }).to eq([true, false])
+      expect(context_for('Moon Mage').allows?(gate)).to be(true)
+      expect(context_for(nil).allows?(gate)).to be(false)
+    end
+
+    it 'lets a not_guilds gate through for every guild it does not name, a guild not known yet included' do
+      gate = { 'not_guilds' => %w[Barbarian Thief] }
+      expect(%w[Thief Barbarian Cleric].map { |guild| context_for(guild).allows?(gate) }).to eq([false, false, true])
+      expect(context_for(nil).allows?(gate)).to be(true)
+    end
+
+    it 'reads setting as set and setting_off as nil or false, by name' do
+      bard = context_for('Bard')
+      expect(bard.allows?('setting' => 'herb_textsubs')).to be(true)
+      expect(%w[textsubs_spell_links textsubs_use_plat_grouping not_a_key].map { |name| bard.allows?('setting' => name) })
+        .to eq([false, false, false])
+      expect(%w[textsubs_spell_links textsubs_use_plat_grouping not_a_key].map { |name| bard.allows?('setting_off' => name) })
+        .to eq([true, true, true])
+      expect(bard.allows?('setting_off' => 'herb_textsubs')).to be(false)
+    end
+
+    it 'counts any value but nil and false as set, 0 and an empty string included' do
+      context = TextSubs::Context.new(guild: 'Bard', settings: OpenStruct.new(zero: 0, blank: ''))
+      expect(%w[zero blank].map { |name| context.allows?('setting' => name) }).to eq([true, true])
+    end
+
+    it 'needs every key of a gate to hold, not just one' do
+      gate = { 'guilds' => ['Bard'], 'setting' => 'textsubs_spell_links' }
+      expect(context_for('Bard').allows?(gate)).to be(false)
+      expect(context_for('Bard').allows?(gate.merge('setting' => 'herb_textsubs'))).to be(true)
+      expect(context_for('Cleric').allows?(gate.merge('setting' => 'herb_textsubs'))).to be(false)
+    end
+
+    {
+      'a misspelt key'               => [{ 'guild' => ['Bard'] }, /unknown 'when' key\(s\) "guild"/],
+      'an empty mapping'             => [{}, /'when' is empty/],
+      'a bare guild name'            => ['Bard', /'when' must be a mapping, not String/],
+      'guilds as a string'           => [{ 'guilds' => 'Bard' }, /'when' guilds must be a non-empty list/],
+      'an empty guild list'          => [{ 'not_guilds' => [] }, /'when' not_guilds must be a non-empty list/],
+      'a misspelt guild'             => [{ 'guilds' => %w[Bard Moonmage] }, /unknown guild\(s\) "Moonmage"/],
+      'a guild in lower case'        => [{ 'guilds' => ['bard'] }, /unknown guild\(s\) "bard"/],
+      'a setting that is not a name' => [{ 'setting' => true }, /'when' setting must be a setting name/],
+      'an empty setting_off'         => [{ 'setting_off' => '' }, /'when' setting_off must be a setting name/]
+    }.each do |label, (gate, message)|
+      it "refuses #{label}, in check_gate and in allows? alike" do
+        expect { TextSubs::Context.check_gate(gate) }.to raise_error(ArgumentError, message)
+        expect { context_for('Bard').allows?(gate) }.to raise_error(ArgumentError, message)
+      end
+    end
+
+    it 'knows the twelve guilds the golden catalog is built for' do
+      expect(TextSubs::Context.guilds).to eq(guilds)
+      expect(TextSubs::Context.guilds).to be_frozen
+    end
+  end
+
+  describe 'TextSubs::Catalog.entries' do
+    let(:settings) { OpenStruct.new(herb_textsubs: true, textsubs_spell_links: false) }
+
+    # Parses a small catalog, as data/base-textsubs.yaml would hold it, and
+    # deep-freezes it, so an example also proves the catalog changes nothing.
+    #
+    # @param yaml [String] the file text, top-level `textsubs:` key included
+    # @return [Hash, nil] the `textsubs:` value
+    def catalog_data(yaml)
+      deep_freeze(YAML.safe_load(yaml)['textsubs'])
+    end
+
+    # @param value [Object]
+    # @return [Object] value, with every Hash, Array and String in it frozen
+    def deep_freeze(value)
+      case value
+      when Hash then value.each_value { |item| deep_freeze(item) }
+      when Array then value.each { |item| deep_freeze(item) }
+      end
+      value.freeze
+    end
+
+    def entries_for(guild, data)
+      TextSubs::Catalog.entries(data, TextSubs::Context.new(guild: guild, settings: settings))
+    end
+
+    let(:three_sections) do
+      catalog_data(<<~YAML)
+        textsubs:
+          schema: 1
+          sections:
+            - name: 'everyone, first'
+              subs:
+                - ['b', 'B']
+                - ['a', 'A']
+            - name: 'Bards only'
+              when:
+                guilds: ['Bard']
+              kind: 'pairs'
+              subs:
+                - ['song', 'SONG']
+            - name: 'herb setting on'
+              when:
+                setting: 'herb_textsubs'
+              subs:
+                - ['c', 'C']
+      YAML
+    end
+
+    it 'gives the subs of every selected section, sections in file order and subs in list order' do
+      expect(entries_for('Bard', three_sections).map { |source, replacement, _meta| [source, replacement] })
+        .to eq([%w[b B], %w[a A], %w[song SONG], %w[c C]])
+    end
+
+    it 'leaves out a section whose gate does not hold, and nothing else' do
+      expect(entries_for('Cleric', three_sections).map(&:first)).to eq(%w[b a c])
+    end
+
+    it 'names the section each sub came from in a frozen meta' do
+      metas = entries_for('Bard', three_sections).map(&:last)
+      expect(metas).to eq([{ section: 'everyone, first' }, { section: 'everyone, first' },
+                           { section: 'Bards only' }, { section: 'herb setting on' }])
+      expect(metas).to all(be_frozen)
+    end
+
+    it 'reads backslashes, quotes and colons in single-quoted scalars as they are written' do
+      data = catalog_data(<<~'YAML')
+        textsubs:
+          schema: 1
+          sections:
+            - name: 'escapes'
+              subs:
+                - ['^(It is labeled) "Burden\."', '\1 "Burden." (it''s: Analogous Patterns)']
+      YAML
+      expect(entries_for('Bard', data).map { |source, replacement, _meta| [source, replacement] })
+        .to eq([['^(It is labeled) "Burden\\."', '\\1 "Burden." (it\'s: Analogous Patterns)']])
+    end
+
+    describe 'the guild spell list link' do
+      let(:data) do
+        catalog_data(<<~YAML)
+          textsubs:
+            schema: 1
+            sections:
+              - name: 'guild spells'
+                kind: 'guild_spells_link'
+                pattern: 'You recall the spells you have learned from your training.'
+                preresult: 'You recall the spells you have learned from your '
+                prelink: 'Category:'
+                poslink: '_spells'
+                posresult: ' training.'
+        YAML
+      end
+
+      it "links the guild's category page, underscores in the page and spaces in the text" do
+        expect(entries_for('Moon Mage', data).map { |source, replacement, _meta| [source, replacement] })
+          .to eq([['You recall the spells you have learned from your training.',
+                   'You recall the spells you have learned from your ' \
+                   '<a href="https://elanthipedia.play.net/Category:Moon_Mage_spells">Moon Mage</a> training.']])
+      end
+
+      it 'links an empty guild name for a guild not known yet, as the inline catalog did under Lich' do
+        expect(entries_for(nil, data).first[1])
+          .to eq('You recall the spells you have learned from your <a href="https://elanthipedia.play.net/Category:_spells"></a> training.')
+      end
+    end
+
+    # Each problem is a whole small file, so the example shows what a player
+    # with a broken or stale data file would have on disk.
+    [
+      [
+        'no textsubs mapping at all (a missing file or a parse error)',
+        "other: 1\n", /no 'textsubs:' mapping/
+      ],
+      [
+        'schema 2',
+        "textsubs:\n  schema: 2\n  sections: []\n", /schema 2, but this textsubs.lic reads schema 1/
+      ],
+      [
+        'a quoted schema',
+        "textsubs:\n  schema: '1'\n  sections: []\n", /schema "1", but this textsubs.lic reads schema 1/
+      ],
+      [
+        'no schema',
+        "textsubs:\n  sections: []\n", /schema nil, but/
+      ],
+      [
+        'an unknown top-level key',
+        "textsubs:\n  schema: 1\n  spels: []\n  sections: []\n", /unknown top-level key\(s\) "spels"/
+      ],
+      [
+        'an empty section list',
+        "textsubs:\n  schema: 1\n  sections: []\n", /'sections' must be a non-empty list/
+      ],
+      [
+        'a section that is not a mapping',
+        "textsubs:\n  schema: 1\n  sections:\n    - 'loose'\n", /section 1 is not a mapping/
+      ],
+      [
+        'a section with no name',
+        "textsubs:\n  schema: 1\n  sections:\n    - subs:\n        - ['a', 'b']\n", /section 1 has no 'name'/
+      ],
+      [
+        'two sections with one name',
+        "textsubs:\n  schema: 1\n  sections:\n    - name: 'x'\n      subs: [['a', 'b']]\n    - name: 'x'\n      subs: [['c', 'd']]\n",
+        /section name\(s\) used more than once: "x"/
+      ],
+      [
+        'an unknown kind',
+        "textsubs:\n  schema: 1\n  sections:\n    - name: 'x'\n      kind: 'ladder'\n      subs: [['a', 'b']]\n",
+        /section 1 \(x\) has unknown kind "ladder"; kinds are pairs, guild_spells_link/
+      ],
+      [
+        'a misspelt section key',
+        "textsubs:\n  schema: 1\n  sections:\n    - name: 'x'\n      sub: [['a', 'b']]\n", /section 1 \(x\) has unknown key\(s\) "sub"/
+      ],
+      [
+        'a guild_spells_link field left out',
+        "textsubs:\n  schema: 1\n  sections:\n    - name: 'x'\n      kind: 'guild_spells_link'\n      pattern: 'p'\n" \
+        "      preresult: ''\n      prelink: ''\n      poslink: ''\n", /section 1 \(x\) has no posresult/
+      ],
+      [
+        'a guild_spells_link field that is not a string',
+        "textsubs:\n  schema: 1\n  sections:\n    - name: 'x'\n      kind: 'guild_spells_link'\n      pattern: 'p'\n" \
+        "      preresult: ''\n      prelink: ''\n      poslink: ''\n      posresult: 7\n", /'posresult' must be a quoted string, not 7/
+      ],
+      [
+        'an empty sub list',
+        "textsubs:\n  schema: 1\n  sections:\n    - name: 'x'\n      subs: []\n", /section 1 \(x\) 'subs' must be a non-empty list/
+      ],
+      [
+        'a sub with three strings',
+        "textsubs:\n  schema: 1\n  sections:\n    - name: 'x'\n      subs: [['a', 'b', 'c']]\n", /sub 1 must be a \['pattern', 'replacement'\] pair/
+      ],
+      [
+        'an unquoted yes, which YAML reads as true',
+        "textsubs:\n  schema: 1\n  sections:\n    - name: 'x'\n      subs:\n        - ['a', 'b']\n        - ['ok', yes]\n",
+        /section 1 \(x\) sub 2 must be .* not \["ok", true\]/
+      ],
+      [
+        'an unquoted number',
+        "textsubs:\n  schema: 1\n  sections:\n    - name: 'x'\n      subs: [[100, 'b']]\n", /not \[100, "b"\]/
+      ],
+      [
+        'a pattern that does not compile',
+        "textsubs:\n  schema: 1\n  sections:\n    - name: 'x'\n      subs: [['(open', 'b']]\n", /section 1 \(x\) pattern "\(open" does not compile/
+      ],
+      [
+        'a malformed gate',
+        "textsubs:\n  schema: 1\n  sections:\n    - name: 'x'\n      when:\n        guilds: ['Moonmage']\n      subs: [['a', 'b']]\n",
+        /section 1 \(x\) 'when' guilds names unknown guild\(s\) "Moonmage"/
+      ]
+    ].each do |label, yaml, message|
+      it "refuses #{label}" do
+        expect { entries_for('Bard', catalog_data(yaml)) }.to raise_error(ArgumentError, message)
+      end
+    end
+
+    it 'refuses a nil textsubs value, which is what get_data gives for a missing file' do
+      expect { entries_for('Bard', nil) }.to raise_error(ArgumentError, /no 'textsubs:' mapping/)
+    end
+
+    it 'refuses a problem in a section the guild does not get, so every guild sees it' do
+      data = catalog_data(<<~YAML)
+        textsubs:
+          schema: 1
+          sections:
+            - name: 'everyone'
+              subs: [['a', 'A']]
+            - name: 'Clerics only'
+              when:
+                guilds: ['Cleric']
+              subs: [['(broken', 'B']]
+      YAML
+      expect { entries_for('Bard', data) }.to raise_error(ArgumentError, /section 2 \(Clerics only\) pattern "\(broken"/)
+    end
+  end
+
+  describe 'TextSubs.add_catalog' do
+    before { TextSubs.clear }
+
+    let(:context) { TextSubs::Context.new(guild: 'Bard', settings: OpenStruct.new) }
+    let(:good) do
+      { 'schema' => 1, 'sections' => [{ 'name' => 'one', 'subs' => [%w[fine FINE], %w[cat dog]] }] }
+    end
+
+    it 'adds every sub through TextSubs.add, in order, and returns nil' do
+      allow(TextSubs).to receive(:add).and_call_original
+      TextSubs.add('mine', 'MINE')
+      generation = TextSubs.generation
+
+      expect(TextSubs.add_catalog(good, context, file: 'data/base-textsubs.yaml')).to be_nil
+      expect(TextSubs.subs).to eq(/mine/ => 'MINE', /fine/ => 'FINE', /cat/ => 'dog')
+      expect(TextSubs).to have_received(:add).with('fine', 'FINE').ordered
+      expect(TextSubs).to have_received(:add).with('cat', 'dog').ordered
+      expect(TextSubs.generation).to eq(generation + 2)
+    end
+
+    it 'adds nothing, not even the good sections before the bad one, and says why, naming the file and the schema' do
+      bad = good.merge('sections' => good['sections'] + [{ 'name' => 'two', 'kind' => 'ladder' }])
+      TextSubs.add('mine', 'MINE')
+      generation = TextSubs.generation
+
+      message = TextSubs.add_catalog(bad, context, file: '/lich/scripts/data/custom/base-textsubs.yaml')
+      expect(message).to eq(
+        'No built-in subs: /lich/scripts/data/custom/base-textsubs.yaml cannot be used (section 2 (two) has unknown kind ' \
+        "\"ladder\"; kinds are pairs, guild_spells_link). This textsubs.lic needs a 'textsubs:' mapping with schema: 1; " \
+        'update dr-scripts, or fix or remove a copy in data/custom. Only private_textsubs and shit-list subs are active.'
+      )
+      expect(TextSubs.subs).to eq(/mine/ => 'MINE')
+      expect(TextSubs.generation).to eq(generation)
+    end
+
+    it 'lets an error that is not about the data through' do
+      allow(TextSubs::Catalog).to receive(:entries).and_raise(NoMethodError, 'a bug, not bad data')
+      expect { TextSubs.add_catalog(good, context, file: 'f') }.to raise_error(NoMethodError, 'a bug, not bad data')
+    end
+  end
+
+  describe 'TextSubs.catalog_override' do
+    it 'names data/custom/base-textsubs.yaml only when that file exists' do
+      Dir.mktmpdir('textsubs-override') do |dir|
+        expect(TextSubs.catalog_override(dir)).to be_nil
+        FileUtils.mkdir_p(File.join(dir, 'data', 'custom'))
+        File.write(File.join(dir, 'data', 'base-textsubs.yaml'), "textsubs: {}\n")
+        expect(TextSubs.catalog_override(dir)).to be_nil
+
+        File.write(File.join(dir, 'data', 'custom', 'base-textsubs.yaml'), "textsubs: {}\n")
+        expect(TextSubs.catalog_override(dir)).to eq(File.join(dir, 'data', 'custom', 'base-textsubs.yaml'))
+      end
+    end
+
+    it 'ignores a directory of that name' do
+      Dir.mktmpdir('textsubs-override') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'data', 'custom', 'base-textsubs.yaml'))
+        expect(TextSubs.catalog_override(dir)).to be_nil
+      end
     end
   end
 
