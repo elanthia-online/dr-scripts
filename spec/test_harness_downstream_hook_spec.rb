@@ -181,6 +181,9 @@ RSpec.describe 'test harness DownstreamHook' do
 
       expect(DownstreamHook.run('line')).to eq('line|harness-b')
       expect(calls).to be_empty
+      # Without the skip, nil.call raises and the rescue echoes it and still
+      # passes the line on, so only the missing echo shows the hook was skipped.
+      expect(displayed_messages).to be_empty
     end
 
     it 'hands each hook a copy, so a hook mutating its argument cannot change the caller line' do
