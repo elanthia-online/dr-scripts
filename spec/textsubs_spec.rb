@@ -1,6 +1,7 @@
 require 'delegate'
 require 'fileutils'
 require 'json'
+require 'stringio'
 require 'tmpdir'
 require 'yaml'
 require_relative '../test/textsubs_corpus'
@@ -704,6 +705,35 @@ RSpec.describe 'textsubs.lic' do
 
     it 'adds nothing, and does not fail, when the flag is on but the file is missing' do
       expect(catalog_with_shit_list(nil, integrate: true)).to eq(plain_catalog)
+    end
+
+    it 'skips a blank line, a line of spaces and a note with no name, keeping the names around them' do
+      catalog = catalog_with_shit_list("zorvex,stole my kill\n\n \t \n, no name here\nquimble,spammer\n\n", integrate: true)
+      expect(catalog.first(2)).to eq([['Zorvex', 0, 'Zorvex (SL)'], ['Quimble', 0, 'Quimble (SL)']])
+      expect(catalog.drop(2)).to eq(plain_catalog)
+    end
+
+    context 'with lines sent through the hook' do
+      include_context 'with a front end attached'
+
+      it 'leaves a line naming nobody alone when the file has empty lines and an empty name' do
+        catalog_with_shit_list("\n   \r\n, note\nzorvex\n", integrate: true)
+        expect(run_hooks("You feel fine.\r\n".b)).to eq("You feel fine.\r\n")
+        expect(run_hooks("Zorvex waves.\r\n".b)).to eq("Zorvex (SL) waves.\r\n")
+      end
+
+      it 'tags a name written with no comma, whatever the line ending' do
+        catalog_with_shit_list("bob\nquimble\r\nzorvex", integrate: true)
+        expect(run_hooks("Bob just arrived.\r\n".b)).to eq("Bob (SL) just arrived.\r\n")
+        expect(run_hooks("Quimble just arrived.\r\n".b)).to eq("Quimble (SL) just arrived.\r\n")
+        expect(run_hooks("Zorvex just arrived.\r\n".b)).to eq("Zorvex (SL) just arrived.\r\n")
+      end
+
+      it 'matches a name as plain text, so a regex character in it stands for itself' do
+        catalog_with_shit_list("o.k,odd name\n", integrate: true)
+        expect(run_hooks("Oxk waves.\r\n".b)).to eq("Oxk waves.\r\n")
+        expect(run_hooks("O.k waves.\r\n".b)).to eq("O.k (SL) waves.\r\n")
+      end
     end
   end
 
@@ -3315,6 +3345,35 @@ RSpec.describe 'textsubs.lic' do
     it 'lets an error that is not about the data through' do
       allow(TextSubs::Catalog).to receive(:keyed_entries).and_raise(NoMethodError, 'a bug, not bad data')
       expect { TextSubs.add_catalog(good, context, file: 'f') }.to raise_error(NoMethodError, 'a bug, not bad data')
+    end
+  end
+
+  describe 'TextSubs::Sources::ShitList' do
+    # @param content [String] a shit-list file body
+    # @return [Array<String>] the names read from it
+    def shit_list_names(content)
+      TextSubs::Sources::ShitList.names(StringIO.new(content))
+    end
+
+    it 'gives each name stripped and capitalized, cut at the first comma only' do
+      expect(shit_list_names("  zorvex  , stole my kill, twice\r\nqUIMBLE,\nbob")).to eq(%w[Zorvex Quimble Bob])
+    end
+
+    it 'gives no name for an empty file, a blank line, a line of spaces, or a lone comma' do
+      expect(shit_list_names('')).to eq([])
+      expect(shit_list_names("\n\r\n \t \n,\n , note\n,bob\n")).to eq([])
+    end
+
+    it 'freezes the list and every name in it' do
+      names = shit_list_names("zorvex\n")
+      expect(names).to be_frozen
+      expect(names).to all(be_frozen)
+    end
+
+    it 'makes a sub that matches the name literally and tags it' do
+      sub = TextSubs::Sources::ShitList.sub('O.k')
+      expect(sub).to eq(['O\\.k', 'O.k (SL)'])
+      expect(sub).to be_frozen
     end
   end
 
