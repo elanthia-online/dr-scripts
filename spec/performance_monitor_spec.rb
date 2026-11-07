@@ -59,10 +59,11 @@ RSpec.describe 'performance-monitor.lic' do
   # Runs the whole script on a fresh runner until its first script.gets?.
   #
   # @param with_start_helper [Boolean] see build_runner
-  # @return [void]
+  # @return [Object] the runner the script ran on
   def run_script(with_start_helper:)
     runner = build_runner(with_start_helper: with_start_helper)
     expect { runner.instance_eval(File.read(path), path, 1) }.to raise_error(stop_run)
+    runner
   end
 
   describe 'textsubs' do
@@ -76,11 +77,11 @@ RSpec.describe 'performance-monitor.lic' do
     end
 
     it 'does not start textsubs through the custom_require fallback' do
-      run_script(with_start_helper: false)
+      runner = run_script(with_start_helper: false)
 
+      expect(runner).not_to respond_to(:start_scripts_if_available)
       expect(loop_reached).not_to be_empty
       expect(custom_required).not_to include('textsubs')
-      expect(started_if_available).to be_empty
       expect($started_scripts.map(&:first)).not_to include('textsubs')
     end
   end
