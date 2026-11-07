@@ -781,32 +781,25 @@ class TextSubs
                  end
         @at += 1
         @at += 1 if peek == '?' || peek == '+' # lazy or possessive
-        throw :bail if stacked?
         bounds
       end
 
+      # Ruby reads a ? or + after an interval unlike after ?, * or + (x{2}?
+      # is an optional x{2}), so neither is consumed here: parse_atom bails
+      # on it.
+      #
       # @return [Array(Integer, Numeric)] the [min, max] of {n}, {n,}, {,m}
-      #   or {n,m}. Ruby reads a ? or + after an interval
-      # unlike after ?, * or + (x{2}? is an optional x{2}), so either bails.
+      #   or {n,m}
       def parse_interval
         interval = /\G\{(\d*)(,?)(\d*)\}/.match(@source, @at)
         throw :bail unless interval && !(interval[1].empty? && interval[3].empty?)
         @at += interval[0].size
-        throw :bail if stacked?
         low = interval[1].to_i
         high = if interval[2].empty? then low
                elsif interval[3].empty? then Float::INFINITY
                else interval[3].to_i
                end
         [low, high]
-      end
-
-      # @return [Boolean] whether another quantifier follows the one just read
-      def stacked?
-        case peek
-        when '?', '*', '+', '{' then true
-        else false
-        end
       end
 
       # @return [Boolean] whether the sequence being read ends here
@@ -817,6 +810,9 @@ class TextSubs
         end
       end
 
+      # A quantifier where an atom should start bails, which also catches a
+      # quantifier stacked on another (Ruby's {n}? and {n}+, or a+?+).
+      #
       # @return [Object] the atom at the read position
       def parse_atom
         char = peek
