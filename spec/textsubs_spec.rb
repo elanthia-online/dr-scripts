@@ -595,7 +595,24 @@ RSpec.describe 'textsubs.lic' do
         end
       end
 
-      it 'reads the Lich globals by default, and the harness sets none of them' do
+      # The hook calls the predicate bare, so these defaults are its only wiring
+      # to Lich. A spec must not set the globals, and with all three nil a
+      # misspelt, swapped or nil default would still answer false, so the
+      # defaults are read from the parsed source instead.
+      it 'defaults each source to the Lich global that holds it' do
+        require 'prism'
+        tree = Prism.parse_file(lic_path('textsubs.lic')).value
+        definition = tree.breadth_first_search do |node|
+          node.is_a?(Prism::DefNode) && node.receiver.is_a?(Prism::SelfNode) && node.name == :client_attached?
+        end
+        defaults = definition.parameters.keywords.to_h { |keyword| [keyword.name, keyword.value.slice] }
+
+        expect(defaults).to eq(registry: '$_DETACHABLE_CLIENT_REGISTRY_', detachable: '$_DETACHABLE_CLIENT_',
+                               client: '$_CLIENT_')
+        expect(definition.parameters.keywords.map(&:value)).to all(be_a(Prism::GlobalVariableReadNode))
+      end
+
+      it 'is false through those defaults in the harness, which sets none of the globals' do
         expect([$_DETACHABLE_CLIENT_REGISTRY_, $_DETACHABLE_CLIENT_, $_CLIENT_]).to all(be_nil)
         expect(TextSubs.client_attached?).to be(false)
       end
