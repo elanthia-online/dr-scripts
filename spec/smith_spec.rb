@@ -502,9 +502,10 @@ RSpec.describe Smith do
 
   # Weaponsmithing recipes made from loose instructions (base-recipes.yaml
   # instructions: true). Kurtus, 2026-08-28: ';forge instructions telothian
-  # spear' studied "some Imperial spear instructions", and tapping a carried
-  # set reads "You tap some Imperial spear instructions inside your
-  # traveler's pack."
+  # spear' got "some Imperial spear instructions" ("You get some Imperial
+  # spear instructions from inside your traveler's pack."), and 'tap my
+  # spear' read "You tap an unfinished telothian Imperial spear inside your
+  # traveler's pack."; the tap replies below follow that form.
   describe 'a recipe made from instructions' do
     let(:instance) { build_smith }
     let(:spear) { SmithSpecData.recipe('a metal Imperial spear') }
