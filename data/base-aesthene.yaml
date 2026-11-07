@@ -16,7 +16,7 @@
 #   solving a known answer, keyed by lock state ("TRALE:aahaa|5" is TRALE
 #   marked absent, absent, hit, absent, absent with five rows left). The script
 #   uses it only when its digest matches these lists, the opening and the
-#   solver's scoring settings; otherwise (including when a character adds
+#   solver's scoring settings and feedback; otherwise (including when a character adds
 #   aesthene_lock_answers) it computes guesses as usual. Regenerate it with
 #   `ruby util/aesthene_guess_table.rb` after changing anything above;
 #   spec/aesthene_spec.rb fails while the digest is stale.
@@ -25,7 +25,7 @@
 # so case does not matter.
 opening: TRALE
 guess_table:
-  digest: 3b9e1b09c8090a1f812d5555d20da8fc160a20127ebc2654e1a10d9e57df8a00
+  digest: 2d3fab5a5e778b5166816b629b2621adfe25fcc34e8239fcf5cd5575951f0a75
   guesses:
     'TRALE:aaaaa|5': NIKOS
     'TRALE:aaaah|5': JOINS

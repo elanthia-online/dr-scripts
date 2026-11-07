@@ -273,9 +273,17 @@ class AestheneSolver
   PROBE_WORD_LIMIT = 2000
 
   # Bump when a change to the scoring would change the guesses without
-  # changing the word lists or the constants above. That changes the digest,
-  # so a guess table built by the old code is no longer used.
+  # changing the word lists, the constants above or feedback_code's marks
+  # (the digest samples those itself). That changes the digest, so a guess
+  # table built by the old code is no longer used.
   SCORING_VERSION = 1
+
+  # Guesses whose feedback against every known answer goes into the digest,
+  # so changing how feedback_code marks a guess retires a guess table built
+  # by the old code even when SCORING_VERSION is not bumped. Repeated letters
+  # are where marking rules differ: doubles, triples, and a letter that is
+  # both right and misplaced.
+  FINGERPRINT_GUESSES = %w[TRALE EERIE LLAMA SASSY ABBEY HAMAR SMALL].freeze
 
   # Marks as written in a state key: hit, present, absent.
   KEY_MARKS = { hit: 'h', present: 'p', absent: 'a' }.freeze
@@ -302,15 +310,17 @@ class AestheneSolver
   end
 
   # Fingerprint of everything that decides the guesses: the lists in order,
-  # the opening, the scoring constants and SCORING_VERSION. A guess table is
-  # only valid for the digest it was built for.
+  # the opening, the scoring constants, SCORING_VERSION and how feedback_code
+  # marks {FINGERPRINT_GUESSES} against every answer. A guess table is only
+  # valid for the digest it was built for.
   #
   # @param answers [Array<String>] normalized known answers, in order
   # @param dictionary [Array<String>] normalized dictionary words, in order
   # @param opening [String, nil]
   # @return [String] hex SHA-256
   def self.digest(answers, dictionary, opening)
-    inputs = [SCORING_VERSION, PROBES, HEDGE_WEIGHT, SCORING_LIMIT, PROBE_WORD_LIMIT, opening, answers, dictionary]
+    feedback = FINGERPRINT_GUESSES.map { |guess| answers.map { |answer| feedback_code(guess, answer) } }
+    inputs = [SCORING_VERSION, PROBES, HEDGE_WEIGHT, SCORING_LIMIT, PROBE_WORD_LIMIT, opening, answers, dictionary, feedback]
     Digest::SHA256.hexdigest(inputs.inspect)
   end
 
