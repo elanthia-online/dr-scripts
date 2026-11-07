@@ -9,12 +9,6 @@ unless HAVE_GTK
   exit
 end
 
-if respond_to?(:start_scripts_if_available)
-  start_scripts_if_available(%w[textsubs])
-else
-  custom_require.call(%w[textsubs])
-end
-
 class PerformanceFilter
   def initialize
     @settings = get_settings
