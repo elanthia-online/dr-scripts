@@ -12,6 +12,10 @@
 # failed forge run it stops: the remaining steps would act on an item that was
 # never made.
 #
+# A recipe marked `instructions: true` in base-recipes.yaml is made from a
+# loose set of instructions instead of the master book; smith checks the
+# character carries that set before buying anything.
+#
 # With use_private_forge, forge.lic walks to and rents the private forge itself.
 # smith only finds a public anvil, and only when that setting is off. With
 # 'here', smith forges in the room it started in: when a part or the ingot
@@ -27,6 +31,8 @@
 #   ;smith steel "metal awl pike" buy here
 # @example In the rented private forge: buy the missing haft, come back, forge, temper
 #   ;smith steel "metal morning star" here temper
+# @example From instructions, in the rented private forge: buy the long pole, come back, forge, temper
+#   ;smith telothian "Imperial spear" here temper
 class Smith
   # Recipe types smith can make.
   SMITHING_TYPES = /blacksmithing|weaponsmithing|armorsmithing/i
@@ -78,6 +84,8 @@ class Smith
   # @param recipe [Hash] the base-recipes entry
   # @return [void]
   def smith(args, recipe)
+    return if recipe['instructions'] && !instructions_carried?(recipe)
+
     parts = parts_for(recipe, args)
     ingot = nil
     if args.buy
@@ -117,10 +125,69 @@ class Smith
     noun = recipe['noun']
     # 'here': forge.lic neither restocks consumables nor walks to the private forge.
     stay_args = args.here ? %w[skip here] : []
-    return false unless forge_finished?(noun, [recipe['type'], recipe['chapter'], recipe['name'], args.material, noun, *stay_args])
+    return false unless forge_finished?(noun, [*item_run_args(recipe, args.material), *stay_args])
 
     stamp_item(noun) if args.stamp
     enhancements(args).all? { |enhancement| forge_finished?(noun, [enhancement, noun, *stay_args]) }
+  end
+
+  # forge.lic's arguments for the item run: the book form, or its
+  # instructions form for a recipe made from loose instructions. forge.lic
+  # studies "<noun> instructions" in that form (#instructions_carried?).
+  #
+  # @param recipe [Hash] the base-recipes entry
+  # @param material [String] metal name as typed
+  # @return [Array<String, Integer>] the recipe chapter is an Integer
+  def item_run_args(recipe, material)
+    return ['instructions', material, recipe['noun']] if recipe['instructions']
+
+    [recipe['type'], recipe['chapter'], recipe['name'], material, recipe['noun']]
+  end
+
+  # Whether the character carries the instructions for this recipe, checked
+  # before anything is bought. forge.lic gets "<noun> instructions", and
+  # some instructions share a noun (serrated and long-handled naginata). A
+  # GET by that name takes the set 'tap my <noun> instructions' names, so
+  # the tapped set must name the recipe: its name less the article and
+  # "metal", e.g. "serrated naginata" for "a metal serrated naginata". DRCC
+  # can instead get the one matching set in the crafting container by its
+  # id, so for a shared noun that container must hold no set of the other
+  # kind. Not covered: a set of the other kind that DRCC remembers by id
+  # from an earlier run and that has since left the container.
+  #
+  # @param recipe [Hash] a base-recipes entry marked instructions: true
+  # @return [Boolean] false (with a message) when the set is missing or another kind
+  def instructions_carried?(recipe)
+    reference = "#{recipe['noun']} instructions"
+    kind = /\b#{Regexp.escape(instructions_kind(recipe))}\b.*\binstructions\b/i
+    tapped = DRCI.tap(reference).to_s.strip
+    unless tapped =~ kind
+      if tapped =~ /\binstructions\b/i
+        Lich::Messaging.msg('bold', "smith: 'my #{reference}' is another kind (#{tapped}), and forge would study it instead. Put the other #{reference} away from your inventory, then run smith again.")
+      else
+        Lich::Messaging.msg('bold', "smith: You don't carry any #{reference}, which forge needs to make #{recipe['name']}. Stopping before buying anything.")
+      end
+      return false
+    end
+    return true unless shared_instructions_noun?(recipe)
+
+    other = (DRCI.get_item_list(@bag) || []).find { |item| item =~ /\b#{Regexp.escape(reference)}\b/i && item !~ kind }
+    return true unless other
+
+    Lich::Messaging.msg('bold', "smith: Your #{@bag} also holds #{other}, and forge may take that set instead. Put it away from your #{@bag}, then run smith again.")
+    false
+  end
+
+  # @param recipe [Hash] an instructions recipe
+  # @return [String] the words its instructions are named by, e.g. "serrated naginata"
+  def instructions_kind(recipe)
+    recipe['name'].sub(/\A(?:an?|some)\s+/i, '').sub(/\Ametal\s+/i, '')
+  end
+
+  # @param recipe [Hash] an instructions recipe
+  # @return [Boolean] true when another instructions recipe uses its noun
+  def shared_instructions_noun?(recipe)
+    get_data('recipes').crafting_recipes.count { |other| other['instructions'] && other['noun'] == recipe['noun'] } > 1
   end
 
   # @param args [OpenStruct] parsed arguments
@@ -459,11 +526,17 @@ class Smith
     exit
   end
 
+  # Book recipes come first: a name that matches any of them is looked up
+  # among them only, so a bare noun such as "glaive" finds the book glaive
+  # as it did before the instructions recipes ("short-hafted glaive") were
+  # added. Any other name is looked up among the instructions recipes.
+  #
   # @param item_name [String] the recipe name as typed
   # @return [Hash, nil] the recipe, or nil when none matches (DRCC says so)
   def find_recipe(item_name)
     recipes = get_data('recipes').crafting_recipes.select { |recipe| recipe['type'] =~ SMITHING_TYPES }
-    DRCC.recipe_lookup(recipes, item_name)
+    book, instructions = recipes.partition { |recipe| !recipe['instructions'] }
+    DRCC.recipe_lookup(book.any? { |recipe| recipe['name'] =~ /#{item_name}/i } ? book : instructions, item_name)
   end
 end
 

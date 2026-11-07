@@ -164,7 +164,7 @@ RSpec.describe CreateRemedies do
     end
 
     it 'gives alchemy.lic the raw herb whose prepared output each instructions herb1 is' do
-      herbs = recipes.select { |recipe| recipe['instructions'] }.map { |recipe| recipe['herb1'] }
+      herbs = recipes.select { |recipe| recipe['instructions'] && recipe['type'] == 'remedies' }.map { |recipe| recipe['herb1'] }
       expect(herbs.map { |herb| create_remedies.forage_name(herb) }).to eq(['shining clubmoss', 'marsh woundwort', 'marram grass', 'ashen flamestalk'])
     end
   end
@@ -222,7 +222,7 @@ RSpec.describe CreateRemedies do
   describe 'the form remedy is run in' do
     # [script name, all arguments] of each script run, in order.
     let(:runs) { [] }
-    let(:instructions_recipes) { recipes.select { |recipe| recipe['instructions'] } }
+    let(:instructions_recipes) { recipes.select { |recipe| recipe['instructions'] && recipe['type'] == 'remedies' } }
     let(:book_recipes) { recipes.select { |recipe| recipe['type'] == 'remedies' && !recipe['instructions'] } }
     # CODE-DERIVED: no log has a herb tap reply; bput hands back the text the
     # "I could not" pattern matched when the herb is not on hand
