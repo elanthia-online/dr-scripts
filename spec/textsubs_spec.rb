@@ -534,7 +534,7 @@ RSpec.describe 'textsubs.lic' do
   end
 
   describe 'reference-engine oracle' do
-    samples = File.readlines(samples_path, chomp: true).map { |line| JSON.parse(line).b }
+    samples = TextsubsCorpus.parse_samples(File.read(samples_path)).map(&:b)
     stream = File.binread(stream_path).lines
     big_line = stream.max_by(&:bytesize)
     # The 49 KB line spends ~0.5 s in the coin regex per pass, so the per-guild
