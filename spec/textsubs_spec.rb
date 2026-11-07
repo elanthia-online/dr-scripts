@@ -195,7 +195,7 @@ RSpec.describe 'textsubs.lic' do
   # @raise [RuntimeError] when the hooks neither returned nor raised
   # @raise [Exception] whatever a hook raises that DownstreamHook.run does not
   #   rescue (it rescues StandardError), unchanged
-  # @example
+  # @example With a front end attached (TextSubs.client_attached? stubbed to true)
   #   run_hooks("You feel fine.\r\n".b) # => "You feel FINE.\r\n"
   def run_hooks(line)
     exit_by = :unwind

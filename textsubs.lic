@@ -25,7 +25,8 @@ class TextSubs
   # Game#client_write_targets: a non-empty detachable client registry, else the
   # legacy single detachable client, else the primary client ($_CLIENT_, nil
   # under --without-frontend). Lich runs the downstream hooks before it picks
-  # those targets, so with none of them a rewritten line goes nowhere.
+  # those targets, so with none of them no client receives a rewritten line;
+  # only the hooks after this one would see it.
   #
   # The defaults read the Lich globals on every call: a detachable client can
   # attach or leave at any time, so the hook asks once per line.
