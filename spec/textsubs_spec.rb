@@ -769,13 +769,18 @@ RSpec.describe 'textsubs.lic' do
     end
 
     # Keys are unanchored and gsub! replaces only what they match, so a
-    # leading '.*' outside every group swallows whatever came before the
-    # message on the line (XML tags, other text), and a value that does not
-    # put the whole match back (\0 or \&) deletes it.
+    # leading wildcard swallows whatever came before the message on the line
+    # (XML tags, other text), and a value that does not put it back deletes
+    # it. The wildcard may be bare ('.*'), in a non-capturing group
+    # ('(?:.*)') or in group 1 ('(.*)'), lazy or not, after an optional '^'
+    # or '\A'; the value puts it back with \0, \& or (group 1 only) \1.
     it "holds no key in any catalog that starts with a '.*' or '.+' its value drops" do
+      leading_wildcard = /\A(?:\^|\\A)?(?:\.[*+]\??|\(\?:\.[*+]\??\)|(?<captured>\(\.[*+]\??\)))/
       offenders = combinations.flat_map do |combination|
         build_combination(combination).filter_map do |source, _options, replacement|
-          [combination['guild'], source] if source.match?(/\A\^?\.[*+]/) && !replacement.match?(/\\[0&]/)
+          wildcard = leading_wildcard.match(source) or next
+          kept = replacement.match?(/\\[0&]/) || (wildcard[:captured] && replacement.match?(/\\1(?!\d)/))
+          [combination['guild'], source] unless kept
         end
       end
       expect(offenders.uniq).to be_empty, -> { "keys that drop the start of the line:\n#{offenders.uniq.map { |entry| "  #{entry.inspect}" }.join("\n")}" }
