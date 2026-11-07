@@ -777,7 +777,7 @@ RSpec.describe 'textsubs.lic' do
     it "holds no key in any catalog that starts with a '.*' or '.+' its value drops" do
       leading_wildcard = /\A(?:\^|\\A)?(?:\.[*+]\??|\(\?:\.[*+]\??\)|(?<captured>\(\.[*+]\??\)))/
       offenders = combinations.flat_map do |combination|
-        build_combination(combination).filter_map do |source, _options, replacement|
+        catalog_of(combination).filter_map do |source, _options, replacement|
           wildcard = leading_wildcard.match(source) or next
           kept = replacement.match?(/\\[0&]/) || (wildcard[:captured] && replacement.match?(/\\1(?!\d)/))
           [combination['guild'], source] unless kept
