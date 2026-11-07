@@ -1278,11 +1278,11 @@ RSpec.describe 'textsubs.lic' do
       Marshal.load(Marshal.dump(shipped_catalog))
     end
     stale = shipped.call.tap { |copy| copy['textsubs']['schema'] = 2 }
-    unknown_kind = shipped.call.tap { |copy| copy['textsubs']['sections'].last['kind'] = 'ladder' }
+    unknown_kind = shipped.call.tap { |copy| copy['textsubs']['sections'].last['kind'] = 'ladders' }
     {
       'a missing file or one that did not parse' => [OpenStruct.new, /no 'textsubs:' mapping/],
       'a file from another schema'               => [OpenStruct.new(stale), /schema 2, but this textsubs.lic reads schema 1/],
-      'a section of an unknown kind'             => [OpenStruct.new(unknown_kind), /has unknown kind "ladder"/]
+      'a section of an unknown kind'             => [OpenStruct.new(unknown_kind), /has unknown kind "ladders"/]
     }.each do |label, (answer, reason)|
       context "with #{label}" do
         # Starts textsubs with one shit-list name and one private sub.
@@ -4395,8 +4395,8 @@ RSpec.describe 'textsubs.lic' do
       ],
       [
         'an unknown kind',
-        "textsubs:\n  schema: 1\n  sections:\n    - name: 'x'\n      kind: 'ladder'\n      subs: [['a', 'b']]\n",
-        /section 1 \(x\) has unknown kind "ladder"; kinds are pairs, guild_spells_link, wiki_links, spell_links, scroll_labels, spell_recognition\z/
+        "textsubs:\n  schema: 1\n  sections:\n    - name: 'x'\n      kind: 'ladders'\n      subs: [['a', 'b']]\n",
+        /section 1 \(x\) has unknown kind "ladders"; kinds are pairs, ladder, guild_spells_link, wiki_links, spell_links, scroll_labels, spell_recognition\z/
       ],
       [
         'a misspelt section key',
@@ -4702,6 +4702,107 @@ RSpec.describe 'textsubs.lic' do
         end
       end
     end
+
+    # A ladder gives each message of a scale its (n/of) counter from one
+    # phrase per step. The phrase is the pattern as written, and the
+    # replacement is its text with the escapes taken out, so these hold the
+    # pattern and the replacement to each other as well as to the data.
+    describe 'the ladder kind' do
+      # @param section [Hash] a ladder section, name and kind included
+      # @return [Hash] the frozen `textsubs:` value holding it alone
+      def ladder_catalog(section)
+        catalog_data({ 'textsubs' => { 'schema' => 1, 'sections' => [section] } }.to_yaml)
+      end
+
+      # @param fields [Hash] the ladder's fields, besides name and kind
+      # @return [Array<Array(String, String)>] [source, replacement] of each sub
+      def ladder_pairs(fields)
+        entries_for('Bard', ladder_catalog({ 'name' => 'scale', 'kind' => 'ladder' }.merge(fields)))
+          .map { |source, replacement, _meta| [source, replacement] }
+      end
+
+      it 'appends each counter after its phrase, in step order, with the prefix and a space before every phrase' do
+        section = { 'name' => 'butchery', 'when' => { 'guilds' => ['Necromancer'] }, 'kind' => 'ladder',
+                    'prefix' => 'manage to extract a', 'of' => 10, 'steps' => [[10, 'perfect'], [9, 'very good']] }
+        expect(entries_for('Necromancer', ladder_catalog(section)))
+          .to eq([['manage to extract a perfect', 'manage to extract a perfect (10/10)', { section: 'butchery' }],
+                  ['manage to extract a very good', 'manage to extract a very good (9/10)', { section: 'butchery' }]])
+        expect(entries_for('Bard', ladder_catalog(section))).to eq([])
+      end
+
+      it 'puts the counter before the full stop for before_period, an escaped one or a bare one alike' do
+        pairs = ladder_pairs('style' => 'before_period', 'of' => 13,
+                             'steps' => [[1, 'it would be taking candy from a baby\.'], [2, 'Your aura pulses slowly.']])
+        expect(pairs).to eq([['it would be taking candy from a baby\.', 'it would be taking candy from a baby (1/13).'],
+                             ['Your aura pulses slowly.', 'Your aura pulses slowly (2/13).']])
+      end
+
+      it "puts the '^' anchor in the pattern only, so the step matches at the start of a line and nowhere else" do
+        pairs = ladder_pairs('anchor' => '^', 'prefix' => 'You sense you are', 'of' => 7, 'steps' => [[4, 'half-way done with']])
+        expect(pairs).to eq([['^You sense you are half-way done with', 'You sense you are half-way done with (4/7)']])
+        pattern = Regexp.new(pairs.first.first)
+        expect('You sense you are half-way done with it.'.sub(pattern, pairs.first.last)).to eq('You sense you are half-way done with (4/7) it.')
+        expect(pattern.match?('Then You sense you are half-way done with it.')).to be(false)
+      end
+
+      it 'writes back each escaped character without its backslash, so the counter lands after the text the pattern matched' do
+        pairs = ladder_pairs('anchor' => '^', 'of' => 15, 'steps' => [[1, 'a mighty\.\.\. Moo\?!  It \*THUDS\* \-\- \(loudly\)\.']])
+        source, replacement = pairs.first
+        expect(replacement).to eq('a mighty... Moo?!  It *THUDS* -- (loudly). (1/15)')
+        line = 'a mighty... Moo?!  It *THUDS* -- (loudly).'
+        expect(line.gsub(Regexp.new(source), replacement)).to eq("#{line} (1/15)")
+        expect(TextSubs::Generators::Ladder.literal('Moo\?\! \-\-')).to eq('Moo?! --')
+      end
+
+      it 'takes the step numbers as written: out of order, with gaps, negative and zero' do
+        pairs = ladder_pairs('of' => 5, 'steps' => [[5, 'best'], [-5, 'worst'], [0, 'neutral'], [2, 'fair']])
+        expect(pairs.map(&:last)).to eq(['best (5/5)', 'worst (-5/5)', 'neutral (0/5)', 'fair (2/5)'])
+      end
+
+      it 'refuses a step number used twice, as two messages cannot hold one place on the scale' do
+        steps = [[1, 'first'], [2, 'second'], [1, 'again'], [2, 'and again']]
+        expect { ladder_pairs('of' => 5, 'steps' => steps) }
+          .to raise_error(ArgumentError, 'section 1 (scale) uses step number(s) 1, 2 more than once')
+      end
+
+      {
+        'an unknown style'             => [{ 'style' => 'prepend' }, /has unknown style "prepend"; styles are append, before_period\z/],
+        'a style that is not a string' => [{ 'style' => 1 }, /'style' must be a quoted string, not 1/],
+        "an anchor other than '^'"     => [{ 'anchor' => '\A' }, /'anchor' must be '\^', not "\\\\A"/],
+        'an of of zero'                => [{ 'of' => 0 }, /'of' must be a positive whole number, not 0/],
+        'a quoted of'                  => [{ 'of' => '10' }, /'of' must be a positive whole number, not "10"/],
+        'a fractional of'              => [{ 'of' => 2.5 }, /'of' must be a positive whole number, not 2.5/],
+        'no steps'                     => [{ 'steps' => [] }, /'steps' must be a non-empty list/],
+        'steps that are not a list'    => [{ 'steps' => 'one' }, /'steps' must be a non-empty list/],
+        'a step with no phrase'        => [{ 'steps' => [[1]] }, /steps 1 must be an \[n, 'phrase'\] pair, .* not \[1\]/],
+        'a step with a quoted n'       => [{ 'steps' => [['1', 'one']] }, /steps 1 must be an \[n, 'phrase'\] pair, .* not \["1", "one"\]/],
+        'a step with an empty phrase'  => [{ 'steps' => [[1, '']] }, /steps 1 must be an \[n, 'phrase'\] pair/],
+        'a step written as a mapping'  => [{ 'steps' => [{ 'n' => 1 }] }, /steps 1 must be an \[n, 'phrase'\] pair/],
+        'a step above of'              => [{ 'steps' => [[1, 'a'], [6, 'b']] }, /steps 2 counts 6, outside -5 to 5/],
+        'a step below -of'             => [{ 'steps' => [[-6, 'a']] }, /steps 1 counts -6, outside -5 to 5/],
+        'an unescaped ?'               => [{ 'steps' => [[1, 'able to move?']] }, /steps 1 phrase "able to move\?" must be literal text/],
+        'an unescaped group'           => [{ 'steps' => [[1, '(a|an) hit']] }, /steps 1 phrase "\(a\|an\) hit" must be literal text/],
+        'an escaped letter'            => [{ 'steps' => [[1, 'a\shit']] }, /steps 1 phrase "a\\\\shit" must be literal text/],
+        'an escaped backslash'         => [{ 'steps' => [[1, 'a\\\\hit']] }, /steps 1 phrase .* must be literal text/],
+        'a trailing backslash'         => [{ 'steps' => [[1, 'a hit\\']] }, /steps 1 phrase .* must be literal text/],
+        'a prefix that is not literal' => [{ 'prefix' => 'Encumbrance *' }, /'prefix' "Encumbrance \*" must be literal text/],
+        'a prefix that is a list'      => [{ 'prefix' => ['a'] }, /'prefix' must be a quoted string, not \["a"\]/],
+        'a misspelt field'             => [{ 'step' => [[1, 'a']] }, /has unknown key\(s\) "step"/],
+        'a before_period phrase with no full stop' =>
+          [{ 'style' => 'before_period', 'steps' => [[1, 'Your aura is blinding!']] },
+           /steps 1 phrase "Your aura is blinding!" must end in a full stop, as its style is before_period/]
+      }.each do |label, (change, message)|
+        it "refuses #{label}" do
+          expect { ladder_pairs({ 'of' => 5, 'steps' => [[1, 'a hit']] }.merge(change)) }
+            .to raise_error(ArgumentError, /\Asection 1 \(scale\) #{message.source}/)
+        end
+      end
+
+      it "refuses a ladder missing of or steps, naming what it lacks" do
+        expect { ladder_pairs('steps' => [[1, 'a']]) }.to raise_error(ArgumentError, 'section 1 (scale) has no of')
+        expect { ladder_pairs('of' => 5) }.to raise_error(ArgumentError, 'section 1 (scale) has no steps')
+      end
+    end
   end
 
   # Both spell kinds build uniform value sets, so no data file reaches these
@@ -4876,14 +4977,14 @@ RSpec.describe 'textsubs.lic' do
     end
 
     it 'adds nothing, not even the good sections before the bad one, and says why, naming the file and the schema' do
-      bad = good.merge('sections' => good['sections'] + [{ 'name' => 'two', 'kind' => 'ladder' }])
+      bad = good.merge('sections' => good['sections'] + [{ 'name' => 'two', 'kind' => 'ladders' }])
       TextSubs.add('mine', 'MINE')
       generation = TextSubs.generation
 
       message = TextSubs.add_catalog(bad, context, file: '/lich/scripts/data/custom/base-textsubs.yaml')
       expect(message).to eq(
         'No built-in subs: /lich/scripts/data/custom/base-textsubs.yaml cannot be used (section 2 (two) has unknown kind ' \
-        "\"ladder\"; kinds are pairs, guild_spells_link, wiki_links, spell_links, scroll_labels, spell_recognition). " \
+        "\"ladders\"; kinds are pairs, ladder, guild_spells_link, wiki_links, spell_links, scroll_labels, spell_recognition). " \
         "This textsubs.lic needs a 'textsubs:' mapping with schema: 1; " \
         'update dr-scripts, or fix or remove a copy in data/custom. Only private_textsubs and shit-list subs are active.'
       )

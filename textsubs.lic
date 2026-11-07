@@ -1475,8 +1475,9 @@ class TextSubs
   # words skips their regexes. It must only name words each pattern needs.
   #
   # A section's kind names the Generators class that checks its fields and
-  # turns them into subs (see kinds); 'pairs' lists them as they are, and the
-  # spell kinds build theirs from the spells table.
+  # turns them into subs (see kinds); 'pairs' lists them as they are,
+  # 'ladder' builds a counter per step of a scale, and the spell kinds build
+  # theirs from the spells table.
   #
   # Sections run in file order and subs in list order; both orders are kept,
   # because two subs that match the same line apply in that order. Every key
@@ -1493,6 +1494,7 @@ class TextSubs
     # @return [Hash{String=>Class}] frozen
     def self.kinds
       { 'pairs'             => Generators::Pairs,
+        'ladder'            => Generators::Ladder,
         'guild_spells_link' => Generators::GuildSpellsLink,
         'wiki_links'        => Generators::WikiLinks,
         'spell_links'       => Generators::SpellLinks,
@@ -1809,6 +1811,154 @@ class TextSubs
       def self.expand(section, _context, _spells)
         section['subs'].map { |pattern, replacement| [pattern, replacement] }
       end
+    end
+
+    # The 'ladder' kind: a run of messages, one per step of a scale, each
+    # given its place on the scale as an (n/of) counter. Its fields are
+    #   of      the top of the scale, a positive whole number
+    #   steps   [n, 'phrase'] per message, in list order; n is a whole number
+    #           from -of to of, each used once, and need not run in order
+    #   style   'append' (the default) puts ' (n/of)' after the phrase;
+    #           'before_period' puts it before the full stop the phrase
+    #           ends with
+    #   anchor  optional '^', put before the phrase in the pattern only
+    #   prefix  optional text the phrases share, put before each one with a
+    #           space between, in the pattern and the replacement alike
+    #
+    # The phrase (with the prefix) is the pattern as it is written, so it is
+    # regex source, and the replacement is that text with each backslash
+    # escape taken out. A phrase is therefore literal text: a regex
+    # metacharacter but '.' must be escaped, and a backslash may only escape
+    # a punctuation mark, so the text the pattern matches is the text the
+    # replacement writes back.
+    #
+    # @example
+    #   section = { 'name' => 'butchery', 'kind' => 'ladder', 'prefix' => 'manage to extract a', 'of' => 10,
+    #               'steps' => [[10, 'perfect'], [9, 'flawless']] }
+    #   TextSubs::Generators::Ladder.expand(section, context, spells)
+    #   # => [['manage to extract a perfect', 'manage to extract a perfect (10/10)'],
+    #   #     ['manage to extract a flawless', 'manage to extract a flawless (9/10)']]
+    # @example A before_period step, anchored
+    #   section = { 'name' => 'x', 'kind' => 'ladder', 'style' => 'before_period', 'anchor' => '^', 'of' => 13,
+    #               'steps' => [[1, 'it would be taking candy from a baby\.']] }
+    #   TextSubs::Generators::Ladder.expand(section, context, spells)
+    #   # => [['^it would be taking candy from a baby\.', 'it would be taking candy from a baby (1/13).']]
+    class Ladder
+      # @return [Array<String>] frozen
+      def self.fields
+        %w[of steps].freeze
+      end
+
+      # @return [Array<String>] frozen
+      def self.optional_fields
+        %w[style anchor prefix].freeze
+      end
+
+      # @return [Array<String>] the styles a section may name, frozen
+      def self.styles
+        %w[append before_period].freeze
+      end
+
+      # @param section [Hash] a ladder section
+      # @param _spells [TextSubs::SpellTable] unused
+      # @return [nil]
+      # @raise [ArgumentError] when style, anchor or prefix is not a quoted
+      #   string, style is unknown, anchor is not '^', of is not a positive
+      #   whole number, steps is not a non-empty list of [n, 'phrase'] pairs,
+      #   an n is out of range or used twice, a phrase or the prefix is not
+      #   literal text, a before_period phrase does not end in a full stop, or
+      #   a pattern does not compile
+      def self.check(section, _spells)
+        Generators.check_strings(section, optional_fields)
+        check_options(section)
+        steps = section['steps']
+        raise ArgumentError, "'steps' must be a non-empty list" unless steps.is_a?(Array) && !steps.empty?
+
+        steps.each_with_index { |step, index| check_step(section, step, index) }
+        repeated = steps.map(&:first).tally.select { |_, count| count > 1 }.keys
+        raise ArgumentError, "uses step number(s) #{repeated.join(', ')} more than once" unless repeated.empty?
+
+        Generators.check_patterns(expand(section, nil, nil))
+      end
+
+      # @param section [Hash] a checked ladder section
+      # @param _context [TextSubs::Context] unused: a ladder is the same for
+      #   every character
+      # @param _spells [TextSubs::SpellTable] unused
+      # @return [Array<Array(String, String)>] one sub per step, in list order
+      def self.expand(section, _context, _spells)
+        section['steps'].map { |n, phrase| step_sub(section, n, phrase) }
+      end
+
+      # @param text [String] regex source written as literal text
+      # @return [String] the text it matches: each backslash escape taken out
+      # @example
+      #   TextSubs::Generators::Ladder.literal('a mighty\.\.\. Moo\?!') # => "a mighty... Moo?!"
+      def self.literal(text)
+        text.gsub(/\\(.)/, '\1')
+      end
+
+      # @param section [Hash] a ladder section, its strings checked
+      # @return [nil]
+      # @raise [ArgumentError] as check describes for style, anchor, of and
+      #   prefix
+      def self.check_options(section)
+        style = section.fetch('style', 'append')
+        raise ArgumentError, "has unknown style #{style.inspect}; styles are #{styles.join(', ')}" unless styles.include?(style)
+        raise ArgumentError, "'anchor' must be '^', not #{section['anchor'].inspect}" unless [nil, '^'].include?(section['anchor'])
+
+        of = section['of']
+        raise ArgumentError, "'of' must be a positive whole number, not #{of.inspect}" unless of.is_a?(Integer) && of.positive?
+
+        check_literal(section['prefix'], "'prefix'") if section.key?('prefix')
+        nil
+      end
+
+      # @param section [Hash] a ladder section, its options checked
+      # @param step [Object] one element of steps
+      # @param index [Integer] its position, for the message
+      # @return [nil]
+      # @raise [ArgumentError] as check describes for one step
+      def self.check_step(section, step, index)
+        label = "steps #{index + 1}"
+        unless step.is_a?(Array) && step.size == 2 && step.first.is_a?(Integer) && step.last.is_a?(String) && !step.last.empty?
+          raise ArgumentError, "#{label} must be an [n, 'phrase'] pair, a whole number and a quoted phrase, not #{step.inspect}"
+        end
+
+        n, phrase = step
+        of = section['of']
+        raise ArgumentError, "#{label} counts #{n}, outside -#{of} to #{of}" unless n.between?(-of, of)
+
+        check_literal(phrase, "#{label} phrase")
+        return unless section['style'] == 'before_period' && !literal(phrase).end_with?('.')
+
+        raise ArgumentError, "#{label} phrase #{phrase.inspect} must end in a full stop, as its style is before_period"
+      end
+
+      # @param text [String] a phrase or the prefix
+      # @param label [String] what it is, for the message
+      # @return [nil]
+      # @raise [ArgumentError] unless text is literal text, as the class
+      #   comment describes
+      def self.check_literal(text, label)
+        return if text.match?(/\A(?:[^\\()\[\]{}*+?|^$]|\\[!-\/:-@\[\]^-`{-~])+\z/)
+
+        raise ArgumentError, "#{label} #{text.inspect} must be literal text: escape each regex metacharacter " \
+                             'but . with a backslash, and escape nothing else'
+      end
+
+      # @param section [Hash] a checked ladder section
+      # @param n [Integer] the step's place on the scale
+      # @param phrase [String] the step's phrase
+      # @return [Array(String, String)] the step's pattern and replacement
+      def self.step_sub(section, n, phrase)
+        source = [section['prefix'], phrase].compact.join(' ')
+        text = literal(source)
+        counter = "(#{n}/#{section['of']})"
+        replacement = section['style'] == 'before_period' ? "#{text.delete_suffix('.')} #{counter}." : "#{text} #{counter}"
+        ["#{section['anchor']}#{source}", replacement]
+      end
+      private_class_method :check_options, :check_step, :check_literal, :step_sub
     end
 
     # The 'guild_spells_link' kind, the one sub whose replacement names the
