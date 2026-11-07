@@ -99,6 +99,23 @@ class Forge
   # @return [Regexp]
   RENTAL_WARNING_PATTERN = /^(?:<[^>]+>)*\[You have less than \d+ minutes remaining\.\s+If you wish to renew your rental/
 
+  # The game's line when the item needs less metal than the ingot holds: "You
+  # realize the tinker's tools will not require as much metal as you have,
+  # and so you split the ingot and leave the portion you won't be using in
+  # your pack." The portion goes to the stow container, so the raw line starts
+  # with the stow container's feed (<clearContainer id="stow"/><inv
+  # id='stow'>In the pack:</inv><inv id='stow'> a bronze ingot</inv>...),
+  # which has text inside its tags. Leading tags and whole <inv> elements
+  # (text, no tags, inside) are allowed before the text, but no other text,
+  # so player speech, whispers and ESP (a name and a quote first) can't fake
+  # it. In the legacy stream every stow <inv> element holds text only. Under
+  # the Saga stream (Lich's default since 5.23.0) the items carry <a exist>
+  # links, which DRParser strips before Flags match (DRParser.match_line,
+  # lich-5 #1702, also 5.23.0), so the elements are text only here too.
+  # Captures the container the game names, without the period.
+  # @return [Regexp]
+  INGOT_RESTOW_PATTERN = %r{^(?:<inv\b[^>]*>[^<]*</inv>|<[^>]+>)*You realize .* will not require as much metal as you have, and so you split the ingot and leave the portion you won't be using in your ([^.]+)\.}
+
   # Patterns indicating failed rental renewal
   # @return [Array<String>]
   RENTAL_RENEW_FAILURE_PATTERNS = ["You don't have enough", 'I could not find'].freeze
@@ -408,7 +425,7 @@ class Forge
               /^(?:<[^>]*>|[^"<])*?shows improved protection/i,
               /^(?:<[^>]+>)*Applying the final touches/i,
               /^(?:<[^>]+>)*The .* was successfully/)
-    Flags.add('ingot-restow', /^(?:<[^>]+>)*You realize .* will not require as much metal as you have, and so you split the ingot and leave the portion you won't be using in your (.*)\./)
+    Flags.add('ingot-restow', INGOT_RESTOW_PATTERN)
     Flags.add('forge-rental-warning', RENTAL_WARNING_PATTERN)
   end
 
@@ -1296,27 +1313,44 @@ class Forge
 
   # Restow leftover ingot metal to proper container.
   #
-  # When crafting uses less metal than provided, the game
-  # automatically splits the ingot. This moves it to the
-  # configured crafting container.
+  # When crafting uses less metal than provided, the game splits the ingot
+  # and leaves the unused portion in the stow container, not the crafting
+  # container the ingot came from. This moves it to the configured crafting
+  # container, where the next item's ingot and a caller's cleanup (taskmaster
+  # bins leftover metal from crafting_container only) look for it.
   #
   # @return [void]
   def restow_ingot
-    tool = DRC.right_hand
     match_data = Flags['ingot-restow']
     Flags.reset('ingot-restow')
     return unless match_data && match_data[1]
 
-    temp_bag = match_data[1].chop
-    return if /#{temp_bag}/ =~ @bag
+    container = match_data[1].strip
+    return if crafting_bag?(container)
 
-    DRCC.stow_crafting_item(tool, @bag, @forging_belt)
-    if DRCI.get_item?("#{@metal} ingot", temp_bag)
-      unless DRCI.put_away_item?("#{@metal} ingot", @bag)
-        error_log("Failed to stow #{@metal} ingot in #{@bag}.")
-      end
+    # A resume run has no metal argument; the split portion is still an ingot.
+    ingot = @metal ? "#{@metal} ingot" : 'ingot'
+    tool = DRC.right_hand
+    DRCC.stow_crafting_item(tool, @bag, @forging_belt) if tool
+    if !DRCI.get_item?(ingot, container)
+      error_log("Could not get the leftover #{ingot} from your #{container}, so it stays there.")
+    elsif !DRCI.put_away_item?(ingot, @bag)
+      error_log("Failed to stow #{ingot} in #{@bag}.")
     end
     swap_tool(tool) if tool
+  end
+
+  # Whether the container the split line names is the crafting container.
+  # The game names it by its noun ("your pack" for a traveler's pack), so it
+  # is the crafting container when that name ends in the same word: "pack"
+  # is a "traveler's pack", never a "backpack" or a "leather-pack". A
+  # different container with the same noun as the stow container can't be
+  # told apart from the line, so the portion stays where the game put it.
+  #
+  # @param container [String] the container from the split line, e.g. 'pack'
+  # @return [Boolean]
+  def crafting_bag?(container)
+    @bag.to_s.match?(/(?:\A|\s)#{Regexp.escape(container)}\z/i)
   end
 
   # @!endgroup

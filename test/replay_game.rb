@@ -21,6 +21,7 @@ end
 # - Flags matching: lib/dragonrealms/drinfomon/drparser.rb:124-139 (match_line),
 #   :145-155 (check_events) and :582-584 (parse feeds one to the other);
 # - fput: lib/global_defs.rb:1483-1641;
+# - Lich::Util.issue_command: lib/util/util.rb:157-224;
 # - the "...wait N seconds." pattern: lib/common/wait_response.rb:9.
 #
 # == Replies
@@ -134,6 +135,10 @@ class ReplayGame
   # Seconds fput waits for any line before it gives up (global_defs.rb:1505).
   FPUT_TIMEOUT = 60
 
+  # issue_command's default end pattern, the prompt after a reply
+  # (util.rb:157). The logs have their prompts removed.
+  PROMPT_PATTERN = /<prompt/
+
   # The game's roundtime refusal, "...wait 1 seconds." (25:11582). Same
   # pattern as lich-5's WAIT_RESPONSE_PATTERN (wait_response.rb:9).
   WAIT_RESPONSE_PATTERN = /(?:\.\.\. ?wait|\AWait) (?<seconds>[0-9]+) sec(?:onds?)?\.(?:<[^>]+>)*\s*\z/
@@ -240,15 +245,19 @@ class ReplayGame
     @clock = 0.0
   end
 
-  # Routes the example's game I/O here: DRC.bput through an `allow`, and the
-  # harness fput and pause through $replay_game (reset_data clears it).
+  # Routes the example's game I/O here: DRC.bput and Lich::Util.issue_command
+  # through an `allow`, and the harness fput and pause through $replay_game
+  # (reset_data clears it).
   #
   # @param example [RSpec::Core::ExampleGroup] the running example (`self`)
   # @return [ReplayGame] self
   def install(example)
     game = self
     $replay_game = game
-    example.instance_exec { allow(DRC).to receive(:bput) { |*args| game.bput(*args) } }
+    example.instance_exec do
+      allow(DRC).to receive(:bput) { |*args| game.bput(*args) }
+      allow(Lich::Util).to receive(:issue_command) { |*args, **options| game.issue_command(*args, **options) }
+    end
     self
   end
 
@@ -416,6 +425,80 @@ class ReplayGame
     advance(FPUT_TIMEOUT, "fput timeout: #{message}")
     @diagnostics << "fput: No game response for #{FPUT_TIMEOUT}s to '#{message}'"
     false
+  end
+
+  # Model of Lich::Util.issue_command (util.rb:157-224): send a command and
+  # return the reply's lines from the first one that matches start_pattern
+  # to the end line.
+  #
+  # - Lines left over from earlier commands are dropped first: the command
+  #   goes out with fput (:200), which clears.
+  # - A "...wait N" line before the start line advances the clock N s and
+  #   resends, as fput does (global_defs.rb:1560-1568). fput sleeps out
+  #   that wait inside issue_command's Timeout (:171), so the waits count
+  #   against the timeout: once they reach it, the clock stops at the
+  #   timeout and nothing is returned, as the Timeout rescue does
+  #   (:215-216).
+  # - Lines before the start line are skipped (:202); the start line and
+  #   every line up to end_pattern are kept, right-stripped (:203-208), the
+  #   end line too when include_end (:209-213). With end_pattern :ignore
+  #   only the start line is kept.
+  # - Lines are returned as the script gets them with usexml (the default,
+  #   :167-168): tags kept.
+  # - The default end pattern, PROMPT_PATTERN, matches the prompt that ends
+  #   every reply. The logs have their prompts removed, so with that pattern
+  #   the end of the reply ends the capture, and no prompt line is added.
+  # - With no start line, or no end line for another end_pattern, the clock
+  #   advances to the timeout (less any waits already sat out) and the
+  #   lines kept so far are returned, as the Timeout rescue does (:171,
+  #   :215-216).
+  #
+  # @param command [String] the command
+  # @param start_pattern [Regexp] the first line to keep
+  # @param end_pattern [Regexp, Symbol] the last line, or :ignore
+  # @param include_end [Boolean] keep the end line
+  # @param timeout [Numeric] seconds before it gives up
+  # @param _options [Hash] silent, usexml, quiet, use_fput: not modelled
+  # @return [Array<String>] the lines kept
+  # @raise [ReplayLoopGuard] when the send budget runs out
+  def issue_command(command, start_pattern, end_pattern = PROMPT_PATTERN, include_end: true, timeout: 5, **_options)
+    @queue.clear
+    send_command(command)
+    result = []
+    waited = 0
+    while (line = @queue.shift)
+      text = line.text
+      if result.empty?
+        if (wait = WAIT_RESPONSE_PATTERN.match(strip_xml(text)))
+          seconds = wait[:seconds].to_i
+          if waited + seconds >= timeout
+            advance(timeout - waited, "issue_command timeout during a wait: #{command}")
+            return result
+          end
+
+          waited += seconds
+          advance(seconds, "issue_command wait: #{command}")
+          @queue.clear
+          send_command(command)
+          next
+        end
+        next unless text.match?(start_pattern)
+
+        result << text.rstrip
+        return result if end_pattern == :ignore
+
+        next
+      end
+      if text.match?(end_pattern)
+        result << text.rstrip if include_end
+        return result
+      end
+      result << text.rstrip
+    end
+    return result if !result.empty? && end_pattern == PROMPT_PATTERN
+
+    advance(timeout - waited, "issue_command timeout: #{command}")
+    result
   end
 
   # Moves the fake clock forward.

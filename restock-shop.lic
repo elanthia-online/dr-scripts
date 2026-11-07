@@ -78,7 +78,9 @@ class ShopRestock
     respond '------------'
     missing_items.each { |item| respond "- #{item['full_name']}" }
 
-    all_recipes = get_data('recipes').crafting_recipes
+    # Weapons made from loose instructions are not restocked: volume_of looks
+    # an item up by its noun, and "glaive" would also find the short-hafted one.
+    all_recipes = get_data('recipes').crafting_recipes.reject { |recipe| recipe['instructions'] }
     missing_recipes_re = Regexp.union(missing_items.map { |item| item['recipe'] })
     @recipes = all_recipes.select { |recipe| missing_recipes_re.match(recipe['name']) }
 

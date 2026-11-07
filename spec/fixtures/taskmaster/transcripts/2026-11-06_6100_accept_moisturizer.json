@@ -1,0 +1,301 @@
+{
+  "run": "2026-11-06_6100_accept_moisturizer",
+  "log": "6100",
+  "from": 130,
+  "to": 220,
+  "source": "nezhiri.txt lines 130-220: Lich text capture, prompts (\"> \", \"R> \") and [hh:mm:ss] stamps removed; every game line after a command, up to the next command, attributed to it (the scripts wait for each reply); Lich lines and script output dropped; other players' lines kept. Another player's Hollow Eve 2026 Nezhiri task log; the \"script\" key per step and the dropped-lines list were removed. The reply to the task command at line 151 is cut after line 158: the lines after it are other characters arriving and the player typing commands of their own.",
+  "steps": [
+    {
+      "cmd": "ask nezhiri for task",
+      "line": 132,
+      "user": false,
+      "responses": [
+        {
+          "text": "Potion Peddler Nezhiri's eyes twinkle enthusiastically.  \"You wish to help me grow my business?  Oh, I am so pleased to hear it!  Your kind efforts will not go unrewarded, but I'm afraid I must ask for an up-front investment of 5 gold Kronars to cover the base costs of this next venture.  If you agree, just ask again and I'll make a record of our arrangement.\"",
+          "line": 133
+        },
+        {
+          "text": "",
+          "line": 134
+        },
+        {
+          "text": "\"I'm also running low on raw ingredients, so you will have to track down your own supplies.  The Merelew have been kind enough to share their stock of brewer's brine with us, however.  You can purchase as much as you need at the local Craftsmen's Academy.\"  The peddler pauses and scratches her scaly chin.  \"I suppose that's all there is to it.  If you give me the coin to finalize our deal and then craft the requested compounds, I'll reward you with whatever knowledge and material trinkets I can spare.\"",
+          "line": 135
+        },
+        {
+          "text": "[ASK NEZHIRI FOR TASK again if you agree to her terms.]",
+          "line": 136
+        }
+      ]
+    },
+    {
+      "cmd": "ask nezhiri for task",
+      "line": 138,
+      "user": false,
+      "responses": [
+        {
+          "text": "Potion Peddler Nezhiri beams at you, her tail rolling up and down in a smooth undulation.  \"I'm pleased that you've decided to hear my proposal!  It's been quite difficult keeping up with demand while still learning these local recipes, so I'll take all the help I can get.  You won't go uncompensated for your assistance, of course!\"",
+          "line": 139
+        },
+        {
+          "text": "",
+          "line": 140
+        },
+        {
+          "text": "Should you agree to my terms, you'll need to make 12 doses of some scale moisturizer,\" Nezhiri explains.  \"It's been selling well today, and that's what I need to restock next.  Please COMBINE the doses into a single product before you turn them in, and make sure anything you give me is well-made or better, because I certainly can't build a business on shoddy merchandise.  And speaking of business, I can't guarantee a profitable return on your investment either, but I'll pay you what I can spare.  If the risk bothers you, then perhaps this arrangement is not for you...but nothing ventured, nothing gained, right?\"  The peddler winks.",
+          "line": 141
+        },
+        {
+          "text": "",
+          "line": 142
+        },
+        {
+          "text": "Nezhiri concludes, \"If you proceed, I'll ask you for that fee and set you to work.\"",
+          "line": 143
+        },
+        {
+          "text": "",
+          "line": 144
+        },
+        {
+          "text": "[You may accept by typing ACCEPT TASK, or decline by typing DECLINE TASK.  You have 30 seconds to decide.]",
+          "line": 145
+        }
+      ]
+    },
+    {
+      "cmd": "accept task",
+      "line": 146,
+      "user": false,
+      "responses": [
+        {
+          "text": "Potion Peddler Nezhiri smiles at you.  She holds out a hand and says, \"I'll have those 5 gold coins now, if I may.\"",
+          "line": 147
+        },
+        {
+          "text": "Potion Peddler Nezhiri accepts your coins and slips them away.  \"Splendid!  We have ourselves a deal.\"",
+          "line": 148
+        },
+        {
+          "text": "Trilling cheerfully, the peddler hands you some scale moisturizer instructions.  \"This is the recipe I need you to follow.  It should be pretty straightforward, but as a measure of quality control I must insist that you make the concoction with your own hands.  Return to me when the requisite number of doses is complete.  I'll be peddling my wares here on Andreshlew until it sinks back into the ocean, so please be sure to conclude our business before then.  Good luck, and no refunds!\"",
+          "line": 149
+        },
+        {
+          "text": "[You can check your progress with the TASK verb.]",
+          "line": 150
+        }
+      ]
+    },
+    {
+      "cmd": "task",
+      "line": 151,
+      "user": false,
+      "responses": [
+        {
+          "text": "You look in your task journal and see the following entry:",
+          "line": 152
+        },
+        {
+          "text": "",
+          "line": 153
+        },
+        {
+          "text": "While visiting Andreshlew for the Hollow Eve festivities, Nezhiri has asked you to craft some items to assist her ongoing efforts with the Merelew and others.  In particular, she wanted you to craft some scale moisturizer and indicated that 12 doses would suffice.  So far, you have returned 0 to her.  Crafting instructions were provided for this item.  If you lost or misplaced them, you can ASK Nezhiri for another copy.",
+          "line": 154
+        },
+        {
+          "text": "",
+          "line": 155
+        },
+        {
+          "text": "You have performed the following tasks:",
+          "line": 156
+        },
+        {
+          "text": "3524 crafting tasks",
+          "line": 157
+        },
+        {
+          "text": "",
+          "line": 158
+        }
+      ]
+    },
+    {
+      "cmd": "tap my gem pouch",
+      "line": 179,
+      "user": false,
+      "responses": [
+        {
+          "text": "You tap a black gem pouch that you are wearing.",
+          "line": 180
+        }
+      ]
+    },
+    {
+      "cmd": "tap my deed packet",
+      "line": 181,
+      "user": false,
+      "responses": [
+        {
+          "text": "You tap a large packet of deed claim forms inside your velvet backpack.",
+          "line": 182
+        }
+      ]
+    },
+    {
+      "cmd": "task",
+      "line": 183,
+      "user": false,
+      "responses": [
+        {
+          "text": "You look in your task journal and see the following entry:",
+          "line": 184
+        },
+        {
+          "text": "",
+          "line": 185
+        },
+        {
+          "text": "While visiting Andreshlew for the Hollow Eve festivities, Nezhiri has asked you to craft some items to assist her ongoing efforts with the Merelew and others.  In particular, she wanted you to craft some scale moisturizer and indicated that 12 doses would suffice.  So far, you have returned 0 to her.  Crafting instructions were provided for this item.  If you lost or misplaced them, you can ASK Nezhiri for another copy.",
+          "line": 186
+        },
+        {
+          "text": "",
+          "line": 187
+        },
+        {
+          "text": "You have performed the following tasks:",
+          "line": 188
+        },
+        {
+          "text": "3524 crafting tasks",
+          "line": 189
+        }
+      ]
+    },
+    {
+      "cmd": "task",
+      "line": 192,
+      "user": false,
+      "responses": [
+        {
+          "text": "You look in your task journal and see the following entry:",
+          "line": 193
+        },
+        {
+          "text": "",
+          "line": 194
+        },
+        {
+          "text": "While visiting Andreshlew for the Hollow Eve festivities, Nezhiri has asked you to craft some items to assist her ongoing efforts with the Merelew and others.  In particular, she wanted you to craft some scale moisturizer and indicated that 12 doses would suffice.  So far, you have returned 0 to her.  Crafting instructions were provided for this item.  If you lost or misplaced them, you can ASK Nezhiri for another copy.",
+          "line": 195
+        },
+        {
+          "text": "",
+          "line": 196
+        },
+        {
+          "text": "You have performed the following tasks:",
+          "line": 197
+        },
+        {
+          "text": "3524 crafting tasks",
+          "line": 198
+        }
+      ]
+    },
+    {
+      "cmd": "get my moisturizer from my leather satchel",
+      "line": 201,
+      "user": false,
+      "responses": [
+        {
+          "text": "What were you referring to?",
+          "line": 202
+        }
+      ]
+    },
+    {
+      "cmd": "get my moisturizer instructions from my leather satchel",
+      "line": 203,
+      "user": false,
+      "responses": [
+        {
+          "text": "What were you referring to?",
+          "line": 204
+        }
+      ]
+    },
+    {
+      "cmd": "get my moisturizer instructions",
+      "line": 205,
+      "user": false,
+      "responses": [
+        {
+          "text": "You get some scale moisturizer instructions from inside your velvet backpack.",
+          "line": 206
+        }
+      ]
+    },
+    {
+      "cmd": "read my moisturizer instructions",
+      "line": 207,
+      "user": false,
+      "responses": [
+        {
+          "text": "These instructions appear to be very fragile and will wear out quickly when studied.  They have only 13 uses remaining.",
+          "line": 208
+        },
+        {
+          "text": "",
+          "line": 209
+        },
+        {
+          "text": "        -=   Instructions for crafting some scale moisturizer    =-",
+          "line": 210
+        },
+        {
+          "text": "",
+          "line": 211
+        },
+        {
+          "text": "  Some scale moisturizer is a craftable item in the Alchemy society under the Remedies crafting discipline.  This is considered to be an extremely easy piece to make, though knowledge of the External Body Remedies technique will be beneficial to the crafter.",
+          "line": 212
+        },
+        {
+          "text": "",
+          "line": 213
+        },
+        {
+          "text": "  This item is listed as a \"custom wound remedy\" ingredient type and is created using a mortar and pestle to crush or a cooking pot and stirring rod to mix.  A crafter may also find it helpful to have a sieve, some water and alcohol, and a fire if mixing on hand.",
+          "line": 214
+        },
+        {
+          "text": "",
+          "line": 215
+        },
+        {
+          "text": " A list of ingredients is provided:",
+          "line": 216
+        },
+        {
+          "text": "",
+          "line": 217
+        },
+        {
+          "text": "   (5) prepared herb (pieces per use, known to provide minor external healing over the entire body)",
+          "line": 218
+        },
+        {
+          "text": "   (1) splash of brewer's brine",
+          "line": 219
+        },
+        {
+          "text": "   (1) catalyst material",
+          "line": 220
+        }
+      ]
+    }
+  ]
+}

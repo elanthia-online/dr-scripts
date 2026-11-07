@@ -970,7 +970,7 @@ RSpec.describe WorkOrders do
   # pick one, even when a workorder_recipes pattern matches its name.
   describe '#work_order_recipes' do
     let(:recipes) { YAML.load_file(File.expand_path('../data/base-recipes.yaml', __dir__), aliases: true)['crafting_recipes'] }
-    let(:instructions_names) { recipes.select { |recipe| recipe['instructions'] }.map { |recipe| recipe['name'] } }
+    let(:instructions_names) { recipes.select { |recipe| recipe['instructions'] && recipe['type'] == 'remedies' }.map { |recipe| recipe['name'] } }
     let(:disciplines) { %w[blacksmithing weaponsmithing tailoring shaping carving remedies artificing tinkering] }
 
     before do
@@ -999,6 +999,14 @@ RSpec.describe WorkOrders do
       [['salve'], ['marram'], ['liniment', 'curative', 'potion'], ['a '], ['.']].each do |patterns|
         names = picked('remedies', overrides: { 'remedies' => patterns })
         expect(names & instructions_names).to eq([])
+      end
+    end
+
+    it 'never picks a weapon made from instructions, whatever workorder_recipes pattern matches its name' do
+      weapons = recipes.select { |recipe| recipe['instructions'] && recipe['type'] == 'weaponsmithing' }.map { |recipe| recipe['name'] }
+      expect(weapons).to include('a metal sterak axe')
+      [{}, { 'weaponsmithing' => ['.'] }, { 'weaponsmithing' => ['sterak', 'naginata'] }].each do |overrides|
+        expect(picked('weaponsmithing', overrides: overrides) & weapons).to eq([]), overrides.inspect
       end
     end
 
@@ -1878,6 +1886,36 @@ RSpec.describe WorkOrders do
       expect(DRCC).not_to have_received(:stow_crafting_item)
       expect(DRC).not_to have_received(:wait_for_script_to_complete)
       expect(DRCT).not_to have_received(:dispose)
+    end
+
+    # forge_items buys one ingot of metal_type at a time. An order for an item
+    # bigger than that ingot used to buy one on every attempt, fail each with
+    # "You need a larger ingot to forge this item.", and waste them all: with
+    # the default bronze (a 5-volume huge bronze ingot), a metal cane (8) or a
+    # metal club (6) burned about eight ingots per order.
+    context 'when the order needs more metal than one ingot holds' do
+      let(:item) { { 'name' => 'a metal cane' } }
+      let(:recipe) { { 'name' => 'a metal cane', 'volume' => 8, 'noun' => 'cane' } }
+      let(:materials_info) { { 'stock-name' => 'bronze', 'stock-number' => 11, 'stock-volume' => 5 } }
+
+      it 'stops without buying an ingot or forging' do
+        expect(DRCT).not_to receive(:order_item)
+        expect(DRCM).not_to receive(:ensure_copper_on_hand)
+        expect(DRC).not_to receive(:wait_for_script_to_complete)
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'WorkOrders: a metal cane needs 8 volume of metal, more than one bronze ingot holds (5). Not buying ingots for it: list only items that fit in workorder_recipes, or set workorders_materials metal_type to a larger ingot.')
+
+        expect(workorders).to receive(:exit).and_raise(SystemExit)
+        expect { workorders.send(:forge_items, info, materials_info, item, 4) }.to raise_error(SystemExit)
+      end
+    end
+
+    it 'forges an item exactly as big as the ingot' do
+      allow(DRCC).to receive(:stow_crafting_item)
+      allow(workorders).to receive(:find_recipe).and_return([recipe.merge('volume' => 10)])
+      # exit is stubbed as a no-op above, so this is what fails if the guard stops it
+      expect(workorders).not_to receive(:exit)
+      expect(DRC).to receive(:wait_for_script_to_complete).with('smith', ['bronze', 'short sword'])
+      workorders.send(:forge_items, info, materials_info, item, 1)
     end
   end
 

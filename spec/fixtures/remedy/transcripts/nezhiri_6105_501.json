@@ -1,0 +1,342 @@
+{
+  "run": "nezhiri_6105_501",
+  "log": "6105",
+  "from": 501,
+  "to": 606,
+  "recipe": "some deep-sea draught (draught instructions) begun in the rustic mortar: crushed junliar, refused for a cooking pot and mixing stick",
+  "source": "another player's Hollow Eve 2026 Nezhiri task logs (log key 6105), Lich text capture, prompts and stamps removed; message4.txt lines 501-606: Lich text capture, prompts (\"> \", \"R> \") and [hh:mm:ss] stamps removed; every game line after a command, up to the next command, attributed to it (the scripts wait for each reply); Lich lines and script output dropped; other players' lines kept",
+  "steps": [
+    {
+      "cmd": ";remedy instructions junliar \"\"coal nugget\"\" mortar draught 25",
+      "line": 501,
+      "user": true,
+      "script": "user",
+      "responses": []
+    },
+    {
+      "cmd": "tap my water",
+      "line": 505,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You tap some water inside your haversack.",
+          "line": 507
+        }
+      ]
+    },
+    {
+      "cmd": "tap my alcohol",
+      "line": 509,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You tap some grain alcohol inside your haversack.",
+          "line": 511
+        }
+      ]
+    },
+    {
+      "cmd": "tap my coal nugget",
+      "line": 513,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You tap a massive coal nugget inside your haversack.",
+          "line": 515
+        }
+      ]
+    },
+    {
+      "cmd": "release mana",
+      "line": 521,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You aren't harnessing any mana.",
+          "line": 523
+        }
+      ]
+    },
+    {
+      "cmd": "prepare symbiosis",
+      "line": 525,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You recall the exact details of the Chaos symbiosis, preparing to integrate it with the next spell you cast.",
+          "line": 527
+        }
+      ]
+    },
+    {
+      "cmd": "prepare BLESS 7",
+      "line": 529,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You raise an arm skyward, chanting the equation of the Bless spell.  Casting rationality aside, you prepare to yoke unseen mana streams to fuel your sorcery.",
+          "line": 531
+        }
+      ]
+    },
+    {
+      "cmd": "put my draught instructions in my haversack",
+      "line": 533,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You put your instructions in your haversack.",
+          "line": 535
+        }
+      ]
+    },
+    {
+      "cmd": "get my draught instructions",
+      "line": 537,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You get some deep-sea draught instructions from inside your haversack.",
+          "line": 539
+        }
+      ]
+    },
+    {
+      "cmd": "study my draught instructions",
+      "line": 541,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "The delicate nature of the instructions will cause them to wear out with use.",
+          "line": 543
+        },
+        {
+          "text": "",
+          "line": 544
+        },
+        {
+          "text": "[These instructions have only 16 uses remaining.  Study them again to proceed.]",
+          "line": 545
+        }
+      ]
+    },
+    {
+      "cmd": "study my draught instructions",
+      "line": 547,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You scan the draught instructions with a glance and completely understand all facets of the design.",
+          "line": 549
+        },
+        {
+          "text": "You now feel ready to begin the crafting process.",
+          "line": 550
+        },
+        {
+          "text": "Roundtime: 5 sec.",
+          "line": 551
+        },
+        {
+          "text": "DRExpMonitor: Scholarship(+1)",
+          "line": 552
+        }
+      ]
+    },
+    {
+      "cmd": "put my draught instructions in my haversack",
+      "line": 554,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You put your instructions in your haversack.",
+          "line": 556
+        }
+      ]
+    },
+    {
+      "cmd": "untie my rustic mortar from my grass toolstrap",
+      "line": 559,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You untie a rustic mortar of unpolished diamondique from the straps of your grass toolstrap.",
+          "line": 561
+        }
+      ]
+    },
+    {
+      "cmd": "lower ground right",
+      "line": 563,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You lower the mortar and place it on the ground at your feet.",
+          "line": 565
+        }
+      ]
+    },
+    {
+      "cmd": "tap my junliar from my haversack",
+      "line": 567,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You tap some crushed junliar inside your haversack.",
+          "line": 569
+        }
+      ]
+    },
+    {
+      "cmd": "get my junliar from my haversack",
+      "line": 571,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You get some crushed junliar from inside your haversack.",
+          "line": 573
+        }
+      ]
+    },
+    {
+      "cmd": "count my junliar",
+      "line": 575,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You count out 25 pieces of material there.",
+          "line": 577
+        }
+      ]
+    },
+    {
+      "cmd": "combine my junliar",
+      "line": 579,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You must be holding both substances to combine them.  For more information, see HELP VERB COMBINE.",
+          "line": 581
+        }
+      ]
+    },
+    {
+      "cmd": "put #2300832 in my rustic mortar",
+      "line": 583,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You put your junliar in your rustic mortar.",
+          "line": 585
+        }
+      ]
+    },
+    {
+      "cmd": "put my junliar in my haversack",
+      "line": 587,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "What were you referring to?",
+          "line": 589
+        }
+      ]
+    },
+    {
+      "cmd": "untie my rustic mortar from my grass toolstrap",
+      "line": 591,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "Untie what?",
+          "line": 593
+        }
+      ]
+    },
+    {
+      "cmd": "get my rustic mortar",
+      "line": 595,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You pick up the mortar lying at your feet.",
+          "line": 597
+        }
+      ]
+    },
+    {
+      "cmd": "untie my rustic pestle from my grass toolstrap",
+      "line": 599,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You untie a rustic pestle of unpolished diamondique from the straps of your grass toolstrap.",
+          "line": 601
+        }
+      ]
+    },
+    {
+      "cmd": "crush my junliar with my rustic pestle",
+      "line": 603,
+      "user": false,
+      "script": "remedy",
+      "responses": [
+        {
+          "text": "You stop, realizing that type of plant requires a cooking pot and mixing stick.",
+          "line": 605
+        }
+      ]
+    },
+    {
+      "cmd": ";pa",
+      "line": 606,
+      "user": true,
+      "script": "user",
+      "responses": []
+    }
+  ],
+  "dropped": [
+    {
+      "line": 503,
+      "why": "lich",
+      "text": "--- Lich: remedy active."
+    },
+    {
+      "line": 517,
+      "why": "lich",
+      "text": "--- Lich: buff active."
+    },
+    {
+      "line": 519,
+      "why": "lich",
+      "text": "--- Lich: buff has exited."
+    },
+    {
+      "line": 557,
+      "why": "script",
+      "text": "Remedy: 15 uses left on the draught instructions."
+    }
+  ]
+}

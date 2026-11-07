@@ -446,12 +446,30 @@ module Harness
   # held item, looked up by that name in $hand_ids (nil when $hand_ids has
   # no id for it, as for an empty hand). A spec gives held items ids by
   # setting $hand_ids, `{ full item name => id }`, or through
-  # ReplayCommons.new(ids:).
+  # ReplayCommons.new(ids:). Two items of one name (two stacks of one
+  # remedy) need ids of their own: $hand_item_ids, `{ right: [name, id],
+  # left: [name, id] }`, gives the id of what each hand holds and wins over
+  # $hand_ids while the hand still holds that name (a spec that sets
+  # $right_hand itself is not shown a stale id).
   class GameObj
     # @return [OpenStruct] the left hand's name, noun and id
     def self.left_hand
       item = Harness.left_hand || 'Empty'
-      OpenStruct.new({ name: item, noun: item, id: ($hand_ids || {})[Harness.left_hand] })
+      OpenStruct.new({ name: item, noun: item, id: hand_id(:left, Harness.left_hand) })
+    end
+
+    # The id GameObj shows for what a hand holds: its own id from
+    # $hand_item_ids when that hand still holds the name it was given for,
+    # else the id of its name in $hand_ids.
+    #
+    # @param hand [Symbol] :right or :left
+    # @param name [String, nil] the held item's name
+    # @return [String, nil]
+    def self.hand_id(hand, name)
+      own_name, own_id = ($hand_item_ids || {})[hand]
+      return own_id if own_id && !name.nil? && own_name == name
+
+      ($hand_ids || {})[name]
     end
 
     def self.left_hand=(val)
@@ -461,7 +479,7 @@ module Harness
     # @return [OpenStruct] the right hand's name, noun and id
     def self.right_hand
       item = Harness.right_hand || 'Empty'
-      OpenStruct.new({ name: item, noun: item, id: ($hand_ids || {})[Harness.right_hand] })
+      OpenStruct.new({ name: item, noun: item, id: hand_id(:right, Harness.right_hand) })
     end
 
     def self.right_hand=(val)
@@ -942,6 +960,9 @@ module Harness
     $right_hand = nil
     # Held item full name => the game's id GameObj shows for it.
     $hand_ids = {}
+    # Hand (:right, :left) => [name, id] of the item it holds, for items
+    # whose name another item shares (GameObj.hand_id).
+    $hand_item_ids = {}
     $worn_items = []
     $containers = {}
 
@@ -1373,6 +1394,7 @@ module Harness
       def in_left_hand?(*_args); false; end
       def in_right_hand?(*_args); false; end
       def exists?(*_args); false; end
+      def tap(*_args); nil; end
       def lift?(*_args); false; end
       def wearing?(*_args); false; end
       def inside?(*_args); false; end
@@ -1398,6 +1420,7 @@ module Harness
       def get_item_list(*_args); []; end
       def get_box_list_in_container(*_args); []; end
       def count_items_in_container(*_args); 0; end
+      def count_item_parts(*_args); 0; end
       def count_all_boxes(*_args); 0; end
       def count_lockpick_container(*_args); 0; end
     end

@@ -1,0 +1,101 @@
+{
+  "run": "2026-11-06_6100_replacement_moisturizer",
+  "log": "6100",
+  "from": 2944,
+  "to": 2963,
+  "source": "nezhiri.txt lines 2944-2963: Lich text capture, prompts (\"> \", \"R> \") and [hh:mm:ss] stamps removed; every game line after a command, up to the next command, attributed to it (the scripts wait for each reply); Lich lines and script output dropped; other players' lines kept. Another player's Hollow Eve 2026 Nezhiri task log; the \"script\" key per step and the dropped-lines list were removed.",
+  "steps": [
+    {
+      "cmd": "get my moisturizer instructions from my leather satchel",
+      "line": 2944,
+      "user": false,
+      "responses": [
+        {
+          "text": "What were you referring to?",
+          "line": 2945
+        }
+      ]
+    },
+    {
+      "cmd": "get my moisturizer instructions",
+      "line": 2946,
+      "user": false,
+      "responses": [
+        {
+          "text": "What were you referring to?",
+          "line": 2947
+        }
+      ]
+    },
+    {
+      "cmd": "ask nezhiri for instructions",
+      "line": 2948,
+      "user": false,
+      "responses": [
+        {
+          "text": "Potion Peddler Nezhiri hands you some scale moisturizer instructions.  She says, \"Please don't lose these.  The formulae are time-consuming to transcribe, so I can only afford to give them to trustworthy folk.\"",
+          "line": 2949
+        }
+      ]
+    },
+    {
+      "cmd": "read my moisturizer instructions",
+      "line": 2950,
+      "user": false,
+      "responses": [
+        {
+          "text": "These instructions appear to be very fragile and will wear out quickly when studied.  They have only 12 uses remaining.",
+          "line": 2951
+        },
+        {
+          "text": "",
+          "line": 2952
+        },
+        {
+          "text": "        -=   Instructions for crafting some scale moisturizer    =-",
+          "line": 2953
+        },
+        {
+          "text": "",
+          "line": 2954
+        },
+        {
+          "text": "  Some scale moisturizer is a craftable item in the Alchemy society under the Remedies crafting discipline.  This is considered to be an extremely easy piece to make, though knowledge of the External Body Remedies technique will be beneficial to the crafter.",
+          "line": 2955
+        },
+        {
+          "text": "",
+          "line": 2956
+        },
+        {
+          "text": "  This item is listed as a \"custom wound remedy\" ingredient type and is created using a mortar and pestle to crush or a cooking pot and stirring rod to mix.  A crafter may also find it helpful to have a sieve, some water and alcohol, and a fire if mixing on hand.",
+          "line": 2957
+        },
+        {
+          "text": "",
+          "line": 2958
+        },
+        {
+          "text": " A list of ingredients is provided:",
+          "line": 2959
+        },
+        {
+          "text": "",
+          "line": 2960
+        },
+        {
+          "text": "   (5) prepared herb (pieces per use, known to provide minor external healing over the entire body)",
+          "line": 2961
+        },
+        {
+          "text": "   (1) splash of brewer's brine",
+          "line": 2962
+        },
+        {
+          "text": "   (1) catalyst material",
+          "line": 2963
+        }
+      ]
+    }
+  ]
+}
