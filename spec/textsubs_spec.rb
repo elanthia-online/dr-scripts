@@ -64,6 +64,10 @@ require_relative '../test/textsubs_corpus'
 # the same output on every corpus line. The hand-made catalogs in 'hook engine
 # semantics' pin that rule.
 #
+# The hook proc is the front end guard plus TextSubs.apply(line), which runs
+# TextSubs::Engine over TextSubs.subs. 'TextSubs.apply' calls that engine
+# straight, with hand-made catalogs and no hook.
+#
 # The hook skips every key when no front end is attached (TextSubs.client_attached?
 # is false), and the harness has none, so the examples that send lines through
 # the hook stub that predicate to true; 'front end guard' covers both branches.
@@ -510,6 +514,15 @@ RSpec.describe 'textsubs.lic' do
       expect(run_hooks("You feel fine today.\n".b)).to eq("You feel FINE today.\n")
     end
 
+    it 'hands each line to TextSubs.apply and passes on what it returns' do
+      build_catalog('Commoner')
+      line = "You feel fine.\r\n".b
+      allow(TextSubs).to receive(:apply).and_return("rewritten\r\n".b)
+
+      expect(run_hooks(line)).to eq("rewritten\r\n")
+      expect(TextSubs).to have_received(:apply).with(line).once
+    end
+
     it "removes 'textsub', and only 'textsub', in before_dying" do
       teardown = nil
       # Stubbed on main (where run_lic_entry evaluates the entry), not on
@@ -661,6 +674,159 @@ RSpec.describe 'textsubs.lic' do
     end
   end
 
+  # TextSubs.apply is the engine the hook hands each line to once a front end
+  # is attached. These examples call it straight, with no hook registered and
+  # no built-in catalog: each starts from an empty catalog and adds only the
+  # keys it needs.
+  describe 'TextSubs.apply' do
+    before { TextSubs.clear }
+
+    # @param pairs [Array<Array(String, String)>] [target, result] pairs, added in order
+    # @return [void]
+    def catalog(*pairs)
+      pairs.each { |target, result| TextSubs.add(target, result) }
+    end
+
+    it 'rewrites a line with the keys added through TextSubs.add, with no hook registered' do
+      catalog(['fine\.', 'FINE.'])
+      expect(DownstreamHook.list).not_to include('textsub')
+      expect(TextSubs.apply("You feel fine.\r\n".b)).to eq("You feel FINE.\r\n")
+    end
+
+    it 'rewrites the line it is given in place and returns that same String' do
+      catalog(%w[cat dog])
+      line = "The cat sleeps.\r\n".b
+      expect(TextSubs.apply(line)).to equal(line)
+      expect(line).to eq("The dog sleeps.\r\n")
+    end
+
+    it 'does not fire a key that matches only after an earlier key rewrote the line' do
+      catalog(%w[cat dog], %w[dog bird])
+      expect(TextSubs.apply("The cat sleeps.\r\n".b)).to eq("The dog sleeps.\r\n")
+    end
+
+    it 'does nothing for a key that matched the original line but no longer matches it' do
+      catalog(%w[cat dog], %w[c k])
+      expect(TextSubs.apply("The cat sleeps.\r\n".b)).to eq("The dog sleeps.\r\n")
+    end
+
+    it 'applies the selected keys in insertion order, each to the output of the one before' do
+      catalog(%w[red blue], %w[blue green])
+      expect(TextSubs.apply("red blue\r\n".b)).to eq("green green\r\n")
+    end
+
+    it 'keeps the first slot for a key added twice, with the value of the last add' do
+      catalog(%w[cat dog], %w[c k], %w[cat lion])
+      expect(TextSubs.apply("The cat sleeps.\r\n".b)).to eq("The lion sleeps.\r\n")
+    end
+
+    it 'fills capture groups in a value and keeps the binary encoding' do
+      catalog(['(\d+) coins', '\1 kronars'])
+      output = TextSubs.apply("You have 42 coins.\r\n".b)
+      expect(output).to eq("You have 42 kronars.\r\n")
+      expect(output.encoding).to eq(Encoding::ASCII_8BIT)
+    end
+
+    it 'returns a line with an empty catalog, or one no key matches, as it came, even when frozen' do
+      line = "A bird sings.\r\n".b.freeze
+      expect(TextSubs.apply(line)).to equal(line)
+      catalog(%w[cat dog])
+      expect(TextSubs.apply(line)).to equal(line)
+    end
+
+    it 'raises FrozenError when a key matches a frozen line' do
+      catalog(%w[cat dog])
+      expect { TextSubs.apply("The cat sleeps.\r\n".b.freeze) }.to raise_error(FrozenError)
+    end
+
+    it 'applies whatever TextSubs.subs holds when it is called, not a copy taken earlier' do
+      catalog(%w[cat dog])
+      expect(TextSubs.apply(+'The cat.')).to eq('The dog.')
+      TextSubs.add('cat', 'lion')
+      expect(TextSubs.apply(+'The cat.')).to eq('The lion.')
+      TextSubs.clear
+      expect(TextSubs.apply(+'The cat.')).to eq('The cat.')
+    end
+
+    describe 'TextSubs::Engine.apply' do
+      it 'runs on a hand-made ordered Hash, leaving that Hash and the TextSubs catalog alone' do
+        subs = { /cat/ => 'dog', /dog/ => 'bird', /CAT/i => 'never' }.freeze
+        # /dog/ matched the original line, so it also rewrites the dog /cat/
+        # just made; /CAT/i matched too, but finds no cat left to change.
+        expect(TextSubs::Engine.apply(subs, +'The cat and the dog.')).to eq('The bird and the bird.')
+        expect(subs.keys).to eq([/cat/, /dog/, /CAT/i])
+        expect(TextSubs.subs).to be_empty
+      end
+
+      it 'uses each key with its own options' do
+        expect(TextSubs::Engine.apply({ /CAT/i => 'dog' }, +'The Cat.')).to eq('The dog.')
+        expect(TextSubs::Engine.apply({ /CAT/ => 'dog' }, +'The Cat.')).to eq('The Cat.')
+      end
+    end
+  end
+
+  describe 'TextSubs.generation' do
+    it 'goes up by one for each add, including a second add of the same target' do
+      start = TextSubs.generation
+      TextSubs.add('cat', 'dog')
+      expect(TextSubs.generation).to eq(start + 1)
+      TextSubs.add('cat', 'lion')
+      expect(TextSubs.generation).to eq(start + 2)
+    end
+
+    it 'goes up by exactly one for an elanthipedia link, which adds one key' do
+      TextSubs.clear
+      start = TextSubs.generation
+      TextSubs.elanthipedia('Fae Arts', '^', ':', 'Category:', '_spellbook')
+      expect(TextSubs.generation).to eq(start + 1)
+      expect(TextSubs.subs.size).to eq(1)
+    end
+
+    it 'goes up by one for clear, even on an empty catalog' do
+      TextSubs.clear
+      start = TextSubs.generation
+      TextSubs.clear
+      expect(TextSubs.generation).to eq(start + 1)
+    end
+
+    it 'leaves the counter and the catalog alone when a target is not valid regex source' do
+      TextSubs.clear
+      TextSubs.add('cat', 'dog')
+      start = TextSubs.generation
+      expect { TextSubs.add('(cat', 'dog') }.to raise_error(RegexpError)
+      expect(TextSubs.generation).to eq(start)
+      expect(TextSubs.subs).to eq(/cat/ => 'dog')
+    end
+
+    it 'keeps the return values add, elanthipedia and clear had before the counter' do
+      expect(TextSubs.add('cat', 'dog')).to eq('dog')
+      expect(TextSubs.elanthipedia('Fae Arts')).to eq('\1<a href="https://elanthipedia.play.net/Fae_Arts">Fae Arts</a>\3')
+      expect(TextSubs.clear).to eq({})
+    end
+  end
+
+  describe 'TextSubs.elanthipedia' do
+    before { TextSubs.clear }
+
+    it 'wraps the text in (pretext)(text)(postext) and puts groups 1 and 3 back around the link by default' do
+      TextSubs.elanthipedia('Fae Arts', '^', ':', 'Category:', '_spellbook')
+      expect(TextSubs.subs.keys).to eq([/(^)(Fae Arts)(:)/])
+      expect(TextSubs.apply(+"Fae Arts:\r\n"))
+        .to eq(%(<a href="https://elanthipedia.play.net/Category:Fae_Arts_spellbook">Fae Arts</a>:\r\n))
+    end
+
+    it 'adds poslink after the underscored page name, and prelink before it' do
+      TextSubs.elanthipedia('Holy Defense', '', '', 'Category:', '_spellbook')
+      expect(TextSubs.subs.values).to eq(['\1<a href="https://elanthipedia.play.net/Category:Holy_Defense_spellbook">Holy Defense</a>\3'])
+    end
+
+    it 'replaces the context with preresult and posresult when they are given' do
+      TextSubs.elanthipedia('Fae Arts', '(?:the )', '(?: book)', '', '', '[', ']')
+      expect(TextSubs.apply(+'Read the Fae Arts book.'))
+        .to eq('Read [<a href="https://elanthipedia.play.net/Fae_Arts">Fae Arts</a>].')
+    end
+  end
+
   describe 'front end guard' do
     let(:line) { "You feel fine.\r\n".b }
     let(:no_clients) { double('DetachableClientRegistry', empty?: true) }
@@ -742,6 +908,15 @@ RSpec.describe 'textsubs.lic' do
       # DownstreamHook.run drops a hook that raises and passes the line on
       # unchanged, which would look like a skip.
       expect(DownstreamHook.list).to include('textsub')
+    end
+
+    it 'does not call TextSubs.apply when no front end is attached' do
+      install_probe_catalog
+      front_ends(registry: no_clients, detachable: nil, client: nil)
+      allow(TextSubs).to receive(:apply).and_call_original
+
+      expect(run_hooks(line)).to eq(line)
+      expect(TextSubs).not_to have_received(:apply)
     end
 
     it 'skips the catalog in the harness, which has no front end, when nothing is stubbed' do
