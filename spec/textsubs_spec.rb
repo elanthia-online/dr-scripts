@@ -4291,7 +4291,7 @@ RSpec.describe 'textsubs.lic' do
       [
         'an unknown kind',
         "textsubs:\n  schema: 1\n  sections:\n    - name: 'x'\n      kind: 'ladder'\n      subs: [['a', 'b']]\n",
-        /section 1 \(x\) has unknown kind "ladder"; kinds are pairs, guild_spells_link/
+        /section 1 \(x\) has unknown kind "ladder"; kinds are pairs, guild_spells_link, wiki_links, spell_links, scroll_labels, spell_recognition\z/
       ],
       [
         'a misspelt section key',
@@ -4377,6 +4377,279 @@ RSpec.describe 'textsubs.lic' do
       YAML
       expect { entries_for('Bard', data) }.to raise_error(ArgumentError, /section 2 \(Clerics only\) pattern "\(broken"/)
     end
+
+    # The spell kinds read one spells table, so a spell's name and labels are
+    # written once. The table here is small and made up for the examples,
+    # with each way a row can give its labels: a book alone, a guild and
+    # book, a signature spell, a label of its own, and a guild with no
+    # recognition data.
+    describe 'the spell kinds' do
+      let(:spell_rows) do
+        [{ 'name' => 'Strange Arrow', 'book' => 'Analogous Patterns', 'tier' => 'introductory', 'type' => 'targeted' },
+         { 'name' => 'Lay Ward', 'book' => 'Analogous Patterns', 'tier' => 'basic', 'type' => 'warding' },
+         { 'name' => 'Manifest Force', 'book' => 'Analogous Patterns', 'tier' => 'basic', 'type' => 'warding' },
+         { 'name' => 'Halo', 'guild' => 'Cleric', 'book' => 'Holy Defense', 'signature' => true, 'tier' => 'advanced',
+           'type' => 'debilitation/warding' },
+         { 'name' => "Sidhlot's Flaying", 'label' => 'Lay Necromancy' },
+         { 'name' => 'Bless', 'guild' => 'Cleric' }]
+      end
+      let(:scrolls) do
+        { 'name' => 'scrolls', 'kind' => 'scroll_labels', 'pattern' => '^(It is labeled) "{name}."',
+          'replacement' => '\1 "{name}." ({label})', 'names' => ['Halo', 'Strange Arrow', "Sidhlot's Flaying", 'Bless'] }
+      end
+      let(:recognition) do
+        { 'name' => 'recognition', 'kind' => 'spell_recognition',
+          'pattern' => '^(You recognize|You decipher) the ({names}) spell.', 'replacement' => '\1 the \2 spell. [{label}]',
+          'groups' => [['Halo'], ['Strange Arrow'], ['Lay Ward', 'Manifest Force']] }
+      end
+
+      # @param sections [Array<Hash>] the sections, in order
+      # @param spells [Array<Hash>, nil] the spells table; nil leaves the key out
+      # @return [Hash] the frozen `textsubs:` value, read back from YAML
+      def spell_catalog(*sections, spells: spell_rows)
+        catalog_data({ 'textsubs' => { 'schema' => 1, 'sections' => sections, 'spells' => spells }.compact }.to_yaml)
+      end
+
+      # @return [Array<Array(String, String)>] [source, replacement] of each sub
+      def pairs_for(data)
+        entries_for('Bard', data).map { |source, replacement, _meta| [source, replacement] }
+      end
+
+      # What TextSubs.elanthipedia adds for each call, as [source, replacement].
+      #
+      # @param calls [Array<Array<String>>] the arguments of each call
+      # @return [Array<Array(String, String)>]
+      def elanthipedia_pairs(calls)
+        TextSubs.clear
+        calls.each { |arguments| TextSubs.elanthipedia(*arguments) }
+        TextSubs.subs.map { |key, value| [key.source, value] }
+      ensure
+        TextSubs.clear
+      end
+
+      it 'links every spell of the table once, in table order, just as elanthipedia would' do
+        links = { 'name' => 'spell links', 'kind' => 'spell_links', 'pretext' => '\S|^', 'postext' => '..\(.*\)|\s*Slot' }
+        expected = elanthipedia_pairs(spell_rows.map { |row| [row['name'], '\S|^', '..\(.*\)|\s*Slot'] })
+
+        expect(pairs_for(spell_catalog(links))).to eq(expected)
+        expect(expected.map(&:first).first(2)).to eq(['(\S|^)(Strange Arrow)(..\(.*\)|\s*Slot)', '(\S|^)(Lay Ward)(..\(.*\)|\s*Slot)'])
+        expect(expected.last.last).to eq('\1<a href="https://elanthipedia.play.net/Bless">Bless</a>\3')
+      end
+
+      it 'links each text of a wiki_links section, in list order, with every link field elanthipedia takes' do
+        books = { 'name' => 'books', 'kind' => 'wiki_links', 'texts' => ['Holy Defense', "Fae's Arts"],
+                  'pretext' => '^', 'postext' => ':', 'prelink' => 'Category:', 'poslink' => '_spellbook',
+                  'preresult' => '[', 'posresult' => ']' }
+        expected = elanthipedia_pairs(books['texts'].map { |text| [text, '^', ':', 'Category:', '_spellbook', '[', ']'] })
+
+        expect(pairs_for(spell_catalog(books))).to eq(expected)
+        expect(expected.last).to eq(['(^)(Fae\'s Arts)(:)', '[<a href="https://elanthipedia.play.net/Category:Fae\'s_Arts_spellbook">Fae\'s Arts</a>]'])
+      end
+
+      it "takes elanthipedia's defaults for each link field a wiki_links section leaves out" do
+        bare = { 'name' => 'bare', 'kind' => 'wiki_links', 'texts' => ['Holy Defense'] }
+        expect(pairs_for(spell_catalog(bare))).to eq(elanthipedia_pairs([['Holy Defense']]))
+        expect(pairs_for(spell_catalog(bare))).to eq([['()(Holy Defense)()', '\1<a href="https://elanthipedia.play.net/Holy_Defense">Holy Defense</a>\3']])
+      end
+
+      it "labels each scroll name, in list order, with the spell's label, else its guild, else its book" do
+        expect(pairs_for(spell_catalog(scrolls))).to eq(
+          [['^(It is labeled) "Halo."', '\1 "Halo." (Cleric)'],
+           ['^(It is labeled) "Strange Arrow."', '\1 "Strange Arrow." (Analogous Patterns)'],
+           ['^(It is labeled) "Sidhlot\'s Flaying."', '\1 "Sidhlot\'s Flaying." (Lay Necromancy)'],
+           ['^(It is labeled) "Bless."', '\1 "Bless." (Cleric)']]
+        )
+      end
+
+      it 'uses an override as it is written, for a name the table does not list and for one it does' do
+        overridden = scrolls.merge('names' => [{ 'name' => "Damaris's Lullaby", 'label' => 'Bard' }, { 'label' => 'Paladin', 'name' => 'Halo' }])
+        expect(pairs_for(spell_catalog(overridden))).to eq(
+          [['^(It is labeled) "Damaris\'s Lullaby."', '\1 "Damaris\'s Lullaby." (Bard)'],
+           ['^(It is labeled) "Halo."', '\1 "Halo." (Paladin)']]
+        )
+      end
+
+      it 'puts names and labels in as they are written: a backslash stays, and a brace that names no placeholder stays' do
+        literal = scrolls.merge('pattern' => '^\d{3} "{name}."', 'names' => [{ 'name' => 'Halo', 'label' => 'it\'s \0' }])
+        expect(pairs_for(spell_catalog(literal))).to eq([['^\d{3} "Halo."', '\1 "Halo." (it\'s \0)']])
+      end
+
+      it 'gives one recognition sub per group, in list order, with the names joined and the label the table computes' do
+        expect(pairs_for(spell_catalog(recognition))).to eq(
+          [['^(You recognize|You decipher) the (Halo) spell.', '\1 the \2 spell. [signature Cleric (Holy Defense): advanced debilitation/warding]'],
+           ['^(You recognize|You decipher) the (Strange Arrow) spell.', '\1 the \2 spell. [Analogous Patterns: introductory targeted]'],
+           ['^(You recognize|You decipher) the (Lay Ward|Manifest Force) spell.', '\1 the \2 spell. [Analogous Patterns: basic warding]']]
+        )
+      end
+
+      it 'rewrites a game line with a group sub, whichever name of the group the line holds' do
+        TextSubs.clear
+        expect(TextSubs.add_catalog(spell_catalog(recognition), TextSubs::Context.new(guild: 'Bard', settings: settings), file: 'f')).to be_nil
+        expect(TextSubs.apply(+'You decipher the Manifest Force spell.'))
+          .to eq('You decipher the Manifest Force spell. [Analogous Patterns: basic warding]')
+        expect(TextSubs.apply(+'You recognize the Lay Ward spell.')).to eq('You recognize the Lay Ward spell. [Analogous Patterns: basic warding]')
+      ensure
+        TextSubs.clear
+      end
+
+      it 'refuses a group whose names the table labels differently, naming both labels' do
+        mixed = recognition.merge('groups' => [['Lay Ward'], ['Strange Arrow', 'Manifest Force']])
+        expect { pairs_for(spell_catalog(mixed)) }.to raise_error(
+          ArgumentError,
+          'section 1 (recognition) groups 2 mixes labels: "Strange Arrow" is "Analogous Patterns: introductory targeted" ' \
+          'but "Manifest Force" is "Analogous Patterns: basic warding"'
+        )
+      end
+
+      it 'refuses a group of two spells that differ only in being a signature spell' do
+        twin = spell_rows + [spell_rows[3].merge('name' => 'Halo Twin').except('signature')]
+        mixed = recognition.merge('groups' => [['Halo', 'Halo Twin']])
+        expect { pairs_for(spell_catalog(mixed, spells: twin)) }.to raise_error(ArgumentError, /groups 1 mixes labels: "Halo" is "signature Cleric/)
+      end
+
+      it 'refuses a section that names a spell the table does not list, as a typo would' do
+        expect { pairs_for(spell_catalog(scrolls.merge('names' => ['Strange Arow']))) }
+          .to raise_error(ArgumentError, 'section 1 (scrolls) names "Strange Arow", which is not in spells')
+        expect { pairs_for(spell_catalog(recognition.merge('groups' => [['Halo', 'Hallo']]))) }
+          .to raise_error(ArgumentError, 'section 1 (recognition) names "Hallo", which is not in spells')
+      end
+
+      it 'refuses a spell section in a file with no spells table at all' do
+        expect { pairs_for(spell_catalog(scrolls, spells: nil)) }.to raise_error(ArgumentError, /names "Halo", which is not in spells/)
+        expect { pairs_for(spell_catalog({ 'name' => 'links', 'kind' => 'spell_links' }, spells: nil)) }
+          .to raise_error(ArgumentError, 'section 1 (links) has no spells to link; list them under spells')
+      end
+
+      it 'loads a file of pairs alone with no spells table, as one from before the table would be' do
+        expect(pairs_for(spell_catalog({ 'name' => 'plain', 'subs' => [%w[cat dog]] }, spells: nil))).to eq([%w[cat dog]])
+      end
+
+      it 'refuses a bad spells row even when no section reads the table' do
+        bad = spell_rows + [{ 'name' => 'Halo' }]
+        expect { pairs_for(spell_catalog({ 'name' => 'plain', 'subs' => [%w[cat dog]] }, spells: bad)) }
+          .to raise_error(ArgumentError, 'spell 7 (Halo) is listed more than once')
+      end
+
+      {
+        'a scroll name that is a number'                   => [:scrolls, { 'names' => [5] }, /names entry 1 must be a quoted spell name or an override \{name: '\.\.\.', label: '\.\.\.'\}, not 5/],
+        'an override with no label'                        => [:scrolls, { 'names' => [{ 'name' => 'Halo' }] }, /names entry 1 must be/],
+        'an override with a key besides name and label'    => [:scrolls, { 'names' => ['Bless', { 'name' => 'Halo', 'label' => 'X', 'note' => 'y' }] }, /names entry 2 must be/],
+        'an override with an empty name'                   => [:scrolls, { 'names' => [{ 'name' => '', 'label' => 'X' }] }, /names entry 1 must be/],
+        'a scroll name listed twice, once as an override'  => [:scrolls, { 'names' => ['Halo', { 'name' => 'Halo', 'label' => 'X' }] }, /section 1 \(scrolls\) lists "Halo" more than once/],
+        'no scroll names'                                  => [:scrolls, { 'names' => [] }, /'names' must be a non-empty list/],
+        'a scroll pattern without {name}'                  => [:scrolls, { 'pattern' => '^(It is labeled) "Halo."' }, /'pattern' must hold \{name\}, not/],
+        'a scroll replacement that is not a string'        => [:scrolls, { 'replacement' => 5 }, /'replacement' must be a quoted string, not 5/],
+        'a scroll pattern that does not compile'           => [:scrolls, { 'pattern' => '^(It is labeled "{name}."' }, /pattern "\^\(It is labeled \\"Halo\.\\"" does not compile/],
+        'a recognition group that is one name, not a list' => [:recognition, { 'groups' => ['Halo'] }, /'groups 1' must be a non-empty list of quoted names, not "Halo"/],
+        'an empty recognition group'                       => [:recognition, { 'groups' => [['Halo'], []] }, /'groups 2' must be a non-empty list/],
+        'no recognition groups'                            => [:recognition, { 'groups' => [] }, /'groups' must be a non-empty list/],
+        'a spell in two recognition groups'                => [:recognition, { 'groups' => [['Halo'], ['Lay Ward'], ['Halo']] }, /lists "Halo" more than once/],
+        'a recognition pattern without {names}'            => [:recognition, { 'pattern' => '^the ({name}) spell.' }, /'pattern' must hold \{names\}/],
+        'a recognition name with no recognition data'      => [:recognition, { 'groups' => [['Bless']] }, /needs the book, tier, type of spell "Bless"/]
+      }.each do |label, (section, change, message)|
+        it "refuses #{label}" do
+          expect { pairs_for(spell_catalog(send(section).merge(change))) }.to raise_error(ArgumentError, message)
+        end
+      end
+
+      it 'refuses a scroll name whose row has no label, guild or book' do
+        bare = spell_rows + [{ 'name' => 'Bare' }]
+        expect { pairs_for(spell_catalog(scrolls.merge('names' => ['Bare']), spells: bare)) }
+          .to raise_error(ArgumentError, 'section 1 (scrolls) needs a label, guild or book for spell "Bare"')
+      end
+
+      it 'refuses a spell name that is not valid regex source wherever it would be linked' do
+        broken = spell_rows + [{ 'name' => 'Open (Spell', 'guild' => 'Cleric' }]
+        expect { pairs_for(spell_catalog({ 'name' => 'links', 'kind' => 'spell_links' }, spells: broken)) }
+          .to raise_error(ArgumentError, /section 1 \(links\) pattern "\(\)\(Open \(Spell\)\(\)" does not compile/)
+      end
+
+      {
+        'an empty texts list'         => [{ 'texts' => [] }, /'texts' must be a non-empty list of quoted names, not \[\]/],
+        'a text listed twice'         => [{ 'texts' => %w[Healing Healing] }, /lists "Healing" more than once/],
+        'a link field that is a list' => [{ 'prelink' => ['Category:'] }, /'prelink' must be a quoted string, not \["Category:"\]/],
+        'an unknown link field'       => [{ 'postlink' => '_spellbook' }, /has unknown key\(s\) "postlink"/]
+      }.each do |label, (change, message)|
+        it "refuses a wiki_links section with #{label}" do
+          section = { 'name' => 'books', 'kind' => 'wiki_links', 'texts' => ['Healing'] }.merge(change)
+          expect { pairs_for(spell_catalog(section)) }.to raise_error(ArgumentError, message)
+        end
+      end
+    end
+  end
+
+  describe 'TextSubs::SpellTable' do
+    let(:rows) do
+      [{ 'name' => 'Halo', 'guild' => 'Cleric', 'book' => 'Holy Defense', 'signature' => true, 'tier' => 'advanced',
+         'type' => 'debilitation/warding' },
+       { 'name' => 'Burden', 'book' => 'Analogous Patterns', 'tier' => 'introductory', 'type' => 'debilitation' },
+       { 'name' => 'Bless', 'guild' => 'Cleric', 'book' => 'Holy Evocations', 'tier' => 'introductory', 'type' => 'utility',
+         'label' => 'Clerical' },
+       { 'name' => 'Abandoned Heart' }]
+    end
+    let(:table) { TextSubs::SpellTable.new(rows) }
+
+    it 'lists the names in table order, frozen' do
+      expect(table.names).to eq(['Halo', 'Burden', 'Bless', 'Abandoned Heart'])
+      expect(table.names).to be_frozen
+    end
+
+    it 'labels a scroll with the label, else the guild, else the book' do
+      expect(%w[Bless Halo Burden].map { |name| table.scroll_label(name) }).to eq(['Clerical', 'Cleric', 'Analogous Patterns'])
+    end
+
+    it "builds a recognition label from the signature flag, the guild and book (or the book alone), the tier and the type" do
+      expect(table.recognition_label('Halo')).to eq('signature Cleric (Holy Defense): advanced debilitation/warding')
+      expect(table.recognition_label('Burden')).to eq('Analogous Patterns: introductory debilitation')
+      expect(table.recognition_label('Bless')).to eq('Cleric (Holy Evocations): introductory utility')
+    end
+
+    it 'refuses a name it does not list, and a label its row has no data for' do
+      expect { table.scroll_label('Hallo') }.to raise_error(ArgumentError, 'names "Hallo", which is not in spells')
+      expect { table.scroll_label('Abandoned Heart') }.to raise_error(ArgumentError, 'needs a label, guild or book for spell "Abandoned Heart"')
+      expect { table.recognition_label('Abandoned Heart') }.to raise_error(ArgumentError, 'needs the book, tier, type of spell "Abandoned Heart"')
+    end
+
+    it 'changes no row it is given' do
+      frozen = YAML.safe_load(rows.to_yaml, freeze: true)
+      expect(TextSubs::SpellTable.new(frozen).recognition_label('Halo')).to start_with('signature')
+    end
+
+    {
+      'spells: with nothing after it' => [nil, /'spells' must be a list, not nil/],
+      'a mapping, not a list'         => [{ 'Halo' => {} }, /'spells' must be a list, not \{"Halo" => \{\}\}/],
+      'a row that is a bare name'     => [['Halo'], /\Aspell 1 is not a mapping\z/],
+      'a row with no name'            => [[{ 'guild' => 'Cleric' }], /\Aspell 1 has no 'name'\z/],
+      'a row with an empty name'      => [[{ 'name' => '' }], /spell 1 has no 'name'/],
+      'a misspelt key'                => [[{ 'name' => 'Halo', 'tierr' => 'basic' }], /\Aspell 1 \(Halo\) has unknown key\(s\) "tierr"\z/],
+      'a name listed twice'           => [[{ 'name' => 'Halo' }, { 'name' => 'Burden' }, { 'name' => 'Halo' }], /\Aspell 3 \(Halo\) is listed more than once\z/],
+      'a misspelt guild'              => [[{ 'name' => 'Halo', 'guild' => 'Moonmage' }], /spell 1 \(Halo\) names unknown guild "Moonmage"/],
+      'signature: false'              => [[{ 'name' => 'Halo', 'signature' => false }], /signature must be true, or left out, not false/],
+      "signature: 'true', a string"   => [[{ 'name' => 'Halo', 'signature' => 'true' }], /signature must be true, or left out, not "true"/],
+      'an unquoted number for a tier' => [[{ 'name' => 'Halo', 'tier' => 5 }], /spell 1 \(Halo\) tier must be a non-empty quoted string, not 5/],
+      'an empty label'                => [[{ 'name' => 'Halo', 'label' => '' }], /label must be a non-empty quoted string, not ""/]
+    }.each do |label, (value, message)|
+      it "refuses #{label}" do
+        expect { TextSubs::SpellTable.new(value) }.to raise_error(ArgumentError, message)
+      end
+    end
+  end
+
+  describe 'TextSubs::LinkBuilder.pair' do
+    it 'gives the key and replacement TextSubs.elanthipedia adds for the same arguments' do
+      TextSubs.clear
+      TextSubs.elanthipedia("Damaris' Lullaby", '\S|^', '\s*Slot', 'Spell:', '_page', '<', '>')
+      expect([TextSubs::LinkBuilder.pair("Damaris' Lullaby", pretext: '\S|^', postext: '\s*Slot', prelink: 'Spell:', poslink: '_page',
+                                                             preresult: '<', posresult: '>')])
+        .to eq(TextSubs.subs.map { |key, value| [key.source, value] })
+    ensure
+      TextSubs.clear
+    end
+
+    it 'puts underscores only in the page, keeping the spaces of the text and the regex' do
+      expect(TextSubs::LinkBuilder.pair('Aura of Tongues'))
+        .to eq(['()(Aura of Tongues)()', '\1<a href="https://elanthipedia.play.net/Aura_of_Tongues">Aura of Tongues</a>\3'])
+    end
   end
 
   describe 'TextSubs.add_catalog' do
@@ -4431,7 +4704,8 @@ RSpec.describe 'textsubs.lic' do
       message = TextSubs.add_catalog(bad, context, file: '/lich/scripts/data/custom/base-textsubs.yaml')
       expect(message).to eq(
         'No built-in subs: /lich/scripts/data/custom/base-textsubs.yaml cannot be used (section 2 (two) has unknown kind ' \
-        "\"ladder\"; kinds are pairs, guild_spells_link). This textsubs.lic needs a 'textsubs:' mapping with schema: 1; " \
+        "\"ladder\"; kinds are pairs, guild_spells_link, wiki_links, spell_links, scroll_labels, spell_recognition). " \
+        "This textsubs.lic needs a 'textsubs:' mapping with schema: 1; " \
         'update dr-scripts, or fix or remove a copy in data/custom. Only private_textsubs and shit-list subs are active.'
       )
       expect(TextSubs.subs).to eq(/mine/ => 'MINE')

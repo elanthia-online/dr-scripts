@@ -1468,12 +1468,15 @@ class TextSubs
   #       requires_any: ['Kronar']       # optional, see Registry
   #       subs:
   #         - ['regex source', 'gsub replacement']
+  #   spells:                            # optional, see SpellTable
+  #     - {name: 'Burden', book: 'Analogous Patterns', tier: 'introductory', type: 'debilitation'}
   #
   # requires_any gates every sub of the section: a line holding none of the
   # words skips their regexes. It must only name words each pattern needs.
   #
   # A section's kind names the Generators class that checks its fields and
-  # turns them into subs (see kinds); 'pairs' lists them as they are.
+  # turns them into subs (see kinds); 'pairs' lists them as they are, and the
+  # spell kinds build theirs from the spells table.
   #
   # Sections run in file order and subs in list order; both orders are kept,
   # because two subs that match the same line apply in that order. Every key
@@ -1490,7 +1493,11 @@ class TextSubs
     # @return [Hash{String=>Class}] frozen
     def self.kinds
       { 'pairs'             => Generators::Pairs,
-        'guild_spells_link' => Generators::GuildSpellsLink }.freeze
+        'guild_spells_link' => Generators::GuildSpellsLink,
+        'wiki_links'        => Generators::WikiLinks,
+        'spell_links'       => Generators::SpellLinks,
+        'scroll_labels'     => Generators::ScrollLabels,
+        'spell_recognition' => Generators::SpellRecognition }.freeze
     end
 
     # @return [Array<String>] the keys every kind of section may hold, frozen
@@ -1543,42 +1550,45 @@ class TextSubs
     #   data = { 'schema' => 1, 'sections' => [{ 'name' => 'all', 'subs' => [['fine', 'FINE']] }] }
     #   TextSubs::Catalog.keyed_entries(data, context) # => [[/fine/, 'FINE', { section: 'all' }]]
     def self.keyed_entries(data, context)
-      sections, keys = check(data)
+      sections, spells, keys = check(data)
       # check has validated every gate already, so allows? checks each one a
       # second time. That is deliberate: allows? is public and stays safe on
       # its own, and the repeat costs nothing at catalog size.
       sections.select { |section| context.allows?(section['when']) }
-              .flat_map { |section| expand(section, context) }
+              .flat_map { |section| expand(section, context, spells) }
               .map { |source, replacement, meta| [keys.fetch(source), replacement, meta] }
     end
 
     # @param data [Object] the `textsubs:` value
-    # @return [Array(Array<Hash>, Hash{String=>Regexp})] its sections, every
-    #   one checked, and every pattern in them compiled, by its source
+    # @return [Array(Array<Hash>, TextSubs::SpellTable, Hash{String=>Regexp})]
+    #   its sections, every one checked, its spells table (empty when data
+    #   has none), and every pattern the sections give compiled, by its source
     # @raise [ArgumentError] naming the first problem found
     def self.check(data)
       raise ArgumentError, "no 'textsubs:' mapping (the file is missing or did not parse)" unless data.is_a?(Hash)
 
-      unknown = data.keys - %w[schema sections]
+      unknown = data.keys - %w[schema sections spells]
       raise ArgumentError, "unknown top-level key(s) #{unknown.map(&:inspect).join(', ')}" unless unknown.empty?
       raise ArgumentError, "schema #{data['schema'].inspect}, but this textsubs.lic reads schema #{schema}" unless data['schema'] == schema
 
+      spells = SpellTable.new(data.fetch('spells', []))
       sections = data['sections']
       raise ArgumentError, "'sections' must be a non-empty list" unless sections.is_a?(Array) && !sections.empty?
 
-      keys = sections.each_with_index.flat_map { |section, index| check_section(section, index) }
+      keys = sections.each_with_index.flat_map { |section, index| check_section(section, index, spells) }
       names = sections.map { |section| section['name'] }
       repeated = names.tally.select { |_, count| count > 1 }.keys
       raise ArgumentError, "section name(s) used more than once: #{repeated.map(&:inspect).join(', ')}" unless repeated.empty?
 
-      [sections, keys.to_h { |key| [key.source, key] }]
+      [sections, spells, keys.to_h { |key| [key.source, key] }]
     end
 
     # @param section [Object] one element of 'sections'
     # @param index [Integer] its position, for the message
+    # @param spells [TextSubs::SpellTable] the spells the spell kinds read
     # @return [Array<Regexp>] its patterns, compiled, in order
     # @raise [ArgumentError] naming the section and what is wrong with it
-    def self.check_section(section, index)
+    def self.check_section(section, index, spells)
       raise ArgumentError, 'is not a mapping' unless section.is_a?(Hash)
       raise ArgumentError, "has no 'name'" unless section['name'].is_a?(String) && !section['name'].empty?
 
@@ -1594,7 +1604,7 @@ class TextSubs
 
       Context.check_gate(section['when'])
       Registry.check_requires_any(section['requires_any'])
-      generator.check(section)
+      generator.check(section, spells)
     rescue ArgumentError => e
       label = section.is_a?(Hash) && section['name'].is_a?(String) ? " (#{section['name']})" : ''
       raise ArgumentError, "section #{index + 1}#{label} #{e.message}"
@@ -1602,11 +1612,12 @@ class TextSubs
 
     # @param section [Hash] a checked section
     # @param context [TextSubs::Context]
+    # @param spells [TextSubs::SpellTable]
     # @return [Array<Array(String, String, Hash)>] its subs, each with the
     #   section's meta
-    def self.expand(section, context)
+    def self.expand(section, context, spells)
       meta = { section: section['name'], requires_any: section['requires_any'] }.compact.freeze
-      kinds.fetch(section.fetch('kind', 'pairs')).expand(section, context).map { |pattern, replacement| [pattern, replacement, meta] }
+      kinds.fetch(section.fetch('kind', 'pairs')).expand(section, context, spells).map { |pattern, replacement| [pattern, replacement, meta] }
     end
     private_class_method :check, :check_section, :expand
   end
@@ -1617,11 +1628,14 @@ class TextSubs
   #   fields                     the keys a section of its kind must hold
   #   optional_fields            the keys it may also hold, besides
   #                              Catalog.section_keys
-  #   check(section)             raises ArgumentError naming what is wrong,
+  #   check(section, spells)     raises ArgumentError naming what is wrong,
   #                              else returns every pattern expand can give,
   #                              compiled (Catalog keeps them as the keys);
   #                              called with every key known and present
-  #   expand(section, context)   the pairs, in order, of a checked section
+  #   expand(section, context, spells)
+  #                              the pairs, in order, of a checked section
+  # spells is the data's TextSubs::SpellTable, which only the spell kinds
+  # read.
   module Generators
     # @param pattern [String] regex source
     # @return [Regexp] the pattern, compiled and frozen, as a Regexp literal is
@@ -1645,11 +1659,67 @@ class TextSubs
       nil
     end
 
+    # @param pairs [Array<Array(String, String)>] generated subs
+    # @return [Array<Regexp>] their patterns, compiled, in order
+    # @raise [ArgumentError] when a pattern does not compile
+    def self.check_patterns(pairs)
+      pairs.map { |pattern, _replacement| check_pattern(pattern) }
+    end
+
+    # @param section [Hash] a section
+    # @param field [String] a template field, checked as a String already
+    # @param placeholder [String] the placeholder the template must hold
+    # @return [nil]
+    # @raise [ArgumentError] when the template lacks the placeholder, so each
+    #   sub it gave would be the same
+    def self.check_template(section, field, placeholder)
+      return if section[field].include?("{#{placeholder}}")
+
+      raise ArgumentError, "'#{field}' must hold {#{placeholder}}, not #{section[field].inspect}"
+    end
+
+    # @param list [Object] a section field that must list names
+    # @param field [String] its key, for the message
+    # @return [nil]
+    # @raise [ArgumentError] unless list is a non-empty list of non-empty
+    #   Strings
+    def self.check_name_list(list, field)
+      return if list.is_a?(Array) && !list.empty? && list.all? { |name| name.is_a?(String) && !name.empty? }
+
+      raise ArgumentError, "'#{field}' must be a non-empty list of quoted names, not #{list.inspect}"
+    end
+
+    # A name listed twice would give the same key twice, and the second would
+    # only overwrite the first in place.
+    #
+    # @param names [Array<String>]
+    # @return [nil]
+    # @raise [ArgumentError] naming each name listed more than once
+    def self.check_unique(names)
+      repeated = names.tally.select { |_, count| count > 1 }.keys
+      raise ArgumentError, "lists #{repeated.map(&:inspect).join(', ')} more than once" unless repeated.empty?
+    end
+
+    # Fills the {placeholder}s of a template. A brace that names no
+    # placeholder, such as the {3} of a regex interval, is left as it is.
+    #
+    # @param template [String] regex source or replacement text
+    # @param values [Hash{String=>String}] each placeholder and its text,
+    #   put in as it is (a spell name is regex source, as in the hand-written
+    #   subs)
+    # @return [String]
+    # @example
+    #   TextSubs::Generators.fill('^(It is labeled) "{name}."', 'name' => 'Burden')
+    #   # => "^(It is labeled) \"Burden.\""
+    def self.fill(template, values)
+      template.gsub(/\{(\w+)\}/) { values.fetch(Regexp.last_match(1), Regexp.last_match(0)) }
+    end
+
     # The 'pairs' kind: subs written out as they apply.
     #
     # @example
     #   section = { 'name' => 'x', 'subs' => [['fine', 'FINE']] }
-    #   TextSubs::Generators::Pairs.expand(section, context) # => [['fine', 'FINE']]
+    #   TextSubs::Generators::Pairs.expand(section, context, spells) # => [['fine', 'FINE']]
     class Pairs
       # @return [Array<String>] frozen
       def self.fields
@@ -1662,10 +1732,11 @@ class TextSubs
       end
 
       # @param section [Hash] a pairs section
+      # @param _spells [TextSubs::SpellTable] unused
       # @return [Array<Regexp>] the patterns, compiled, in order
       # @raise [ArgumentError] unless 'subs' is a non-empty list of
       #   [pattern, replacement] String pairs whose patterns compile
-      def self.check(section)
+      def self.check(section, _spells)
         subs = section['subs']
         raise ArgumentError, "'subs' must be a non-empty list" unless subs.is_a?(Array) && !subs.empty?
 
@@ -1681,8 +1752,9 @@ class TextSubs
       # @param section [Hash] a checked pairs section
       # @param _context [TextSubs::Context] unused: a pair is the same for
       #   every character
+      # @param _spells [TextSubs::SpellTable] unused
       # @return [Array<Array(String, String)>] its subs, in list order
-      def self.expand(section, _context)
+      def self.expand(section, _context, _spells)
         section['subs'].map { |pattern, replacement| [pattern, replacement] }
       end
     end
@@ -1705,24 +1777,427 @@ class TextSubs
       end
 
       # @param section [Hash] a guild_spells_link section
+      # @param _spells [TextSubs::SpellTable] unused
       # @return [Array<Regexp>] its one pattern, compiled
       # @raise [ArgumentError] unless every field is a String and the pattern compiles
-      def self.check(section)
+      def self.check(section, _spells)
         Generators.check_strings(section, fields)
         [Generators.check_pattern(section['pattern'])]
       end
 
       # @param section [Hash] a checked guild_spells_link section
       # @param context [TextSubs::Context] its guild names the page
+      # @param _spells [TextSubs::SpellTable] unused
       # @return [Array<Array(String, String)>] the one link, or none while the
       #   guild is nil
-      def self.expand(section, context)
+      def self.expand(section, context, _spells)
         guild = context.guild
         return [] if guild.nil?
 
         link = TextSubs.wiki_link(section['prelink'] + guild.tr(' ', '_') + section['poslink'], guild)
         [[section['pattern'], section['preresult'] + link + section['posresult']]]
       end
+    end
+
+    # The 'wiki_links' kind: an Elanthipedia link for each of the texts, in
+    # order, built by LinkBuilder exactly as TextSubs.elanthipedia would with
+    # the section's pretext, postext, prelink, poslink, preresult and
+    # posresult (each optional, with elanthipedia's default).
+    #
+    # @example The spellbook headings
+    #   section = { 'name' => 'spellbook links', 'kind' => 'wiki_links', 'texts' => ['Fae Arts'],
+    #               'pretext' => '^', 'postext' => ':', 'prelink' => 'Category:', 'poslink' => '_spellbook' }
+    #   TextSubs::Generators::WikiLinks.expand(section, context, spells)
+    #   # => [['(^)(Fae Arts)(:)', '\1<a href="https://elanthipedia.play.net/Category:Fae_Arts_spellbook">Fae Arts</a>\3']]
+    class WikiLinks
+      # @return [Array<String>] frozen
+      def self.fields
+        %w[texts].freeze
+      end
+
+      # @return [Array<String>] the LinkBuilder.pair keywords a section may
+      #   set, frozen
+      def self.optional_fields
+        %w[pretext postext prelink poslink preresult posresult].freeze
+      end
+
+      # @param section [Hash] a wiki_links section
+      # @param _spells [TextSubs::SpellTable] unused
+      # @return [Array<Regexp>] the patterns, compiled, in order
+      # @raise [ArgumentError] unless texts is a non-empty list of distinct
+      #   names, every link field is a String and every pattern compiles
+      def self.check(section, _spells)
+        Generators.check_name_list(section['texts'], 'texts')
+        Generators.check_unique(section['texts'])
+        check_links(section, section['texts'])
+      end
+
+      # @param section [Hash] a checked wiki_links section
+      # @param _context [TextSubs::Context] unused
+      # @param _spells [TextSubs::SpellTable] unused
+      # @return [Array<Array(String, String)>] one link per text, in order
+      def self.expand(section, _context, _spells)
+        links(section, section['texts'])
+      end
+
+      # @param section [Hash] a wiki_links or spell_links section
+      # @param texts [Array<String>] what to link, in order
+      # @return [Array<Regexp>] the patterns, compiled, in order
+      # @raise [ArgumentError] unless every link field is a String and every
+      #   pattern compiles
+      def self.check_links(section, texts)
+        Generators.check_strings(section, optional_fields)
+        Generators.check_patterns(links(section, texts))
+      end
+
+      # @param section [Hash] a wiki_links or spell_links section
+      # @param texts [Array<String>] what to link, in order
+      # @return [Array<Array(String, String)>] one LinkBuilder.pair per text
+      def self.links(section, texts)
+        options = section.slice(*optional_fields).transform_keys(&:to_sym)
+        texts.map { |text| LinkBuilder.pair(text, **options) }
+      end
+    end
+
+    # The 'spell_links' kind: a wiki_links section whose texts are the names
+    # of the spells table, in table order, so each spell is linked once and
+    # named in one place.
+    class SpellLinks
+      # @return [Array<String>] frozen
+      def self.fields
+        [].freeze
+      end
+
+      # @return [Array<String>] the link fields of WikiLinks, frozen
+      def self.optional_fields
+        WikiLinks.optional_fields
+      end
+
+      # @param section [Hash] a spell_links section
+      # @param spells [TextSubs::SpellTable]
+      # @return [Array<Regexp>] the patterns, compiled, in order
+      # @raise [ArgumentError] when there is no spell to link, a link field is
+      #   not a String or a pattern does not compile
+      def self.check(section, spells)
+        raise ArgumentError, 'has no spells to link; list them under spells' if spells.names.empty?
+
+        WikiLinks.check_links(section, spells.names)
+      end
+
+      # @param section [Hash] a checked spell_links section
+      # @param _context [TextSubs::Context] unused
+      # @param spells [TextSubs::SpellTable]
+      # @return [Array<Array(String, String)>] one link per spell, in table
+      #   order
+      def self.expand(section, _context, spells)
+        WikiLinks.links(section, spells.names)
+      end
+    end
+
+    # The 'scroll_labels' kind: one sub per name, in list order, from the
+    # pattern and replacement templates, with {name} the spell's name and
+    # {label} what SpellTable#scroll_label gives for it.
+    #
+    # A names entry that is a mapping, {name: '...', label: '...'}, is an
+    # override: its name and label are used as they are, whether or not
+    # spells lists the name. It keeps a sub whose text differs from the table
+    # as it is, until someone finds out which one the game prints.
+    #
+    # @example
+    #   section = { 'pattern' => '^(It is labeled) "{name}."', 'replacement' => '\1 "{name}." ({label})',
+    #               'names' => ['Burden'] }
+    #   TextSubs::Generators::ScrollLabels.expand(section, context, spells)
+    #   # => [['^(It is labeled) "Burden."', '\1 "Burden." (Analogous Patterns)']]
+    class ScrollLabels
+      # @return [Array<String>] frozen
+      def self.fields
+        %w[pattern replacement names].freeze
+      end
+
+      # @return [Array<String>] frozen
+      def self.optional_fields
+        [].freeze
+      end
+
+      # @param section [Hash] a scroll_labels section
+      # @param spells [TextSubs::SpellTable]
+      # @return [Array<Regexp>] the patterns, compiled, in order
+      # @raise [ArgumentError] when a template is not a String or the pattern
+      #   lacks {name}, names is not a non-empty list, an entry is neither a
+      #   spell name nor an override, a name is not in spells or has no label,
+      #   a name is listed twice, or a pattern does not compile
+      def self.check(section, spells)
+        Generators.check_strings(section, %w[pattern replacement])
+        Generators.check_template(section, 'pattern', 'name')
+        names = section['names']
+        raise ArgumentError, "'names' must be a non-empty list" unless names.is_a?(Array) && !names.empty?
+
+        labelled = labels(names, spells)
+        Generators.check_unique(labelled.map(&:first))
+        Generators.check_patterns(subs(section, labelled))
+      end
+
+      # @param section [Hash] a checked scroll_labels section
+      # @param _context [TextSubs::Context] unused
+      # @param spells [TextSubs::SpellTable]
+      # @return [Array<Array(String, String)>] one sub per name, in list order
+      def self.expand(section, _context, spells)
+        subs(section, labels(section['names'], spells))
+      end
+
+      # @param names [Array<String, Hash>] the section's names
+      # @param spells [TextSubs::SpellTable]
+      # @return [Array<Array(String, String)>] [name, label] per entry
+      # @raise [ArgumentError] as check describes for an entry
+      def self.labels(names, spells)
+        names.each_with_index.map do |entry, index|
+          next [entry, spells.scroll_label(entry)] if entry.is_a?(String)
+          next entry.values_at('name', 'label') if override?(entry)
+
+          raise ArgumentError, "names entry #{index + 1} must be a quoted spell name or an override " \
+                               "{name: '...', label: '...'}, not #{entry.inspect}"
+        end
+      end
+
+      # @param entry [Object] a names entry that is not a String
+      # @return [Boolean] whether it is a {name:, label:} override of two
+      #   non-empty Strings and nothing else
+      def self.override?(entry)
+        entry.is_a?(Hash) && entry.keys.sort == %w[label name] && entry.values.all? { |value| value.is_a?(String) && !value.empty? }
+      end
+
+      # @param section [Hash] the section, for its templates
+      # @param labelled [Array<Array(String, String)>] [name, label] pairs
+      # @return [Array<Array(String, String)>] one sub per pair
+      def self.subs(section, labelled)
+        labelled.map do |name, label|
+          values = { 'name' => name, 'label' => label }
+          [Generators.fill(section['pattern'], values), Generators.fill(section['replacement'], values)]
+        end
+      end
+      private_class_method :labels, :override?, :subs
+    end
+
+    # The 'spell_recognition' kind: one sub per group of spell names, in list
+    # order, from the pattern and replacement templates, with {names} the
+    # group's names joined by '|' and {label} what SpellTable#recognition_label
+    # gives for them. Every name of a group must give the same label, as the
+    # sub shows one label for them all.
+    #
+    # @example
+    #   section = { 'pattern' => '^You recognize the ({names}) spell.', 'replacement' => '\0 [{label}]',
+    #               'groups' => [['Lay Ward', 'Manifest Force']] }
+    #   TextSubs::Generators::SpellRecognition.expand(section, context, spells)
+    #   # => [['^You recognize the (Lay Ward|Manifest Force) spell.', '\0 [Analogous Patterns: basic warding]']]
+    class SpellRecognition
+      # @return [Array<String>] frozen
+      def self.fields
+        %w[pattern replacement groups].freeze
+      end
+
+      # @return [Array<String>] frozen
+      def self.optional_fields
+        [].freeze
+      end
+
+      # @param section [Hash] a spell_recognition section
+      # @param spells [TextSubs::SpellTable]
+      # @return [Array<Regexp>] the patterns, compiled, in order
+      # @raise [ArgumentError] when a template is not a String or the pattern
+      #   lacks {names}, groups is not a non-empty list of name lists, a name
+      #   is not in spells or lacks its recognition data, the names of a group
+      #   give different labels, a name is listed twice, or a pattern does not
+      #   compile
+      def self.check(section, spells)
+        Generators.check_strings(section, %w[pattern replacement])
+        Generators.check_template(section, 'pattern', 'names')
+        groups = section['groups']
+        raise ArgumentError, "'groups' must be a non-empty list" unless groups.is_a?(Array) && !groups.empty?
+
+        groups.each_with_index do |group, index|
+          Generators.check_name_list(group, "groups #{index + 1}")
+          check_labels(group, index, spells)
+        end
+        Generators.check_unique(groups.flatten)
+        Generators.check_patterns(expand(section, nil, spells))
+      end
+
+      # @param section [Hash] a checked spell_recognition section
+      # @param _context [TextSubs::Context] unused
+      # @param spells [TextSubs::SpellTable]
+      # @return [Array<Array(String, String)>] one sub per group, in list order
+      def self.expand(section, _context, spells)
+        section['groups'].map do |group|
+          values = { 'names' => group.join('|'), 'label' => spells.recognition_label(group.first) }
+          [Generators.fill(section['pattern'], values), Generators.fill(section['replacement'], values)]
+        end
+      end
+
+      # @param group [Array<String>] the names of one group
+      # @param index [Integer] its position, for the message
+      # @param spells [TextSubs::SpellTable]
+      # @return [nil]
+      # @raise [ArgumentError] naming the first name whose label differs from
+      #   the label of the group's first name
+      def self.check_labels(group, index, spells)
+        label = spells.recognition_label(group.first)
+        other = group.find { |name| spells.recognition_label(name) != label }
+        return unless other
+
+        raise ArgumentError, "groups #{index + 1} mixes labels: #{group.first.inspect} is #{label.inspect} " \
+                             "but #{other.inspect} is #{spells.recognition_label(other).inspect}"
+      end
+      private_class_method :check_labels
+    end
+  end
+
+  # The spells: list of data/base-textsubs.yaml, the one place a spell's
+  # name, guild, spellbook and recognition data live. The spell_links,
+  # scroll_labels and spell_recognition sections all read it, so a spell is
+  # renamed or relabelled in one row. Rows keep their order: spell_links
+  # links them in it.
+  #
+  # Each row is a mapping; name is required and the rest optional:
+  #   name       the spell's name, unique; regex source, as in the subs
+  #   guild      the guild, one of Context.guilds
+  #   book       the spellbook
+  #   signature  true for a guild's signature spell, else left out
+  #   tier       its recognition tier ('basic', 'advanced', ...)
+  #   type       its recognition type ('warding', 'augmentation/utility', ...)
+  #   label      what its scroll label names, when that is neither the guild
+  #              nor the book
+  #
+  # @example
+  #   spells = TextSubs::SpellTable.new([{ 'name' => 'Halo', 'guild' => 'Cleric', 'book' => 'Holy Defense',
+  #                                        'signature' => true, 'tier' => 'advanced', 'type' => 'debilitation/warding' }])
+  #   spells.scroll_label('Halo')      # => "Cleric"
+  #   spells.recognition_label('Halo') # => "signature Cleric (Holy Defense): advanced debilitation/warding"
+  class SpellTable
+    # @return [Array<String>] the keys a row may hold, frozen
+    def self.fields
+      %w[name guild book signature tier type label].freeze
+    end
+
+    # @param rows [Object] the `spells:` value
+    # @raise [ArgumentError] naming the first row that is not a mapping of
+    #   known fields with a new name, a known guild, signature true or left
+    #   out, and non-empty Strings for the rest
+    def initialize(rows)
+      raise ArgumentError, "'spells' must be a list, not #{rows.inspect}" unless rows.is_a?(Array)
+
+      @spells = {}
+      rows.each_with_index { |row, index| @spells[check_row(row, index)] = row }
+      @spells.freeze
+      @names = @spells.keys.freeze
+    end
+
+    # @return [Array<String>] every spell name, in table order, frozen
+    attr_reader :names
+
+    # @param name [String] a spell name
+    # @return [String] what its scroll label names: label, else guild, else
+    #   book
+    # @raise [ArgumentError] when the table does not list name, or its row
+    #   has none of the three
+    def scroll_label(name)
+      spell = fetch(name)
+      spell.fetch('label') { spell.fetch('guild') { spell.fetch('book') { raise ArgumentError, "needs a label, guild or book for spell #{name.inspect}" } } }
+    end
+
+    # @param name [String] a spell name
+    # @return [String] its recognition label: 'signature ' for a signature
+    #   spell, 'Guild (Book)' (or the book alone with no guild), then ': ',
+    #   tier, a space and type
+    # @raise [ArgumentError] when the table does not list name, or its row
+    #   lacks book, tier or type
+    def recognition_label(name)
+      spell = fetch(name)
+      missing = %w[book tier type] - spell.keys
+      raise ArgumentError, "needs the #{missing.join(', ')} of spell #{name.inspect}" unless missing.empty?
+
+      owner = spell.key?('guild') ? "#{spell['guild']} (#{spell['book']})" : spell['book']
+      "#{'signature ' if spell['signature']}#{owner}: #{spell['tier']} #{spell['type']}"
+    end
+
+    private
+
+    # @param name [String]
+    # @return [Hash] its row
+    # @raise [ArgumentError] when the table does not list name
+    def fetch(name)
+      @spells.fetch(name) { raise ArgumentError, "names #{name.inspect}, which is not in spells" }
+    end
+
+    # @param row [Object] one element of `spells:`
+    # @param index [Integer] its position, for the message
+    # @return [String] its name
+    # @raise [ArgumentError] naming the row and what is wrong with it
+    def check_row(row, index)
+      raise ArgumentError, 'is not a mapping' unless row.is_a?(Hash)
+
+      name = row['name']
+      raise ArgumentError, "has no 'name'" unless name.is_a?(String) && !name.empty?
+
+      unknown = row.keys - self.class.fields
+      raise ArgumentError, "has unknown key(s) #{unknown.map(&:inspect).join(', ')}" unless unknown.empty?
+      raise ArgumentError, 'is listed more than once' if @spells.key?(name)
+
+      check_fields(row)
+      name
+    rescue ArgumentError => e
+      label = row.is_a?(Hash) && row['name'].is_a?(String) && !row['name'].empty? ? " (#{row['name']})" : ''
+      raise ArgumentError, "spell #{index + 1}#{label} #{e.message}"
+    end
+
+    # @param row [Hash] a row with a name and known keys
+    # @return [nil]
+    # @raise [ArgumentError] naming the first field with a bad value
+    def check_fields(row)
+      row.each do |field, value|
+        case field
+        when 'signature'
+          raise ArgumentError, "signature must be true, or left out, not #{value.inspect}" unless value == true
+        when 'guild'
+          raise ArgumentError, "names unknown guild #{value.inspect}" unless Context.guilds.include?(value)
+        else
+          raise ArgumentError, "#{field} must be a non-empty quoted string, not #{value.inspect}" unless value.is_a?(String) && !value.empty?
+        end
+      end
+      nil
+    end
+  end
+
+  # Builds the [regex source, replacement] pair of an Elanthipedia link, for
+  # TextSubs.elanthipedia and the wiki_links and spell_links kinds alike, so
+  # a link the catalog data gives is exactly the one elanthipedia would add.
+  #
+  # The key is three capture groups, (pretext)(text)(postext). pretext, text
+  # and postext build the key: they are regex source, compiled unescaped.
+  # preresult, posresult, prelink, poslink and text are gsub replacement
+  # text, so \0 to \9, \&, \`, \', \+ and \\ in them are substitutions;
+  # any other backslash stays as written. \k<name> is one too, but the key's
+  # three groups have no name, so it raises IndexError on the hook thread
+  # unless pretext or postext names that group; a named group also stops the
+  # three plain groups from capturing, so \1 to \3 then count named groups
+  # only. text is the one argument that is both, so a regex escape in it
+  # (such as \s) matches in the key but shows verbatim in the link and the
+  # page name, while a substitution in it (such as \&) is replaced in both.
+  class LinkBuilder
+    # @param text [String] the text to link; also the page name, spaces
+    #   turned into underscores
+    # @param pretext [String] context before the text, capture group 1
+    # @param postext [String] context after the text, capture group 3
+    # @param prelink [String] prefix of the page path (such as 'Category:')
+    # @param poslink [String] suffix of the page path (such as '_spellbook')
+    # @param preresult [String] replacement before the link
+    # @param posresult [String] replacement after the link
+    # @return [Array(String, String)] the regex source and the replacement
+    # @example
+    #   TextSubs::LinkBuilder.pair('Fae Arts', pretext: '^', postext: ':', prelink: 'Category:', poslink: '_spellbook')
+    #   # => ["(^)(Fae Arts)(:)", "\\1<a href=\"https://elanthipedia.play.net/Category:Fae_Arts_spellbook\">Fae Arts</a>\\3"]
+    def self.pair(text, pretext: '', postext: '', prelink: '', poslink: '', preresult: '\1', posresult: '\3')
+      page = prelink + text.gsub(' ', '_') + poslink
+      ["(#{pretext})(#{text})(#{postext})", preresult + TextSubs.wiki_link(page, text) + posresult]
     end
   end
 
@@ -1962,22 +2437,12 @@ class TextSubs
   # between the words (MikeLC 2/15/2025; thanks to Tysong for the "how to
   # hyperlink" help).
   #
-  # Kept as public API for players' own scripts: the built-in catalog no
-  # longer calls it, as data/base-textsubs.yaml stores each link already
-  # expanded into a [pattern, replacement] pair.
+  # Kept as public API for players' own scripts. The built-in catalog does not
+  # call it, but its wiki_links and spell_links sections build each link with
+  # the same LinkBuilder.pair, so a link is the same whichever adds it.
   #
   # The key is three capture groups, (pretext)(text)(postext), so the context
-  # around the text can be matched and put back. pretext, text and postext
-  # build the key: they are regex source, compiled unescaped. preresult,
-  # posresult, prelink, poslink and text are gsub replacement text, so \0 to
-  # \9, \&, \`, \', \+ and \\ in them are substitutions; any other
-  # backslash stays as written. \k<name> is one too, but the key's three
-  # groups have no name, so it raises IndexError on the hook thread unless
-  # pretext or postext names that group; a named group also stops the three
-  # plain groups from capturing, so \1 to \3 then count named groups only.
-  # text is the one argument that is both, so a regex escape in it (such as
-  # \s) matches in the key but shows verbatim in the link and the page name,
-  # while a substitution in it (such as \&) is replaced in both.
+  # around the text can be matched and put back (see LinkBuilder).
   #
   # @param text [String] the text to link; also the page name, spaces turned
   #   into underscores
@@ -1997,14 +2462,14 @@ class TextSubs
   #   # "Fae Arts:" becomes
   #   # <a href="https://elanthipedia.play.net/Category:Fae_Arts_spellbook">Fae Arts</a>:
   def self.elanthipedia(text, pretext = '', postext = '', prelink = '', poslink = '', preresult = '\1', posresult = '\3')
-    target = "(#{pretext})" + "(#{text})" + "(#{postext})"
-    hyperlink = prelink + text.gsub(" ", "_") + poslink
-    result = preresult + wiki_link(hyperlink, text) + posresult
+    target, result = LinkBuilder.pair(text, pretext: pretext, postext: postext, prelink: prelink, poslink: poslink,
+                                            preresult: preresult, posresult: posresult)
     store(target, result, change: true)
   end
 
   # The anchor tag that links text to an Elanthipedia page, shared by
-  # elanthipedia and the catalog's guild spell list link.
+  # LinkBuilder (so elanthipedia and the catalog's link kinds) and the
+  # catalog's guild spell list link.
   #
   # @param page [String] the page path after the site root, used as is
   # @param text [String] what the link shows
