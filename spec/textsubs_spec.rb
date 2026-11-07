@@ -1272,7 +1272,7 @@ RSpec.describe 'textsubs.lic' do
 
       build_catalog('Commoner')
 
-      expect(events).to eq([[:hook, 'textsub'], [:watch, 'textsub', {}]])
+      expect(events).to eq([[:hook, 'textsub'], [:watch, 'textsub', { guild: 'Commoner' }]])
     end
 
     it 'ends the script, saying so, once Lich removes the hook because it raised' do
@@ -1665,6 +1665,69 @@ RSpec.describe 'textsubs.lic' do
       TextSubs.watch('textsub')
       expect(script.want_downstream).to be(false)
     end
+
+    describe 'with a block, as the entry point passes one' do
+      let(:yielded) { [] }
+
+      # @param guild [String, nil] the guild the catalog was built for
+      # @param polls [Integer] how many checks find the hook before it goes
+      # @return [nil] what watch returns
+      def watch_for(guild:, polls:)
+        allow(DownstreamHook).to receive(:list).and_return(*([%w[textsub]] * polls), [])
+        TextSubs.watch('textsub', script: script, interval: 1, guild: guild) { |new_guild| yielded << [new_guild, pauses.size] }
+      end
+
+      it 'yields nothing while DRStats reports the guild the catalog was built for' do
+        DRStats.guild = 'Bard'
+        watch_for(guild: 'Bard', polls: 3)
+        expect(yielded).to be_empty
+        expect(pauses.size).to eq(3)
+      end
+
+      it 'yields the new guild once, before that check pauses, and not again while it stays' do
+        allow(TextSubs).to receive(:pause) do |seconds|
+          pauses << seconds
+          DRStats.guild = 'Bard' if pauses.size == 2
+        end
+        watch_for(guild: nil, polls: 5)
+        expect(yielded).to eq([['Bard', 2]])
+        expect(pauses.size).to eq(5)
+      end
+
+      it 'yields again on each later change, nil included, comparing with the guild it last yielded' do
+        reported = [nil, 'Bard', 'Bard', 'Cleric', nil]
+        allow(TextSubs).to receive(:pause) { |seconds| pauses << seconds }
+        allow(DRStats).to receive(:guild) { reported[pauses.size] }
+        watch_for(guild: nil, polls: 5)
+        expect(yielded).to eq([['Bard', 1], ['Cleric', 3], [nil, 4]])
+      end
+
+      it 'yields at the first check when the guild changed after the catalog was built' do
+        DRStats.guild = 'Ranger'
+        watch_for(guild: nil, polls: 1)
+        expect(yielded).to eq([['Ranger', 0]])
+      end
+
+      it 'yields nothing once the hook is gone, whatever the guild' do
+        DRStats.guild = 'Ranger'
+        watch_for(guild: nil, polls: 0)
+        expect(yielded).to be_empty
+      end
+
+      it 'compares with the guild DRStats reports when it is called, if no guild is given' do
+        DRStats.guild = 'Thief'
+        allow(DownstreamHook).to receive(:list).and_return(%w[textsub], [])
+        TextSubs.watch('textsub', script: script) { |new_guild| yielded << new_guild }
+        expect(yielded).to be_empty
+      end
+    end
+
+    it 'never reads the guild without a block' do
+      allow(DRStats).to receive(:guild).and_raise('read the guild')
+      allow(DownstreamHook).to receive(:list).and_return(%w[textsub], %w[textsub], [])
+      expect { TextSubs.watch('textsub', script: script, guild: 'Bard') }.not_to raise_error
+      expect(pauses.size).to eq(2)
+    end
   end
 
   # pause is stubbed and counted, so a wait that never ends fails instead of
@@ -1783,6 +1846,119 @@ RSpec.describe 'textsubs.lic' do
       expect(pauses).to eq(2)
       expect(catalog == golden_catalog(spell_links_on.merge('guild' => 'Empath'))).to be(true)
       expect(warnings).to be_empty
+    end
+
+    context 'when DRStats learns the guild after the hook is registered' do
+      include_context 'with a front end attached'
+
+      let(:song) { "You bring the song to a close, bowing your head.\r\n".b }
+      let(:rebuilt) { displayed_messages.grep(/^Your guild is now/) }
+
+      # Runs the real watch: the first pause is where INFO lands and sets the
+      # guild; each pause after it gets a line through the hooks, and the
+      # last one removes the hook so watch returns.
+      #
+      # @param polls [Integer] how many pauses watch makes before the hook goes
+      # @return [Array<String>] what the hooks made of `song` at each pause
+      #   after the first
+      def start_then_learn_bard(polls: 2)
+        allow(TextSubs).to receive(:watch).and_call_original
+        seen = []
+        pauses = 0
+        allow(TextSubs).to receive(:pause) do
+          pauses += 1
+          raise 'TextSubs.watch kept waiting' if pauses > polls
+
+          DRStats.guild = 'Bard' if pauses == 1
+          seen << run_hooks(song) if pauses > 1
+          DownstreamHook.remove('textsub') if pauses == polls
+        end
+        build_catalog(nil, spell_links_on.merge('private_textsubs' => { 'You feel fine' => 'You feel FINE' }))
+        seen
+      end
+
+      it 'builds the Bard catalog in one watch check and installs it, saying so once' do
+        seen = start_then_learn_bard
+        private_key = ['You feel fine', 0, 'You feel FINE']
+
+        expect(seen).to eq(["You bring the song to a close, bowing your head (4/7).\r\n"])
+        expect(TextSubs.subs.map { |pattern, replacement| [pattern.source, pattern.options, replacement] })
+          .to eq([private_key, *golden_catalog(spell_links_on.merge('guild' => 'Bard'))])
+        expect(rebuilt).to eq(['Your guild is now Bard, so textsubs has built its subs again for it.'])
+        expect(warnings.size).to eq(1)
+      end
+
+      # The first write once the guild is Bard (the rebuild's) and every
+      # 400th after it send two lines through the hooks: the Bard song, which
+      # only the new catalog labels, and a private sub the old one has.
+      it 'keeps applying the whole old catalog while the new one is built, then swaps it in with one generation' do
+        probes = []
+        writes = 0
+        probe = lambda do |_key, _value, _gate|
+          next unless DRStats.guild == 'Bard' && (writes += 1) % 400 == 1
+
+          probes << [run_hooks(song), run_hooks("You feel fine.\r\n".b), TextSubs.generation]
+        end
+
+        seen = on_registry_write(probe) { start_then_learn_bard }
+
+        expect(probes.size).to be > 2
+        expect(probes.map { |old_song, fine, _| [old_song, fine] }.uniq).to eq([[song, "You feel FINE.\r\n"]])
+        expect(probes.map(&:last).uniq.size).to eq(1)
+        expect(TextSubs.generation).to eq(probes.first.last + 1)
+        expect(seen).to eq(["You bring the song to a close, bowing your head (4/7).\r\n"])
+      end
+    end
+  end
+
+  describe 'TextSubs.build' do
+    let(:context) { TextSubs::Context.new(guild: 'Bard', settings: OpenStruct.new) }
+    let(:data) do
+      { 'schema' => 1, 'sections' => [{ 'name' => 'one', 'subs' => [%w[fine FINE], %w[cat dog]] }] }
+    end
+    let(:private_subs) { TextSubs::Sources::PrivateSubs.entries('fine' => 'MINE', 'owl' => 'hoot').first }
+
+    def build_into(registry, data: self.data)
+      TextSubs.build(registry, shit_list: %w[Bob Quimble], private_subs: private_subs, data: data, context: context, file: 'f')
+    end
+
+    it 'fills a Registry that is not installed, in place order, leaving the installed catalog and the generation alone' do
+      TextSubs.add('mine', 'MINE')
+      generation = TextSubs.generation
+      registry = TextSubs::Registry.new
+
+      expect(build_into(registry)).to eq(['private_textsubs "fine" is also a built-in sub; your replacement is used instead of the built-in one.'])
+      expect(registry.snapshot.to_a).to eq([[/\bBob\b/, 'Bob (SL)'], [/\bQuimble\b/, 'Quimble (SL)'], [private_subs[0][0], 'MINE'],
+                                            [private_subs[1][0], 'hoot'], [/cat/, 'dog']])
+      expect(TextSubs.subs).to eq(/mine/ => 'MINE')
+      expect(TextSubs.generation).to eq(generation)
+
+      TextSubs.install(registry)
+      expect(TextSubs.generation).to eq(generation + 1)
+      expect(TextSubs.apply(+'Bob: fine cat')).to eq('Bob (SL): MINE dog')
+    end
+
+    it 'counts a generation for each write to the installed Registry, as on a start' do
+      registry = TextSubs.install(TextSubs::Registry.new)
+      generation = TextSubs.generation
+      build_into(registry)
+      # Two names, two private keys, two built-in subs, one private value given back.
+      expect(TextSubs.generation).to eq(generation + 7)
+    end
+
+    it "puts why no built-in sub was added first, and still adds the shit-list and private subs" do
+      registry = TextSubs::Registry.new
+      messages = build_into(registry, data: { 'schema' => 2 })
+      expect(messages.size).to eq(1)
+      expect(messages.first).to start_with('No built-in subs: f cannot be used (schema 2')
+      expect(registry.snapshot.values).to eq(['Bob (SL)', 'Quimble (SL)', 'MINE', 'hoot'])
+    end
+
+    it 'gives each private key the gate of the built-in sub it replaced, in the Registry it fills' do
+      gated = { 'schema' => 1, 'sections' => [{ 'name' => 'gated', 'requires_any' => ['Kronar'], 'subs' => [%w[fine FINE]] }] }
+      registry = TextSubs::Registry.new
+      build_into(registry, data: gated)
+      expect(registry.gates).to eq(private_subs[0][0] => ['Kronar'])
     end
   end
 
