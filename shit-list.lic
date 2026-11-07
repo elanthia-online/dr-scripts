@@ -43,7 +43,7 @@ class ShitListRecorder
 
   # Appends a name to the list, then restarts textsubs (see #restart_textsubs)
   # so the new name gets its (SL) tag. Exits without writing the name or
-  # textsubs when the name is already listed.
+  # restarting textsubs when the name is already listed.
   #
   # @param name [String] lower-case character name to add
   # @param desc [String] why the name was added
