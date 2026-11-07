@@ -454,6 +454,11 @@ class Aesthene
   # Room with the apprentice Timekeeper, where slips are redeemed.
   TIMEKEEPER_ROOM = 16_958
 
+  # How commands name the lock. A bare "lock" also matches anything the
+  # character carries whose noun starts with "lock", such as a lockpick, and
+  # the game picks that first ("You reach out and touch a stout lockpick.").
+  LOCK = 'time lock'
+
   # Seconds to wait for the grid after a whisper or look.
   READ_TIMEOUT = 10
   # Seconds to wait for the solved message once every row is used.
@@ -598,8 +603,8 @@ class Aesthene
   #   the current grid when resuming one
   def attune_to_lock
     outcomes = [TOUCH_CONFIRM_PATTERN, ATTUNED_PATTERN, ALREADY_ATTUNED_PATTERN, AestheneGrid::NO_PASS_PATTERN]
-    response = DRC.bput('touch lock', *outcomes)
-    response = DRC.bput('touch lock', *outcomes.drop(1)) if response.match?(TOUCH_CONFIRM_PATTERN)
+    response = DRC.bput("touch #{LOCK}", *outcomes)
+    response = DRC.bput("touch #{LOCK}", *outcomes.drop(1)) if response.match?(TOUCH_CONFIRM_PATTERN)
 
     case response
     when ATTUNED_PATTERN then AestheneGrid::Reading.new
@@ -657,7 +662,7 @@ class Aesthene
   # @return [AestheneGrid::Reading]
   def whisper(guess)
     respond("aesthene: whispering #{guess} (#{@solver.candidates.size} possible)")
-    reading = read_lock("whisper lock #{guess.downcase}")
+    reading = read_lock("whisper #{LOCK} #{guess.downcase}")
     abort_with('aesthene: you are no longer attuned to the lock.') if %i[not_tasked no_pass].include?(reading.status)
     reading = look_at_lock unless reading.grid_complete? && reading.consistent?
     if reading.rows.last&.guess != guess
@@ -670,7 +675,7 @@ class Aesthene
   #
   # @return [AestheneGrid::Reading]
   def look_at_lock
-    reading = read_lock('look lock')
+    reading = read_lock("look #{LOCK}")
     abort_with("aesthene: couldn't read the time lock.") unless reading.grid_complete?
     reading
   end
