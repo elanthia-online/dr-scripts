@@ -285,6 +285,7 @@ class AestheneSolver
     @known = answers
     @unlisted = dictionary
     @candidates = answers.empty? ? dictionary : answers
+    @guess_cache = {}
   end
 
   # Re-derives the candidates from every row on the lock.
@@ -315,8 +316,15 @@ class AestheneSolver
   # answer.
   #
   # The second row is the slow one: it scores about 3,000 guesses against
-  # several hundred candidates, which takes a second or more. Later rows have
-  # few candidates left and are near-instant.
+  # several hundred candidates, which takes a second or more (up to 13 seconds
+  # in a live run with other scripts busy). Later rows have few candidates left
+  # and are near-instant.
+  #
+  # The same rows always give the same guess, so each result is remembered
+  # for the life of the solver. In a run of slips, a lock whose first row
+  # repeats an earlier lock's gets its second guess at once; in two 50-lock
+  # runs about 40% of first rows repeated. The cache holds one short entry per
+  # lock state actually scored, a few per lock.
   #
   # @param rows_left [Integer] rows still free on the lock
   # @return [String, nil] the guess, or nil when nothing fits
@@ -325,12 +333,8 @@ class AestheneSolver
     return @candidates.first if @candidates.size == 1 || rows_left <= 1
     return @opening if @opening && @rows.empty?
 
-    targets = weighted_targets
-    pool = (unused_probes + sample(@candidates, SCORING_LIMIT) + @answers + probe_words).uniq
-    candidate_set = @candidates.to_h { |word| [word, true] }
-    pool.min_by.with_index do |guess, index|
-      [score(guess, targets, rows_left), candidate_set[guess] ? 0 : 1, index]
-    end
+    key = (@rows.map { |row| "#{row.guess}:#{row.marks.join(',')}" } << rows_left).join('|')
+    @guess_cache[key] ||= best_guess(rows_left)
   end
 
   # Whether a word could still be the answer given one row of feedback.
@@ -383,6 +387,19 @@ class AestheneSolver
   end
 
   private
+
+  # Scores the guess pool against the candidates; the slow part of next_guess.
+  #
+  # @param rows_left [Integer] rows still free on the lock
+  # @return [String] the best guess
+  def best_guess(rows_left)
+    targets = weighted_targets
+    pool = (unused_probes + sample(@candidates, SCORING_LIMIT) + @answers + probe_words).uniq
+    candidate_set = @candidates.to_h { |word| [word, true] }
+    pool.min_by.with_index do |guess, index|
+      [score(guess, targets, rows_left), candidate_set[guess] ? 0 : 1, index]
+    end
+  end
 
   # @param word [String]
   # @return [Boolean] true when the word fits every row seen so far
