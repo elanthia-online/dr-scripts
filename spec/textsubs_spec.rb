@@ -729,6 +729,9 @@ RSpec.describe 'textsubs.lic' do
     # The game tells tier 18 from tier 17 only by the "(That'll leave a mark!)"
     # after the hit, so the two keys must see real parentheses there.
     describe 'the devastating-hit tiers' do
+      # A plain tier-17 line was already labelled right before the quoting
+      # fix; this pins it so a later edit to the lookahead cannot stop key 17
+      # from matching. The tier-18 example is the one that fails on the bug.
       it 'labels a devastating hit (17/23) and nothing else' do
         expect(hooked("The punch lands a devastating hit to the goblin's chest."))
           .to eq("The punch lands a devastating hit (17/23) to the goblin's chest.\r\n")
