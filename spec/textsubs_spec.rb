@@ -130,10 +130,11 @@ RSpec.describe 'textsubs.lic' do
     build_catalog(combination['guild'], combination.except('guild'))
   end
 
-  # Each combination's catalog, built once per run by whichever example asks
-  # first. The examples that only read a catalog share these builds, so the 96
-  # catalogs are not rebuilt once per such example. The examples that need
-  # TextSubs.subs to hold the catalog call build_combination instead.
+  # Each combination's traced build (see traced_build), made once per run by
+  # whichever example asks first. The examples that only read a catalog, or
+  # the calls that made it, share these builds, so the 96 catalogs are not
+  # rebuilt once per such example. The examples that need TextSubs.subs to
+  # hold the catalog call build_combination instead.
   built_catalogs = {}
 
   # The stubs active in this example that could change what build_catalog
@@ -156,35 +157,65 @@ RSpec.describe 'textsubs.lic' do
               .map { |name| "TextSubs.#{name}" }
   end
 
-  # Memoized build_combination, for examples that only read the returned
-  # catalog. Whether TextSubs.subs holds that catalog afterwards depends on
+  # build_combination, recording the calls that wrote the catalog: the source
+  # passed to each TextSubs.add, and how many times TextSubs.elanthipedia ran
+  # (it writes its key itself). TracePoints record them, which leaves both
+  # methods as they are; rspec-mocks wrappers on the ~100,000 calls of the 96
+  # builds doubled the time of the builds. The add source is read by its
+  # position, so renaming TextSubs.add's parameter does not break the trace.
+  #
+  # @param combination [Hash{String=>Object}] one element of `combinations`
+  # @return [Hash{Symbol=>Object}] deep-frozen, because every caller shares it:
+  #   :catalog, as build_combination returns it (an unfrozen string is copied
+  #   before it is frozen, so the record never shares a mutable string with
+  #   TextSubs.subs); :add_sources [Array<String>], the first argument of each
+  #   TextSubs.add call, in call order; :link_calls [Integer], the number of
+  #   TextSubs.elanthipedia calls
+  def traced_build(combination)
+    sources = []
+    links = 0
+    adds = TracePoint.new(:call) { |trace| sources << trace.binding.local_variable_get(trace.parameters.first.last).to_s.freeze }
+    link_calls = TracePoint.new(:call) { links += 1 }
+    catalog = adds.enable(target: TextSubs.method(:add)) do
+      link_calls.enable(target: TextSubs.method(:elanthipedia)) { build_combination(combination) }
+    end
+    { catalog: catalog.map { |entry| entry.map { |value| value.frozen? ? value : value.dup.freeze }.freeze }.freeze,
+      add_sources: sources.freeze, link_calls: links }.freeze
+  end
+
+  # Memoized traced_build, for examples that only read the returned catalog or
+  # calls. Whether TextSubs.subs holds that catalog afterwards depends on
   # whether this call built it, so callers must not rely on TextSubs.subs
   # either way; examples that need it call build_combination.
   #
   # Under --order random (as the seed gate runs it) any caller may be the first
   # to ask for a combination, and the first caller builds it in its own
   # context, so a stub on something catalog building reads would leak into
-  # every later caller's catalog. Every call therefore refuses to run while
+  # every later caller's record. Every call therefore refuses to run while
   # such a stub is active (see stubs_on_catalog_reads), cached or not, so a
   # caller in a stubbing group fails on every run, whatever the order.
   #
   # @param combination [Hash{String=>Object}] one element of `combinations`
-  # @return [Array<Array(String, Integer, String)>] that combination's catalog,
-  #   deep-frozen (outer array, entries and their strings), because every
-  #   caller shares it. An unfrozen string is copied before it is frozen, so
-  #   the cache never shares a mutable string with TextSubs.subs.
+  # @return [Hash{Symbol=>Object}] that combination's shared, deep-frozen
+  #   record, as traced_build returns it
   # @raise [RuntimeError] when a stub on something catalog building reads is
   #   active in the calling example
-  define_method(:catalog_of) do |combination|
+  define_method(:catalog_build_of) do |combination|
     stubbed = stubs_on_catalog_reads
     unless stubbed.empty?
-      raise "catalog_of: #{stubbed.join(', ')} stubbed here would change the shared catalog; " \
+      raise "catalog_build_of: #{stubbed.join(', ')} stubbed here would change the shared catalog; " \
             'call build_combination in this group instead'
     end
 
-    built_catalogs[combination] ||= build_combination(combination).map do |entry|
-      entry.map { |value| value.frozen? ? value : value.dup.freeze }.freeze
-    end.freeze
+    built_catalogs[combination] ||= traced_build(combination)
+  end
+
+  # @param combination [Hash{String=>Object}] one element of `combinations`
+  # @return [Array<Array(String, Integer, String)>] that combination's shared,
+  #   deep-frozen catalog (see catalog_build_of)
+  # @raise [RuntimeError] as catalog_build_of does
+  def catalog_of(combination)
+    catalog_build_of(combination)[:catalog]
   end
 
   # Expands a list of inclusive [first, last] index ranges into entries.
@@ -822,20 +853,17 @@ RSpec.describe 'textsubs.lic' do
     # as limb-EW). TextSubs.elanthipedia writes its own keys, so every call
     # to either method has to leave one more key behind.
     #
-    # TracePoints count the calls: they leave both methods as they are, and
-    # rspec-mocks wrappers on the ~100,000 calls of the 96 builds doubled the
-    # time of this example.
+    # catalog_build_of records both methods' calls in the one build the
+    # catalog examples share, so this example does not build the 96 catalogs
+    # a second time.
     it 'adds every key source once in every combination' do
       offenders = combinations.filter_map do |combination|
-        sources = []
-        links = 0
-        adds = TracePoint.new(:call) { |trace| sources << trace.binding.local_variable_get(:target).to_s }
-        link_calls = TracePoint.new(:call) { links += 1 }
-        size = adds.enable(target: TextSubs.method(:add)) do
-          link_calls.enable(target: TextSubs.method(:elanthipedia)) { build_combination(combination).size }
-        end
+        build = catalog_build_of(combination)
+        sources = build[:add_sources]
+        calls = sources.size + build[:link_calls]
+        size = build[:catalog].size
         repeated = sources.tally.select { |_, count| count > 1 }.keys
-        [combination, repeated, sources.size + links, size] unless repeated.empty? && sources.size + links == size
+        [combination, repeated, calls, size] unless repeated.empty? && calls == size
       end
       expect(offenders).to be_empty, lambda {
         "#{offenders.size} combination(s) add a key twice ([combination, repeated sources, calls, keys]):\n" \
