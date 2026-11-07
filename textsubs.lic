@@ -68,6 +68,7 @@ class TextSubs
       @gates = {}
       @version = 0
       @snapshot = nil
+      @indexed = nil
     end
 
     # Adds one substitution, or gives a key already present its new value in
@@ -117,6 +118,27 @@ class TextSubs
     #   empty when no key is gated
     def gates
       cached[2]
+    end
+
+    # The snapshot and a TokenIndex over exactly its keys and gates, both from
+    # the same copy, so the index never misses a key the snapshot holds. The
+    # index is built the first time it is asked for after an add, not on
+    # every add: the entry point adds ~1,600 subs and then asks once.
+    #
+    # @return [Array(Hash{Regexp=>String}, TextSubs::TokenIndex)] frozen
+    #   [snapshot, index]
+    # @example
+    #   registry.add(/cat/, 'dog')
+    #   subs, index = registry.indexed_snapshot
+    #   TextSubs::Engine.apply(subs, +'The cat.', index: index) # => "The dog."
+    def indexed_snapshot
+      copy = cached
+      memo = @indexed
+      return memo[1] if memo && memo[0].equal?(copy)
+
+      pair = [copy[1], TokenIndex.new(copy[1].keys, copy[2])].freeze
+      @indexed = [copy, pair].freeze
+      pair
     end
 
     private
@@ -345,14 +367,19 @@ class TextSubs
 
   # Rewrites one server line with every key that matches it.
   #
+  # Only the keys the installed Registry's TokenIndex names for the line are
+  # tried. The first line after the catalog changes (a start, or an add from
+  # another script) builds the index anew, so a key added at any time is
+  # tried from the next line on.
+  #
   # @param line [String] a server line, as the DownstreamHook receives it
   # @return [String] the same String, rewritten in place
   # @raise [FrozenError] when a key matches a frozen line
   # @example After TextSubs.add('fine', 'FINE')
   #   TextSubs.apply(+"You feel fine.\r\n") # => "You feel FINE.\r\n"
   def self.apply(line)
-    registry = @@registry
-    Engine.apply(registry.snapshot, line, gates: registry.gates)
+    subs, index = @@registry.indexed_snapshot
+    Engine.apply(subs, line, index: index)
   end
 
   # The matching engine behind TextSubs.apply, kept apart from the catalog so
@@ -363,33 +390,35 @@ class TextSubs
     # only matches after an earlier key rewrote the line does not fire, and a
     # selected key that no longer matches changes nothing.
     #
+    # Only the keys the TokenIndex names for the line are tried, so a line
+    # costs a handful of regexes instead of one per key. The index leaves out
+    # only keys that cannot match the line, and a gated key whose words the
+    # line holds none of: the gate is trusted, not checked, so a key gated on
+    # a word it does not need would miss lines it matches.
+    #
     # Selection uses match?, which builds no MatchData and sets no $~: nothing
     # reads the match, only whether there is one.
-    #
-    # A gated key whose words the original line holds none of is left out
-    # before selection, so its regex never runs on that line. The gate is
-    # trusted, not checked: a key gated on a word it does not need would miss
-    # lines it matches.
     #
     # @param subs [Hash{Regexp=>String}] ordered keys and their replacements
     # @param line [String] the line to rewrite
     # @param gates [Hash{Regexp=>Array<String>}] gated keys of subs and their
-    #   words (Registry#gates); a gate for a key subs does not hold is ignored
+    #   words (Registry#gates); a gate for a key subs does not hold is
+    #   ignored. Read only when no index is given.
+    # @param index [TextSubs::TokenIndex, nil] an index over exactly the keys
+    #   of subs and gates; nil builds one for this call, which parses every
+    #   key, so a caller that runs many lines through one catalog passes it
+    #   (Registry#indexed_snapshot)
     # @return [String] the same String, rewritten in place
     # @raise [FrozenError] when a key matches a frozen line
+    # @raise [KeyError] when index names a key subs does not hold
     # @example
     #   TextSubs::Engine.apply({ /cat/ => 'dog', /dog/ => 'bird' }, +'The cat.') # => "The dog."
     # @example A gate the line does not meet
     #   TextSubs::Engine.apply({ /\d+/ => '#' }, +'7 coins', gates: { /\d+/ => ['Kronar'] }) # => "7 coins"
-    def self.apply(subs, line, gates: {})
-      # Hash#except keeps the order of subs. On most lines its copy costs
-      # about what skipping the gated regexes saves, and on a long
-      # digit-heavy line the skip saves far more; a gate lookup per key would
-      # cost more on every line.
-      skipped = gates.filter_map { |key, words| key unless words.any? { |word| line.include?(word) } }
-      candidates = skipped.empty? ? subs : subs.except(*skipped)
-      matches = candidates.select { |key, _| key.match?(line) }
-      matches.each { |target, result| line.gsub!(target, result) }
+    def self.apply(subs, line, gates: {}, index: nil)
+      index ||= TokenIndex.new(subs.keys, gates)
+      matches = index.candidates(line).select { |key| key.match?(line) }
+      matches.each { |key| line.gsub!(key, subs.fetch(key)) }
       line
     end
   end

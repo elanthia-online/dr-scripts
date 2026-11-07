@@ -69,10 +69,17 @@ require_relative '../test/textsubs_corpus'
 # semantics' pin that rule.
 #
 # The hook proc is the front end guard plus TextSubs.apply(line), which runs
-# TextSubs::Engine over TextSubs.subs and the installed Registry's
-# requires_any gates. 'TextSubs.apply' calls that engine straight, with
-# hand-made catalogs and no hook; 'the coin-comma gate' holds the one gated
-# section to the oracle and checks that its gate is sound.
+# TextSubs::Engine over TextSubs.subs with a TokenIndex built over its keys
+# and the installed Registry's requires_any gates. 'TextSubs.apply' calls that
+# engine straight, with hand-made catalogs and no hook; 'the coin-comma gate'
+# holds the one gated section to the oracle and checks that its gate is sound.
+#
+# The index only picks which keys run on a line, so every oracle sweep above
+# also holds it to reference_apply. On top of those, 'every catalog, with the
+# select step looked up' covers all 96 catalogs and mutated samples, and
+# 'TextSubs::TokenIndex' pins each tier, every construct the parser refuses
+# (with a line a naive reading of the source would wrongly skip) and a seeded
+# fuzz of 2,000 generated regexes.
 #
 # The hook skips every key when no front end is attached (TextSubs.client_attached?
 # is false), and the harness has none, so the examples that send lines through
@@ -1252,6 +1259,13 @@ RSpec.describe 'textsubs.lic' do
       expect(TextSubs.apply(+'The cat.')).to eq('The cat.')
     end
 
+    it 'tries a key added after the first line on the very next line, though the index was already built' do
+      catalog(%w[cat dog])
+      expect(TextSubs.apply(+'The cat and the bird.')).to eq('The dog and the bird.')
+      TextSubs.add('bird', 'fish')
+      expect(TextSubs.apply(+'The cat and the bird.')).to eq('The dog and the fish.')
+    end
+
     describe 'TextSubs::Engine.apply' do
       it 'runs on a hand-made ordered Hash, leaving that Hash and the TextSubs catalog alone' do
         subs = { /cat/ => 'dog', /dog/ => 'bird', /CAT/i => 'never' }.freeze
@@ -1564,6 +1578,31 @@ RSpec.describe 'textsubs.lic' do
         expect(registry.gates).to eq(/cat/ => ['Kronar'])
       end
     end
+
+    it 'hands out the snapshot with an index over exactly its keys, the same pair until the next add' do
+      registry.add(/cat/, 'dog')
+      subs, index = registry.indexed_snapshot
+      expect(subs).to equal(registry.snapshot)
+      expect(registry.indexed_snapshot).to be_frozen
+      expect(registry.indexed_snapshot.last).to equal(index)
+      expect(index.candidates('The cat and the bird.')).to eq([/cat/])
+
+      registry.add(/bird/, 'fish')
+      newer_subs, newer_index = registry.indexed_snapshot
+      expect(newer_subs).to equal(registry.snapshot)
+      expect(newer_index.candidates('The cat and the bird.')).to eq([/cat/, /bird/])
+      expect(index.candidates('The cat and the bird.')).to eq([/cat/])
+    end
+
+    it 'gives the index the gates of the same copy, so a gated key stays out of a line without its word' do
+      registry.add(/\d+/, '#', requires_any: ['Kronar'])
+      _subs, index = registry.indexed_snapshot
+      expect(index.candidates('7 coins')).to eq([])
+      expect(index.candidates('7 Kronars')).to eq([/\d+/])
+
+      registry.add(/\d+/, '#')
+      expect(registry.indexed_snapshot.last.candidates('7 coins')).to eq([/\d+/])
+    end
   end
 
   # The index picks the keys that may match a line, so a wrong tier would
@@ -1723,6 +1762,133 @@ RSpec.describe 'textsubs.lic' do
         '(?!.*>)\d{1,3}(?=((\d{3})*(\d{4}))(?!\d)(?! platinum).*(Kronar|Dokora|Lirum))',
         '(?!.*>)\d{1,3}(?=(\d{3})+(?!\d) platinum.*(Kronar|Dokora|Lirum))'
       )
+    end
+
+    # A small regex grammar. Each production gives [source, sample], where the
+    # sample is a string the source matches unless a zero-width part fails
+    # where it lands. It mixes the constructs the parser reads with the ones
+    # it refuses, so every tier and the bail path all see thousands of lines.
+    describe 'against a seeded fuzz of 2,000 generated regexes' do
+      # @return [Array<String>] the plain words the grammar draws on, frozen
+      def fuzz_words
+        %w[ab abc abcd bca cab cabin xyz Roundtime You the fine Kronar].freeze
+      end
+
+      # @return [Hash{Symbol=>Array<Array(String, String)>}] leaf productions
+      #   by kind, frozen
+      def fuzz_leaves
+        {
+          separator: [[' ', ' '], [',', ','], [':', ':'], ['\.', '.'], ['\(', '('], ['-', '-'], ['_', '_'], ['7', '7'], ['>', '>'],
+                      ['\s', ' '], ['\s+', '  '], ['\d', '4'], ['\d+', '12'], ['\W', '#'], ['\t', "\t"], ['_+', '__'],
+                      ['[ ,.]', ','], ['[0-9]', '3'], ['[\d\s]', ' '], ['[-.]', '-'], ['[_7]', '_'],
+                      ['--', '--'], ['\*\*', '**'], ['\.\.\.', '...'], [', ', ', ']],
+          letters: %w[a b c].flat_map { |letter| [["#{letter}?", ''], ["#{letter}+", letter * 2], ["#{letter}*", ''], ["#{letter}{2,3}", letter * 3]] } +
+            [['\w', 'k'], ['\w+', 'k9'], ['\h', 'f'], ['\D', 'z'], ['\S', 'q'], ['.', 'm'], ['.*', 'mn'], ['.+?', 'm'],
+             ['[abc]', 'b'], ['[^a]', 'z'], ['[a-z]', 'm'], ['[!-/]', '#'], ['[!-~]', 'q'], ['[\w]', 'w']],
+          zero_width: [['\b', ''], ['^', ''], ['$', ''], ['(?=a)', ''], ['(?!zz)', ''], ['(?<=\s)', ''], ['(?<!q)', ''], ['\A', ''], ['\z', '']],
+          refused: [['\x41', 'A'], ['\101', 'A'], ['\u0042', 'B'], ['[[:alpha:]]', 'q'], ['\p{Alpha}', 'r'], ['(?i:ab)', 'AB'],
+                    ['\C-a', "\x01"], ['[\c]a]', 'a'], ['b{1}+', 'bb'], ['b{1}?', ''], ['(?#note)', ''], ['(ab)\1', 'abab'],
+                    ['(?<n>c)\k<n>', 'cc'], ['(x)\g<1>', 'xx'], ['(?x: a b )', 'ab']]
+        }.freeze
+      end
+
+      # @param random [Random]
+      # @return [Array(String, String)] one leaf: a plain word (most often),
+      #   a separator, a letter-matching piece, a zero-width part, or (rarely)
+      #   a construct the parser refuses
+      def fuzz_leaf(random)
+        roll = random.rand(100)
+        return [fuzz_words.sample(random: random)] * 2 if roll < 40
+
+        kind = if roll < 70 then :separator
+               elsif roll < 85 then :letters
+               elsif roll < 96 then :zero_width
+               else :refused
+               end
+        fuzz_leaves[kind].sample(random: random)
+      end
+
+      # @param random [Random]
+      # @param depth [Integer] group nesting so far
+      # @return [Array(String, String)] [source, sample]
+      def fuzz_node(random, depth)
+        return fuzz_leaf(random) if depth >= 2 || random.rand(4).positive?
+
+        parts = Array.new(random.rand(1..3)) { fuzz_node(random, depth + 1) }
+        body = parts.map(&:first).join
+        sample = parts.map(&:last).join
+        # Only a group holding a plain word is quantified: a quantifier on a
+        # group that is one repeat already makes Ruby warn.
+        case random.rand(parts.any? { |source, _| fuzz_words.include?(source) } ? 8 : 4)
+        when 0
+          other_source, other_sample = fuzz_node(random, depth + 1)
+          ["(?:#{body}|#{other_source})", random.rand(2).zero? ? sample : other_sample]
+        when 1 then ["(#{body})", sample]
+        when 2 then ["(?<g#{depth}>#{body})", sample]
+        when 3 then ["(?>#{body})", sample]
+        when 4 then ["(?:#{body})?", random.rand(2).zero? ? sample : '']
+        when 5 then ["(?:#{body})+", sample * random.rand(1..2)]
+        when 6 then ["(?:#{body}){1,2}", sample]
+        else ["(?:#{body})*", '']
+        end
+      end
+
+      # @param random [Random]
+      # @return [Array(Regexp, String)] a compilable regex and its sample
+      def fuzz_regex(random)
+        loop do
+          parts = Array.new(random.rand(2..6)) { fuzz_node(random, 0) }
+          source = parts.map(&:first).join
+          sample = parts.map(&:last).join
+          if random.rand(6).zero?
+            other = Array.new(random.rand(1..3)) { fuzz_node(random, 0) }
+            source = "#{source}|#{other.map(&:first).join}"
+          end
+          return [Regexp.new(source), sample]
+        rescue RegexpError
+          next
+        end
+      end
+
+      it 'gives reference_apply\'s output on every line, and names every key that matches a line' do
+        random = Random.new(14_014)
+        generated = Array.new(2_000) { fuzz_regex(random) }
+        tiers = Hash.new(0)
+        own_matches = 0
+        pairs = 0
+        skipped = 0
+        missed = []
+        mismatches = []
+        generated.each_slice(50).with_index do |batch, batch_number|
+          subs = batch.each_with_index.to_h { |(key, _), at| [key, "<#{batch_number}.#{at}>"] }
+          index = TextSubs::TokenIndex.new(subs.keys)
+          subs.each_key { |key| tiers[TextSubs::TokenIndex.tier(key).first] += 1 }
+          own_matches += batch.count { |key, sample| key.match?(sample) }
+          lines = batch.flat_map do |_, sample|
+            [sample, "x#{sample}", "#{sample}x", "<b>#{sample}</b>", sample.swapcase, "zz #{sample} zz", "#{sample}\r\n"]
+          end
+          lines.each do |line|
+            candidates = index.candidates(line)
+            pairs += subs.size
+            skipped += subs.size - candidates.size
+            subs.each_key { |key| missed << [key.source, line] if key.match?(line) && !candidates.include?(key) }
+            indexed = TextSubs::Engine.apply(subs, line.dup, index: index)
+            expected = reference_apply(subs, line)
+            mismatches << [line, indexed, expected] unless indexed == expected
+          end
+        end
+
+        expect(missed).to eq([]), -> { "#{missed.size} key(s) left out of a line they match:\n#{missed.first(10).map(&:inspect).join("\n")}" }
+        expect(mismatches).to eq([]), -> { "#{mismatches.size} line(s) differ:\n#{mismatches.first(10).map(&:inspect).join("\n")}" }
+        # The fuzz is only worth something if the keys match their samples,
+        # every tier is filled, and the index leaves many keys out (about
+        # two in five keys are refused or have no letters, so it cannot
+        # leave out most).
+        expect(own_matches).to be > 1_200
+        expect(tiers.keys).to contain_exactly(:words, :prefix, :suffix, :trigram, :include, :always)
+        expect(tiers.values).to all(be >= 20), "tiers: #{tiers.inspect}"
+        expect(skipped.fdiv(pairs)).to be > 0.4
+      end
     end
   end
 
@@ -3507,6 +3673,102 @@ RSpec.describe 'textsubs.lic' do
         expect(gated.size).to eq(3)
         expect(matched.map(&:first).uniq.size).to eq(gated.size)
         expect(unsound.map { |key, _words, line| [key.source, line] }).to eq([])
+      end
+    end
+
+    # The sweeps above run reference_apply itself, once per guild. Across all
+    # 96 catalogs that would cost about a minute, so the first example below
+    # looks its select step up instead: each distinct key runs key =~ line on
+    # every line once, the first time a catalog holds it, and a catalog's
+    # reference output for a line is then its matching keys gsub!'d in its
+    # own order, exactly as reference_apply would.
+    describe 'every catalog, with the select step looked up' do
+      # @param lines [Array<String>] the lines the catalogs are held to
+      # @return [Proc] call it with a catalog (TextSubs.subs) to get a Proc
+      #   that takes a line index and gives reference_apply's output for that
+      #   catalog and line
+      def lookup_reference(lines)
+        seen = Set.new
+        matching = Array.new(lines.size) { [] }
+        lambda do |subs|
+          subs.each_key do |key|
+            next unless seen.add?(key)
+
+            lines.each_with_index { |line, index| matching[index] << key if key =~ line }
+          end
+          order = subs.keys.each_with_index.to_h
+          lambda do |at|
+            output = lines[at].dup
+            matching[at].select { |key| order.key?(key) }.sort_by { |key| order[key] }.each { |key| output.gsub!(key, subs[key]) }
+            output
+          end
+        end
+      end
+
+      # @param lines [Array<String>]
+      # @param catalogs [Array<Hash>] combinations to build, in turn
+      # @return [Array(Array<Array>, Integer)] [combination, line, apply
+      #   output, reference output] for each line where the two differ, and
+      #   the number of catalog lines the reference rewrote
+      def lookup_mismatches(lines, catalogs)
+        reference = lookup_reference(lines)
+        rewritten = 0
+        mismatches = catalogs.flat_map do |combination|
+          build_combination(combination)
+          expected_for = reference.call(TextSubs.subs)
+          lines.each_index.filter_map do |at|
+            expected = expected_for.call(at)
+            rewritten += 1 unless expected == lines[at]
+            applied = TextSubs.apply(lines[at].dup)
+            [combination, lines[at], applied, expected] unless applied == expected
+          end
+        end
+        [mismatches, rewritten]
+      end
+
+      it "gives reference_apply's output for every sample and stream line with each of the 96 catalogs" do
+        mismatches, rewritten = lookup_mismatches(samples + stream_without_big_line, combinations)
+        expect(rewritten).to be > 96 * 1_000
+        expect(mismatches).to be_empty, lambda {
+          "#{mismatches.size} line(s) differ:\n#{mismatches.first(5).map { |entry| "  #{entry.inspect[0, 400]}" }.join("\n")}"
+        }
+      end
+
+      # Each mutation moves token edges or line ends the index reads: a letter
+      # glued to the first or last token, markup around the sample, every
+      # letter's case flipped, and a \r\n line end.
+      #
+      # The engine runs exactly the candidates that match the line, so a
+      # catalog gives reference_apply's output on a line as long as every key
+      # of it that matches the line is a candidate. A key's tier depends on
+      # the key alone, so one index over every key of every catalog (the 24
+      # catalogs with both flags on hold all the keys the 96 do) checks that
+      # for all 96 catalogs at once: one regex call per key and line instead
+      # of 96 hook sweeps.
+      it 'names every key of every catalog that matches a mutated sample' do
+        mutated = samples.flat_map do |sample|
+          ["x#{sample}", "#{sample}x", "<pushBold/>#{sample}<popBold/>", sample.swapcase, "#{sample}\r\n"].map(&:b)
+        end
+        keys = combinations.select { |combination| combination['textsubs_spell_links'] && combination['herb_textsubs'] }.flat_map do |combination|
+          build_combination(combination)
+          TextSubs.subs.keys
+        end.uniq
+        index = TextSubs::TokenIndex.new(keys)
+        matched = 0
+        missed = mutated.flat_map do |line|
+          candidates = index.candidates(line).to_set
+          keys.filter_map do |key|
+            next unless key.match?(line)
+
+            matched += 1
+            [key.source, line] unless candidates.include?(key)
+          end
+        end
+        expect(keys.size).to be > 1_500
+        expect(matched).to be > 5_000
+        expect(missed).to be_empty, lambda {
+          "#{missed.size} key(s) left out of a mutated sample they match:\n#{missed.first(10).map { |entry| "  #{entry.inspect}" }.join("\n")}"
+        }
       end
     end
 
