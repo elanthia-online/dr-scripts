@@ -225,6 +225,8 @@ RSpec.describe 'textsubs.lic' do
     built_catalogs[combination] ||= traced_build(combination)
   end
 
+  # The catalog half of catalog_build_of, for examples that only read entries.
+  #
   # @param combination [Hash{String=>Object}] one element of `combinations`
   # @return [Array<Array(String, Integer, String)>] that combination's shared,
   #   deep-frozen catalog (see catalog_build_of)
@@ -1301,10 +1303,10 @@ RSpec.describe 'textsubs.lic' do
     # composite lines at the end of samples.jsonl join two samples, each of
     # which may have its own counter, so they are judged by their parts.
     #
-    # The hook's output for a sample is reference_apply's, looked up as the
-    # per-guild sweeps above look it up: those sweeps hold the hook to it on
-    # every sample with these same catalogs, and sending the ~28,000 lines
-    # through the hook again here took ~3.8 s.
+    # The output for a sample is reference_apply's, looked up as the per-guild
+    # sweeps above look it up; those sweeps hold the hook to it on every sample
+    # with these same catalogs, and sending the ~28,000 lines through the hook
+    # again here took ~3.8 s.
     it 'gives no sample of any guild catalog two new (n/m) counters' do
       known = samples.to_set
       composite = lambda do |sample|
