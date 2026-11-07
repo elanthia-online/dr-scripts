@@ -34,10 +34,11 @@ require_relative '../test/textsubs_corpus'
 #     composite lines, each two of those samples joined by a space, that two or
 #     more keys of every guild catalog match; in a few of them the order the
 #     keys run in changes the output (a coin amount before a spell link, whose
-#     '>' turns the coin rule off; a scroll label before a link to the same
-#     spell, which the link rule then finds inside the label), so the
-#     per-guild sweeps also pin the order of real keys, not just each key. The
-#     lines of samples_hand_added.jsonl come last;
+#     '>' turns the coin rule off), so the per-guild sweeps also pin the order
+#     of real keys, not just each key. A scroll label before a link to the
+#     same spell gives one output in either order: the label keeps the full
+#     stop after the title, so the link rule's '..\(' cannot match inside it.
+#     The lines of samples_hand_added.jsonl come last;
 #   - synthetic_stream.xml is a hand-written XML stream (inv pushStream dump,
 #     room objs with exist ids, prompts, roundTime, coin and wealth lines and a
 #     49 KB digit-heavy inventoryManager line), every line ending in \r\n.
@@ -1125,6 +1126,15 @@ RSpec.describe 'textsubs.lic' do
           expect(hooked("Assessing the steel sword durability, you determine #{condition}."))
             .to eq("Assessing the steel sword durability, #{condition} (#{tier}/18).\r\n")
         end
+      end
+    end
+
+    # Every scroll label keeps the full stop the game puts inside the quoted
+    # title; the Demrris' Resolve one used to drop it.
+    describe "the Demrris' Resolve scroll label" do
+      it 'keeps the full stop inside the quoted title and adds (Bard)' do
+        expect(hooked(%(It is labeled "Demrris' Resolve.")))
+          .to eq(%(It is labeled "Demrris' Resolve." (Bard)\r\n))
       end
     end
   end

@@ -1672,7 +1672,7 @@ TextSubs.add("#{scroll_label} \"Naming of Tears.\"", '\1 "Naming of Tears." (Bar
 TextSubs.add("#{scroll_label} \"Harmony.\"", '\1 "Harmony." (Bard)')
 TextSubs.add("#{scroll_label} \"Hodierna's Lilt.\"", '\1 "Hodierna\'s Lilt." (Bard)')
 TextSubs.add("#{scroll_label} \"Whispers of the Muse.\"", '\1 "Whispers of the Muse." (Bard)')
-TextSubs.add("#{scroll_label} \"Demrris' Resolve.\"", '\1 "Demrris\' Resolve" (Bard)')
+TextSubs.add("#{scroll_label} \"Demrris' Resolve.\"", '\1 "Demrris\' Resolve." (Bard)')
 
 TextSubs.add("#{scroll_label} \"Partial Displacement.\"", '\1 "Partial Displacement." (Moon Mage)')
 TextSubs.add("#{scroll_label} \"Whole Displacement.\"", '\1 "Whole Displacement." (Moon Mage)')
