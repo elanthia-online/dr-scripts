@@ -136,14 +136,24 @@ RSpec.describe 'textsubs.lic' do
   # TextSubs.subs to hold the catalog call build_combination instead.
   built_catalogs = {}
 
-  # Memoized build_combination, for examples that only read the catalog: it
-  # does not leave TextSubs.subs holding that catalog.
+  # Memoized build_combination, for examples that only read the returned
+  # catalog. Whether TextSubs.subs holds that catalog afterwards depends on
+  # whether this call built it, so callers must not rely on TextSubs.subs
+  # either way; examples that need it call build_combination.
+  #
+  # The first caller of a combination builds it, in its own context, under
+  # random order. Do not call this from a group that stubs anything catalog
+  # building reads, or that stub leaks into every later caller's catalog.
   #
   # @param combination [Hash{String=>Object}] one element of `combinations`
   # @return [Array<Array(String, Integer, String)>] that combination's catalog,
-  #   frozen (entries included) because every caller shares it
+  #   deep-frozen (outer array, entries and their strings), because every
+  #   caller shares it. An unfrozen string is copied before it is frozen, so
+  #   the cache never shares a mutable string with TextSubs.subs.
   define_method(:catalog_of) do |combination|
-    built_catalogs[combination] ||= build_combination(combination).each(&:freeze).freeze
+    built_catalogs[combination] ||= build_combination(combination).map do |entry|
+      entry.map { |value| value.frozen? ? value : value.dup.freeze }.freeze
+    end.freeze
   end
 
   # Expands a list of inclusive [first, last] index ranges into entries.
