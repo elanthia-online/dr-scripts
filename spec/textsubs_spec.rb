@@ -816,6 +816,54 @@ RSpec.describe 'textsubs.lic' do
       expect(offenders.uniq).to be_empty, -> { "keys that swallow the start of the line:\n#{offenders.uniq.map { |entry| "  #{entry.inspect}" }.join("\n")}" }
     end
 
+    # TextSubs.add stores /#{target}/ as the Hash key, so a second add of the
+    # same source keeps the first slot with the last value and the first
+    # value is lost without a word ('jadice' was added as limb-ES and then
+    # as limb-EW). TextSubs.elanthipedia writes its own keys, so every call
+    # to either method has to leave one more key behind.
+    it 'adds every key source once in every combination' do
+      offenders = combinations.filter_map do |combination|
+        sources = []
+        links = 0
+        allow(TextSubs).to receive(:add).and_wrap_original do |original, target, result|
+          sources << target.to_s
+          original.call(target, result)
+        end
+        allow(TextSubs).to receive(:elanthipedia).and_wrap_original do |original, *args|
+          links += 1
+          original.call(*args)
+        end
+        size = build_combination(combination).size
+        repeated = sources.tally.select { |_, count| count > 1 }.keys
+        [combination, repeated, sources.size + links, size] unless repeated.empty? && sources.size + links == size
+      end
+      expect(offenders).to be_empty, lambda {
+        "#{offenders.size} combination(s) add a key twice ([combination, repeated sources, calls, keys]):\n" \
+          "#{offenders.first(5).map { |entry| "  #{entry.inspect}" }.join("\n")}"
+      }
+    end
+
+    # data/base-herbs.yaml lists jadice flower as the external remedy for
+    # limb wounds and jadice pollen as the one for limb scars.
+    describe 'the jadice herb notes' do
+      [['jadice flower', 'limb-EW'], ['jadice pollen', 'limb-ES']].each do |herb, tag|
+        it "tags a #{herb} (#{tag}) with herb_textsubs on" do
+          build_catalog('Commoner', 'herb_textsubs' => true)
+          expect(run_hooks("You get some #{herb} from your pouch.\r\n".b)).to eq("You get some #{herb} (#{tag}) from your pouch.\r\n")
+        end
+      end
+
+      it 'leaves a bare jadice, which could be either herb, untagged' do
+        build_catalog('Commoner', 'herb_textsubs' => true)
+        expect(run_hooks("You see some jadice here.\r\n".b)).to eq("You see some jadice here.\r\n")
+      end
+
+      it 'tags neither herb with herb_textsubs off' do
+        expect(hooked('You get some jadice flower and some jadice pollen.'))
+          .to eq("You get some jadice flower and some jadice pollen.\r\n")
+      end
+    end
+
     describe 'the RoC/RoG aura notes' do
       [['Joyous corruption seeps into your mind from your own spell, muting your unconscious sense of shame.',
         ' (Your RoC/RoG spell is strong enough to mask your aura from Clerics and Moon Mages.)'],
