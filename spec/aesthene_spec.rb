@@ -97,12 +97,15 @@ class AestheneFakeLock
   # @return [Array<String>] every command the script sent, in order
   attr_reader :commands
 
-  # @param answer [String] the lock's answer
+  # @param answer [String, Array<String>] the lock's answer; several for a
+  #   run of slips, one per lock in turn
   # @param passes [Integer] redeemed passes the character already holds
   # @param attuned_rows [Array<String>, nil] guesses already on a lock the
   #   character is attuned to; nil when not attuned
   def initialize(answer, passes: 0, attuned_rows: nil)
-    @answer = answer
+    @answers = Array(answer)
+    @answer = @answers.first
+    @solved = 0
     @passes = passes
     @rows = attuned_rows
     @commands = []
@@ -197,6 +200,11 @@ class AestheneFakeLock
     end
     lines += body + legend
     if guess == @answer
+      # Solving frees the character: the reference log shows the same lock
+      # touched again, for a new puzzle, right after a solve.
+      @rows = nil
+      @solved += 1
+      @answer = @answers[@solved % @answers.size]
       lines + ['The letters on a time lock pulsing with multi-colored light pulse with blue light and lock in place.',
                "[You have received 1 role-playing point for your assistance in locking away unstable temporal magics at Aesthene's Close!  Type RPA HELP to review how to use it.]"]
     else
@@ -688,8 +696,8 @@ RSpec.describe 'aesthene.lic' do
       before do
         $test_data = OpenStruct.new(aesthene: OpenStruct.new(lock_answers: %w[POACH], dictionary: []))
         allow(instance).to receive(:check_lock)
-        allow(instance).to receive(:attune_and_solve)
-        allow(instance).to receive(:redeem_slip)
+        allow(instance).to receive(:attune_and_solve).and_return(true)
+        allow(instance).to receive(:redeem_slip).and_return(true)
       end
 
       it 'only reads the lock for check' do
@@ -714,6 +722,27 @@ RSpec.describe 'aesthene.lic' do
         expect(instance).to have_received(:attune_and_solve).ordered
       end
 
+      it 'runs one slip for full with no count' do
+        allow(instance).to receive(:run_slips)
+        $parsed_args = OpenStruct.new(full: true)
+        instance.send(:initialize)
+        expect(instance).to have_received(:run_slips).with(1)
+      end
+
+      it 'runs the given number of slips for full N' do
+        allow(instance).to receive(:run_slips)
+        $parsed_args = OpenStruct.new(full: true, count: '3')
+        instance.send(:initialize)
+        expect(instance).to have_received(:run_slips).with(3)
+      end
+
+      it 'runs until the slips run out for full all' do
+        allow(instance).to receive(:run_slips)
+        $parsed_args = OpenStruct.new(full: true, count: 'all')
+        instance.send(:initialize)
+        expect(instance).to have_received(:run_slips).with(Float::INFINITY)
+      end
+
       it 'loads the aesthene data file' do
         $parsed_args = OpenStruct.new(check: true)
         instance.send(:initialize)
@@ -725,6 +754,20 @@ RSpec.describe 'aesthene.lic' do
         $test_settings = OpenStruct.new(aesthene_lock_answers: %w[cloak])
         instance.send(:initialize)
         expect(instance.instance_variable_get(:@builtin_answers)).to eq(%w[POACH])
+      end
+    end
+
+    describe '#arg_definitions' do
+      let(:count) { instance.arg_definitions.first.find { |definition| definition[:name] == 'count' } }
+
+      it 'makes the count optional on full only' do
+        expect(count[:optional]).to be(true)
+        expect(instance.arg_definitions.drop(1).flatten.map { |definition| definition[:name] }).to eq(%w[solve check])
+      end
+
+      it 'takes a positive number or all, and nothing else' do
+        expect(%w[1 5 12 all ALL]).to all(match(count[:regex]))
+        expect(%w[0 05 -1 1.5 al alls five]).to all(satisfy { |arg| !arg.match?(count[:regex]) })
       end
     end
 
@@ -783,11 +826,32 @@ RSpec.describe 'aesthene.lic' do
         expect(DRC).not_to have_received(:bput)
       end
 
-      it 'stops before redeeming when there is no time slip' do
+      it 'stops before walking or redeeming when there is no time slip' do
         allow(DRCI).to receive(:get_item?).and_return(false)
+        allow(DRCT).to receive(:walk_to)
         allow(DRC).to receive(:bput)
         expect { instance.redeem_slip }.to raise_error(SystemExit)
+        expect(DRCT).not_to have_received(:walk_to)
         expect(DRC).not_to have_received(:bput)
+      end
+
+      it 'returns false without walking when a later slip of a run finds none' do
+        allow(DRCI).to receive(:get_item?).and_return(false)
+        allow(DRCT).to receive(:walk_to)
+        allow(DRC).to receive(:bput)
+        expect(instance.redeem_slip(first: false)).to be(false)
+        expect(DRCT).not_to have_received(:walk_to)
+        expect(DRC).not_to have_received(:bput)
+      end
+
+      it 'returns true once shown to a lock' do
+        allow(DRC).to receive(:bput).and_return(confirm, redeemed, escorted)
+        expect(instance.redeem_slip(first: false)).to be(true)
+      end
+
+      it 'still stops on a later slip when the Timekeeper cannot be reached' do
+        allow(DRCT).to receive(:walk_to).and_return(false)
+        expect { instance.redeem_slip(first: false) }.to raise_error(SystemExit)
       end
 
       it 'does not fetch another slip when one is already in hand' do
@@ -808,6 +872,75 @@ RSpec.describe 'aesthene.lic' do
       it 'stops when the Timekeeper does not take you to a lock' do
         allow(DRC).to receive(:bput).and_return(confirm, redeemed, '')
         expect { instance.redeem_slip }.to raise_error(SystemExit)
+      end
+    end
+
+    describe '#run_slips' do
+      before { allow(DRC).to receive(:message) }
+
+      it 'runs one slip and sums nothing up for a single slip' do
+        allow(instance).to receive(:redeem_slip).and_return(true)
+        allow(instance).to receive(:attune_and_solve).and_return(true)
+        instance.run_slips(1)
+        expect(instance).to have_received(:redeem_slip).once.with(first: true)
+        expect(DRC).not_to have_received(:message)
+      end
+
+      it 'stops after the requested number of solved locks' do
+        allow(instance).to receive(:redeem_slip).and_return(true)
+        allow(instance).to receive(:attune_and_solve).and_return(true)
+        instance.run_slips(3)
+        expect(instance).to have_received(:redeem_slip).with(first: true).once
+        expect(instance).to have_received(:redeem_slip).with(first: false).twice
+        expect(DRC).to have_received(:message).with('aesthene: solved 3 locks.')
+      end
+
+      it 'stops when the slips run out' do
+        allow(instance).to receive(:redeem_slip).and_return(true, true, false)
+        allow(instance).to receive(:attune_and_solve).and_return(true)
+        instance.run_slips(Float::INFINITY)
+        expect(instance).to have_received(:attune_and_solve).twice
+        expect(DRC).to have_received(:message).with('aesthene: solved 2 locks; no time slips left.')
+      end
+
+      it 'redeems no more slips after a lock it could not solve' do
+        allow(instance).to receive(:redeem_slip).and_return(true)
+        allow(instance).to receive(:attune_and_solve).and_return(true, false)
+        instance.run_slips(5)
+        expect(instance).to have_received(:redeem_slip).twice
+        expect(DRC).to have_received(:message).with("aesthene: solved 1 lock; stopped at a lock it couldn't solve, so no more slips are spent.")
+      end
+
+      it 'sums up even a run whose first lock is not solved' do
+        allow(instance).to receive(:redeem_slip).and_return(true)
+        allow(instance).to receive(:attune_and_solve).and_return(false)
+        instance.run_slips(5)
+        expect(DRC).to have_received(:message).with("aesthene: solved 0 locks; stopped at a lock it couldn't solve, so no more slips are spent.")
+      end
+
+      it 'still reports the count when a later step stops the script' do
+        calls = 0
+        allow(instance).to receive(:redeem_slip) do
+          (calls += 1) == 3 ? instance.abort_with('aesthene: the Timekeeper did not take you to a lock.') : true
+        end
+        allow(instance).to receive(:attune_and_solve).and_return(true)
+        expect { instance.run_slips(5) }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message).with('aesthene: the Timekeeper did not take you to a lock.').ordered
+        expect(DRC).to have_received(:message).with('aesthene: solved 2 locks.').ordered
+      end
+
+      it 'adds no summary when the first slip stops the script' do
+        allow(instance).to receive(:redeem_slip) { instance.abort_with('aesthene: no time slip found.') }
+        expect { instance.run_slips(5) }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message).once.with('aesthene: no time slip found.')
+      end
+    end
+
+    describe '#slip_limit' do
+      it 'is one slip without a count, the count when given, and unbounded for all' do
+        expect(instance.slip_limit(nil)).to eq(1)
+        expect(instance.slip_limit('7')).to eq(7)
+        expect(instance.slip_limit('all')).to eq(Float::INFINITY)
       end
     end
 
@@ -913,8 +1046,13 @@ RSpec.describe 'aesthene.lic' do
 
       it 'solves a known answer and announces it' do
         play_lock('POACH')
-        instance.solve(AestheneGrid::Reading.new)
+        expect(instance.solve(AestheneGrid::Reading.new)).to be(true)
         expect(DRC).to have_received(:message).with('aesthene: solved! The word was POACH.')
+      end
+
+      it 'returns false for a lock it could not solve' do
+        play_lock('POACH')
+        expect(instance.solve(reading_from(['[6 of the 6 rows are locked into place.]']))).to be(false)
       end
 
       it 'does not ask for a report when the built-in list has the answer' do
@@ -1071,8 +1209,8 @@ RSpec.describe 'aesthene.lic' do
     # RSpec does not rescue SystemExit, so an unexpected exit would end the
     # whole suite and report what had run so far as passing. It is turned into
     # a failure here unless the example expects the script to stop.
-    def run_script(lock, mode, exits: false)
-      $parsed_args = OpenStruct.new(mode => true)
+    def run_script(lock, mode, exits: false, count: nil)
+      $parsed_args = OpenStruct.new(mode => true, count: count)
       $test_data = OpenStruct.new(aesthene: OpenStruct.new(lock_answers: answers, dictionary: dictionary))
       $history = []
       script = Aesthene.allocate
@@ -1108,6 +1246,34 @@ RSpec.describe 'aesthene.lic' do
       expect(whispers(lock).last).to eq('whisper lock poach')
       expect(messages).to include('aesthene: solved! The word was POACH.')
       expect(messages.grep(/lich discord/)).to be_empty
+    end
+
+    it 'runs three slips back to back with ;aesthene full 3, walking back for each' do
+      allow(DRCT).to receive(:walk_to).and_return(true)
+      lock = AestheneFakeLock.new(%w[POACH THROW HYDRA])
+      run_script(lock, :full, count: '3')
+      expect(DRCT).to have_received(:walk_to).with(Aesthene::TIMEKEEPER_ROOM).exactly(3).times
+      expect(lock.commands.grep('ask timekeeper about access').size).to eq(3)
+      expect(messages.grep(/solved! The word was/)).to eq(['aesthene: solved! The word was POACH.', 'aesthene: solved! The word was THROW.', 'aesthene: solved! The word was HYDRA.'])
+      expect(messages.last).to eq('aesthene: solved 3 locks.')
+    end
+
+    it 'runs until the slips run out with ;aesthene full all' do
+      allow(DRCI).to receive(:get_item?).and_return(true, true, false)
+      lock = AestheneFakeLock.new(%w[CLOAK CORAL])
+      run_script(lock, :full, count: 'all')
+      expect(lock.commands.grep('redeem my slip').size).to eq(4)
+      expect(messages.grep(/solved! The word was/).size).to eq(2)
+      expect(messages.last).to eq('aesthene: solved 2 locks; no time slips left.')
+    end
+
+    it 'stops a run at a lock it cannot solve and redeems nothing more' do
+      # VIXEN is in no list here, so the second lock cannot be solved.
+      lock = AestheneFakeLock.new(%w[POACH VIXEN])
+      run_script(lock, :full, count: 'all')
+      expect(lock.commands.grep('redeem my slip').size).to eq(4)
+      expect(messages).to include('aesthene: solved! The word was POACH.')
+      expect(messages.last).to eq("aesthene: solved 1 lock; stopped at a lock it couldn't solve, so no more slips are spent.")
     end
 
     it 'solves in at most six whispers for every known answer' do
