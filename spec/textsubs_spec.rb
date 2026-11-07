@@ -1257,17 +1257,25 @@ RSpec.describe 'textsubs.lic' do
     # second new counter is two keys labelling it, whatever the catalog. The
     # composite lines at the end of samples.jsonl join two samples, each of
     # which may have its own counter, so they are judged by their parts.
+    #
+    # The hook's output for a sample is reference_apply's, looked up as the
+    # per-guild sweeps above look it up: those sweeps hold the hook to it on
+    # every sample with these same catalogs, and sending the ~28,000 lines
+    # through the hook again here took ~3.8 s.
     it 'gives no sample of any guild catalog two new (n/m) counters' do
       known = samples.to_set
       composite = lambda do |sample|
         (0...sample.size).any? { |i| sample[i] == ' ' && known.include?(sample[0...i]) && known.include?(sample[(i + 1)..]) }
       end
-      singles = samples.reject { |sample| composite.call(sample) }
-      expect(samples.size - singles.size).to be >= 10
+      single_indexes = samples.each_index.reject { |at| composite.call(samples[at]) }
+      expect(samples.size - single_indexes.size).to be >= 10
       offenders = guilds.flat_map do |guild|
         build_catalog(guild, every_flag_on)
-        singles.filter_map do |sample|
-          output = run_hooks(sample)
+        subs = TextSubs.subs
+        selected = selected_keys(subs, corpus_matches, corpus.size)
+        single_indexes.filter_map do |at|
+          sample = samples[at]
+          output = apply_selected(subs, selected[at], sample)
           [guild, sample, output] if output.scan(counter).size - sample.scan(counter).size > 1
         end
       end
