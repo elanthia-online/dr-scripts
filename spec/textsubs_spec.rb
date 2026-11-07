@@ -411,6 +411,17 @@ RSpec.describe 'textsubs.lic' do
       DownstreamHook.add('textsub', eval('proc { |_server_string| return }', TOPLEVEL_BINDING.dup, __FILE__, __LINE__))
     end
 
+    # Registers, as 'textsub', a hook that raises a new exception class that is
+    # not a StandardError, so DownstreamHook.run does not swallow it.
+    #
+    # @return [Class] the exception class the hook raises, with message
+    #   'from the hook'
+    def add_raising_hook
+      hook_error = Class.new(Exception) # rubocop:disable Lint/InheritException
+      DownstreamHook.add('textsub', proc { |_server_string| raise hook_error, 'from the hook' })
+      hook_error
+    end
+
     # Calls run_hooks and gives back what came out of it, value or exception.
     # A top-level return that gets past run_hooks would end rspec with status
     # 0, so this has its own guard: `finished` is set only once run_hooks has
@@ -434,6 +445,11 @@ RSpec.describe 'textsubs.lic' do
       raise 'a top-level return in the hook got past run_hooks' unless finished
     end
 
+    it 'hands back an exception the hook raises as itself, whatever its class' do
+      hook_error = add_raising_hook
+      expect(run_hooks_outcome("You feel fine.\r\n".b)).to be_a(hook_error).and have_attributes(message: 'from the hook')
+    end
+
     it 'turns a top-level return in the hook into an error' do
       add_top_level_return_hook
       expect(run_hooks_outcome("You feel fine.\r\n".b)).to be_a(RuntimeError).and have_attributes(message: /left without returning/)
@@ -450,9 +466,7 @@ RSpec.describe 'textsubs.lic' do
     end
 
     it 'lets an exception the hook raises through unchanged when run_hooks is called while an exception is rescued' do
-      # Not a StandardError, so DownstreamHook.run does not swallow it.
-      hook_error = Class.new(Exception) # rubocop:disable Lint/InheritException
-      DownstreamHook.add('textsub', proc { |_server_string| raise hook_error, 'from the hook' })
+      hook_error = add_raising_hook
       expect do
         raise ArgumentError, 'an exception being rescued leaves $! set'
       rescue ArgumentError
