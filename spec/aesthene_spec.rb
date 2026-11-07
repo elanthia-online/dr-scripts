@@ -102,10 +102,14 @@ class AestheneFakeLock
   # @param passes [Integer] redeemed passes the character already holds
   # @param attuned_rows [Array<String>, nil] guesses already on a lock the
   #   character is attuned to; nil when not attuned
-  def initialize(answer, passes: 0, attuned_rows: nil)
+  # @param carrying [String, nil] an item the character carries whose noun
+  #   starts with "lock", e.g. 'stout lockpick'. The game matches a bare
+  #   "lock" to it before the time lock.
+  def initialize(answer, passes: 0, attuned_rows: nil, carrying: nil)
     @answers = Array(answer)
     @answer = @answers.first
     @solved = 0
+    @carrying = carrying
     @passes = passes
     @rows = attuned_rows
     @commands = []
@@ -135,17 +139,29 @@ class AestheneFakeLock
     # A script stuck re-sending the same whisper would otherwise hang the suite.
     raise 'the script kept whispering' if @commands.grep(/\Awhisper /).size > 20
 
+    # A bare "lock" reaches the carried item first, as it did in a live report.
+    return carried_item_reply(command) if @carrying && command.match?(/\A(?:touch|look|whisper) lock\b/)
+
     case command
     when 'redeem my slip' then redeem
     when 'ask timekeeper about access' then ask_access
-    when 'touch lock' then touch
-    when 'look lock' then look
-    when /\Awhisper lock (\w+)\z/ then whisper(Regexp.last_match(1).upcase)
+    when 'touch time lock', 'touch lock' then touch
+    when 'look time lock', 'look lock' then look
+    when /\Awhisper (?:time )?lock (\w+)\z/ then whisper(Regexp.last_match(1).upcase)
     else []
     end
   end
 
   private
+
+  # What the game printed when "touch lock" found a carried lockpick.
+  def carried_item_reply(command)
+    case command
+    when /\Atouch/ then ["You reach out and touch a #{@carrying}."]
+    when /\Alook/ then ["You see nothing unusual about the #{@carrying}."]
+    else ["You whisper quietly to your #{@carrying}."]
+    end
+  end
 
   def redeem
     unless @redeem_confirmed
@@ -951,7 +967,7 @@ RSpec.describe 'aesthene.lic' do
       it 'touches twice and starts from an empty grid' do
         allow(DRC).to receive(:bput).and_return(confirm, attuned)
         reading = instance.attune_to_lock
-        expect(DRC).to have_received(:bput).with('touch lock', any_args).twice
+        expect(DRC).to have_received(:bput).with('touch time lock', any_args).twice
         expect(reading.rows).to be_empty
         expect(reading.rows_left).to eq(6)
       end
@@ -1005,7 +1021,7 @@ RSpec.describe 'aesthene.lic' do
       it 'returns the reading for the guess' do
         allow(instance).to receive(:read_lock).and_return(reading_from(AESTHENE_FIRST_PROBE_TRANSCRIPT))
         expect(instance.whisper('AEIOU').rows.last.guess).to eq('AEIOU')
-        expect(instance).to have_received(:read_lock).with('whisper lock aeiou')
+        expect(instance).to have_received(:read_lock).with('whisper time lock aeiou')
       end
 
       it 'stops when the lock says you are not attuned' do
@@ -1173,7 +1189,7 @@ RSpec.describe 'aesthene.lic' do
         instance.instance_variable_set(:@solver, AestheneSolver.new(%w[BLOOD CROOK ORLOG PHLOX THROW], []))
         $history = AESTHENE_LOOK_TRANSCRIPT.dup
         instance.check_lock
-        expect(drain_sent_messages).to eq(['look lock'])
+        expect(drain_sent_messages).to eq(['look time lock'])
         expect(DRC).to have_received(:message).with('aesthene: 1 possible known answer: THROW')
         expect(DRC).to have_received(:message).with('aesthene: suggested guess: THROW')
       end
@@ -1231,7 +1247,7 @@ RSpec.describe 'aesthene.lic' do
     end
 
     def whispers(lock)
-      lock.commands.grep(/\Awhisper lock /)
+      lock.commands.grep(/\Awhisper time lock /)
     end
 
     before do
@@ -1242,8 +1258,8 @@ RSpec.describe 'aesthene.lic' do
     it 'redeems, attunes and solves a known answer with ;aesthene full' do
       lock = AestheneFakeLock.new('POACH')
       run_script(lock, :full)
-      expect(lock.commands.first(5)).to eq(['redeem my slip', 'redeem my slip', 'ask timekeeper about access', 'touch lock', 'touch lock'])
-      expect(whispers(lock).last).to eq('whisper lock poach')
+      expect(lock.commands.first(5)).to eq(['redeem my slip', 'redeem my slip', 'ask timekeeper about access', 'touch time lock', 'touch time lock'])
+      expect(whispers(lock).last).to eq('whisper time lock poach')
       expect(messages).to include('aesthene: solved! The word was POACH.')
       expect(messages.grep(/lich discord/)).to be_empty
     end
@@ -1276,6 +1292,19 @@ RSpec.describe 'aesthene.lic' do
       expect(messages.last).to eq("aesthene: solved 1 lock; stopped at a lock it couldn't solve, so no more slips are spent.")
     end
 
+    it 'names the time lock, so a carried lockpick does not take the commands' do
+      lock = AestheneFakeLock.new('POACH', carrying: 'stout lockpick')
+      run_script(lock, :full)
+      expect(lock.commands.grep(/\block\b/).grep_v(/time lock/)).to be_empty
+      expect(messages).to include('aesthene: solved! The word was POACH.')
+    end
+
+    it 'resumes a part-solved lock past a carried lockpick' do
+      lock = AestheneFakeLock.new('THROW', attuned_rows: %w[AEIOU TPMRS], carrying: 'stout lockpick')
+      run_script(lock, :solve)
+      expect(messages).to include('aesthene: solved! The word was THROW.')
+    end
+
     it 'solves in at most six whispers for every known answer' do
       answers.each do |answer|
         lock = AestheneFakeLock.new(answer, passes: 1)
@@ -1296,7 +1325,7 @@ RSpec.describe 'aesthene.lic' do
     it 'resumes a lock that is already part-solved' do
       lock = AestheneFakeLock.new('THROW', attuned_rows: %w[AEIOU TPMRS])
       run_script(lock, :solve)
-      expect(lock.commands.first(2)).to eq(['touch lock', 'look lock'])
+      expect(lock.commands.first(2)).to eq(['touch time lock', 'look time lock'])
       expect(messages).to include('aesthene: solved! The word was THROW.')
     end
 
@@ -1304,7 +1333,7 @@ RSpec.describe 'aesthene.lic' do
       lock = AestheneFakeLock.new('HYDRA', passes: 1)
       lock.drop_a_row_next_whisper
       run_script(lock, :solve)
-      expect(lock.commands[3]).to eq('look lock')
+      expect(lock.commands[3]).to eq('look time lock')
       expect(messages).to include('aesthene: solved! The word was HYDRA.')
     end
 
@@ -1336,7 +1365,7 @@ RSpec.describe 'aesthene.lic' do
     it 'checks a lock without whispering' do
       lock = AestheneFakeLock.new('THROW', attuned_rows: %w[AEIOU TPMRS])
       run_script(lock, :check)
-      expect(lock.commands).to eq(['look lock'])
+      expect(lock.commands).to eq(['look time lock'])
       expect(messages.grep(/possible known answer/)).not_to be_empty
     end
   end
