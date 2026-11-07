@@ -2806,6 +2806,19 @@ RSpec.describe 'textsubs.lic' do
           expect(rebuilt.snapshot.to_a).to eq([[/fine/, 'FINE'], [/raises/, 'fixed']])
         end
 
+        # Before the rebuild the re-added key runs last; after it, the key
+        # runs where the catalog puts it (documented on record and replay).
+        it 'puts a built-in key a script re-added after a drop back in its catalog place' do
+          registry.add(/fine/, nil)
+          registry.add(/owl/, 'hoot')
+          registry.drop(/fine/, nil)
+          registry.add_change(/fine/, 'MINE')
+          expect(registry.snapshot.keys).to eq([/owl/, /fine/])
+
+          rebuilt.replay(registry.changes)
+          expect(rebuilt.snapshot.to_a).to eq([[/fine/, 'MINE'], [/raises/, 'built again'], [/owl/, 'hoot']])
+        end
+
         it 'changes nothing for an empty change list' do
           before = rebuilt.snapshot
           rebuilt.replay(registry.changes)

@@ -175,6 +175,11 @@ class TextSubs
     # catalog has it, and all of them are recorded, so a catalog built after
     # this one keeps them as well.
     #
+    # A key this catalog built keeps its catalog place even when the
+    # recorded add followed a drop, so a built-in key a script re-added after
+    # apply dropped it runs last until a rebuild and in its catalog place
+    # after one (see record).
+    #
     # @param changes [Hash{Regexp=>Array}] what #changes returned
     # @return [Registry] self
     # @example Carry the changes over to a catalog built again
@@ -245,7 +250,9 @@ class TextSubs
 
     # Keeps change as the last one for key. A drop moves the key to the end,
     # and so does an add after a drop, as the add appends it to the catalog
-    # again; an add after an add keeps the place, as add does.
+    # again; an add after an add keeps the place, as add does. The order is
+    # the order the keys took here: replay gives a key the catalog built
+    # again its catalog place, wherever it stands in the log.
     #
     # @param key [Regexp] the pattern
     # @param change [Array] [:add, result, requires_any] or [:drop]
