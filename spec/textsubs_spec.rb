@@ -3279,10 +3279,14 @@ RSpec.describe 'textsubs.lic' do
     end
 
     describe 'the coin-comma gate' do
-      # Every call that runs a coin-comma key on a line in the code under the
-      # block, by any name a Regexp can be run with. TracePoint sees the C call
-      # whatever the engine uses, so an engine that ran the key with =~ is
-      # caught too. Calls that run no match (hash, source) are not counted.
+      # Every call made on a coin-comma key that runs it on a line in the code
+      # under the block, by any name a Regexp can be run with, so an engine
+      # that ran the key with key =~ line is caught too. Calls that run no
+      # match (hash, source) are not counted. Only calls whose receiver is the
+      # Regexp are seen: line.match?(key) and line =~ key run on the String, so
+      # an engine written that way would slip past the empty-list examples and
+      # is caught instead by the currency-word controls below and the Engine
+      # 'with gates' examples.
       #
       # @return [Array<Array(Symbol, String)>] [method, key source] per call
       def coin_key_calls
