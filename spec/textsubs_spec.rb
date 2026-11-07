@@ -798,6 +798,24 @@ RSpec.describe 'textsubs.lic' do
       expect(TextSubs.subs).to eq(/cat/ => 'dog')
     end
 
+    it 'counts a new key only after the key is in the catalog, so a reader never sees the count run ahead' do
+      TextSubs.clear
+      TextSubs.add('cat', 'dog')
+      before_write = TextSubs.generation
+      seen = []
+      # A reader that runs at the moment the key is written, as the hook thread
+      # can while the entry point is still adding. The singleton lives on this
+      # catalog Hash only; the after hook's clear drops it.
+      TextSubs.subs.define_singleton_method(:[]=) do |key, value|
+        seen << [TextSubs.generation, TextSubs.subs.keys.map(&:source)]
+        super(key, value)
+      end
+      expect(TextSubs.add('bird', 'fish')).to eq('fish')
+      expect(seen).to eq([[before_write, ['cat']]])
+      expect(TextSubs.generation).to eq(before_write + 1)
+      expect(TextSubs.subs.keys.map(&:source)).to eq(%w[cat bird])
+    end
+
     it 'keeps the return values add, elanthipedia and clear had before the counter' do
       expect(TextSubs.add('cat', 'dog')).to eq('dog')
       expect(TextSubs.elanthipedia('Fae Arts')).to eq('\1<a href="https://elanthipedia.play.net/Fae_Arts">Fae Arts</a>\3')

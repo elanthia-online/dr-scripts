@@ -30,6 +30,12 @@ class TextSubs
   # How many times the catalog has changed since the class body last ran: add,
   # elanthipedia and clear each count once.
   #
+  # The count rises only after the change is visible in subs, so a reader on
+  # another thread that sees a new generation also sees the catalog it counts.
+  # A cache keyed on the generation should read it before it reads subs: if a
+  # change lands in between, the cache holds a newer catalog under an older
+  # number and rebuilds on the next call, never the other way round.
+  #
   # @return [Integer] 0 for a catalog nothing has touched yet
   def self.generation
     @@generation
@@ -39,8 +45,9 @@ class TextSubs
   #
   # @return [Hash] the new, empty catalog
   def self.clear
-    @@generation += 1
     @@subs = {}
+    @@generation += 1
+    @@subs
   end
 
   # Adds one substitution. A target already in the catalog keeps its place and
@@ -146,7 +153,8 @@ class TextSubs
   end
 
   # The one writer of the catalog, shared by add and elanthipedia so a call to
-  # either is one key and one generation.
+  # either is one key and one generation. It writes the key first and counts
+  # it after, so the generation never runs ahead of the catalog.
   #
   # @param target [String] regex source, compiled unescaped
   # @param result [String] the gsub replacement
@@ -155,8 +163,9 @@ class TextSubs
   #   and the generation are left as they were
   def self.store(target, result)
     key = /#{target}/
-    @@generation += 1
     @@subs[key] = result
+    @@generation += 1
+    result
   end
   private_class_method :store
 end
