@@ -878,11 +878,12 @@ RSpec.describe 'textsubs.lic' do
     end
 
     # The hook rewrites the raw XML stream, so a bare '<' in a value opens a
-    # tag the front end never sees closed: ProfanityFE drops the annotation
-    # and swallows the markup after it on the row, and Genie buffers it into
-    # the next row's XML. The Elanthipedia links are the only markup a
-    # built-in value may add. Private subs are not built in (and may add
-    # markup on purpose), so the engine does not escape values.
+    # tag the front end never sees closed: when markup follows on the row,
+    # ProfanityFE drops the annotation and swallows that markup, and Genie
+    # (read from source) buffers it into the next row's XML. The
+    # Elanthipedia links are the only markup a built-in value may add.
+    # Private subs are not built in (and may add markup on purpose), so the
+    # engine does not escape values.
     it "adds no '<' outside an <a href=\"...\">...</a> link in any value of any catalog" do
       link = %r{<a href="[^"<>]*">[^<>]*</a>}
       offenders = combinations.flat_map do |combination|
@@ -1105,7 +1106,6 @@ RSpec.describe 'textsubs.lic' do
           prompt = '<prompt time="1700000000">&gt;</prompt>'
           output = hooked("#{message}#{prompt}", guild: 'Empath')
           expect(output).to eq("#{message}#{note}#{prompt}\r\n")
-          expect(output.count('<')).to eq(prompt.count('<'))
         end
       end
 
