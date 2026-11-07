@@ -1578,9 +1578,12 @@ class TextSubs
 
   # Gives each private key whose value a later add replaced (a built-in sub
   # with the same regex source) its private replacement back, in the place
-  # the key already holds, without the built-in's gate. A private sub is the
-  # player's own choice, so it wins over the shipped one. It reads and writes
-  # the catalog being built: the staged Registry on a start (see stage).
+  # the key already holds. A private sub is the player's own choice, so it
+  # wins over the shipped one. The key keeps the gate the built-in gave it:
+  # a gate is a promise about the pattern (see Registry), and the pattern is
+  # the same, so the private value is spared the regex on lines the gate
+  # rules out just as the built-in one was. It reads and writes the catalog
+  # being built: the staged Registry on a start (see stage).
   #
   # @param entries [Array<Array(Regexp, String)>] the entries add_private added
   # @return [Array<String>] one warning per key given back, naming it; empty
@@ -1590,10 +1593,11 @@ class TextSubs
   #   # => ["private_textsubs \"You feel fine\" is also a built-in sub; your replacement is used instead of the built-in one."]
   def self.prefer_private(entries)
     entries.filter_map do |key, replacement|
-      catalog = write_target.snapshot
+      target = write_target
+      catalog = target.snapshot
       next if !catalog.key?(key) || catalog[key] == replacement
 
-      store_key(key, replacement)
+      store_key(key, replacement, requires_any: target.gates[key])
       "private_textsubs #{key.source.inspect} is also a built-in sub; your replacement is used instead of the built-in one."
     end
   end

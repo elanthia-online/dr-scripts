@@ -3285,14 +3285,20 @@ RSpec.describe 'textsubs.lic' do
       expect(TextSubs.generation).to eq(generation + 1)
     end
 
-    it 'drops the gate a built-in section gave the key' do
-      entries, = TextSubs::Sources::PrivateSubs.entries('fine' => 'MINE')
+    it 'keeps the gate the built-in section gave the key, so the private value still skips lines without a coin' do
+      coin_commas = '(?!.*>)\\d{1,3}(?=(\\d{3})+(?!\\d).*(Kronar|Dokora|Lirum))'
+      entries, = TextSubs::Sources::PrivateSubs.entries(coin_commas => '\\&.')
+      key = entries.first.first
       TextSubs.add_private(entries)
-      gated = { 'schema' => 1, 'sections' => [{ 'name' => 'gated', 'requires_any' => ['Kronar'], 'subs' => [%w[fine FINE]] }] }
+      gated = { 'schema' => 1, 'sections' => [{ 'name' => 'coin commas', 'requires_any' => %w[Kronar Dokora Lirum], 'subs' => [[coin_commas, '\\&,']] }] }
       TextSubs.add_catalog(gated, context, file: 'f')
+      allow(key).to receive(:match?).and_call_original
 
       TextSubs.prefer_private(entries)
-      expect(TextSubs.apply(+'fine')).to eq('MINE')
+      expect(TextSubs.apply(+'You count 1234567 coins.')).to eq('You count 1234567 coins.')
+      expect(key).not_to have_received(:match?)
+      expect(TextSubs.apply(+'You have 1234567 Kronars.')).to eq('You have 1.234.567 Kronars.')
+      expect(key).to have_received(:match?).once
     end
 
     it 'leaves a key alone that is no longer in the catalog' do
