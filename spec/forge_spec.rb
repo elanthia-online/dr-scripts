@@ -599,35 +599,128 @@ RSpec.describe Forge do
     end
 
     describe '#restow_ingot' do
+      # A real split line names the stow container by its noun, with the
+      # period outside the capture: "... leave the portion you won't be using
+      # in your pack." (Mahtra, 2026-09-22 08:54:04, ingot from her duffel bag).
+      def split_into(container)
+        Flags['ingot-restow'] = Forge::INGOT_RESTOW_PATTERN.match(
+          "You realize the sword will not require as much metal as you have, and so you split the ingot and leave the portion you won't be using in your #{container}."
+        )
+      end
+
       before do
         stub_flags_class
         Flags.add('ingot-restow', /pattern/)
-        Flags['ingot-restow'] = ['full match', 'pouch.']
+        forge_instance.instance_variable_set(:@metal, 'bronze')
+        forge_instance.instance_variable_set(:@forging_belt, nil)
+        allow(DRCC).to receive(:stow_crafting_item)
+        allow(forge_instance).to receive(:swap_tool)
       end
 
-      it 'returns early if temp_bag matches @bag' do
-        forge_instance.instance_variable_set(:@bag, 'pouch')
+      it 'moves the portion from the stow container named in the line, by its whole noun, to the crafting container' do
+        forge_instance.instance_variable_set(:@bag, 'duffel bag')
         $right_hand = 'hammer'
+        split_into('pack')
+        expect(DRCC).to receive(:stow_crafting_item).with('hammer', 'duffel bag', nil).ordered
+        expect(DRCI).to receive(:get_item?).with('bronze ingot', 'pack').ordered.and_return(true)
+        expect(DRCI).to receive(:put_away_item?).with('bronze ingot', 'duffel bag').ordered.and_return(true)
+        expect(forge_instance).to receive(:swap_tool).with('hammer').ordered
+        forge_instance.send(:restow_ingot)
+        expect(Flags['ingot-restow']).to be(false)
+      end
+
+      it 'moves it when the crafting container merely contains the word, like a backpack or leather-pack and the pack' do
+        ['backpack', 'leather-pack', 'pack.basket'].each do |bag|
+          forge_instance.instance_variable_set(:@bag, bag)
+          $right_hand = 'hammer'
+          split_into('pack')
+          expect(DRCI).to receive(:get_item?).with('bronze ingot', 'pack').and_return(true)
+          expect(DRCI).to receive(:put_away_item?).with('bronze ingot', bag).and_return(true)
+          forge_instance.send(:restow_ingot)
+        end
+      end
+
+      # The report's log (2026-11-06): the ingot came out of "a blacksmith's
+      # lootsack" (crafting_container), and each of 28 splits said "in your
+      # backpack." (the stow container), where taskmaster never looked.
+      it "moves the reporter's portion from the backpack to the lootsack" do
+        forge_instance.instance_variable_set(:@bag, 'lootsack')
+        $right_hand = 'ball-peen hammer'
+        Flags['ingot-restow'] = Forge::INGOT_RESTOW_PATTERN.match(
+          "You realize the waterproof case will not require as much metal as you have, and so you split the ingot and leave the portion you won't be using in your backpack."
+        )
+        expect(DRCI).to receive(:get_item?).with('bronze ingot', 'backpack').and_return(true)
+        expect(DRCI).to receive(:put_away_item?).with('bronze ingot', 'lootsack').and_return(true)
+        forge_instance.send(:restow_ingot)
+      end
+
+      it 'moves it by the plain noun on a resume run, which has no metal' do
+        forge_instance.instance_variable_set(:@bag, 'duffel bag')
+        forge_instance.instance_variable_set(:@metal, nil)
+        $right_hand = 'hammer'
+        split_into('pack')
+        expect(DRCI).to receive(:get_item?).with('ingot', 'pack').and_return(true)
+        expect(DRCI).to receive(:put_away_item?).with('ingot', 'duffel bag').and_return(true)
+        forge_instance.send(:restow_ingot)
+        expect(Flags['ingot-restow']).to be(false)
+      end
+
+      it 'leaves it when the stow container is the crafting container' do
+        ["traveler's pack", 'pack', 'Pack'].each do |bag|
+          forge_instance.instance_variable_set(:@bag, bag)
+          split_into('pack')
+          expect(DRCI).not_to receive(:get_item?)
+          expect(DRCC).not_to receive(:stow_crafting_item)
+          forge_instance.send(:restow_ingot)
+        end
+      end
+
+      it 'does nothing without a match' do
+        forge_instance.instance_variable_set(:@bag, 'duffel bag')
+        Flags['ingot-restow'] = false
         expect(DRCI).not_to receive(:get_item?)
         forge_instance.send(:restow_ingot)
       end
 
-      it 'moves ingot from temp_bag to main bag' do
-        forge_instance.instance_variable_set(:@bag, 'backpack')
+      # The work loop restows right after the command that split the ingot,
+      # before the result is handled: handling a Roundtime can finish the item
+      # and exit, which would leave the portion where the game put it.
+      it 'is called by the work loop after the splitting command and before its result is handled' do
+        forge_instance.instance_variable_set(:@bag, 'duffel bag')
+        forge_instance.instance_variable_set(:@command, 'pound ingot on anvil with my hammer')
+        allow(DRCA).to receive(:crafting_magic_routine)
+        allow(forge_instance).to receive(:assemble_part)
+        expect(forge_instance).to receive(:execute_work_command).ordered do
+          split_into('pack')
+          'Roundtime'
+        end
+        expect(forge_instance).to receive(:restow_ingot).ordered.and_call_original
+        expect(DRCI).to receive(:get_item?).with('bronze ingot', 'pack').ordered.and_return(true)
+        expect(DRCI).to receive(:put_away_item?).with('bronze ingot', 'duffel bag').ordered.and_return(true)
+        expect(forge_instance).to receive(:handle_work_result).with('Roundtime').ordered.and_raise(RuntimeError, 'end of work loop')
+        expect { forge_instance.send(:work) }.to raise_error(RuntimeError, 'end of work loop')
+      end
+
+      it 'says so when the portion cannot be got, and puts nothing away' do
+        forge_instance.instance_variable_set(:@bag, 'duffel bag')
         $right_hand = 'hammer'
-        expect(DRCI).to receive(:get_item?).with('steel ingot', 'pouch').and_return(true)
-        expect(DRCI).to receive(:put_away_item?).with('steel ingot', 'backpack').and_return(true)
-        allow(DRCC).to receive(:stow_crafting_item)
-        allow(forge_instance).to receive(:swap_tool)
+        split_into('pack')
+        expect(DRCI).to receive(:get_item?).with('bronze ingot', 'pack').and_return(false)
+        expect(DRCI).not_to receive(:put_away_item?)
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: Could not get the leftover bronze ingot from your pack, so it stays there.')
+        expect(forge_instance).to receive(:swap_tool).with('hammer')
         forge_instance.send(:restow_ingot)
       end
 
-      it 'logs error when put_away fails' do
+      it 'logs error when put_away fails, with nothing in hand to stow or swap back' do
         forge_instance.instance_variable_set(:@bag, 'backpack')
         $right_hand = nil
-        expect(DRCI).to receive(:get_item?).with('steel ingot', 'pouch').and_return(true)
-        expect(DRCI).to receive(:put_away_item?).with('steel ingot', 'backpack').and_return(false)
-        expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: Failed to stow steel ingot in backpack.')
+        split_into('pack')
+        expect(DRCC).not_to receive(:stow_crafting_item)
+        expect(forge_instance).not_to receive(:swap_tool)
+        expect(DRCI).to receive(:get_item?).with('bronze ingot', 'pack').and_return(true)
+        expect(DRCI).to receive(:put_away_item?).with('bronze ingot', 'backpack').and_return(false)
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: Failed to stow bronze ingot in backpack.')
         forge_instance.send(:restow_ingot)
       end
     end
@@ -1466,6 +1559,43 @@ RSpec.describe Forge do
         end
         deliver(rental_line)
         expect(Flags['forge-rental-warning']).to be_truthy
+      end
+
+      # The split portion goes to the stow container, and DR puts the stow
+      # container's feed in front of the first line of a reply that changes
+      # it, on the same raw line. This prefix is verbatim from
+      # DR-Quilsilgas/2026/09/2026-09-27_09-06-21.xml:17015 (before "You put
+      # your ring in your scribe's pack."). Both the old /^You realize/ and
+      # the /^(?:<[^>]+>)*You realize/ pattern missed such a line, so forge
+      # never moved the portion and taskmaster left one ingot per task.
+      let(:stow_feed) do
+        %(<clearContainer id="stow"/><inv id='stow'>In the pack:</inv><inv id='stow'> an ornate niello ring</inv><inv id='stow'> an enormous slate Albreda lollipop covered in iridescent sugar crystals</inv><inv id='stow'> a large jade bowl painted with lilac blossoms</inv><inv id='stow'> some powdery blue jaguar-pelt ice skates with watered steel blades</inv><inv id='stow'> a bronze rapier</inv>)
+      end
+
+      it 'sets ingot-restow from the split line behind the stow feed, with the same capture' do
+        ["#{stow_feed}#{restow_line}", "<pushBold/>#{stow_feed}#{restow_line}", "#{stow_feed}#{restow_line}\r\n"].each do |line|
+          Flags.reset('ingot-restow')
+          deliver(line)
+          expect(Flags['ingot-restow']).to be_truthy, "no match: #{line}"
+          expect(Flags['ingot-restow'][1]).to eq('pack')
+        end
+      end
+
+      it 'does not take text between two inv elements for part of the feed' do
+        deliver(%(<inv id='stow'>x</inv>Mallory says, "<inv id='stow'>y</inv>#{restow_line}))
+        expect(Flags['ingot-restow']).to be(false)
+      end
+
+      it "captures a stow container's whole name, and nothing after the period" do
+        deliver(restow_line.sub('your pack.', "your traveler's pack.  Following solid heating in the forge, you fold the metal."))
+        expect(Flags['ingot-restow'][1]).to eq("traveler's pack")
+      end
+
+      it 'ignores the split text in speech even with the stow feed in front' do
+        player_shapes(restow_line).each do |line|
+          deliver("#{stow_feed}#{line}")
+          expect(Flags['ingot-restow']).to be(false), "flag set by: #{line}"
+        end
       end
 
       it 'sets the rental warning from the two game lines, with leading XML tags' do
