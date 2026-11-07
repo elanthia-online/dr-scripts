@@ -7,7 +7,11 @@
   Usage:
     ;aesthene full   - walk to the apprentice Timekeeper, redeem one time slip,
                        ask for access, attune to the lock you are shown and
-                       solve it. Run it again for the next slip.
+                       solve it.
+    ;aesthene full 5 - do that five times in a row, one slip at a time.
+    ;aesthene full all - keep going until you have no time slips left.
+                       A run of several slips stops early at a lock it can't
+                       solve, so no more slips are spent on it.
     ;aesthene solve  - attune to (or resume) the time lock in your room and
                        solve it. Use this when you already have a redeemed pass.
     ;aesthene check  - read the lock in your room and list the answers that are
@@ -481,15 +485,15 @@ class Aesthene
     elsif args.solve
       attune_and_solve
     else
-      redeem_slip
-      attune_and_solve
+      run_slips(slip_limit(args.count))
     end
   end
 
   # @return [Array<Array<Hash>>] argument definitions for parse_args
   def arg_definitions
     [
-      [{ name: 'full', regex: /^full$/i, description: 'Redeem a time slip, attune to the lock you are shown and solve it.' }],
+      [{ name: 'full', regex: /^full$/i, description: 'Redeem a time slip, attune to the lock you are shown and solve it.' },
+       { name: 'count', regex: /^([1-9]\d*|all)$/i, optional: true, description: 'How many slips to run, one after another, or all. Default 1.' }],
       [{ name: 'solve', regex: /^solve$/i, description: 'Attune to (or resume) the lock in this room and solve it.' }],
       [{ name: 'check', regex: /^check$/i, description: 'List the answers still possible for the lock in this room.' }]
     ]
@@ -512,13 +516,59 @@ class Aesthene
     AestheneSolver.new(answers, dictionary, opening: opening.first)
   end
 
-  # Walks to the Timekeeper, redeems one time slip and asks to be shown to a
-  # lock. Stops the script if any step fails.
+  # @param count [String, nil] the count argument: digits, 'all' or nil
+  # @return [Integer, Float] slips to run; Float::INFINITY for all
+  def slip_limit(count)
+    return 1 if count.nil?
+    return Float::INFINITY if count == 'all'
+
+    count.to_i
+  end
+
+  # Redeems a slip and solves the lock it opens, again and again, until
+  # `limit` locks are solved, the slips run out, or a lock is not solved.
   #
+  # Stopping at an unsolved lock matters. The character may still be attuned
+  # to it, and the next lock touched would then resume it, fail again and
+  # spend another slip each time round.
+  #
+  # @param limit [Integer, Float] slips to run; Float::INFINITY for all
   # @return [void]
-  def redeem_slip
+  def run_slips(limit)
+    solved = 0
+    stop = nil
+    begin
+      while solved < limit
+        unless redeem_slip(first: solved.zero?)
+          stop = 'no time slips left'
+          break
+        end
+        unless attune_and_solve
+          stop = "stopped at a lock it couldn't solve, so no more slips are spent"
+          break
+        end
+        solved += 1
+      end
+    ensure
+      # Also runs when a step aborts part-way, so the count is not lost.
+      report_run(solved, stop) if limit > 1 && (solved.positive? || stop)
+    end
+  end
+
+  # Walks to the Timekeeper, redeems one time slip and asks to be shown to a
+  # lock. Stops the script if any step fails, except when a later slip of a
+  # run finds none left.
+  #
+  # @param first [Boolean] false for the second and later slips of a run
+  # @return [Boolean] true once shown to a lock; false when a later slip
+  #   finds no time slip
+  def redeem_slip(first: true)
+    unless DRCI.in_hands?('time slip') || DRCI.get_item?('time slip')
+      return false unless first
+
+      abort_with('aesthene: no time slip found.')
+    end
     abort_with("aesthene: couldn't reach the apprentice Timekeeper (room #{TIMEKEEPER_ROOM}).") unless DRCT.walk_to(TIMEKEEPER_ROOM)
-    abort_with('aesthene: no time slip found.') unless DRCI.in_hands?('time slip') || DRCI.get_item?('time slip')
 
     # The first REDEEM asks for confirmation; the second spends the slip.
     response = DRC.bput('redeem my slip', REDEEM_CONFIRM_PATTERN, REDEEMED_PATTERN, NO_REPRESENTATIVE_PATTERN)
@@ -528,14 +578,14 @@ class Aesthene
       abort_with('aesthene: the Timekeeper did not take the slip.')
     end
 
-    return if DRC.bput('ask timekeeper about access', ESCORTED_PATTERN).match?(ESCORTED_PATTERN)
+    return true if DRC.bput('ask timekeeper about access', ESCORTED_PATTERN).match?(ESCORTED_PATTERN)
 
     abort_with('aesthene: the Timekeeper did not take you to a lock.')
   end
 
   # Attunes to the lock in this room, then guesses until it is solved.
   #
-  # @return [void]
+  # @return [Boolean] true when the lock was solved
   def attune_and_solve
     reading = attune_to_lock
     solve(reading)
@@ -567,12 +617,15 @@ class Aesthene
   # without a limit a lock that never takes it would be whispered forever.
   #
   # @param reading [AestheneGrid::Reading] the lock's current state
-  # @return [void]
+  # @return [Boolean] true when the lock was solved
   def solve(reading)
     stalled = 0
     loop do
       @solver.observe(reading.rows)
-      return report_solved(reading.rows.last&.guess || reading.whispered) if reading.solved?
+      if reading.solved?
+        report_solved(reading.rows.last&.guess || reading.whispered)
+        return true
+      end
       return report_failure('the lock has no rows left.') if reading.rows_left.zero?
       return report_failure("#{STALL_LIMIT} whispers in a row added no row to the lock.") if stalled >= STALL_LIMIT
 
@@ -664,11 +717,23 @@ class Aesthene
     DRC.message("aesthene: until then, add #{word} to aesthene_lock_answers in your YAML.") if @solver.fallback?
   end
 
-  # @param reason [String]
+  # Sums up a run of several slips.
+  #
+  # @param solved [Integer] locks solved
+  # @param stop [String, nil] why the run ended early; nil when it finished
+  #   or a step stopped the script
   # @return [void]
+  def report_run(solved, stop)
+    locks = solved == 1 ? 'lock' : 'locks'
+    DRC.message("aesthene: solved #{solved} #{locks}#{stop ? "; #{stop}" : ''}.")
+  end
+
+  # @param reason [String]
+  # @return [false] so solve can return it as its result
   def report_failure(reason)
     DRC.message("aesthene: couldn't solve the lock: #{reason}")
     report_candidates
+    false
   end
 
   # Lists the candidates. With none left, the answer is in no word list, so
