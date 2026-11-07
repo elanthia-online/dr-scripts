@@ -1373,14 +1373,13 @@ class TextSubs
     #   #     ["private_textsubs \"Bob\" is skipped: its replacement is empty (nil) ..."]]
     class PrivateSubs
       # The match timeout of every private key, so one runaway pattern cannot
-      # stall the game thread: the engine drops a key that times out. One
-      # second is lich-5's own choice for user regexes
-      # (Lich::Common::UserDefs::REGEX_TIMEOUT_SECONDS), not read from there,
-      # as the Lich versions textsubs runs on do not all have it.
+      # stall the game thread: the engine drops a key that times out. It is
+      # lich-5's own timeout for user regexes, which every Lich from the
+      # 5.23.0 floor (dependency.lic) defines.
       #
-      # @return [Float] seconds
+      # @return [Float] seconds (1.0 as lich-5 ships it)
       def self.regex_timeout
-        1.0
+        Lich::Common::UserDefs::REGEX_TIMEOUT_SECONDS
       end
 
       # The entries of a private_textsubs value that can be used, in order,
