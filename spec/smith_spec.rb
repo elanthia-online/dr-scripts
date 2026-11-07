@@ -212,9 +212,10 @@ RSpec.describe Smith do
       expect(forge_runs.first).not_to include('skip', 'here')
     end
 
-    it "stays in the room with 'here': no anvil search, no walking, no parts, and it forges" do
+    it "stays in the room with 'here' and every part in the bag: no anvil search, no walking, no buying, no coin" do
       instance = build_smith
       allow(instance).to receive(:buy_parts)
+      allow(DRCI).to receive(:get_item_list).with('duffel bag').and_return(['wooden haft', 'flask of oil'])
       allow(DRCT).to receive(:walk_to)
       allow(Room).to receive(:current).and_return(OpenStruct.new(id: 51_058))
 
@@ -223,11 +224,22 @@ RSpec.describe Smith do
       expect(DRCC).not_to have_received(:find_anvil)
       expect(DRCT).not_to have_received(:walk_to)
       expect(instance).not_to have_received(:buy_parts)
+      expect(DRCM).not_to have_received(:ensure_copper_on_hand)
+      expect(forge_runs.size).to eq(1)
+    end
+
+    it "doesn't list the bag with 'here' for a recipe without parts" do
+      allow(DRCI).to receive(:get_item_list)
+
+      build_smith.smith(smith_args(here: 'here'), morning_star.except('part'))
+
+      expect(DRCI).not_to have_received(:get_item_list)
       expect(forge_runs.size).to eq(1)
     end
 
     it "tells every forge run to skip restocking and stay put with 'here'" do
       forge_runs_end_holding('steel morning star', 'steel morning star')
+      allow(DRCI).to receive(:get_item_list).with('duffel bag').and_return(['wooden haft'])
 
       build_smith.smith(smith_args(here: 'here', temper: 'temper'), morning_star)
 
@@ -257,6 +269,197 @@ RSpec.describe Smith do
       instance.smith(smith_args, morning_star)
 
       expect(calls).to eq([[:oil, 'oil', 4436, 6, 'duffel bag', bag_items, belt], ['buff'], ['forge']])
+    end
+  end
+
+  # Kurtus, 2026-08-28, in the Shard private forge (51058): forge.lic stopped
+  # on "You need another finished long wooden pole"; the pole was bought by
+  # hand at 4436 and the item resumed. 'here' now buys a missing part and
+  # walks back before forging.
+  describe "'here' with a part missing from the bag" do
+    let(:instance) { build_smith }
+    # A room that is not the town's private forge (Shard's is 51058).
+    let(:start_room) { 8_775 }
+    let(:events) { [] }
+
+    before do
+      allow(Room).to receive(:current).and_return(OpenStruct.new(id: start_room))
+      allow(DRCT).to receive(:walk_to) { |room| events << [:walk, room] }.and_return(true)
+      allow(DRCT).to receive(:buy_item) { |room, part| events << [:buy, room, part] }
+      allow(DRCC).to receive(:stow_crafting_item)
+      allow(DRCI).to receive(:get_item_list).with('duffel bag').and_return(['flask of oil'])
+      allow(DRC).to receive(:wait_for_script_to_complete) do |name, args|
+        next unless name == 'forge'
+
+        events << [:forge]
+        forge_runs << args
+        $right_hand = 'steel morning star'
+      end
+    end
+
+    context 'when the purchase works' do
+      before do
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+        instance.smith(smith_args(here: 'here'), morning_star)
+      end
+
+      it 'carries the parts budget, buys the part, walks back, then forges there' do
+        expect(DRCM).to have_received(:ensure_copper_on_hand).with(Smith::PARTS_COPPER, settings, 'Shard')
+        expect(events).to eq([[:buy, 4436, 'haft'], [:walk, start_room], [:forge]])
+        expect(forge_runs.first).to include('skip', 'here')
+      end
+
+      it 'still looks for no public anvil' do
+        expect(DRCC).not_to have_received(:find_anvil)
+      end
+    end
+
+    context 'when the purchase fails' do
+      before do
+        allow(DRCI).to receive(:in_hands?).and_return(false)
+        instance.smith(smith_args(here: 'here'), morning_star)
+      end
+
+      include_examples 'a run that stops before forging'
+
+      it "walks back to the room 'here' started in and says what failed" do
+        expect(DRCT).to have_received(:walk_to).with(start_room)
+        expect(Lich::Messaging).to have_received(:msg).with('bold', /Could not buy a haft/)
+      end
+    end
+
+    context 'when the room is unknown' do
+      before do
+        allow(Room).to receive(:current).and_return(OpenStruct.new(id: nil))
+        instance.smith(smith_args(here: 'here'), morning_star)
+      end
+
+      include_examples 'a run that stops before forging'
+
+      it 'buys nothing, fetches no coin, and says why' do
+        expect(DRCT).not_to have_received(:buy_item)
+        expect(DRCM).not_to have_received(:ensure_copper_on_hand)
+        expect(Lich::Messaging).to have_received(:msg).with('bold', /needs a known room to come back to/)
+      end
+    end
+
+    it 'buys the part and the ingot on one trip with buy' do
+      allow(DRCI).to receive(:in_hands?).and_return(true)
+      allow(DRCI).to receive(:exists?).and_return(false)
+      allow(DRCT).to receive(:order_item) { |room, number| events << [:order, room, number] }
+      allow(DRCC).to receive(:crafting_cost).and_return(6_200)
+
+      instance.smith(smith_args(buy: 'buy', here: 'here'), morning_star)
+
+      expect(events).to eq([[:buy, 4436, 'haft'], [:order, 17_119, 13], [:walk, start_room], [:forge]])
+    end
+
+    it 'still fetches the ingot and walks back with buy when every part is in the bag' do
+      allow(DRCI).to receive(:get_item_list).with('duffel bag').and_return(['wooden haft'])
+      allow(DRCI).to receive(:in_hands?).and_return(true)
+      allow(DRCI).to receive(:exists?).and_return(false)
+      allow(DRCT).to receive(:order_item) { |room, number| events << [:order, room, number] }
+      allow(DRCC).to receive(:crafting_cost).and_return(6_200)
+
+      instance.smith(smith_args(buy: 'buy', here: 'here'), morning_star)
+
+      expect(events).to eq([[:order, 17_119, 13], [:walk, start_room], [:forge]])
+    end
+
+    it 'buys the leather strip reinforce needs' do
+      allow(DRCI).to receive(:get_item_list).with('duffel bag').and_return(['wooden haft'])
+      allow(DRCI).to receive(:in_hands?).and_return(true)
+
+      instance.smith(smith_args(here: 'here', reinforce: 'reinforce'), morning_star)
+
+      strip_shop = SmithSpecData.crafting.dig('recipe_parts', 'leather strip', 'Shard', 'part-room')
+      # The item run, then the reinforce run.
+      expect(events).to eq([[:buy, strip_shop, 'leather strip'], [:walk, start_room], [:forge], [:forge]])
+    end
+
+    # forge.lic gets each part with DRCI.get_item?(part), from anywhere.
+    context 'when the part is carried outside the crafting container' do
+      before { allow(DRCI).to receive(:exists?).with('haft').and_return(true) }
+
+      it 'counts it as carried: no coin, no shopping, no walking, and it forges' do
+        instance.smith(smith_args(here: 'here'), morning_star)
+
+        expect(DRCM).not_to have_received(:ensure_copper_on_hand)
+        expect(events).to eq([[:forge]])
+      end
+
+      it 'does the same when the crafting container cannot be listed' do
+        allow(DRCI).to receive(:get_item_list).with('duffel bag').and_return(nil)
+
+        instance.smith(smith_args(here: 'here'), morning_star)
+
+        expect(events).to eq([[:forge]])
+      end
+
+      it 'buys by the container count when the recipe needs that part twice (a tap cannot count)' do
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+
+        instance.smith(smith_args(here: 'here'), morning_star.merge('part' => %w[haft haft]))
+
+        expect(events.count { |event| event.first == :buy }).to eq(2)
+      end
+    end
+
+    # mrhoribu, #7979: a brigandine hauberk needs a large padding and two
+    # small paddings. With one of each in the bag, 'tap my small padding'
+    # finds the bagged one, so the tap can't stand for the second.
+    it 'buys the second of a doubled part when the bag holds one' do
+      hauberk = SmithSpecData.recipe('a brigandine hauberk')
+      expect(hauberk['part']).to eq(['large padding', 'small padding', 'small padding'])
+      allow(DRCI).to receive(:get_item_list).with('duffel bag').and_return(['large padding', 'small padding'])
+      allow(DRCI).to receive(:exists?).with('small padding').and_return(true)
+      allow(DRCI).to receive(:in_hands?).and_return(true)
+      allow(DRCT).to receive(:order_item) { |room, number| events << [:order, room, number] }
+
+      instance.smith(smith_args(here: 'here'), hauberk)
+
+      # Shard's leather shop sells small padding as order 11 (base-crafting recipe_parts).
+      expect(events).to eq([[:order, 10_939, 11], [:walk, start_room], [:forge]])
+    end
+
+    # Kurtus, 2026-08-28: go2 walked back into the Shard private forge
+    # through the guarded archway ("The sentry nods and allows you to pass.").
+    context "when 'here' started in the town's private forge" do
+      before do
+        allow(Room).to receive(:current).and_return(OpenStruct.new(id: 51_058))
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+        allow(DRCC).to receive(:go_to_private_forge) { events << [:private_forge] }.and_return(true)
+      end
+
+      it 'goes back in through DRCC.go_to_private_forge, which tries the door and carries the rental cost' do
+        instance.smith(smith_args(here: 'here'), morning_star)
+
+        expect(DRCC).to have_received(:go_to_private_forge).with('Shard', settings)
+        expect(events).to eq([[:buy, 4436, 'haft'], [:private_forge], [:forge]])
+      end
+
+      it 'stops when that does not get back in' do
+        allow(DRCC).to receive(:go_to_private_forge).and_return(false)
+
+        instance.smith(smith_args(here: 'here'), morning_star)
+
+        expect(forge_runs).to be_empty
+        expect(Lich::Messaging).to have_received(:msg).with('bold', /Could not get back to room 51058 after shopping/)
+      end
+    end
+
+    context 'when the walk back does not get there' do
+      before do
+        allow(DRCI).to receive(:in_hands?).and_return(true)
+        allow(DRCT).to receive(:walk_to) { |room| events << [:walk, room] }.and_return(false)
+        instance.smith(smith_args(here: 'here'), morning_star)
+      end
+
+      include_examples 'a run that stops before forging'
+
+      it 'says so instead of forging where the walk ended' do
+        expect(Lich::Messaging).to have_received(:msg).with('bold', /Could not get back to room 8775 after shopping/)
+      end
     end
   end
 
@@ -632,7 +835,7 @@ RSpec.describe Smith do
 
       it "comes back to the starting room after shopping with 'here'" do
         allow(Room).to receive(:current).and_return(OpenStruct.new(id: 51_058))
-        allow(DRCT).to receive(:walk_to)
+        allow(DRCT).to receive(:walk_to).and_return(true)
 
         instance.smith(smith_args(buy: 'buy', here: 'here'), morning_star)
 
@@ -811,19 +1014,19 @@ RSpec.describe Smith do
     before { allow(DRCC).to receive(:crafting_cost).and_return(6_200) }
 
     it 'carries the parts budget when not buying an ingot' do
-      instance.fund_run(morning_star, ['haft'], nil, nil)
+      instance.fund_run(morning_star, ['haft'], nil, true)
 
       expect(DRCM).to have_received(:ensure_copper_on_hand).with(Smith::PARTS_COPPER, settings, 'Shard')
     end
 
-    it "fetches nothing with 'here' and no ingot to buy" do
-      instance.fund_run(morning_star, ['haft'], nil, 'here')
+    it 'fetches nothing with no part or ingot to buy' do
+      instance.fund_run(morning_star, ['haft'], nil, false)
 
       expect(DRCM).not_to have_received(:ensure_copper_on_hand)
     end
 
-    it "still pays for a bought ingot with 'here'" do
-      instance.fund_run(morning_star, ['haft'], { 'stock-number' => 13 }, 'here')
+    it 'still pays for a bought ingot when no part is bought' do
+      instance.fund_run(morning_star, ['haft'], { 'stock-number' => 13 }, false)
 
       expect(DRCM).to have_received(:ensure_copper_on_hand).with(6_200, settings, 'Shard')
     end

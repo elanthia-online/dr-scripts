@@ -13,7 +13,10 @@
 # never made.
 #
 # With use_private_forge, forge.lic walks to and rents the private forge itself.
-# smith only finds a public anvil, and only when that setting is off.
+# smith only finds a public anvil, and only when that setting is off. With
+# 'here', smith forges in the room it started in: when a part or the ingot
+# must be bought it walks to the shops and comes back first, and when nothing
+# is missing it does not move.
 #
 # Entry points are #initialize and #smith. The step methods stay public so
 # the spec can drive each one on its own; only setup is private.
@@ -22,6 +25,8 @@
 #   ;smith steel "metal morning star" temper balance
 # @example Buy a steel ingot that fits, then come back and forge where you stood
 #   ;smith steel "metal awl pike" buy here
+# @example In the rented private forge: buy the missing haft, come back, forge, temper
+#   ;smith steel "metal morning star" here temper
 class Smith
   # Recipe types smith can make.
   SMITHING_TYPES = /blacksmithing|weaponsmithing|armorsmithing/i
@@ -46,7 +51,7 @@ class Smith
       { name: 'material', regex: /\w+/, description: 'Metal type of the ingot' },
       { name: 'item_name', display: 'recipe name', regex: /^[a-z\s\-']+$/i, variable: true, description: 'Name of the recipe, wrap in double quotes if this is multiple words.' },
       { name: 'stamp', regex: /^stamp/i, optional: true, description: 'To stamp completed items' },
-      { name: 'here', regex: /^here/i, optional: true, description: 'Force it to forge in the room you are currently in, useful for private forge rentals or forge wands' },
+      { name: 'here', regex: /^here/i, optional: true, description: 'Forge in the room you are in (a rented private forge, a forge wand); missing parts and a bought ingot are fetched first, then smith comes back' },
       { name: 'temper', regex: /^temper/i, optional: true, description: 'Tempers crafted item, boost durability' },
       { name: 'hone', regex: /^hone/i, optional: true, description: 'Hones crafted item(weapon only), reducing weight and impact' },
       { name: 'balance', regex: /^balance/i, optional: true, description: 'Balance crafted item (weapon only), increasing balance at the cost of suitability' },
@@ -80,16 +85,19 @@ class Smith
       return unless ingot
       return if ingot_already_carried?(args.material)
     end
-    if ingot && args.here
+    # Away from 'here', buy_parts works out and buys what the bag lacks.
+    to_buy = args.here ? parts_to_buy_here(parts) : nil
+    buying_parts = !args.here || !to_buy.empty?
+    if args.here && (ingot || buying_parts)
       return_room = Room.current.id
       return unless return_room_known?(return_room)
     end
-    fund_run(recipe, parts, ingot, args.here)
+    fund_run(recipe, parts, ingot, buying_parts)
 
     # Come back after a failed purchase too: 'here' means forge where you stood.
-    bought = (args.here || buy_parts(parts)) && (!ingot || buy_ingot(ingot))
-    DRCT.walk_to(return_room) if return_room
-    return unless bought
+    bought = (!buying_parts || buy_parts(parts, to_buy)) && (!ingot || buy_ingot(ingot))
+    back = return_room.nil? || walked_back?(return_room)
+    return unless bought && back
 
     go_to_workplace(args.here)
     restock_oil
@@ -194,10 +202,10 @@ class Smith
   # @param recipe [Hash] the base-recipes entry
   # @param parts [Array<String>] part names
   # @param ingot [Hash, nil] the stock entry to buy, or nil
-  # @param here [String, nil] the 'here' argument
+  # @param buying_parts [Boolean] whether smith goes to the part shops
   # @return [void]
-  def fund_run(recipe, parts, ingot, here)
-    return if here && !ingot
+  def fund_run(recipe, parts, ingot, buying_parts)
+    return unless ingot || buying_parts
 
     copper = ingot ? [PARTS_COPPER, DRCC.crafting_cost(recipe, @hometown, parts, 1, ingot)].max : PARTS_COPPER
     DRCM.ensure_copper_on_hand(copper, @settings, @hometown)
@@ -209,11 +217,13 @@ class Smith
   # uses it instead of buying another.
   #
   # @param parts [Array<String>] part names from the recipe (may repeat)
+  # @param to_buy [Array<String>, nil] the parts to buy when already worked
+  #   out ('here'); nil buys what the crafting container lacks
   # @return [Boolean] false when a purchase failed
-  def buy_parts(parts)
+  def buy_parts(parts, to_buy = nil)
     DRCI.stow_hands
 
-    missing_parts(parts).all? do |part|
+    (to_buy || missing_parts(parts)).all? do |part|
       data = get_data('crafting')['recipe_parts'][part][@hometown]
       if data['part-number']
         DRCT.order_item(data['part-room'], data['part-number'])
@@ -225,6 +235,22 @@ class Smith
       DRCC.stow_crafting_item(part, @bag, @belt)
       true
     end
+  end
+
+  # The parts 'here' still has to buy. forge.lic takes a part from anywhere
+  # in the inventory, so a part the crafting container lacks counts as
+  # carried when 'tap my <part>' finds it elsewhere. A part the recipe needs
+  # more than once is bought by the container count alone: a tap can't
+  # count, and would find the one already in the container. Lists nothing
+  # when the recipe has no parts.
+  #
+  # @param parts [Array<String>] part names from the recipe (may repeat)
+  # @return [Array<String>] the parts to buy
+  def parts_to_buy_here(parts)
+    return [] if parts.empty?
+
+    missing = missing_parts(parts)
+    missing.reject { |part| parts.count(part) == 1 && DRCI.exists?(part) }
   end
 
   # The parts the crafting container doesn't hold yet, one entry per part
@@ -288,14 +314,35 @@ class Smith
     true
   end
 
-  # 'buy' with 'here' walks to the shop, so smith needs the room to come back to.
+  # Buying with 'here' walks to the shops, so smith needs the room to come
+  # back to.
   #
   # @param room [Integer, nil] the current room id
   # @return [Boolean] false (with a message) when the room is unknown
   def return_room_known?(room)
     return true if room
 
-    Lich::Messaging.msg('bold', "smith: 'buy' with 'here' needs a known room to come back to. Buy the ingot first, then run smith with 'here'.")
+    Lich::Messaging.msg('bold', "smith: Buying with 'here' needs a known room to come back to. Buy the missing parts or the ingot first, then run smith with 'here'.")
+    false
+  end
+
+  # Walk back to the room 'here' started in. forge.lic is told to stay put,
+  # so smith stops rather than forge wherever the walk ended. Back into the
+  # town's private forge, DRCC.go_to_private_forge carries the rental cost
+  # (the entrance charges it again once the rental has lapsed), walks, and
+  # tries the door when the walk ends outside, as forge.lic does.
+  #
+  # @param room [Integer] the room id 'here' started in
+  # @return [Boolean] false (with a message) when the walk didn't get there
+  def walked_back?(room)
+    back = if room == DRCC.private_forge_room(@hometown)
+             DRCC.go_to_private_forge(@hometown, @settings)
+           else
+             DRCT.walk_to(room)
+           end
+    return true if back
+
+    Lich::Messaging.msg('bold', "smith: Could not get back to room #{room} after shopping, so smith stops rather than forge somewhere else. Go back and run smith with 'here' again; what was bought is in your #{@bag}.")
     false
   end
 
