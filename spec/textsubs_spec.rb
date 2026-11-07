@@ -47,6 +47,10 @@ require 'tmpdir'
 # that checks each key against the changing line instead of the original gives
 # the same output on every corpus line. The hand-made catalogs in 'hook engine
 # semantics' pin that rule.
+#
+# Hooks run through run_hooks, never DownstreamHook.run directly: a `return`
+# in the hook proc (where `next` belongs) is a top-level return in this spec
+# and would end rspec silently with status 0.
 
 load_lic_class('textsubs.lic', 'TextSubs')
 
@@ -150,6 +154,33 @@ RSpec.describe 'textsubs.lic' do
     matches = subs.select { |key, _| key =~ client_string }
     matches.each { |target, result| client_string.gsub!(target, result) }
     client_string
+  end
+
+  # Sends a line through every registered DownstreamHook, as Lich does.
+  #
+  # run_lic_entry evaluates the entry in a copy of TOPLEVEL_BINDING, so a
+  # `return` inside the hook proc (where `next` belongs) is a top-level return:
+  # Ruby unwinds the whole rspec process and exits with status 0, skipping
+  # every example after it, and neither `rescue Exception` nor the SystemExit
+  # guard in spec_helper sees it. The ensure clause still runs on that unwind,
+  # and raising there turns it into an ordinary failure of this example.
+  #
+  # @param line [String] a binary server line
+  # @return [String, nil] what the hooks pass on to the client
+  # @raise [RuntimeError] when the hooks neither returned nor raised
+  # @example
+  #   run_hooks("You feel fine.\r\n".b) # => "You feel FINE.\r\n"
+  def run_hooks(line)
+    returned = false
+    output = DownstreamHook.run(line)
+    returned = true
+    output
+  ensure
+    # $! is the exception in flight when the hook raised: let that one through.
+    unless returned || $!
+      raise "a DownstreamHook left without returning (a `return` in the hook proc where `next` belongs?); " \
+            'unchecked, that would end the whole rspec run with status 0'
+    end
   end
 
   after do
@@ -327,7 +358,7 @@ RSpec.describe 'textsubs.lic' do
     it "registers 'textsub', and the registered hook applies the catalog" do
       build_catalog('Commoner', 'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
       expect(DownstreamHook.list).to include('textsub')
-      expect(DownstreamHook.run("You feel fine today.\n")).to eq("You feel FINE today.\n")
+      expect(run_hooks("You feel fine today.\n".b)).to eq("You feel FINE today.\n")
     end
 
     it "removes 'textsub', and only 'textsub', in before_dying" do
@@ -363,7 +394,7 @@ RSpec.describe 'textsubs.lic' do
     # @param line [String] a server line; sent as the binary string Lich hands hooks
     # @return [String, nil] what the downstream hooks pass on to the client
     def through_hook(line)
-      DownstreamHook.run(line.b)
+      run_hooks(line.b)
     end
 
     it 'does not fire a key that matches only after an earlier key rewrote the line' do
@@ -423,7 +454,7 @@ RSpec.describe 'textsubs.lic' do
     def oracle_mismatches(lines)
       subs = TextSubs.subs
       lines.filter_map do |line|
-        hooked = DownstreamHook.run(line)
+        hooked = run_hooks(line)
         expected = reference_apply(subs, line)
         [line, hooked, expected] unless hooked == expected
       end
@@ -504,7 +535,7 @@ RSpec.describe 'textsubs.lic' do
     it 'keeps the \r\n ending on every stream line the Empath catalog rewrites' do
       build_catalog('Empath', every_flag_on)
       rewritten = stream_without_big_line.filter_map do |line|
-        output = DownstreamHook.run(line)
+        output = run_hooks(line)
         output unless output == line
       end
       expect(rewritten).not_to be_empty
