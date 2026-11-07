@@ -27,7 +27,8 @@ require_relative '../test/textsubs_corpus'
 # and review the fixture diff: it names every entry the change touched.
 #
 # A nil guild (textsubs started before DRStats knows the guild) is not part of
-# the golden set; it is covered on its own when the guild handling is fixed.
+# the golden set; 'a guild DRStats does not know yet' covers it, holding the
+# catalog built once the guild turns up to the golden one.
 #
 # The golden catalog says WHAT the hook applies; the reference-engine oracle
 # below says HOW. reference_apply keeps today's matching engine verbatim, and
@@ -417,6 +418,17 @@ RSpec.describe 'textsubs.lic' do
       observer.call(*[key_param, value_param, gate_param].map { |name| trace.binding.local_variable_get(name) }, trace.self)
     end
     writes.enable(target: write) { yield }
+  end
+
+  let(:golden_entries) { File.readlines(entries_path).map { |line| JSON.parse(line) } }
+  let(:golden_combinations) { JSON.parse(File.read(combos_path))['combinations'] }
+
+  # @param combination [Hash{String=>Object}] one element of `combinations`
+  # @return [Array<Array(String, Integer, String)>] its catalog as the golden
+  #   fixture holds it
+  def golden_catalog(combination)
+    golden = golden_combinations.find { |c| c.except('ranges') == combination }
+    expand_ranges(golden_entries, golden.fetch('ranges'))
   end
 
   # Installing a freshly staged Registry empties the catalog and ends any
@@ -1652,6 +1664,125 @@ RSpec.describe 'textsubs.lic' do
       allow(DownstreamHook).to receive(:list).and_return([])
       TextSubs.watch('textsub')
       expect(script.want_downstream).to be(false)
+    end
+  end
+
+  # pause is stubbed and counted, so a wait that never ends fails instead of
+  # hanging the run; DRInfomon.startup_complete? is the harness double, true
+  # unless an example says otherwise.
+  describe 'TextSubs.await_guild' do
+    let(:pauses) { [] }
+    let(:warnings) { displayed_messages.grep(/does not know your guild yet/) }
+
+    # @param on_pause [Proc, nil] called with the number of pauses so far
+    #   after each one, to change the world as time goes by
+    # @return [void]
+    def count_pauses(&on_pause)
+      allow(TextSubs).to receive(:pause) do |seconds|
+        pauses << seconds
+        raise 'TextSubs.await_guild is still waiting after 100 pauses' if pauses.size > 100
+
+        on_pause&.call(pauses.size)
+      end
+    end
+
+    before { count_pauses }
+
+    it 'returns the guild DRStats knows at once, without pausing or warning' do
+      DRStats.guild = 'Moon Mage'
+      DRInfomon._set_startup_complete(false)
+      expect(TextSubs.await_guild).to eq('Moon Mage')
+      expect(pauses).to be_empty
+      expect(warnings).to be_empty
+    end
+
+    it 'returns nil at once, warning once, when DRInfomon is done and still has no guild (a login while dead)' do
+      expect(TextSubs.await_guild).to be_nil
+      expect(pauses).to be_empty
+      expect(warnings.size).to eq(1)
+      expect(warnings.first).to end_with('textsubs adds them by itself once your guild is known.')
+    end
+
+    it 'keeps waiting while DRInfomon is busy, and returns the guild once INFO sets it, without warning' do
+      DRInfomon._set_startup_complete(false)
+      count_pauses { |count| DRStats.guild = 'Empath' if count == 3 }
+      expect(TextSubs.await_guild(interval: 0.25)).to eq('Empath')
+      expect(pauses).to eq([0.25, 0.25, 0.25])
+      expect(warnings).to be_empty
+    end
+
+    it 'stops at the check after DRInfomon finishes without a guild' do
+      DRInfomon._set_startup_complete(false)
+      count_pauses { |count| DRInfomon._set_startup_complete(true) if count == 2 }
+      expect(TextSubs.await_guild).to be_nil
+      expect(pauses.size).to eq(2)
+      expect(warnings.size).to eq(1)
+    end
+
+    it 'gives up after timeout seconds and warns once' do
+      DRInfomon._set_startup_complete(false)
+      expect(TextSubs.await_guild(timeout: 2, interval: 0.5)).to be_nil
+      expect(pauses).to eq([0.5] * 4)
+      expect(warnings.size).to eq(1)
+    end
+
+    it 'waits ten seconds at most by default, checking every half second' do
+      DRInfomon._set_startup_complete(false)
+      TextSubs.await_guild
+      expect(pauses).to eq([0.5] * 20)
+    end
+
+    it 'does not wait at all when the timeout is zero' do
+      DRInfomon._set_startup_complete(false)
+      expect(TextSubs.await_guild(timeout: 0)).to be_nil
+      expect(pauses).to be_empty
+    end
+
+    # DRInfomon marks startup done right after INFO, so the guild may land
+    # between the guild check and the startup check of the same poll.
+    it 'reads the guild again after it stops, so a guild set at the moment DRInfomon finishes is not missed' do
+      allow(DRStats).to receive(:guild).and_return(nil, 'Bard')
+      expect(TextSubs.await_guild).to eq('Bard')
+      expect(warnings).to be_empty
+    end
+  end
+
+  describe 'a guild DRStats does not know yet' do
+    let(:warnings) { displayed_messages.grep(/does not know your guild yet/) }
+    let(:spell_links_on) { { 'textsubs_spell_links' => true, 'herb_textsubs' => false, 'textsubs_use_plat_grouping' => false } }
+    let(:mana_tuner_sources) do
+      shipped_catalog['textsubs']['sections'].find { |section| section['name'] == 'mana tuners' }['subs'].map(&:first)
+    end
+
+    before { allow(TextSubs).to receive(:pause) }
+
+    it 'builds no guild section, no guild spell link and no mana tuner note, and warns once' do
+      catalog = build_catalog(nil, spell_links_on)
+      sources = catalog.map(&:first)
+      commoner = golden_catalog(spell_links_on.merge('guild' => 'Commoner'))
+
+      expect(catalog.map(&:last).grep(/Category:_spells/)).to be_empty
+      expect(sources & mana_tuner_sources).to be_empty
+      expect(sources).not_to include('You recall the spells you have learned from your training.')
+      # A Commoner has no guild section, so it differs only by what needs a
+      # known guild: the link and the mana tuners.
+      expect(catalog).to eq(commoner.reject { |source, _, replacement| mana_tuner_sources.include?(source) || replacement.include?('Category:Commoner_spells') })
+      expect(warnings.size).to eq(1)
+    end
+
+    it 'builds the Empath catalog when INFO sets the guild during the wait' do
+      DRInfomon._set_startup_complete(false)
+      pauses = 0
+      allow(TextSubs).to receive(:pause) do
+        pauses += 1
+        DRStats.guild = 'Empath' if pauses == 2
+      end
+
+      catalog = build_catalog(nil, spell_links_on)
+
+      expect(pauses).to eq(2)
+      expect(catalog == golden_catalog(spell_links_on.merge('guild' => 'Empath'))).to be(true)
+      expect(warnings).to be_empty
     end
   end
 

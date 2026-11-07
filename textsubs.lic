@@ -463,6 +463,38 @@ class TextSubs
     -100
   end
 
+  # Waits for DRStats to know the guild, as the catalog's guild sections and
+  # its guild spell list link need it: DRStats.guild is nil until DRInfomon's
+  # login commands have had INFO parsed, and textsubs often starts before
+  # that, from autostart.
+  #
+  # It stops waiting as soon as the guild is known, or DRInfomon says its
+  # login commands are done (they skip INFO on a login while dead, so the
+  # guild stays nil until a later INFO), or timeout seconds have gone by.
+  # A guild still not known then is said once; watch rebuilds the catalog
+  # when the guild turns up later.
+  #
+  # @param timeout [Numeric] the most seconds to wait
+  # @param interval [Numeric] seconds between checks
+  # @return [String, nil] the guild, or nil when it is still not known
+  # @example At the start of the entry point
+  #   guild = TextSubs.await_guild # => "Bard"
+  def self.await_guild(timeout: 10, interval: 0.5)
+    waited = 0
+    until DRStats.guild || DRInfomon.startup_complete? || waited >= timeout
+      pause(interval)
+      waited += interval
+    end
+    # Read once more: INFO may land between the guild check and the
+    # startup check above.
+    guild = DRStats.guild
+    unless guild
+      echo 'DRStats does not know your guild yet (a login while dead skips INFO), so the guild subs and the ' \
+           'guild spell list link are off for now; textsubs adds them by itself once your guild is known.'
+    end
+    guild
+  end
+
   # Keeps the script alive exactly as long as its hook is registered, so
   # ;list and Script.running?('textsubs') tell the truth: Lich removes a
   # hook that raises (and another script may remove it by name), and a
@@ -1795,6 +1827,10 @@ end
 
 settings = get_settings
 
+# Waits a few seconds at most, before the catalog is built, for DRStats to
+# know the guild the guild sections are chosen by.
+guild = TextSubs.await_guild
+
 # Every start builds its catalog from nothing: a restart with other settings
 # keeps none of the keys the run before it added. The catalog is built in a
 # staged Registry and installed whole once it is complete. Lich has already
@@ -1858,7 +1894,7 @@ if catalog_override
   echo "Reading the built-in subs from #{catalog_override}, which replaces data/base-textsubs.yaml " \
        "(it must be a 'textsubs:' mapping with schema: #{TextSubs::Catalog.schema})."
 end
-catalog_problem = TextSubs.add_catalog(get_data('textsubs').textsubs, TextSubs::Context.new(guild: DRStats.guild, settings: settings),
+catalog_problem = TextSubs.add_catalog(get_data('textsubs').textsubs, TextSubs::Context.new(guild: guild, settings: settings),
                                        file: catalog_override || File.join(SCRIPT_DIR, 'data', 'base-textsubs.yaml'))
 echo catalog_problem if catalog_problem
 TextSubs.prefer_private(private_subs).each { |warning| echo warning }
