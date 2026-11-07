@@ -1,6 +1,7 @@
 require 'fileutils'
 require 'json'
 require 'tmpdir'
+require_relative '../test/textsubs_corpus'
 
 # textsubs.lic builds its whole substitution catalog at top level: the entry
 # point registers the 'textsub' DownstreamHook, adds the shit-list and
@@ -29,17 +30,24 @@ require 'tmpdir'
 # committed inputs, both synthetic (no real player names):
 #   - samples.jsonl holds one JSON string per line, expanded from the catalog's
 #     own regex sources (up to two alternatives per entry), so every key of
-#     every guild catalog is matched by at least one sample. It ends with
+#     every guild catalog is matched by at least one sample. Then come
 #     composite lines, each two of those samples joined by a space, that two or
 #     more keys of every guild catalog match; in a few of them the order the
 #     keys run in changes the output (a coin amount before a spell link, whose
 #     '>' turns the coin rule off; the two "a devastating hit" keys), so the
-#     per-guild sweeps also pin the order of real keys, not just each key;
+#     per-guild sweeps also pin the order of real keys, not just each key. Any
+#     lines added by hand come last;
 #   - synthetic_stream.xml is a hand-written XML stream (inv pushStream dump,
 #     room objs with exist ids, prompts, roundTime, coin and wealth lines and a
 #     49 KB digit-heavy inventoryManager line), every line ending in \r\n.
-# The samples are inputs, not output: they are not regenerated when the catalog
-# changes. A new or rewritten pattern adds a line to samples.jsonl.
+# test/textsubs_corpus.rb generates both: the samples from catalog_entries.jsonl,
+# the stream from its own text. 'corpus fixtures' checks that each file is the
+# generator's output (for samples.jsonl, followed by the hand-added lines). A
+# commit that changes the catalog regenerates them with
+#   TEXTSUBS_CORPUS_WRITE=1 bundle exec rspec spec/textsubs_spec.rb
+# which keeps every line of samples.jsonl the generator does not make, so a
+# hand-added line is never dropped; review the diff. To pin a pattern with a
+# line the generator does not make, add the line at the end of samples.jsonl.
 #
 # What the real catalogs cannot pin: on no corpus line does a key create a
 # match for a key that runs after it (the only two such pairs a search of every
@@ -534,6 +542,56 @@ RSpec.describe 'textsubs.lic' do
           "reference: #{expected.inspect[0, 300]}"
       end
       "#{mismatches.size} line(s) differ from reference_apply with the #{catalog} catalog:\n#{shown.join("\n")}"
+    end
+
+    describe 'corpus fixtures' do
+      catalog_entries = -> { File.readlines(entries_path).map { |line| JSON.parse(line) } }
+
+      if ENV['TEXTSUBS_CORPUS_WRITE'] == '1'
+        it 'writes samples.jsonl and synthetic_stream.xml, keeping the hand-added samples' do
+          generated = TextsubsCorpus.generated_samples(catalog_entries.call)
+          current = TextsubsCorpus.parse_samples(File.read(samples_path))
+          composites = TextsubsCorpus.composite_samples(TextsubsCorpus.expanded_samples(catalog_entries.call)).map(&:b)
+          thin = combinations.select { |combination| combination['textsubs_spell_links'] && combination['herb_textsubs'] }.flat_map do |combination|
+            build_combination(combination)
+            keys = TextSubs.subs.keys
+            composites.reject { |line| keys.count { |key| key.match?(line) } >= 2 }.map { |line| [combination['guild'], line] }
+          end
+          expect(thin).to eq([]), 'each composite sample must be matched by two or more keys of every catalog with spell links and herbs on'
+
+          File.write(samples_path, TextsubsCorpus.samples_jsonl(TextsubsCorpus.samples_lines(generated, current)))
+          File.binwrite(stream_path, TextsubsCorpus.stream)
+          kept = TextsubsCorpus.hand_added(generated, current)
+          warn "samples.jsonl keeps #{kept.size} line(s) the generator does not make, at its end:\n#{kept.map { |line| "  #{line.inspect}" }.join("\n")}" unless kept.empty?
+        end
+      else
+        it 'holds the generated samples, then only the hand-added ones, each line once' do
+          generated = TextsubsCorpus.generated_samples(catalog_entries.call)
+          committed = File.read(samples_path)
+          current = TextsubsCorpus.parse_samples(committed)
+          repeated = current.tally.select { |_line, count| count > 1 }.keys
+          expect(repeated).to eq([]), "samples.jsonl holds these lines more than once: #{repeated.inspect}"
+          expected = TextsubsCorpus.samples_jsonl(TextsubsCorpus.samples_lines(generated, current)).lines
+          at = committed.lines.each_index.find { |index| committed.lines[index] != expected[index] }
+          expect(at).to be_nil, lambda {
+            "samples.jsonl line #{at + 1} is #{committed.lines[at].inspect}, the generator puts #{expected[at].inspect} there; " \
+              'regenerate it with TEXTSUBS_CORPUS_WRITE=1 bundle exec rspec spec/textsubs_spec.rb ' \
+              '(hand-added lines go at the end)'
+          }
+          expect(committed.lines.size).to eq(expected.size)
+        end
+
+        it 'holds the generated stream' do
+          committed = File.binread(stream_path)
+          generated = TextsubsCorpus.stream
+          at = (0...[committed.size, generated.size].max).find { |index| committed[index] != generated[index] }
+          expect(at).to be_nil, lambda {
+            "synthetic_stream.xml differs from TextsubsCorpus.stream at byte #{at}: " \
+              "#{committed[at, 60].inspect} vs #{generated[at, 60].inspect}; regenerate it with " \
+              'TEXTSUBS_CORPUS_WRITE=1 bundle exec rspec spec/textsubs_spec.rb'
+          }
+        end
+      end
     end
 
     it 'reads a synthetic stream of \r\n lines holding one 49 KB digit-heavy line with no currency word' do
