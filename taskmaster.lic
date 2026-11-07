@@ -35,7 +35,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.07.10'
+  VERSION = '2026.11.07.12'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -3528,13 +3528,17 @@ class TaskMaster
 
   # Whether the item to hand in is in hand, getting one from the hand-in bag
   # when not: for Nezhiri, the stack remedy_hand_in? made ready, by its id.
+  # A held item counts by its own noun: DRCI.in_hands?('rope') also matches
+  # the "reinforced rope instructions" a stopped sew leaves in hand, so the
+  # rope was never taken out of the bag and five gives of nothing stopped
+  # the task (2026-11-07).
   #
   # @param noun [String] the item's noun
   # @return [Boolean]
   def holding_hand_in?(noun)
     return hand_ids.include?(@remedy_hand_in) if @npc == 'nezhiri'
 
-    DRCI.in_hands?(noun) || DRCI.get_item?(noun, hand_in_bag)
+    !held_id(noun).nil? || DRCI.get_item?(noun, hand_in_bag)
   end
 
   # The id of the item being handed in, for a give from the right hand.
