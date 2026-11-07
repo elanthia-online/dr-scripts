@@ -12,7 +12,8 @@ no_kill_all
 # fills it through add (the shit list, private_textsubs, then the built-in
 # subs Catalog reads from data/base-textsubs.yaml), installs it whole, and only
 # then registers a 'textsub' DownstreamHook (persist: false, so Lich removes it
-# when the script ends) that hands every server line to apply while a front
+# when the script ends, and priority hook_priority, so it runs after every
+# default-priority hook) that hands every server line to apply while a front
 # end is attached. Until the install, apply serves the empty catalog the class
 # body installed when the start evaluated it. The script then waits in watch,
 # which ends it once that hook is gone.
@@ -446,6 +447,20 @@ class TextSubs
     true
   end
   private_class_method :drop
+
+  # The priority the 'textsub' hook is registered at. Lich runs downstream
+  # hooks in descending priority, equal priorities in the order they were
+  # first registered, and a hook added without one gets 0. At -100, every
+  # default-priority hook that reads or squelches lines sees the raw server
+  # text before textsubs rewrites it, whether its script started before or
+  # after textsubs, and a restart of textsubs cannot change that.
+  #
+  # @return [Integer] -100
+  # @example The entry point
+  #   DownstreamHook.add('textsub', action, persist: false, priority: TextSubs.hook_priority)
+  def self.hook_priority
+    -100
+  end
 
   # Keeps the script alive exactly as long as its hook is registered, so
   # ;list and Script.running?('textsubs') tell the truth: Lich removes a
@@ -1600,8 +1615,9 @@ end
 
 # persist: false hands the cleanup to Lich, which removes the hook when this
 # script ends, and only if this script still owns it: a newer textsubs that
-# re-registered 'textsub' keeps its hook when an older one dies.
-DownstreamHook.add('textsub', action, persist: false)
+# re-registered 'textsub' keeps its hook when an older one dies. The priority
+# runs it after every default-priority hook (see TextSubs.hook_priority).
+DownstreamHook.add('textsub', action, persist: false, priority: TextSubs.hook_priority)
 
 # Runs until the hook is gone, then ends the script, so restart helpers see
 # that textsubs is no longer running.
