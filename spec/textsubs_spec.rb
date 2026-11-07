@@ -745,13 +745,14 @@ RSpec.describe 'textsubs.lic' do
     #
     # @param line [String] a server line without its line ending
     # @param guild [String] whose catalog to build
-    # @return [String, nil] what the hooks pass on for "#{line}\r\n"
+    # @param line_ending [String] appended to `line`; raw server lines end in "\r\n"
+    # @return [String, nil] what the hooks pass on for "#{line}#{line_ending}"
     # @example
     #   hooked('The back of your neck prickles.', guild: 'Necromancer')
     #   # => "The back of your neck prickles. (DO gained from being in a Holy area. Move away to avoid this hit.)\r\n"
-    def hooked(line, guild: 'Commoner')
+    def hooked(line, guild: 'Commoner', line_ending: "\r\n")
       build_catalog(guild)
-      run_hooks("#{line}\r\n".b)
+      run_hooks("#{line}#{line_ending}".b)
     end
 
     # A double-quoted literal turns "\1" into byte 0x01 and "\b" into a
@@ -846,8 +847,7 @@ RSpec.describe 'textsubs.lic' do
         end
 
         it "labels the (#{tier}) howl on a line that ends in a bare \\n" do
-          build_catalog('Ranger')
-          expect(run_hooks("#{howl}\n".b)).to eq("#{howl} (#{tier})\n")
+          expect(hooked(howl, guild: 'Ranger', line_ending: "\n")).to eq("#{howl} (#{tier})\n")
         end
 
         it "leaves the (#{tier}) howl alone when more text follows it on the line" do
