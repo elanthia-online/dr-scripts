@@ -442,7 +442,7 @@ class TextSubs
 
     @@generation += 1
     respond "[textsubs: the sub #{key.source.inspect} raised #{error.class} (#{error.message}) " \
-            'and is off until textsubs restarts; fix or remove it in private_textsubs]'
+            'and is off until textsubs restarts; fix or remove it where it was added, usually private_textsubs]'
     true
   end
   private_class_method :drop
