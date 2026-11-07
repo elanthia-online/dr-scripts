@@ -32,6 +32,8 @@
           - patch
 =end
 
+require 'digest'
+
 # Loads and normalizes the word lists the solver works from.
 module AestheneWords
   # Every lock answer and guess is exactly five ASCII letters.
@@ -270,6 +272,14 @@ class AestheneSolver
   # sampled evenly from the dictionary.
   PROBE_WORD_LIMIT = 2000
 
+  # Bump when a change to the scoring would change the guesses without
+  # changing the word lists or the constants above. That changes the digest,
+  # so a guess table built by the old code is no longer used.
+  SCORING_VERSION = 1
+
+  # Marks as written in a state key: hit, present, absent.
+  KEY_MARKS = { hit: 'h', present: 'p', absent: 'a' }.freeze
+
   # @return [Array<String>] answers still consistent with the feedback
   attr_reader :candidates
 
@@ -277,7 +287,10 @@ class AestheneSolver
   # @param dictionary [Array<String>] normalized fallback words
   # @param opening [String, nil] first guess for an empty lock. Precomputed,
   #   because scoring the empty lock takes several seconds; nil computes it.
-  def initialize(answers, dictionary, opening: nil)
+  # @param table [Hash{String => String}, nil] precomputed guesses by state
+  #   key (see .state_key), from the data file. Only pass a table whose digest
+  #   matches these lists (see .digest).
+  def initialize(answers, dictionary, opening: nil, table: nil)
     @answers = answers
     @dictionary = dictionary
     @opening = opening
@@ -285,7 +298,78 @@ class AestheneSolver
     @known = answers
     @unlisted = dictionary
     @candidates = answers.empty? ? dictionary : answers
-    @guess_cache = {}
+    @guess_cache = table ? table.dup : {}
+  end
+
+  # Fingerprint of everything that decides the guesses: the lists in order,
+  # the opening, the scoring constants and SCORING_VERSION. A guess table is
+  # only valid for the digest it was built for.
+  #
+  # @param answers [Array<String>] normalized known answers, in order
+  # @param dictionary [Array<String>] normalized dictionary words, in order
+  # @param opening [String, nil]
+  # @return [String] hex SHA-256
+  def self.digest(answers, dictionary, opening)
+    inputs = [SCORING_VERSION, PROBES, HEDGE_WEIGHT, SCORING_LIMIT, PROBE_WORD_LIMIT, opening, answers, dictionary]
+    Digest::SHA256.hexdigest(inputs.inspect)
+  end
+
+  # The key a lock state is remembered by, e.g. "TRALE:aahaa|5".
+  #
+  # @param rows [Array<AestheneGrid::Row>] every row on the lock
+  # @param rows_left [Integer]
+  # @return [String]
+  def self.state_key(rows, rows_left)
+    (rows.map { |row| "#{row.guess}:#{row.marks.map { |mark| KEY_MARKS.fetch(mark) }.join}" } << rows_left).join('|')
+  end
+
+  # Solves every known answer once and returns each guess that had to be
+  # scored, by state key. That is the guess table: with it, no known answer
+  # needs scoring. Slow: tens of seconds.
+  #
+  # @param answers [Array<String>]
+  # @param dictionary [Array<String>]
+  # @param opening [String, nil]
+  # @return [Hash{String => String}] guesses in key order
+  def self.build_table(answers, dictionary, opening)
+    solver = new(answers, dictionary, opening: opening)
+    answers.each { |answer| solver.solve_offline(answer) }
+    solver.instance_variable_get(:@guess_cache).sort.to_h
+  end
+
+  # The marks the game puts on a guess. Unlike Wordle it does not count
+  # letters: a tile that is not a hit is present whenever its letter is
+  # anywhere in the answer. Live logs: HAMAR against FAIRY marks both A's
+  # (+A+ then _A_), and SMALL against PSALM marks both L's (+L+ then _L_).
+  # feedback_code, which scores guesses, still counts letters.
+  #
+  # @param guess [String]
+  # @param answer [String]
+  # @return [Array<Symbol>] :hit, :present or :absent per tile
+  def self.lock_marks(guess, answer)
+    guess.chars.each_with_index.map do |letter, index|
+      if answer[index] == letter then :hit
+      elsif answer.include?(letter) then :present
+      else :absent
+      end
+    end
+  end
+
+  # Plays a lock with a known answer against this solver, as the game would.
+  #
+  # @param answer [String]
+  # @return [Array<String>] the guesses, ending with the answer when solved
+  def solve_offline(answer)
+    rows = []
+    6.times do
+      observe(rows)
+      guess = next_guess(6 - rows.size)
+      break unless guess
+
+      rows += [AestheneGrid::Row.new(guess, AestheneSolver.lock_marks(guess, answer))]
+      break if guess == answer
+    end
+    rows.map(&:guess)
   end
 
   # Re-derives the candidates from every row on the lock.
@@ -324,7 +408,8 @@ class AestheneSolver
   # for the life of the solver. In a run of slips, a lock whose first row
   # repeats an earlier lock's gets its second guess at once; in two 50-lock
   # runs about 40% of first rows repeated. The cache holds one short entry per
-  # lock state actually scored, a few per lock.
+  # lock state actually scored, a few per lock. A guess table from the data
+  # file seeds it, so known answers need no scoring at all.
   #
   # @param rows_left [Integer] rows still free on the lock
   # @return [String, nil] the guess, or nil when nothing fits
@@ -333,8 +418,7 @@ class AestheneSolver
     return @candidates.first if @candidates.size == 1 || rows_left <= 1
     return @opening if @opening && @rows.empty?
 
-    key = (@rows.map { |row| "#{row.guess}:#{row.marks.join(',')}" } << rows_left).join('|')
-    @guess_cache[key] ||= best_guess(rows_left)
+    @guess_cache[AestheneSolver.state_key(@rows, rows_left)] ||= best_guess(rows_left)
   end
 
   # Whether a word could still be the answer given one row of feedback.
@@ -539,7 +623,21 @@ class Aesthene
     opening, = AestheneWords.normalize(data&.opening)
     abort_with('aesthene: no word lists found. Is data/base-aesthene.yaml installed?') if answers.empty? && dictionary.empty?
 
-    AestheneSolver.new(answers, dictionary, opening: opening.first)
+    AestheneSolver.new(answers, dictionary, opening: opening.first, table: guess_table(data, answers, dictionary, opening.first))
+  end
+
+  # The data file's guess table, when it was built for exactly these lists.
+  # A character's aesthene_lock_answers, or data changed without regenerating
+  # the table (util/aesthene_guess_table.rb), changes the digest; the table is
+  # then ignored and guesses are computed as before.
+  #
+  # @return [Hash{String => String}, nil]
+  def guess_table(data, answers, dictionary, opening)
+    table = data&.guess_table
+    return nil unless table.is_a?(Hash) && table['guesses'].is_a?(Hash)
+    return nil unless table['digest'] == AestheneSolver.digest(answers, dictionary, opening)
+
+    table['guesses']
   end
 
   # @param count [String, nil] the count argument: digits, 'all' or nil
