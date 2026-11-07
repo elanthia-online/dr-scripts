@@ -5,12 +5,14 @@ require 'tmpdir'
 require 'yaml'
 require_relative '../test/textsubs_corpus'
 
-# textsubs.lic builds its whole substitution catalog at top level: the entry
-# point registers the 'textsub' DownstreamHook, adds the shit-list and
-# private_textsubs entries, then runs ~1,600 TextSubs.add / TextSubs.elanthipedia
-# calls gated by the guild and three settings. These specs pin that catalog so a
-# refactor of the script has to reproduce every entry, in order, for every
-# combination a player can run.
+# textsubs.lic builds its whole substitution catalog when it starts: the entry
+# point adds the shit-list and private_textsubs entries, then the ~1,600
+# built-in subs TextSubs::Catalog reads from data/base-textsubs.yaml, gated by
+# the guild and three settings, and then registers the 'textsub'
+# DownstreamHook. These specs pin that catalog so a change to the script or
+# the data file has to reproduce every entry, in order, for every combination
+# a player can run. The golden fixture is JSON, so it does not lean on the YAML
+# reader it checks.
 #
 # The golden fixture lives in spec/fixtures/textsubs/:
 #   - catalog_entries.jsonl holds every distinct [source, options, replacement]
@@ -97,6 +99,18 @@ RSpec.describe 'textsubs.lic' do
   hand_added_path = File.join(fixture_dir, 'samples_hand_added.jsonl')
   # @return [Array<Array(String, Integer, String)>] the rows of catalog_entries.jsonl
   read_entries = -> { File.readlines(entries_path).map { |line| JSON.parse(line) } }
+  catalog_path = File.expand_path('../data/base-textsubs.yaml', __dir__)
+  # Read once, the way lich-5's SetupFiles reads it (YAML.unsafe_load_file),
+  # and frozen, so a catalog reader that changed its data would raise.
+  shipped_catalog = YAML.unsafe_load_file(catalog_path, freeze: true)
+
+  # Every example starts as a fresh install: get_data('textsubs') answers with
+  # the shipped file, as an OpenStruct of its top-level keys like lich-5's, and
+  # SCRIPT_DIR points nowhere, so there is no data/custom copy.
+  before do
+    stub_const('SCRIPT_DIR', '/nonexistent-textsubs-spec')
+    $test_data[:textsubs] = OpenStruct.new(shipped_catalog)
+  end
 
   # Runs the real textsubs.lic entry point for one combination and returns the
   # catalog it built.
@@ -402,6 +416,101 @@ RSpec.describe 'textsubs.lic' do
     end
   end
 
+  # The checks yamllint does not make: its key-duplicates rule only warns, and
+  # Psych keeps the last of two equal keys without a word. They read the
+  # file's syntax tree, so they see how each scalar is written, not just what
+  # it loads as.
+  describe 'data/base-textsubs.yaml' do
+    let(:document) { Psych.parse_file(catalog_path) }
+    let(:data) { shipped_catalog['textsubs'] }
+
+    # Every scalar of a parsed YAML stream that is a value, not a mapping key.
+    #
+    # @param tree [Psych::Nodes::Node] a parsed stream or document
+    # @return [Array<Psych::Nodes::Scalar>]
+    def value_scalars(tree)
+      keys = tree.each.grep(Psych::Nodes::Mapping).flat_map { |mapping| mapping.children.each_slice(2).map(&:first) }
+      tree.each.grep(Psych::Nodes::Scalar).reject { |scalar| keys.any? { |key| key.equal?(scalar) } }
+    end
+
+    # @param tree [Psych::Nodes::Node]
+    # @return [Array<String>] "line N: value" for each value scalar not in
+    #   single quotes, but the number under a schema key
+    def unquoted_values(tree)
+      schema_numbers = tree.each.grep(Psych::Nodes::Mapping).flat_map do |mapping|
+        mapping.children.each_slice(2).select { |key, _| key.value == 'schema' }.map(&:last)
+      end
+      value_scalars(tree).reject { |scalar| scalar.style == Psych::Nodes::Scalar::SINGLE_QUOTED || schema_numbers.any? { |number| number.equal?(scalar) } }
+                         .map { |scalar| "line #{scalar.start_line + 1}: #{scalar.value}" }
+    end
+
+    # @param tree [Psych::Nodes::Node]
+    # @return [Array<String>] "line N: key" for each key a mapping repeats
+    def repeated_keys(tree)
+      tree.each.grep(Psych::Nodes::Mapping).flat_map do |mapping|
+        keys = mapping.children.each_slice(2).map(&:first)
+        keys.group_by(&:value).values.select { |same| same.size > 1 }.map { |same| "line #{same.last.start_line + 1}: #{same.last.value}" }
+      end
+    end
+
+    it 'writes every pattern, replacement, name, guild and setting in single quotes' do
+      expect(unquoted_values(document)).to be_empty, -> { "not single-quoted:\n  #{unquoted_values(document).first(10).join("\n  ")}" }
+      expect(value_scalars(document).size).to be > 3000
+    end
+
+    it 'takes a plain, a double-quoted and a block scalar for unquoted, but not the schema number' do
+      tree = Psych.parse(<<~YAML)
+        textsubs:
+          schema: 1
+          sections:
+            - name: plain
+              when:
+                setting: |
+                  block
+              subs:
+                - ["\\\\1", 'ok']
+                - [1, 'one']
+      YAML
+      expect(unquoted_values(tree)).to eq(['line 4: plain', "line 6: block\n", 'line 9: \\1', 'line 10: 1'])
+    end
+
+    it 'repeats no key in any mapping' do
+      expect(repeated_keys(document)).to be_empty, -> { "repeated keys:\n  #{repeated_keys(document).join("\n  ")}" }
+    end
+
+    it 'finds a repeated key, which Psych would load as the last one alone' do
+      tree = Psych.parse("textsubs:\n  schema: 1\n  sections:\n    - name: 'a'\n      subs: []\n      name: 'b'\n")
+      expect(repeated_keys(tree)).to eq(['line 6: name'])
+    end
+
+    it 'uses no anchor, alias or tag, so every sub is written out where it applies' do
+      nodes = document.each.to_a
+      expect(nodes.grep(Psych::Nodes::Alias)).to be_empty
+      expect(nodes.select { |node| node.respond_to?(:anchor) && node.anchor }).to be_empty
+      expect(nodes.select { |node| node.respond_to?(:tag) && node.tag }).to be_empty
+    end
+
+    it 'gives every section its own name' do
+      names = data['sections'].map { |section| section['name'] }
+      expect(names.tally.select { |_, count| count > 1 }).to be_empty
+    end
+
+    it 'holds only patterns that compile' do
+      patterns = data['sections'].flat_map { |section| section.key?('subs') ? section['subs'].map(&:first) : [section['pattern']] }
+      broken = patterns.reject do |pattern|
+        Regexp.new(pattern)
+      rescue RegexpError
+        false
+      end
+      expect(broken).to be_empty
+      expect(patterns.size).to be > 1500
+    end
+
+    it 'is schema 1, the schema this textsubs.lic reads' do
+      expect(data['schema']).to eq(TextSubs::Catalog.schema)
+    end
+  end
+
   describe 'settings gating' do
     flags = %w[textsubs_spell_links herb_textsubs textsubs_use_plat_grouping]
 
@@ -524,6 +633,92 @@ RSpec.describe 'textsubs.lic' do
         settings = { 'integrate_shit_list_with_textsubs' => true, 'private_textsubs' => { 'You feel fine' => 'You feel FINE' } }
         catalog = Dir.chdir(dir) { build_catalog('Commoner', settings) }
         expect(catalog.first(2)).to eq([['Zorvex', 0, 'Zorvex (SL)'], ['You feel fine', 0, 'You feel FINE']])
+      end
+    end
+  end
+
+  # get_data answers a missing data/base-textsubs.yaml and one that did not
+  # parse alike (lich-5 SetupFiles: no cache entry, or {} after printing the
+  # parse error), with an OpenStruct that has no textsubs key.
+  describe 'catalog data it cannot use' do
+    include_context 'with a front end attached'
+
+    shipped = lambda do
+      Marshal.load(Marshal.dump(shipped_catalog))
+    end
+    stale = shipped.call.tap { |copy| copy['textsubs']['schema'] = 2 }
+    unknown_kind = shipped.call.tap { |copy| copy['textsubs']['sections'].last['kind'] = 'ladder' }
+    {
+      'a missing file or one that did not parse' => [OpenStruct.new, /no 'textsubs:' mapping/],
+      'a file from another schema'               => [OpenStruct.new(stale), /schema 2, but this textsubs.lic reads schema 1/],
+      'a section of an unknown kind'             => [OpenStruct.new(unknown_kind), /has unknown kind "ladder"/]
+    }.each do |label, (answer, reason)|
+      context "with #{label}" do
+        # Starts textsubs with one shit-list name and one private sub.
+        #
+        # @return [Array<Array>] the catalog built
+        def start_with_shit_list_and_private_sub
+          Dir.mktmpdir('textsubs-bad-catalog') do |dir|
+            File.write(File.join(dir, "#{checkname}_shit.list"), "zorvex,stole my kill\n")
+            Dir.chdir(dir) do
+              build_catalog('Bard', 'integrate_shit_list_with_textsubs' => true, 'textsubs_spell_links' => true,
+                                    'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
+            end
+          end
+        end
+
+        before { $test_data[:textsubs] = answer }
+
+        it 'says once that it adds no built-in sub, naming the file, why and the schema it needs' do
+          start_with_shit_list_and_private_sub
+          expect($data_called_with).to eq(['textsubs'])
+          said = displayed_messages.grep(/built-in subs/)
+          expect(said.size).to eq(1)
+          expect(said.first).to start_with('No built-in subs: /nonexistent-textsubs-spec/data/base-textsubs.yaml cannot be used (')
+          expect(said.first).to match(reason)
+          expect(said.first).to include("needs a 'textsubs:' mapping with schema: 1")
+          expect(said.first).to end_with('Only private_textsubs and shit-list subs are active.')
+        end
+
+        it 'keeps the shit-list and private subs, adds nothing else, and still registers the hook' do
+          expect(start_with_shit_list_and_private_sub).to eq([['Zorvex', 0, 'Zorvex (SL)'], ['You feel fine', 0, 'You feel FINE']])
+          expect(DownstreamHook.list).to include('textsub')
+          expect(run_hooks("You feel fine, Zorvex.\r\n".b)).to eq("You feel FINE, Zorvex (SL).\r\n")
+        end
+      end
+    end
+
+    it 'says nothing about the catalog when the shipped file is good' do
+      build_catalog('Commoner')
+      expect(displayed_messages).to be_empty
+    end
+
+    describe 'a copy in data/custom' do
+      around do |example|
+        Dir.mktmpdir('textsubs-script-dir') do |dir|
+          @custom = File.join(dir, 'data', 'custom', 'base-textsubs.yaml')
+          FileUtils.mkdir_p(File.dirname(@custom))
+          File.write(@custom, "textsubs:\n")
+          @script_dir = dir
+          example.run
+        end
+      end
+
+      before { stub_const('SCRIPT_DIR', @script_dir) }
+
+      it 'says once that it reads the copy, and builds the catalog get_data gives' do
+        from_copy = build_catalog('Commoner')
+        expect(displayed_messages).to eq(["Reading the built-in subs from #{@custom}, which replaces data/base-textsubs.yaml."])
+
+        stub_const('SCRIPT_DIR', '/nonexistent-textsubs-spec')
+        expect(from_copy).to eq(build_catalog('Commoner'))
+        expect(from_copy.size).to be > 700
+      end
+
+      it 'names the copy, not the shipped file, when the copy cannot be used' do
+        $test_data[:textsubs] = OpenStruct.new(textsubs: nil)
+        expect(build_catalog('Commoner')).to eq([])
+        expect(displayed_messages.last).to start_with("No built-in subs: #{@custom} cannot be used (no 'textsubs:' mapping")
       end
     end
   end
@@ -1646,22 +1841,13 @@ RSpec.describe 'textsubs.lic' do
     let(:settings) { OpenStruct.new(herb_textsubs: true, textsubs_spell_links: false) }
 
     # Parses a small catalog, as data/base-textsubs.yaml would hold it, and
-    # deep-freezes it, so an example also proves the catalog changes nothing.
+    # freezes it throughout, so an example also proves the catalog changes
+    # nothing.
     #
     # @param yaml [String] the file text, top-level `textsubs:` key included
     # @return [Hash, nil] the `textsubs:` value
     def catalog_data(yaml)
-      deep_freeze(YAML.safe_load(yaml)['textsubs'])
-    end
-
-    # @param value [Object]
-    # @return [Object] value, with every Hash, Array and String in it frozen
-    def deep_freeze(value)
-      case value
-      when Hash then value.each_value { |item| deep_freeze(item) }
-      when Array then value.each { |item| deep_freeze(item) }
-      end
-      value.freeze
+      YAML.safe_load(yaml, freeze: true)['textsubs']
     end
 
     def entries_for(guild, data)
