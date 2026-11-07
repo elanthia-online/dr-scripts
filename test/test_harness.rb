@@ -599,38 +599,99 @@ module Harness
     end
   end
 
-  # Copied from lich.rbw
+  # Mirrors lich-5's DownstreamHook (lib/common/downstreamhook.rb plus the
+  # shared lib/common/hook_registry.rb, adebeef0): add takes persist: and
+  # priority:, and run calls hooks in descending priority, equal priorities in
+  # registration order (a re-added name keeps its first position). The default
+  # priority of zero keeps the historical registration order, so two-argument
+  # callers see no change. persist: is recorded (_hook_persist) but there is no
+  # script death in the harness, so nothing acts on it. Thread locking and
+  # source/owner bookkeeping are left out: specs run one thread.
   class DownstreamHook
     @@downstream_hooks ||= Hash.new
+    @@downstream_hook_persist ||= Hash.new
+    @@downstream_hook_priorities ||= Hash.new
 
-    def DownstreamHook.add(name, action)
-      unless action.class == Proc
+    # Registers +action+ under +name+, replacing any hook of that name.
+    #
+    # @param name [String] hook name; one hook per name
+    # @param action [Proc] called with a copy of each server line; its return
+    #   value is passed to the next hook, and nil drops the line
+    # @param persist [Boolean, nil] lifetime relative to the registering script
+    #   (true keeps it, false scopes it to the script, nil leaves it undeclared)
+    # @param priority [Numeric] finite real; higher values run first
+    # @return [Proc, false] the stored proc, or false (with an echo) when
+    #   +action+ is not a Proc or +priority+ is not a finite real Numeric
+    # @example A hook that must see the line after every default-priority hook
+    #   DownstreamHook.add('late', proc { |line| line }, persist: false, priority: -100)
+    def DownstreamHook.add(name, action, persist: nil, priority: 0)
+      unless action.is_a?(Proc)
         echo "DownstreamHook: not a Proc (#{action})"
         return false
       end
+      unless priority.is_a?(Numeric) && priority.real? &&
+             (!priority.respond_to?(:finite?) || priority.finite?)
+        echo "DownstreamHook: priority must be a finite real Numeric (#{priority.inspect})"
+        return false
+      end
+      @@downstream_hook_persist[name] = persist
+      @@downstream_hook_priorities[name] = priority
       @@downstream_hooks[name] = action
     end
 
+    # Passes +server_string+ through every hook in {ordered_hook_names} order.
+    # A hook that raises is removed and the line goes on unchanged; a hook
+    # removed earlier in the same pass is skipped.
+    #
+    # @param server_string [String, nil] a server line
+    # @return [String, nil] what the hooks pass on; nil when one dropped it
     def DownstreamHook.run(server_string)
-      for key in @@downstream_hooks.keys
+      for key in ordered_hook_names
+        return nil if server_string.nil?
+
         begin
-          server_string = @@downstream_hooks[key].call(server_string.dup)
+          action = @@downstream_hooks[key]
+          next unless action
+
+          server_string = action.call(server_string.dup) if server_string.is_a?(String)
         rescue
-          @@downstream_hooks.delete(key)
+          remove(key)
           respond "--- Lich: DownstreamHook: #{$!}"
           respond $!.backtrace.first
         end
-        return nil if server_string.nil?
       end
       return server_string
     end
 
+    # @return [Array<String>] hook names in run order: priority descending,
+    #   then registration order
+    def DownstreamHook.ordered_hook_names
+      @@downstream_hooks.keys.each_with_index
+                        .sort_by { |name, index| [-@@downstream_hook_priorities.fetch(name, 0), index] }
+                        .map(&:first)
+    end
+
+    # @param name [String]
+    # @return [Proc, nil] the removed proc, if any
     def DownstreamHook.remove(name)
+      @@downstream_hook_persist.delete(name)
+      @@downstream_hook_priorities.delete(name)
       @@downstream_hooks.delete(name)
     end
 
+    # @return [Array<String>] a copy of the registered names, in registration order
     def DownstreamHook.list
       @@downstream_hooks.keys.dup
+    end
+
+    # @return [Hash{String => Boolean, nil}] the live name -> persist map
+    def DownstreamHook._hook_persist
+      @@downstream_hook_persist
+    end
+
+    # @return [Hash{String => Numeric}] the live name -> priority map
+    def DownstreamHook._hook_priorities
+      @@downstream_hook_priorities
     end
   end
 
