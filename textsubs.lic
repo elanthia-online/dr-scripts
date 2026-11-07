@@ -1360,8 +1360,9 @@ class TextSubs
   end
 
   # Parsers for the subs a character's own settings and files give. Each is
-  # pure: it takes what the entry point read and returns only what it can
-  # use, and never opens a file or reads a setting itself.
+  # pure: it takes what the entry point read and returns what it can use
+  # (PrivateSubs also returns a warning for each entry it skips), and never
+  # opens a file or reads a setting itself.
   module Sources
     # The <checkname>_shit.list file integrate_shit_list_with_textsubs reads:
     # one player a line, the name first, then optionally a comma and a note.
