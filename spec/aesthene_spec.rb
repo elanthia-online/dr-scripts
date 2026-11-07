@@ -738,6 +738,33 @@ RSpec.describe 'aesthene.lic' do
         expect(instance).to have_received(:attune_and_solve).ordered
       end
 
+      it 'walks back to the starting room after a full run' do
+        allow(Room).to receive(:current).and_return(OpenStruct.new(id: 4242))
+        allow(instance).to receive(:run_slips).and_return(true)
+        allow(instance).to receive(:return_to)
+        $parsed_args = OpenStruct.new(full: true, count: '3')
+        instance.send(:initialize)
+        expect(instance).to have_received(:return_to).with(4242)
+      end
+
+      it 'stays at a lock it could not solve' do
+        allow(instance).to receive(:run_slips).and_return(false)
+        allow(instance).to receive(:return_to)
+        $parsed_args = OpenStruct.new(full: true)
+        instance.send(:initialize)
+        expect(instance).not_to have_received(:return_to)
+      end
+
+      it 'does not move for solve or check' do
+        allow(instance).to receive(:return_to)
+        allow(instance).to receive(:check_lock)
+        $parsed_args = OpenStruct.new(solve: true)
+        instance.send(:initialize)
+        $parsed_args = OpenStruct.new(check: true)
+        instance.send(:initialize)
+        expect(instance).not_to have_received(:return_to)
+      end
+
       it 'runs one slip for full with no count' do
         allow(instance).to receive(:run_slips)
         $parsed_args = OpenStruct.new(full: true)
@@ -919,10 +946,17 @@ RSpec.describe 'aesthene.lic' do
         expect(DRC).to have_received(:message).with('aesthene: solved 2 locks; no time slips left.')
       end
 
+      it 'reports a finished run, and one that ran out of slips, as not stuck' do
+        allow(instance).to receive(:redeem_slip).and_return(true, false)
+        allow(instance).to receive(:attune_and_solve).and_return(true)
+        expect(instance.run_slips(5)).to be(true)
+        expect(instance.run_slips(1)).to be(true)
+      end
+
       it 'redeems no more slips after a lock it could not solve' do
         allow(instance).to receive(:redeem_slip).and_return(true)
         allow(instance).to receive(:attune_and_solve).and_return(true, false)
-        instance.run_slips(5)
+        expect(instance.run_slips(5)).to be(false)
         expect(instance).to have_received(:redeem_slip).twice
         expect(DRC).to have_received(:message).with("aesthene: solved 1 lock; stopped at a lock it couldn't solve, so no more slips are spent.")
       end
@@ -949,6 +983,39 @@ RSpec.describe 'aesthene.lic' do
         allow(instance).to receive(:redeem_slip) { instance.abort_with('aesthene: no time slip found.') }
         expect { instance.run_slips(5) }.to raise_error(SystemExit)
         expect(DRC).to have_received(:message).once.with('aesthene: no time slip found.')
+      end
+    end
+
+    describe '#return_to' do
+      before { allow(DRC).to receive(:message) }
+
+      it 'walks to the starting room' do
+        allow(Room).to receive(:current).and_return(OpenStruct.new(id: 999))
+        allow(DRCT).to receive(:walk_to).and_return(true)
+        instance.return_to(16_958)
+        expect(DRCT).to have_received(:walk_to).with(16_958)
+        expect(DRC).not_to have_received(:message)
+      end
+
+      it 'does not walk when already there' do
+        allow(Room).to receive(:current).and_return(OpenStruct.new(id: 16_958))
+        allow(DRCT).to receive(:walk_to)
+        instance.return_to(16_958)
+        expect(DRCT).not_to have_received(:walk_to)
+      end
+
+      it 'stays put and says so when the starting room was not mapped' do
+        allow(DRCT).to receive(:walk_to)
+        instance.return_to(nil)
+        expect(DRCT).not_to have_received(:walk_to)
+        expect(DRC).to have_received(:message).with("aesthene: the room you started in isn't mapped, so you're staying here.")
+      end
+
+      it 'says so when the walk back fails' do
+        allow(Room).to receive(:current).and_return(OpenStruct.new(id: 999))
+        allow(DRCT).to receive(:walk_to).and_return(false)
+        instance.return_to(4242)
+        expect(DRC).to have_received(:message).with("aesthene: couldn't walk back to room 4242, where you started.")
       end
     end
 
@@ -1266,9 +1333,12 @@ RSpec.describe 'aesthene.lic' do
 
     it 'runs three slips back to back with ;aesthene full 3, walking back for each' do
       allow(DRCT).to receive(:walk_to).and_return(true)
+      # Started in room 4242; at a lock in another room when the run ends.
+      allow(Room).to receive(:current).and_return(OpenStruct.new(id: 4242), OpenStruct.new(id: 16_959))
       lock = AestheneFakeLock.new(%w[POACH THROW HYDRA])
       run_script(lock, :full, count: '3')
-      expect(DRCT).to have_received(:walk_to).with(Aesthene::TIMEKEEPER_ROOM).exactly(3).times
+      expect(DRCT).to have_received(:walk_to).with(Aesthene::TIMEKEEPER_ROOM).exactly(3).times.ordered
+      expect(DRCT).to have_received(:walk_to).with(4242).once.ordered
       expect(lock.commands.grep('ask timekeeper about access').size).to eq(3)
       expect(messages.grep(/solved! The word was/)).to eq(['aesthene: solved! The word was POACH.', 'aesthene: solved! The word was THROW.', 'aesthene: solved! The word was HYDRA.'])
       expect(messages.last).to eq('aesthene: solved 3 locks.')
@@ -1290,6 +1360,13 @@ RSpec.describe 'aesthene.lic' do
       expect(lock.commands.grep('redeem my slip').size).to eq(4)
       expect(messages).to include('aesthene: solved! The word was POACH.')
       expect(messages.last).to eq("aesthene: solved 1 lock; stopped at a lock it couldn't solve, so no more slips are spent.")
+    end
+
+    it 'leaves the character at the lock it could not solve' do
+      allow(DRCT).to receive(:walk_to).and_return(true)
+      allow(Room).to receive(:current).and_return(OpenStruct.new(id: 4242), OpenStruct.new(id: 16_959))
+      run_script(AestheneFakeLock.new(%w[POACH VIXEN]), :full, count: 'all')
+      expect(DRCT).not_to have_received(:walk_to).with(4242)
     end
 
     it 'names the time lock, so a carried lockpick does not take the commands' do
