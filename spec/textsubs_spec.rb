@@ -900,6 +900,33 @@ RSpec.describe 'textsubs.lic' do
         expect(hooked(line, guild: 'Thief')).to eq("#{line}\r\n")
       end
     end
+    # Two Bard blocks used to hold a song ladder each: one keyed on the end of
+    # every message, one on the whole message, so a Bard got each counter
+    # twice ("bowing your head (4/7). (4/7)"). Every message gets its counter
+    # once, before the full stop.
+    describe 'the Bard song assessment' do
+      ['You stop only after those first few lines, however, unable to remember any more|1',
+       'Your voice cracks on the second line, however, and you stop, unable to remember any more of the song anyway|1',
+       'At one point you hesitate as you mentally grasp for the next line of the song, and stop in confusion, ' \
+       'but pick it up a moment later and bring it to a strong conclusion|2',
+       'You feel a bit tired as you finish, but grin despite that for the ease at which you sang|3',
+       'You bring the song to a close, bowing your head|4',
+       'Your voice carries strongly on the air as you effortlessly recite the Common words so that all may hear, ' \
+       'bowing your head as they come to a close|5',
+       'Tears fill your eyes as the emotion of your ancient aire grips you, and you raise your chin with pride ' \
+       'as it comes to a close|6',
+       'When the song finally comes to a close, you bow your head, your ears ringing in the silence|7'].each do |row|
+        message, tier = row.split('|')
+        it "labels \"#{message[0, 40]}...\" (#{tier}/7) once" do
+          expect(hooked("#{message}.", guild: 'Bard')).to eq("#{message} (#{tier}/7).\r\n")
+        end
+      end
+
+      it 'leaves the song messages alone for a guild other than Bard' do
+        line = 'You bring the song to a close, bowing your head.'
+        expect(hooked(line, guild: 'Empath')).to eq("#{line}\r\n")
+      end
+    end
   end
 
   describe 'reference-engine oracle' do
@@ -1171,6 +1198,34 @@ RSpec.describe 'textsubs.lic' do
         expect(order_sensitive.size).to be >= 4,
                                         "only #{order_sensitive.size} sample(s) give another output with the #{guild} keys reversed"
       end
+    end
+
+    # A progress counter: "(4/7)", "(10/10)". Ingot sizes "(1)" and percent
+    # bands "(40-50%)" are not counters.
+    counter = %r{\(\d+/\d+\)}
+
+    # Two keys that label the same message stack their counters. No single
+    # sample is one message with two counters, so a sample the hook gives a
+    # second new counter is two keys labelling it, whatever the catalog. The
+    # composite lines at the end of samples.jsonl join two samples, each of
+    # which may have its own counter, so they are judged by their parts.
+    it 'gives no sample of any guild catalog two new (n/m) counters' do
+      known = samples.to_set
+      composite = lambda do |sample|
+        (0...sample.size).any? { |i| sample[i] == ' ' && known.include?(sample[0...i]) && known.include?(sample[(i + 1)..]) }
+      end
+      singles = samples.reject { |sample| composite.call(sample) }
+      expect(samples.size - singles.size).to be >= 10
+      offenders = guilds.flat_map do |guild|
+        build_catalog(guild, every_flag_on)
+        singles.filter_map do |sample|
+          output = run_hooks(sample)
+          [guild, sample, output] if output.scan(counter).size - sample.scan(counter).size > 1
+        end
+      end
+      expect(offenders).to be_empty, lambda {
+        "#{offenders.size} sample(s) get two counters:\n#{offenders.first(10).map { |entry| "  #{entry.inspect}" }.join("\n")}"
+      }
     end
 
     it "gives reference_apply's output for the whole stream, 49 KB line included, with the default coin rule" do

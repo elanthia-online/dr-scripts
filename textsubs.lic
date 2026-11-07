@@ -621,15 +621,8 @@ if DRStats.necromancer?
   TextSubs.add('manage to extract a poor', 'manage to extract a poor (1/10)')
 end
 
-# Bard Assessment
+# Bard play and dance assessment (the song ladder is the later Bard block)
 if DRStats.bard?
-  TextSubs.add("unable to remember any more of the song anyway.", "unable to remember any more of the song anyway. (1/7)")
-  TextSubs.add("but pick it up a moment later and bring it to a strong conclusion.", "but pick it up a moment later and bring it to a strong conclusion. (2/7)")
-  TextSubs.add("but grin despite that for the ease at which you sang.", "but grin despite that for the ease at which you sang. (3/7)")
-  TextSubs.add("You bring the song to a close, bowing your head.", "You bring the song to a close, bowing your head. (4/7)")
-  TextSubs.add(" bowing your head as they come to a close.", " bowing your head as they come to a close. (5/7)")
-  TextSubs.add("and you raise your chin with pride as it comes to a close.", "and you raise your chin with pride as it comes to a close. (6/7)")
-  TextSubs.add("you bow your head, your ears ringing in the silence.", "you bow your head, your ears ringing in the silence. (7/7)")
   TextSubs.add("the simplest musical phrase in your current state of mind.", "the simplest musical phrase in your current state of mind. (1/10)")
   TextSubs.add("feel very sure of your ability to perform just now.", "feel very sure of your ability to perform just now. (2/10)")
   TextSubs.add("you give up in exasperation and stop trying to play altogether.", "you give up in exasperation and stop trying to play altogether. (3/10)")
@@ -1129,6 +1122,7 @@ if DRStats.paladin?
   TextSubs.add('You believe you catch the faintest flicker of light. You might have imagined it\.', 'You believe you catch the faintest flicker of light. You might have imagined it (1/11).')
 end
 
+# Bard song assessment: one key per whole message, so each gets one counter
 if DRStats.bard?
   TextSubs.add('You stop only after those first few lines, however, unable to remember any more\.', 'You stop only after those first few lines, however, unable to remember any more (1/7).')
   TextSubs.add('Your voice cracks on the second line, however, and you stop, unable to remember any more of the song anyway\.', 'Your voice cracks on the second line, however, and you stop, unable to remember any more of the song anyway (1/7).')
