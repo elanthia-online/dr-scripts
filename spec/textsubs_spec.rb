@@ -45,17 +45,30 @@ RSpec.describe 'textsubs.lic' do
   # `@@subs = {}`) on every start: load_lic_class evaluates the class only once
   # per process, so without it each run would add onto the previous catalog.
   #
+  # Every textsubs key gets a value on each call, so a catalog never inherits
+  # a setting from an earlier build_catalog call in the same example.
+  #
   # @param guild [String] what DRStats.guild reports
-  # @param settings [Hash{String=>Object}] settings keys for get_settings;
-  #   private_textsubs defaults to {} because the harness has no nilclass patch
+  # @param settings [Hash{String=>Object}] settings keys for get_settings,
+  #   merged over textsubs_defaults
   # @return [Array<Array(String, Integer, String)>] [source, options, replacement]
   #   for each entry of TextSubs.subs, in insertion order
   def build_catalog(guild, settings = {})
     DRStats.guild = guild
-    { 'private_textsubs' => {} }.merge(settings).each { |key, value| $test_settings[key] = value }
+    textsubs_defaults.merge(settings).each { |key, value| $test_settings[key] = value }
     TextSubs.clear
     run_lic_entry('textsubs.lic', 'TextSubs')
     TextSubs.subs.map { |pattern, replacement| [pattern.source, pattern.options, replacement] }
+  end
+
+  # The textsubs settings as data/base.yaml ships them, except
+  # private_textsubs: {} instead of nil because the harness has no nilclass
+  # patch. textsubs_spell_links stays nil, as base.yaml leaves it unset.
+  #
+  # @return [Hash{String=>Object}] frozen default for every key textsubs.lic reads
+  def textsubs_defaults
+    { 'private_textsubs' => {}, 'integrate_shit_list_with_textsubs' => false, 'textsubs_spell_links' => nil,
+      'herb_textsubs' => false, 'textsubs_use_plat_grouping' => false }.freeze
   end
 
   # @param combination [Hash{String=>Object}] one element of `combinations`
@@ -163,11 +176,13 @@ RSpec.describe 'textsubs.lic' do
       { removed: off[prefix...(off.size - suffix)], added: on[prefix...(on.size - suffix)] }
     end
 
+    # Builds `guild`'s catalog with `flag` off and then on, the other two flags
+    # held at `others`. Defined with define_method so the body sees `flags`.
+    #
     # @param guild [String]
     # @param flag [String] the flag to toggle
     # @param others [Boolean] the value of the other two flags
     # @return [Hash{Symbol=>Array<Array>}] changed_run for toggling `flag`
-    # (define_method so the body sees `flags`)
     define_method(:toggle) do |guild, flag, others:|
       base = (flags - [flag]).to_h { |other| [other, others] }
       changed_run(build_catalog(guild, base.merge(flag => false)), build_catalog(guild, base.merge(flag => true)))
