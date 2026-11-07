@@ -1114,6 +1114,19 @@ RSpec.describe 'textsubs.lic' do
         expect(hooked(line, guild: 'Cleric')).to eq("#{line}\r\n")
       end
     end
+
+    # The first two rungs of the durability ladder spelled the game's word
+    # 'durabiltiy'. Every rung shortens 'you determine it is' to 'it is';
+    # these two now read like the other sixteen.
+    describe 'the durability (1/18) and (2/18) notes' do
+      [['it is extremely weak and easily damaged', 1],
+       ['they are very delicate and easily damaged', 2]].each do |condition, tier|
+        it "spells durability right in the (#{tier}/18) note" do
+          expect(hooked("Assessing the steel sword durability, you determine #{condition}."))
+            .to eq("Assessing the steel sword durability, #{condition} (#{tier}/18).\r\n")
+        end
+      end
+    end
   end
 
   describe 'reference-engine oracle' do
