@@ -18,6 +18,7 @@ no_kill_all
 # constant" for any other.
 class TextSubs
   @@subs = {}
+  @@generation = 0
 
   # The catalog, in the order its keys were first added.
   #
@@ -26,10 +27,19 @@ class TextSubs
     @@subs
   end
 
+  # How many times the catalog has changed since the class body last ran: add,
+  # elanthipedia and clear each count once.
+  #
+  # @return [Integer] 0 for a catalog nothing has touched yet
+  def self.generation
+    @@generation
+  end
+
   # Empties the catalog.
   #
   # @return [Hash] the new, empty catalog
   def self.clear
+    @@generation += 1
     @@subs = {}
   end
 
@@ -40,6 +50,7 @@ class TextSubs
   # @param result [String] the gsub replacement, so '\1' refers to a capture
   #   group of the target
   # @return [String] result
+  # @raise [RegexpError] when target is not valid regex source
   # @example
   #   TextSubs.add('You feel fine', 'You feel FINE')
   def self.add(target, result)
@@ -135,13 +146,17 @@ class TextSubs
   end
 
   # The one writer of the catalog, shared by add and elanthipedia so a call to
-  # either is one key.
+  # either is one key and one generation.
   #
   # @param target [String] regex source, compiled unescaped
   # @param result [String] the gsub replacement
   # @return [String] result
+  # @raise [RegexpError] when target is not valid regex source; the catalog
+  #   and the generation are left as they were
   def self.store(target, result)
-    @@subs[/#{target}/] = result
+    key = /#{target}/
+    @@generation += 1
+    @@subs[key] = result
   end
   private_class_method :store
 end
