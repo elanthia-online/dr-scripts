@@ -130,6 +130,22 @@ RSpec.describe 'textsubs.lic' do
     build_catalog(combination['guild'], combination.except('guild'))
   end
 
+  # Each combination's catalog, built once per run by whichever example asks
+  # first. The examples that only read a catalog share these builds, so the 96
+  # catalogs are not rebuilt once per such example. The examples that need
+  # TextSubs.subs to hold the catalog call build_combination instead.
+  built_catalogs = {}
+
+  # Memoized build_combination, for examples that only read the catalog: it
+  # does not leave TextSubs.subs holding that catalog.
+  #
+  # @param combination [Hash{String=>Object}] one element of `combinations`
+  # @return [Array<Array(String, Integer, String)>] that combination's catalog,
+  #   frozen (entries included) because every caller shares it
+  define_method(:catalog_of) do |combination|
+    built_catalogs[combination] ||= build_combination(combination).each(&:freeze).freeze
+  end
+
   # Expands a list of inclusive [first, last] index ranges into entries.
   #
   # @param entries [Array<Array>] every fixture entry
@@ -262,7 +278,7 @@ RSpec.describe 'textsubs.lic' do
         it "reproduces the #{combination['guild']} catalog with #{flags_label}" do
           golden = @golden_combinations.find { |c| c.except('ranges') == combination }
           expected = expand_ranges(@golden_entries, golden['ranges'])
-          actual = build_combination(combination)
+          actual = catalog_of(combination)
           expect(actual == expected).to be(true), -> { catalog_difference(combination, expected, actual) }
         end
       end
@@ -701,7 +717,7 @@ RSpec.describe 'textsubs.lic' do
     # backspace; a single-quoted one keeps the backslash for the regex engine.
     it 'holds no control byte (0x00-0x1f) in any key or value of any catalog' do
       offenders = combinations.flat_map do |combination|
-        build_combination(combination).filter_map do |source, _options, replacement|
+        catalog_of(combination).filter_map do |source, _options, replacement|
           [combination, source, replacement] if [source, replacement].any? { |text| text.bytes.any? { |byte| byte < 0x20 } }
         end
       end
