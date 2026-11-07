@@ -2049,11 +2049,16 @@ catalog_data = get_data('textsubs').textsubs
 catalog_file = catalog_override || File.join(SCRIPT_DIR, 'data', 'base-textsubs.yaml')
 
 # Fills registry with every sub a character of for_guild gets, from the
-# inputs read above, and shows what TextSubs.build has to say about them.
+# inputs read above, and shows what TextSubs.build has to say about them that
+# an earlier fill has not said already: a rebuild for a new guild repeats
+# only the warnings that guild brings.
+shown_messages = []
 fill_catalog = lambda do |registry, for_guild|
   context = TextSubs::Context.new(guild: for_guild, settings: settings)
-  TextSubs.build(registry, shit_list: shit_list_names, private_subs: private_subs, data: catalog_data, context: context,
-                           file: catalog_file).each { |message| echo message }
+  messages = TextSubs.build(registry, shit_list: shit_list_names, private_subs: private_subs, data: catalog_data,
+                                      context: context, file: catalog_file)
+  (messages - shown_messages).each { |message| echo message }
+  shown_messages |= messages
   registry
 end
 

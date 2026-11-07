@@ -1927,6 +1927,17 @@ RSpec.describe 'textsubs.lic' do
         expect(reports.call.size).to eq(1)
       end
 
+      it 'says again only the private_textsubs warnings the new guild brings' do
+        teaching = 'class on extremely advanced(.*)compared to'
+        bard_song = 'You bring the song to a close, bowing your head\\.'
+        seen = start_then_learn_bard(private_textsubs: { teaching => 'TAUGHT', bard_song => 'SUNG' })
+
+        expect(seen).to eq(["SUNG\r\n"])
+        expect(displayed_messages.grep(/is also a built-in sub/))
+          .to eq(["private_textsubs #{teaching.inspect} is also a built-in sub; your replacement is used instead of the built-in one.",
+                  "private_textsubs #{bard_song.inspect} is also a built-in sub; your replacement is used instead of the built-in one."])
+      end
+
       it 'builds the Bard catalog in one watch check and installs it, saying so once' do
         seen = start_then_learn_bard
         private_key = ['You feel fine', 0, 'You feel FINE']
