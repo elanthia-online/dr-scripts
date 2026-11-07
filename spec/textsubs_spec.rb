@@ -647,8 +647,10 @@ RSpec.describe 'textsubs.lic' do
 
         expect(expected).not_to eq(line)
         expect(run_hooks(line)).to eq(expected)
-        # The rewrite came through the attached branch, not around the guard.
-        expect(TextSubs).to have_received(:client_attached?).once
+        # The rewrite came through the attached branch, not around the guard,
+        # and the hook asked bare: front_ends discards the hook's arguments, so
+        # an explicit client: nil would otherwise pass while disabling textsubs.
+        expect(TextSubs).to have_received(:client_attached?).with(no_args).once
       end
     end
 
