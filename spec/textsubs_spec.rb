@@ -1281,8 +1281,8 @@ RSpec.describe 'textsubs.lic' do
     counter = %r{\(\d+/\d+\)}
 
     # Two keys that label the same message stack their counters. No single
-    # sample is one message with two counters, so a sample the hook gives a
-    # second new counter is two keys labelling it, whatever the catalog. The
+    # sample is one message with two counters, so a sample whose output under
+    # a catalog gets a second new counter is two keys labelling it. The
     # composite lines at the end of samples.jsonl join two samples, each of
     # which may have its own counter, so they are judged by their parts.
     #
