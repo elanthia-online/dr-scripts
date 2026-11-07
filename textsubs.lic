@@ -1380,17 +1380,27 @@ class TextSubs
       #
       # Each line is read as bytes (ASCII-8BIT), the way game lines arrive,
       # so a hand-edited byte that is not UTF-8 cannot raise and end the
-      # script before any sub is installed.
+      # script before any sub is installed, and a UTF-8 byte order mark a
+      # Windows editor puts at the start is dropped rather than left in
+      # front of the first name.
       #
       # @param io [#each_line] the open file
       # @return [Array<String>] frozen: each name stripped and capitalized,
       #   in ASCII-8BIT
       def self.names(io)
         io.each_line.filter_map do |line|
-          name = line.b.split(',', 2).first.to_s.strip
+          name = line.b.delete_prefix(byte_order_mark).split(',', 2).first.to_s.strip
           name.capitalize.freeze unless name.empty?
         end.freeze
       end
+
+      # The UTF-8 byte order mark, as bytes.
+      #
+      # @return [String] frozen
+      def self.byte_order_mark
+        "\xEF\xBB\xBF".b.freeze
+      end
+      private_class_method :byte_order_mark
 
       # The sub that tags one name. The name is matched as plain text, so a
       # regex character in it stands for itself, and as a whole word, so

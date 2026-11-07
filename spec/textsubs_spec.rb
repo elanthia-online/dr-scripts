@@ -742,6 +742,12 @@ RSpec.describe 'textsubs.lic' do
         expect(run_hooks("Zorvex just arrived.\r\n".b)).to eq("Zorvex (SL) just arrived.\r\n")
       end
 
+      it 'drops a UTF-8 byte order mark in front of the first name' do
+        catalog = catalog_with_shit_list("\xEF\xBB\xBFbob,stole my kill\nzorvex\n".b, integrate: true)
+        expect(catalog.first(2).map(&:first)).to eq(['\\bBob\\b', '\\bZorvex\\b'])
+        expect(run_hooks("Bob just arrived.\r\n".b)).to eq("Bob (SL) just arrived.\r\n")
+      end
+
       it 'matches a name as plain text, so a regex character in it stands for itself' do
         catalog_with_shit_list("o.k,odd name\n", integrate: true)
         expect(run_hooks("Oxk waves.\r\n".b)).to eq("Oxk waves.\r\n")
