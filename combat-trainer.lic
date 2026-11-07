@@ -2801,7 +2801,7 @@ class SpellProcess
     echo "Figuring out ready offensive spells..." if $debug_mode_ct
     ready_spells = @offensive_spells.select do |spell|
       next false if spell_disabled?(spell['abbrev'])
-      next false if spell['target_enemy'] && Lich::DragonRealms::Creature.targets.none? { |c| c.noun == spell['target_enemy'] }
+      next false if spell['target_enemy'] && CTTargets.unignored(@ignored_npcs).none? { |c| c.noun == spell['target_enemy'] }
       next false if spell['min_threshold'] && game_state.npcs.length < spell['min_threshold']
       next false if spell['max_threshold'] && game_state.npcs.length > spell['max_threshold']
       next false if spell['expire'] && !Flags["ct-#{spell['abbrev']}"]
@@ -2907,7 +2907,7 @@ class SpellProcess
     echo("prepare spell: #{data}") if $debug_mode_ct
     if data['target_enemy']
       echo("  Target found: #{data['target_enemy']}") if $debug_mode_ct
-      se_target = Lich::DragonRealms::Creature.targets.find { |c| c.noun == data['target_enemy'] }
+      se_target = CTTargets.unignored(@ignored_npcs).find { |c| c.noun == data['target_enemy'] }
       fput(se_target ? "face ##{se_target.id}" : "face #{data['target_enemy']}")
     end
 
@@ -3120,6 +3120,9 @@ end
 class AbilityProcess
   def initialize(settings)
     echo('New AbilityProcess') if $debug_mode_ct
+
+    @ignored_npcs = settings.ignored_npcs || []
+    echo("  @ignored_npcs: #{@ignored_npcs}") if $debug_mode_ct
 
     @buffs = settings.buff_nonspells
     echo("  @buffs: #{@buffs}") if $debug_mode_ct
@@ -3670,7 +3673,7 @@ class AbilityProcess
     Flags.reset('ct-battle-cry-not-facing')
 
     battle_cries = @battle_cries
-                   .select { |battle_cry| battle_cry['target_enemy'] ? Lich::DragonRealms::Creature.targets.any? { |c| c.noun == battle_cry['target_enemy'] } : true }
+                   .select { |battle_cry| battle_cry['target_enemy'] ? CTTargets.unignored(@ignored_npcs).any? { |c| c.noun == battle_cry['target_enemy'] } : true }
                    .select { |battle_cry| battle_cry['min_threshold'] ? game_state.npcs.length >= battle_cry['min_threshold'] : true }
                    .select { |battle_cry| battle_cry['max_threshold'] ? game_state.npcs.length <= battle_cry['max_threshold'] : true }
 
@@ -3686,7 +3689,7 @@ class AbilityProcess
 
       command = battle_cry_data['command']
       if battle_cry_data['target_enemy']
-        bc_target = Lich::DragonRealms::Creature.targets.find { |c| c.noun == battle_cry_data['target_enemy'] }
+        bc_target = CTTargets.unignored(@ignored_npcs).find { |c| c.noun == battle_cry_data['target_enemy'] }
         command += " at " + (bc_target ? "##{bc_target.id}" : battle_cry_data['target_enemy'])
       end
 
@@ -4028,7 +4031,7 @@ class TrainerProcess
     when /^PrayerMat$/i
       pray_mat(game_state)
     when /^Recall$/i
-      recall_target = Lich::DragonRealms::Creature.targets.first
+      recall_target = CTTargets.unignored(@ignored_npcs).first
       DRC.bput("recall ##{recall_target.id}", 'Roundtime', 'You are far too occupied', 'You search your mind') if recall_target
     when /^Barb Research Augmentation$/i
       DRC.bput('meditate research monkey', /^You clear your mind and begin to meditate/, /^What did you want to research/)

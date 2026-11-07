@@ -1260,6 +1260,38 @@ RSpec.describe AbilityProcess do
       ap.send(:check_battle_cries, gs_double)
       expect(ap).not_to have_received(:fput)
     end
+
+    # A player's pet can share the configured noun: a plague spawn (pet) and a
+    # forest spawn (creature) are both "spawn". ignored_npcs keeps the pet out.
+    context 'with a pet that shares the target_enemy noun' do
+      let(:pet) { Lich::DragonRealms::CreatureInstance.new(901, 'spawn', 'plague spawn') }
+      let(:mob) { Lich::DragonRealms::CreatureInstance.new(904, 'spawn', 'forest spawn') }
+
+      def build_spawn_cry_ability
+        ap = build_ability(
+          battle_cries: [{ 'name' => 'Roar', 'command' => 'roar', 'target_enemy' => 'spawn' }],
+          battle_cry_cycle: ['Roar'],
+          ignored_npcs: ['plague spawn']
+        )
+        allow(ap).to receive(:waitrt?)
+        allow(ap).to receive(:fput)
+        ap
+      end
+
+      it 'roars at the creature, not the ignored pet listed first' do
+        allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([pet, mob])
+        ap = build_spawn_cry_ability
+        ap.send(:check_battle_cries, gs_double)
+        expect(ap).to have_received(:fput).with('roar at #904')
+      end
+
+      it 'drops the battle cry when the ignored pet is the only match' do
+        allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([pet])
+        ap = build_spawn_cry_ability
+        ap.send(:check_battle_cries, gs_double)
+        expect(ap).not_to have_received(:fput)
+      end
+    end
   end
 
   describe 'battle cry and pilgrim badge replies only from the game' do
@@ -5510,6 +5542,21 @@ RSpec.describe SpellProcess do
 
         expect(instance).to have_received(:fput).with('face kobold')
       end
+
+      it 'faces the creature, not an ignored pet that shares the noun' do
+        pet = Lich::DragonRealms::CreatureInstance.new(901, 'spawn', 'plague spawn')
+        mob = Lich::DragonRealms::CreatureInstance.new(904, 'spawn', 'forest spawn')
+        allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([pet, mob])
+
+        instance = build_spell_process(ignored_npcs: ['plague spawn'])
+        allow(instance).to receive(:fput)
+        data = { 'abbrev' => 'FIRE', 'name' => 'Fire Spirit', 'mana' => 3, 'target_enemy' => 'spawn' }
+
+        instance.send(:prepare_spell, data, build_prep_state)
+
+        expect(instance).to have_received(:fput).with('face #904')
+        expect(instance).not_to have_received(:fput).with('face #901')
+      end
     end
 
     describe '#check_offensive selection gate' do
@@ -5551,6 +5598,19 @@ RSpec.describe SpellProcess do
         gs = build_offensive_state
 
         expect(instance).to receive(:prepare_spell).with(hash_including('target_enemy' => 'kobold'), gs)
+        instance.send(:check_offensive, gs)
+      end
+
+      it 'rejects the spell when the only noun match is an ignored pet' do
+        DRStats.mana = 100
+        pet = Lich::DragonRealms::CreatureInstance.new(901, 'kobold', 'tame kobold')
+        allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([pet])
+
+        instance = build_target_enemy_process
+        instance.instance_variable_set(:@ignored_npcs, ['tame kobold'])
+        gs = build_offensive_state
+
+        expect(instance).not_to receive(:prepare_spell)
         instance.send(:check_offensive, gs)
       end
     end
@@ -6981,6 +7041,37 @@ RSpec.describe 'TrainerProcess#execute Recall' do
     build_trainer.execute(double('GameState', danger: false))
 
     expect(DRC).not_to have_received(:bput)
+  end
+
+  context 'with a player pet listed in ignored_npcs' do
+    let(:pet) { Lich::DragonRealms::CreatureInstance.new(901, 'spawn', 'plague spawn') }
+    let(:mob) { Lich::DragonRealms::CreatureInstance.new(333, 'goblin', 'a goblin') }
+
+    def build_pet_trainer
+      trainer = build_trainer
+      trainer.instance_variable_set(:@ignored_npcs, ['plague spawn'])
+      trainer
+    end
+
+    it 'recalls the first creature that is not ignored' do
+      allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([pet, mob])
+      allow(DRC).to receive(:bput)
+
+      build_pet_trainer.execute(double('GameState', danger: false))
+
+      expect(DRC).to have_received(:bput)
+        .with('recall #333', 'Roundtime', 'You are far too occupied', 'You search your mind')
+      expect(DRC).not_to have_received(:bput).with('recall #901', any_args)
+    end
+
+    it 'issues no recall when the pet is the only target' do
+      allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([pet])
+      allow(DRC).to receive(:bput)
+
+      build_pet_trainer.execute(double('GameState', danger: false))
+
+      expect(DRC).not_to have_received(:bput)
+    end
   end
 end
 
