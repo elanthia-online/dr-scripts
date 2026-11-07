@@ -678,6 +678,12 @@ RSpec.describe Smith do
       expect(SmithSpecData.recipe('a metal Imperial spear')).to include('noun' => 'spear', 'volume' => 13, 'part' => ['long pole'])
       expect(SmithSpecData.recipe('a metal sterak axe')).to include('noun' => 'axe', 'volume' => 9, 'part' => ['haft'])
     end
+
+    # Kurtus, 2026-11-07, 'read my inst' on some well-written hawkbill
+    # instructions: "(1) refined metal ingot (1 volume)", "(1) finished wooden hilt".
+    it 'keep the hawkbill parts read from its instructions in game' do
+      expect(SmithSpecData.recipe('a metal hawkbill')).to include('noun' => 'hawkbill', 'volume' => 1, 'part' => ['hilt'])
+    end
   end
 
   # forge.lic leaves the finished item in hand (its default 'hold' finish) and

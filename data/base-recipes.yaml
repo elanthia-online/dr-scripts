@@ -3896,7 +3896,10 @@ crafting_recipes:
   work_order: false
   chapter: # Instructions only, not in crafting book.
   instructions: true
-  # Parts unconfirmed: no wiki page lists this recipe's ingredients.
+  # From the instructions read in game (Kurtus, 2026-11-07): "(1) refined
+  # metal ingot (1 volume)" and "(1) finished wooden hilt".
+  part:
+  - hilt
 - name: a metal hunga-munga
   noun: hunga-munga
   volume: 9
