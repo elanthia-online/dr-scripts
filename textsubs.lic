@@ -263,19 +263,11 @@ end
 
 settings = get_settings
 
-action = proc do |client_string|
-  # Headless: nobody would see the rewrite, so skip every key.
-  next client_string unless TextSubs.client_attached?
-
-  TextSubs.apply(client_string)
-end
-
-DownstreamHook.remove('textsub')
-DownstreamHook.add('textsub', action)
-
-before_dying do
-  DownstreamHook.remove('textsub')
-end
+# Every start builds its catalog from nothing: a restart with other settings
+# keeps none of the keys the run before it added. The 'textsub' hook is
+# registered only once the catalog is complete, at the end of the script, so a
+# line that arrives while it is built passes through untouched.
+TextSubs.install(TextSubs::Registry.new)
 
 # Put shit list players in textsubs
 if settings.integrate_shit_list_with_textsubs && File.file?("#{checkname}_shit.list")
@@ -2051,5 +2043,17 @@ TextSubs.add('^(\d\d)\)\.  an enormous (\w+) (ingot|nugget)(\.+) ([\d,]+) (\w+)'
 TextSubs.add('^(\d\d)\)\.  an immense (\w+) (ingot|nugget)(\.+) ([\d,]+) (\w+)',  '\1).  an  (50) immense \2 \3\4.. \5 \6')
 TextSubs.add('^(\d\d)\)\.  a gigantic (\w+) (ingot|nugget)(\.+) ([\d,]+) (\w+)',  '\1).  a  (100) gigantic \2 \3\4. \5 \6')
 TextSubs.add('^(\d\d)\)\.  a colossal (\w+) (ingot|nugget)(\.+) ([\d,]+) (\w+)',  '\1).  a  (200) colossal \2 \3\4. \5 \6')
+
+action = proc do |client_string|
+  # Headless: nobody would see the rewrite, so skip every key.
+  next client_string unless TextSubs.client_attached?
+
+  TextSubs.apply(client_string)
+end
+
+# persist: false hands the cleanup to Lich, which removes the hook when this
+# script ends, and only if this script still owns it: a newer textsubs that
+# re-registered 'textsub' keeps its hook when an older one dies.
+DownstreamHook.add('textsub', action, persist: false)
 
 clear until script.gets.nil?

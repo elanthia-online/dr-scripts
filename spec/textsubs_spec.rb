@@ -100,9 +100,9 @@ RSpec.describe 'textsubs.lic' do
   # Runs the real textsubs.lic entry point for one combination and returns the
   # catalog it built.
   #
-  # TextSubs.clear stands in for Lich re-evaluating the class body (and with it
-  # `@@subs = {}`) on every start: load_lic_class evaluates the class only once
-  # per process, so without it each run would add onto the previous catalog.
+  # Nothing is cleared first: load_lic_class evaluates the class body only once
+  # per process, so each run starts from whatever the run before it left, and
+  # the entry point's own fresh Registry is what keeps the catalogs apart.
   #
   # Every textsubs key gets a value on each call, so a catalog never inherits
   # a setting from an earlier build_catalog call in the same example.
@@ -115,7 +115,6 @@ RSpec.describe 'textsubs.lic' do
   def build_catalog(guild, settings = {})
     DRStats.guild = guild
     textsubs_defaults.merge(settings).each { |key, value| $test_settings[key] = value }
-    TextSubs.clear
     run_lic_entry('textsubs.lic', 'TextSubs')
     TextSubs.subs.map { |pattern, replacement| [pattern.source, pattern.options, replacement] }
   end
@@ -368,6 +367,24 @@ RSpec.describe 'textsubs.lic' do
         expect(used.uniq.sort).to eq((0...@golden_entries.size).to_a)
       end
 
+      it 'rebuilds from nothing on a restart, keeping no herb, shit-list or private key of the run before' do
+        Dir.mktmpdir('textsubs-restart') do |dir|
+          File.write(File.join(dir, "#{checkname}_shit.list"), "zorvex,stole my kill\n")
+          Dir.chdir(dir) do
+            first = build_catalog('Ranger', 'herb_textsubs' => true, 'integrate_shit_list_with_textsubs' => true,
+                                            'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
+            expect(first.map(&:first)).to include('Zorvex', 'You feel fine', 'nilos')
+          end
+        end
+
+        combination = { 'guild' => 'Ranger', 'textsubs_spell_links' => false, 'herb_textsubs' => false,
+                        'textsubs_use_plat_grouping' => false }
+        golden = @golden_combinations.find { |c| c.except('ranges') == combination }
+        expected = expand_ranges(@golden_entries, golden['ranges'])
+        actual = build_combination(combination)
+        expect(actual == expected).to be(true), -> { catalog_difference(combination, expected, actual) }
+      end
+
       combinations.each do |combination|
         flags_label = combination.except('guild').map { |flag, on| "#{flag} #{on ? 'on' : 'off'}" }.join(', ')
         it "reproduces the #{combination['guild']} catalog with #{flags_label}" do
@@ -524,20 +541,69 @@ RSpec.describe 'textsubs.lic' do
       expect(TextSubs).to have_received(:apply).with(line).once
     end
 
-    it "removes 'textsub', and only 'textsub', in before_dying" do
-      teardown = nil
+    it "registers 'textsub' with persist: false, leaving its removal to Lich alone, with no before_dying" do
       # Stubbed on main (where run_lic_entry evaluates the entry), not on
       # Script.at_exit: another spec replaces the top-level before_dying.
-      allow(TOPLEVEL_BINDING.receiver).to receive(:before_dying) { |&block| teardown = block }
+      allow(TOPLEVEL_BINDING.receiver).to receive(:before_dying)
       DownstreamHook.add('other-script', proc { |line| line })
       build_catalog('Commoner')
-      expect(teardown).to be_a(Proc)
 
-      teardown.call
-      expect(DownstreamHook.list).not_to include('textsub')
+      expect(DownstreamHook._hook_persist).to include('textsub' => false)
+      expect(TOPLEVEL_BINDING.receiver).not_to have_received(:before_dying)
       expect(DownstreamHook.list).to include('other-script')
     ensure
       DownstreamHook.remove('other-script')
+    end
+
+    it 'registers the hook once, only after a fresh Registry is installed and the whole catalog is in it' do
+      TextSubs.add('stale', 'left over from the run before')
+      events = []
+      allow(TextSubs).to(receive(:install).and_wrap_original do |original, registry|
+        events << [:install, registry.snapshot]
+        original.call(registry)
+      end)
+      allow(DownstreamHook).to(receive(:add).and_wrap_original do |original, name, action, **options|
+        events << [:hook, name, options, TextSubs.subs]
+        original.call(name, action, **options)
+      end)
+
+      catalog = build_catalog('Commoner', 'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
+
+      expect(events.map(&:first)).to eq(%i[install hook])
+      expect(events.first.last).to eq({})
+      _, name, options, subs_at_hook = events.last
+      expect([name, options]).to eq(['textsub', { persist: false }])
+      expect(subs_at_hook.map { |pattern, replacement| [pattern.source, pattern.options, replacement] }).to eq(catalog)
+      expect(catalog.map(&:first)).not_to include('stale')
+    end
+
+    it 'passes a line through untouched while the catalog is still being built' do
+      seen = []
+      adds = 0
+      # Sends a line through the hooks right after the private key is in the
+      # catalog, and after every 250th add from then on: a hook registered
+      # before the catalog was done would already rewrite it.
+      allow(TextSubs).to(receive(:add).and_wrap_original do |original, target, result|
+        stored = original.call(target, result)
+        adds += 1 unless seen.empty? && target != 'You feel fine'
+        seen << run_hooks("You feel fine.\r\n".b) if adds % 250 == 1
+        stored
+      end)
+
+      build_catalog('Commoner', 'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
+
+      expect(seen.size).to be > 3
+      expect(seen).to all(eq("You feel fine.\r\n"))
+      expect(run_hooks("You feel fine.\r\n".b)).to eq("You feel FINE.\r\n")
+    end
+
+    it 'leaves one hook that applies the new catalog after a restart with other settings' do
+      build_catalog('Ranger', 'herb_textsubs' => true)
+      expect(run_hooks("You pick some nilos.\r\n".b)).to eq("You pick some nilos (abdo-EW).\r\n")
+
+      build_catalog('Ranger', 'herb_textsubs' => false)
+      expect(DownstreamHook.list.count('textsub')).to eq(1)
+      expect(run_hooks("You pick some nilos.\r\n".b)).to eq("You pick some nilos.\r\n")
     end
   end
 
