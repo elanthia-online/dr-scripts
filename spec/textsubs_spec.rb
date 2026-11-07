@@ -4825,6 +4825,16 @@ RSpec.describe 'textsubs.lic' do
         expect(pairs.map(&:last)).to eq(['a hit (1/5)', 'you take a hit (2/5)'])
       end
 
+      # The pattern 'a hit\?' matches the text 'a hit?', not its source
+      # 'a hit\?', so the check must try each pattern on the text the step
+      # writes back, its escapes taken out.
+      it "checks the overlap on each step's text with its escapes taken out, not on its regex source" do
+        expect { ladder_pairs('of' => 5, 'steps' => [[1, 'a hit\?'], [2, 'a hit\? hard']]) }
+          .to raise_error(ArgumentError, /steps 2 phrase "a hit\\\\\? hard" is also matched by steps 1/)
+        pairs = ladder_pairs('of' => 5, 'steps' => [[1, 'a hit\?'], [2, 'a hit\! hard']])
+        expect(pairs.map(&:last)).to eq(['a hit? (1/5)', 'a hit! hard (2/5)'])
+      end
+
       it "refuses an unescaped '.' that matches another step's text, as it matches any character" do
         expect { ladder_pairs('of' => 5, 'steps' => [[1, 'a hit.'], [2, 'a hit!']]) }
           .to raise_error(ArgumentError, /steps 2 phrase "a hit!" is also matched by steps 1/)
