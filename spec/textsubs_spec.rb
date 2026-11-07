@@ -2954,10 +2954,20 @@ RSpec.describe 'textsubs.lic' do
       expect(context_for(nil).allows?(gate)).to be(false)
     end
 
-    it 'lets a not_guilds gate through for every guild it does not name, a guild not known yet included' do
+    it 'lets a not_guilds gate through for every guild it does not name, but not for a guild not known yet' do
       gate = { 'not_guilds' => %w[Barbarian Thief] }
       expect(%w[Thief Barbarian Cleric].map { |guild| context_for(guild).allows?(gate) }).to eq([false, false, true])
-      expect(context_for(nil).allows?(gate)).to be(true)
+      expect(context_for(nil).allows?(gate)).to be(false)
+    end
+
+    # The unknown guild may turn out to be one the gate names, so a section
+    # gated on guilds waits for it whichever way the gate is put.
+    it 'lets no guild gate through for a guild not known yet, even beside a setting that holds' do
+      unknown = context_for(nil)
+      expect(unknown.allows?('not_guilds' => ['Commoner'], 'setting' => 'herb_textsubs')).to be(false)
+      expect(unknown.allows?('guilds' => TextSubs::Context.guilds)).to be(false)
+      expect(unknown.allows?('setting' => 'herb_textsubs')).to be(true)
+      expect(unknown.guild).to be_nil
     end
 
     it 'reads setting as set and setting_off as nil or false, by name' do
@@ -3146,9 +3156,28 @@ RSpec.describe 'textsubs.lic' do
                    '<a href="https://elanthipedia.play.net/Category:Moon_Mage_spells">Moon Mage</a> training.']])
       end
 
-      it 'links an empty guild name for a guild not known yet, as the inline catalog did under Lich' do
-        expect(entries_for(nil, data).first[1])
-          .to eq('You recall the spells you have learned from your <a href="https://elanthipedia.play.net/Category:_spells"></a> training.')
+      # A link to Category:_spells would show an empty link where the game
+      # names the guild, losing the name; the line is better left as it is.
+      it 'gives no sub at all for a guild not known yet, keeping the sections around it' do
+        around = catalog_data(<<~YAML)['sections']
+          textsubs:
+            schema: 1
+            sections:
+              - name: 'before'
+                subs: [['cat', 'dog']]
+              - name: 'after'
+                subs: [['bird', 'fish']]
+        YAML
+        data_with_neighbours = data.merge('sections' => [around.first, *data['sections'], around.last])
+
+        expect(entries_for(nil, data)).to eq([])
+        expect(entries_for(nil, data_with_neighbours).map(&:first)).to eq(%w[cat bird])
+        expect(entries_for('Bard', data_with_neighbours).size).to eq(3)
+      end
+
+      it 'still checks the link fields while the guild is not known' do
+        broken = data.merge('sections' => [data['sections'].first.merge('poslink' => 5)])
+        expect { entries_for(nil, broken) }.to raise_error(ArgumentError, /'poslink' must be a quoted string, not 5/)
       end
     end
 

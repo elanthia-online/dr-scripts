@@ -1068,14 +1068,20 @@ class TextSubs
   # A gate is nil (always holds) or a Hash with one or more of these keys,
   # every one of which must hold:
   # - 'guilds' [Array<String>]: the guild is one of them;
-  # - 'not_guilds' [Array<String>]: the guild is none of them;
+  # - 'not_guilds' [Array<String>]: the guild is known and none of them;
   # - 'setting' [String]: that setting is set (neither nil nor false);
   # - 'setting_off' [String]: that setting is nil or false.
+  #
+  # The guild is nil until DRStats has read INFO, which a login while dead
+  # skips. Neither guild key holds then: a section for some guilds, or for
+  # all but some, is wrong for a character whose guild may be any of them.
   #
   # @example
   #   context = TextSubs::Context.new(guild: 'Bard', settings: OpenStruct.new(herb_textsubs: true))
   #   context.allows?('guilds' => ['Bard'], 'setting' => 'herb_textsubs') # => true
   #   context.allows?('not_guilds' => ['Bard'])                          # => false
+  # @example While DRStats does not know the guild
+  #   TextSubs::Context.new(guild: nil, settings: OpenStruct.new).allows?('not_guilds' => ['Thief']) # => false
   class Context
     # @return [Array<String>] every guild DRStats can report, frozen
     def self.guilds
@@ -1127,7 +1133,8 @@ class TextSubs
     end
     private_class_method :check_guilds, :check_setting
 
-    # @param guild [String, nil] what DRStats.guild reports
+    # @param guild [String, nil] what DRStats.guild reports, nil while it is
+    #   not known
     # @param settings [#[]] the character settings (get_settings), read by name
     # @return [Context]
     def initialize(guild:, settings:)
@@ -1135,11 +1142,13 @@ class TextSubs
       @settings = settings
     end
 
-    # @return [String, nil] the guild the catalog is built for
+    # @return [String, nil] the guild the catalog is built for, nil when it
+    #   is not known
     attr_reader :guild
 
     # @param gate [Hash, nil] a section's `when:` value
-    # @return [Boolean] whether every condition of the gate holds
+    # @return [Boolean] whether every condition of the gate holds; a guild
+    #   condition never does while the guild is nil
     # @raise [ArgumentError] when the gate is malformed (see check_gate)
     def allows?(gate)
       self.class.check_gate(gate)
@@ -1148,7 +1157,7 @@ class TextSubs
       gate.all? do |key, value|
         case key
         when 'guilds' then value.include?(guild)
-        when 'not_guilds' then !value.include?(guild)
+        when 'not_guilds' then !guild.nil? && !value.include?(guild)
         when 'setting' then setting?(value)
         else !setting?(value)
         end
@@ -1186,6 +1195,8 @@ class TextSubs
   # names the character's guild. Its fields are pattern, preresult, prelink,
   # poslink and posresult, and it expands to
   #   [pattern, preresult + TextSubs.wiki_link(prelink + guild page + poslink, guild) + posresult]
+  # or to no sub at all while the guild is not known, as a link to no guild
+  # would only drop the guild's name from the line.
   #
   # Sections run in file order and subs in list order; both orders are kept,
   # because two subs that match the same line apply in that order. Every key
@@ -1347,12 +1358,15 @@ class TextSubs
 
     # @param section [Hash] a checked section
     # @param context [TextSubs::Context]
-    # @return [Array<Array(String, String, Hash)>] its subs
+    # @return [Array<Array(String, String, Hash)>] its subs; none for a
+    #   guild_spells_link section while the guild is nil
     def self.expand(section, context)
       meta = { section: section['name'], requires_any: section['requires_any'] }.compact.freeze
       return section['subs'].map { |pattern, replacement| [pattern, replacement, meta] } unless section['kind'] == 'guild_spells_link'
 
-      guild = context.guild.to_s
+      guild = context.guild
+      return [] if guild.nil?
+
       link = TextSubs.wiki_link(section['prelink'] + guild.tr(' ', '_') + section['poslink'], guild)
       [[section['pattern'], section['preresult'] + link + section['posresult'], meta]]
     end
