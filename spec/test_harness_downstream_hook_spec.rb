@@ -152,6 +152,12 @@ RSpec.describe 'test harness DownstreamHook' do
       expect(DownstreamHook.list).not_to include('harness-a')
       expect(displayed_messages).to include('DownstreamHook: not a Proc (not a proc)')
     end
+
+    it 'refuses a callable that is not a Proc, such as a Method' do
+      expect(DownstreamHook.add('harness-a', 'line'.method(:upcase))).to be(false)
+      expect(DownstreamHook.list).not_to include('harness-a')
+      expect(displayed_messages).to include(/DownstreamHook: not a Proc/)
+    end
   end
 
   describe 'run' do
@@ -171,7 +177,18 @@ RSpec.describe 'test harness DownstreamHook' do
 
       expect(DownstreamHook.run('line')).to eq('line|harness-a')
       expect(DownstreamHook.list).not_to include('harness-b')
+      expect(DownstreamHook._hook_priorities).not_to have_key('harness-b')
+      expect(DownstreamHook._hook_persist).not_to have_key('harness-b')
       expect(displayed_messages).to include('--- Lich: DownstreamHook: boom')
+    end
+
+    it 'passes on a non-String return as it is and skips every later hook' do
+      calls = []
+      DownstreamHook.add('harness-a', tagging_hook('harness-a', calls), priority: -100)
+      DownstreamHook.add('harness-b', proc { |_line| calls << 'harness-b' and 42 })
+
+      expect(DownstreamHook.run('line')).to eq(42)
+      expect(calls).to eq(['harness-b'])
     end
 
     it 'skips a hook that an earlier hook removed in the same pass' do
