@@ -22,6 +22,19 @@ require 'tmpdir'
 #
 # A nil guild (textsubs started before DRStats knows the guild) is not part of
 # the golden set; it is covered on its own when the guild handling is fixed.
+#
+# The golden catalog says WHAT the hook applies; the reference-engine oracle
+# below says HOW. reference_apply keeps today's matching engine verbatim, and
+# the hook has to give the same output for every guild catalog over two
+# committed inputs, both synthetic (no real player names):
+#   - samples.jsonl holds one JSON string per line, expanded from the catalog's
+#     own regex sources (every alternative of an entry it could reach), so every
+#     key of every guild catalog is matched by at least one sample;
+#   - synthetic_stream.xml is a hand-written XML stream (inv pushStream dump,
+#     room objs with exist ids, prompts, roundTime, coin and wealth lines and a
+#     49 KB digit-heavy inventoryManager line), every line ending in \r\n.
+# The samples are inputs, not output: they are not regenerated when the catalog
+# changes. A new or rewritten pattern adds a line to samples.jsonl.
 
 load_lic_class('textsubs.lic', 'TextSubs')
 
@@ -37,6 +50,8 @@ RSpec.describe 'textsubs.lic' do
   fixture_dir = File.expand_path('fixtures/textsubs', __dir__)
   entries_path = File.join(fixture_dir, 'catalog_entries.jsonl')
   combos_path = File.join(fixture_dir, 'catalog_combos.json')
+  samples_path = File.join(fixture_dir, 'samples.jsonl')
+  stream_path = File.join(fixture_dir, 'synthetic_stream.xml')
 
   # Runs the real textsubs.lic entry point for one combination and returns the
   # catalog it built.
@@ -107,6 +122,22 @@ RSpec.describe 'textsubs.lic' do
       "(expected #{expected.size} entries, got #{actual.size}):\n" \
       "  expected: #{expected[index].inspect}\n" \
       "  actual:   #{actual[index].inspect}"
+  end
+
+  # Today's matching engine, kept verbatim as the oracle the hook is held to:
+  # select every key that matches the ORIGINAL line, then gsub! each selected
+  # key, in insertion order, on the line as it changes. It is deliberately a
+  # copy, not a call: later changes rewrite the hook's engine, and this is the
+  # behaviour they must keep.
+  #
+  # @param subs [Hash{Regexp=>String}] ordered catalog (TextSubs.subs)
+  # @param line [String] a server line
+  # @return [String] the line after substitution; `line` is not modified
+  def reference_apply(subs, line)
+    client_string = line.dup
+    matches = subs.select { |key, _| key =~ client_string }
+    matches.each { |target, result| client_string.gsub!(target, result) }
+    client_string
   end
 
   after do
@@ -359,6 +390,98 @@ RSpec.describe 'textsubs.lic' do
     it 'returns a line that no key matches byte for byte' do
       install_catalog(%w[cat dog])
       expect(through_hook("A bird sings.\r\n")).to eq("A bird sings.\r\n")
+    end
+  end
+
+  describe 'reference-engine oracle' do
+    samples = File.readlines(samples_path, chomp: true).map { |line| JSON.parse(line).b }
+    stream = File.binread(stream_path).lines
+    big_line = stream.max_by(&:bytesize)
+    # The 49 KB line spends ~0.5 s in the coin regex per pass, so the per-guild
+    # sweeps leave it to the one whole-stream example below.
+    stream_without_big_line = stream - [big_line]
+    every_flag_on = { 'textsubs_spell_links' => true, 'herb_textsubs' => true }.freeze
+
+    # Sends each line through the registered hooks and through reference_apply
+    # with the current TextSubs.subs.
+    #
+    # @param lines [Array<String>] binary server lines
+    # @return [Array<Array(String, String, String)>] [line, hook output,
+    #   reference output] for each line where the two differ
+    def oracle_mismatches(lines)
+      subs = TextSubs.subs
+      lines.filter_map do |line|
+        hooked = DownstreamHook.run(line)
+        expected = reference_apply(subs, line)
+        [line, hooked, expected] unless hooked == expected
+      end
+    end
+
+    # @param catalog [String] which catalog was in force
+    # @param mismatches [Array<Array(String, String, String)>] from oracle_mismatches
+    # @return [String] the count and the first five differences, each value cut
+    #   to 300 characters so the 49 KB line stays readable
+    def mismatch_report(catalog, mismatches)
+      shown = mismatches.first(5).map do |line, hooked, expected|
+        "  line:      #{line.inspect[0, 300]}\n  hook:      #{hooked.inspect[0, 300]}\n  " \
+          "reference: #{expected.inspect[0, 300]}"
+      end
+      "#{mismatches.size} line(s) differ from reference_apply with the #{catalog} catalog:\n#{shown.join("\n")}"
+    end
+
+    it 'reads a synthetic stream of \r\n lines holding one 49 KB digit-heavy line with no currency word' do
+      expect(stream).to all(end_with("\r\n"))
+      expect(stream.join).to be_ascii_only
+      expect(big_line.bytesize).to be >= 49_000
+      expect(big_line.count('0-9')).to be > 10_000
+      expect(big_line).not_to match(/Kronar|Dokora|Lirum/)
+    end
+
+    it 'reads one-line ASCII samples' do
+      expect(samples.size).to be > 2_000
+      expect(samples).to all(be_ascii_only)
+      expect(samples.grep(/[\r\n]/)).to eq([])
+    end
+
+    guilds.each do |guild|
+      it "gives reference_apply's output for every sample and stream line with the #{guild} catalog" do
+        build_catalog(guild, every_flag_on)
+        mismatches = oracle_mismatches(samples + stream_without_big_line)
+        expect(mismatches).to be_empty, -> { mismatch_report(guild, mismatches) }
+      end
+
+      it "matches every key of the #{guild} catalog with at least one sample" do
+        build_catalog(guild, every_flag_on)
+        unmatched = TextSubs.subs.keys.reject { |key| samples.any? { |sample| key.match?(sample) } }
+        expect(unmatched.map(&:source)).to eq([]), lambda {
+          "#{unmatched.size} #{guild} key(s) match no line of samples.jsonl; add a sample for each:\n" \
+            "#{unmatched.map { |key| "  #{key.source}" }.join("\n")}"
+        }
+      end
+    end
+
+    it "gives reference_apply's output for the whole stream, 49 KB line included, with the default coin rule" do
+      build_catalog('Trader', every_flag_on.merge('textsubs_use_plat_grouping' => false))
+      mismatches = oracle_mismatches(stream)
+      expect(mismatches).to be_empty, -> { mismatch_report('Trader (plat grouping off)', mismatches) }
+    end
+
+    it "gives reference_apply's output for every sample and stream line with textsubs_use_plat_grouping on" do
+      # The 49 KB line is left out: through the two platinum-aware coin rules it
+      # costs ~3.5 s, and the coin rules see it in the default-rule example above.
+      build_catalog('Trader', every_flag_on.merge('textsubs_use_plat_grouping' => true))
+      mismatches = oracle_mismatches(samples + stream_without_big_line)
+      expect(mismatches).to be_empty, -> { mismatch_report('Trader (plat grouping on)', mismatches) }
+    end
+
+    it 'keeps the \r\n ending on every stream line the Empath catalog rewrites' do
+      build_catalog('Empath', every_flag_on)
+      rewritten = stream_without_big_line.filter_map do |line|
+        output = DownstreamHook.run(line)
+        output unless output == line
+      end
+      expect(rewritten).not_to be_empty
+      expect(rewritten).to all(end_with("\r\n"))
     end
   end
 end
