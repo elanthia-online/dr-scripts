@@ -53,6 +53,7 @@ lock_answers:
 - BLEND
 - BLESS
 - BLIND
+- BLOCK
 - BLOOD
 - BLUNT
 - BONES
@@ -1634,7 +1635,6 @@ dictionary:
 - BLOAN
 - BLOAT
 - BLOBS
-- BLOCK
 - BLOCS
 - BLOGS
 - BLOKE
