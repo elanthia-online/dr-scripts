@@ -1556,6 +1556,12 @@ RSpec.describe 'textsubs.lic' do
           .to raise_error(ArgumentError, /requires_any must be a non-empty list of non-empty ASCII words/)
         expect(registry.snapshot).to equal(snapshot)
         expect(registry.gates).to equal(gates)
+
+        # A refused add leaves the version alone, so the snapshot above is the
+        # cached copy. Another add forces a fresh copy of what is held.
+        registry.add(/bird/, 'fish')
+        expect(registry.snapshot).to eq(/cat/ => 'dog', /bird/ => 'fish')
+        expect(registry.gates).to eq(/cat/ => ['Kronar'])
       end
     end
   end
