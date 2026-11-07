@@ -4408,6 +4408,354 @@ RSpec.describe Remedy do
       end
     end
   end
+
+  # Brewer's brine and the wrong vessel, replayed from another player's
+  # Hollow Eve 2026 Nezhiri crafts (log keys 6102 to 6106: Lich text
+  # captures, prompts and stamps removed). In those logs the player ran
+  # this remedy.lic's instructions form by hand. remedy did not answer the
+  # brine cue, so the player paused it (`;pa`), added the brine by hand
+  # (get, put, put away) and unpaused it (`;ua`); and a herb crushed in the
+  # mortar was refused for a cooking pot and mixing stick.
+  #
+  # The replays script the real replies to remedy's own commands from the
+  # transcripts, map remedy's brine put onto the player's hand-typed one
+  # with alias_command, and give the brine put the reply the player's put
+  # got. The game keeps asking for brine until it gets some: the crush (or
+  # mix) the logged remedy sent while the brine was owed got the cue alone
+  # (6106:731 -> 6106:734, 6102:227 -> 6102:229), and that reply answers
+  # every crafting command until the brine is put in. Only the brine put
+  # scripts the replies of the rest of the craft, so a remedy that never
+  # adds the brine never gets them.
+  #
+  # The logged character's crafting magic (cast, prepare, release) is
+  # DRCA.crafting_magic_routine and Magic, outside this change:
+  # crafting_training_spells is empty here, so remedy sends none of it.
+  describe "brewer's brine and the wrong vessel, replayed from another player's Nezhiri crafts" do
+    let(:haversack) { 'haversack' }
+    let(:nezhiri_belt) { { 'name' => toolstrap, 'items' => ['rustic mortar', 'rustic pestle', 'mixing stick', 'sieve'] } }
+    # The tools as the logs name them: the untie lines 6106:672, 6106:702,
+    # 6106:986, 6102:215, the get 6102:187 and the stamp get 6106:1062,
+    # shortened.
+    let(:nezhiri_tools) do
+      { 'rustic mortar'                  => toolstrap,
+        'rustic pestle'                  => toolstrap,
+        'grooved covellite mixing stick' => toolstrap,
+        'mesh sieve'                     => toolstrap,
+        'sleek steel mixing bowl'        => haversack,
+        'basic steel stamp'              => haversack }
+    end
+    # The supplies as the tap and get lines name them (6106:629-635,
+    # 6106:758), all in the haversack.
+    let(:nezhiri_supplies) do
+      { 'water' => haversack, 'grain alcohol' => haversack, 'massive coal nugget' => haversack, "brewer's brine" => haversack }
+    end
+    let(:settings) do
+      logged_settings.merge(crafting_container: haversack, crafting_items_in_container: [], alchemy_belt: nezhiri_belt,
+                            alchemy_tools: ['rustic mortar', 'rustic pestle', 'mixing bowl', 'mixing stick', 'sieve'])
+    end
+    let(:brine_moves) { ["brewer's brine: #{haversack} -> hand", "brewer's brine: hand -> #{haversack}"] }
+
+    # Scripts one logged step's reply for its own command.
+    #
+    # @param run [ReplayTranscript]
+    # @param line [Integer] the step's log line
+    # @param after [Proc, nil] see ReplayGame#script
+    # @param lines [Array<ReplayGame::Line>, nil] other lines for the reply
+    # @return [void]
+    def script_step(run, line, after: nil, lines: nil)
+      step = run.step(line)
+      game.script(step.command, *(lines || step.lines), after: after)
+    end
+
+    # The commands the logged remedy sent itself in a window, minus the
+    # ones listed, as the log has them.
+    #
+    # @param run [ReplayTranscript]
+    # @param own [Regexp] remedy's own commands (not the commons helpers'
+    #   or the crafting magic's)
+    # @param without [Array<Integer>] log lines of steps to leave out
+    # @return [Array<String>]
+    def logged_sends(run, own, without: [])
+      run.steps.select { |step| !step.user && own.match?(step.command) && !without.include?(step.line) }.map(&:command)
+    end
+
+    context 'a gill glop crushed in the rustic mortar (6106:626-1090)' do
+      let(:glop) { transcript('nezhiri_6106_626') }
+      let(:inventory) { nezhiri_tools.merge(nezhiri_supplies, 'gill glop instructions' => haversack, 'dried georin' => haversack) }
+      # The herb stack's id is the log's own (6106:688).
+      let(:item_ids) { { 'dried georin' => '920805' } }
+      let(:glop_line) { typed('instructions georin "coal nugget" mortar glop 25') } # 6106:626, the doubled quotes as one pair
+      let(:crush) { 'crush my glop with my rustic pestle' }
+      let(:brine_put) { 'put brine in my rustic mortar' }
+      # remedy's own commands in the window, as the log has them.
+      let(:own) { /\A(?:study my glop|count my georin|combine my georin|put #\d+ in my rustic mortar|crush my|smell my glop|push my glop|put my coal nugget in my rustic mortar|get my glop from|mark my glop|count my glop)/ }
+      let(:continue_line) { 'Remedy: the unfinished glop is in the rustic mortar; to carry on with it, run ;remedy continue na "coal nugget" mortar glop' }
+
+      # Scripts the craft: the studies (6106:654, 6106:659), the herb
+      # (6106:682-690) and the first crush, whose reply is Roundtime and
+      # then the brine cue (6106:706-708). Every later crush gets the cue
+      # alone (6106:734, the reply to the crush 6106:731 sent while the
+      # brine was owed). The brine put, aliased to the player's `put my
+      # brine in my mortar` (6106:759), gets its reply (6106:760) and
+      # scripts the rest of the craft from 6106:816; the crush 6106:731 is
+      # left out, as remedy adds the brine before it crushes again. The get
+      # of the brine, DRCC.get_crafting_item at API level, sends nothing
+      # here; the player's `get my brine` got 6106:758.
+      #
+      # @param first_crush [Array<ReplayGame::Line>, nil] other lines for the
+      #   first crush's reply
+      # @return [void]
+      def script_glop(first_crush: nil)
+        [654, 659, 682, 685].each { |line| script_step(glop, line) }
+        script_step(glop, 688, after: ->(_game) { commons.release('georin') })
+        script_step(glop, 703, lines: first_crush)
+        game.fallback(crush, *glop.step(731).lines)
+        game.alias_command(brine_put, as: 'put my brine in my mortar')
+        script_step(glop, 759, after: lambda { |replay|
+          glop.script(replay, commands: /\A(?:crush my glop|smell my glop|push my glop|put my coal nugget in my rustic mortar|mark my glop|count my glop)/, from: 816)
+        })
+        script_step(glop, 1054, after: ->(_game) { commons.hold('gill glop') })
+      end
+
+      it 'adds the brine when the game asks, crafts on to the final touches (6106:1042) and makes 6 uses, as the logged craft did (6106:1076)' do
+        script_glop
+        expect(run_remedy(glop_line)).to eq(:exited)
+        expected = logged_sends(glop, own, without: [731]).insert(6, brine_put)
+        expect(game.sent).to eq(expected), game.report
+        expect(game.sent[5, 3]).to eq(['crush my georin with my rustic pestle', brine_put, crush])
+        expect(remedy_messages).to eq(['Remedy: 12 uses left on the glop instructions.', 'Remedy: made 6 uses of gill glop.']) # 6106:669, 6106:1076
+        expect(game.diagnostics).to be_empty
+        expect(game.flag_sets.select { |flag, _cite| flag == 'remedy-brine' }).to eq([%w[remedy-brine 6106:708]])
+      end
+
+      it 'gets the brine from the haversack and puts it back there, the pestle stowed before and got back after, every tool back at the end' do
+        script_glop
+        run_remedy(glop_line)
+        brine_at = commons.moves.index(brine_moves.first)
+        expect(commons.moves[brine_at - 1, 4]).to eq(["rustic pestle: hand -> #{toolstrap}", *brine_moves, "rustic pestle: #{toolstrap} -> hand"])
+        expect(commons.moves.grep(/brine/)).to eq(brine_moves)
+        expect(commons.location_of("brewer's brine")).to eq(haversack)
+        expect(commons.location_of('gill glop')).to eq('left').or eq('right')
+        expect(nezhiri_tools.keys.to_h { |tool| [tool, commons.location_of(tool)] }).to eq(nezhiri_tools)
+        expect(commons.calls).to include(['DRCC.get_crafting_item', 'brine', haversack, [], nezhiri_belt, true])
+        exit_hooks.each(&:call)
+        expect(remedy_flags).to be_empty
+      end
+
+      %i[current v5_22 v5_21].each do |release|
+        context "with no brine on hand, on lich-5 #{release}" do
+          let(:lich5) { release }
+          let(:inventory) { nezhiri_tools.merge(nezhiri_supplies.except("brewer's brine"), 'gill glop instructions' => haversack, 'dried georin' => haversack) }
+
+          it 'stops at the brine cue with a Remedy line, sends no brine put and no other crush, buys nothing, then prints the continue line' do
+            script_glop
+            outcome = run_remedy(glop_line) { allow(DRC).to receive(:beep) }
+            expect(outcome).to eq(:exited)
+            expect(game.sent.last).to eq('crush my georin with my rustic pestle')
+            expect(game.sent).not_to include(brine_put, crush)
+            expect(remedy_messages.last).to eq("Remedy: the game asks for brewer's brine, and none could be got. remedy does not buy brine; keep some in your #{haversack}. Stopping.")
+            expect(commons.messages.first).to eq('DRCC: You seem to be missing: brine')
+            expect(commons.calls.map(&:first)).not_to include('DRCT.order_item', 'DRCT.walk_to', 'DRCM.get_money_from_bank')
+            expect(game.diagnostics).to be_empty
+            # Not at once: the hands are looked at once a second for a late
+            # get first, as after every guarded get.
+            expect(game.clock).to eq(0.2 + Remedy::Inventory::LATE_GET_LOOKS)
+            exit_hooks.each(&:call)
+            expect(remedy_messages.last).to eq(continue_line)
+            expect(commons.location_of('rustic pestle')).to eq(toolstrap)
+            expect(commons.location_of('rustic mortar')).to eq('left').or eq('right')
+            expect(remedy_flags).to be_empty
+          end
+        end
+      end
+
+      # code-derived: the cue 6106:708 in the speech form other players'
+      # lines take (Remedy::NO_QUOTE). The next crush then gets the game's
+      # cue alone (6106:734), as the crush 6106:731 did: the bput returns on
+      # it at once, and the next pass adds the brine, with no 15 s wait.
+      it "adds no brine for another player saying the cue, and adds it at once when the game's own cue alone answers the next crush (6106:734)" do
+        spoken = code(%(<preset id='speech'>Mallory says</preset>, "#{log('6106:708').text}"), from: '6106:708 as player speech (Remedy::NO_QUOTE)')
+        script_glop(first_crush: [*glop.step(703).lines.first(2), spoken])
+        expect(run_remedy(glop_line)).to eq(:exited)
+        expect(game.sent[5, 3]).to eq(['crush my georin with my rustic pestle', crush, brine_put])
+        expect(game.flag_sets.select { |flag, _cite| flag == 'remedy-brine' }).to eq([%w[remedy-brine 6106:734]])
+        expect(remedy_messages.last).to eq('Remedy: made 6 uses of gill glop.')
+        expect(game.diagnostics).to be_empty
+        expect(game.clock).to eq(0.2)
+      end
+    end
+
+    context 'a deep-sea draught mixed in the mixing bowl (6102:144-471)' do
+      let(:draught) { transcript('nezhiri_6102_144') }
+      let(:inventory) do
+        nezhiri_tools.merge(nezhiri_supplies.except('massive coal nugget'), 'large coal nugget' => haversack, # 6102:153
+                            'deep-sea draught instructions' => haversack, 'crushed junliar' => haversack)
+      end
+      let(:item_ids) { { 'crushed junliar' => '8189291' } } # 6102:204
+      let(:settings) { super().merge(mark_crafted_goods: false) } # the logged craft marked nothing
+      let(:draught_line) { typed('instructions junliar "coal nugget" bowl draught 25') } # 6102:144
+      let(:mix) { 'mix my mixing bowl with my mixing stick' }
+      let(:brine_put) { 'put brine in my mixing bowl' }
+      let(:own) { /\A(?:study my draught|count my junliar|combine my junliar|put #\d+ in my mixing bowl|mix my mixing bowl|smell my draught|turn my mixing bowl|push my draught|put my coal nugget in my mixing bowl|get my draught from|count my draught)/ }
+
+      # Scripts the craft as #script_glop does: the studies (6102:170,
+      # 6102:175), the herb (6102:198-205), the first mix (Roundtime, then
+      # the brine cue, 6102:219-221); every later mix gets the cue alone
+      # (6102:229) until the brine put, aliased to the player's `put brine
+      # in my bowl` (6102:249 -> 6102:250), scripts the rest from 6102:255.
+      # The player mixed once by hand after the brine (`mix my bowl with my
+      # mix stick`, 6102:255); remedy's next mix is aliased to it, so it
+      # gets that mix's reply and the craft goes on exactly as logged.
+      #
+      # @return [void]
+      def script_draught
+        [170, 175, 198, 201].each { |line| script_step(draught, line) }
+        script_step(draught, 204, after: ->(_game) { commons.release('junliar') })
+        script_step(draught, 217)
+        game.fallback(mix, *draught.step(227).lines)
+        game.alias_command(brine_put, as: 'put brine in my bowl')
+        game.alias_command(mix, as: 'mix my bowl with my mix stick')
+        script_step(draught, 249, after: lambda { |replay|
+          draught.script(replay, commands: /\A(?:mix my|smell my draught|turn my mixing bowl|push my draught|put my coal nugget in my mixing bowl|count my draught)/, from: 255)
+        })
+        script_step(draught, 449, after: ->(_game) { commons.hold('deep-sea draught') })
+      end
+
+      it 'adds the brine when the game asks, crafts on to the final touches (6102:426) and makes 6 uses, as the logged craft did (6102:458)' do
+        script_draught
+        expect(run_remedy(draught_line)).to eq(:exited)
+        expected = logged_sends(draught, own, without: [227]).insert(6, brine_put, mix)
+        expect(game.sent).to eq(expected), game.report
+        expect(remedy_messages).to eq(['Remedy: 14 uses left on the draught instructions.', 'Remedy: made 6 uses of deep-sea draught.']) # 6102:185, 6102:458
+        expect(game.diagnostics).to be_empty
+        expect(commons.moves.grep(/brine/)).to eq(brine_moves)
+        expect(commons.location_of('deep-sea draught')).to eq('left').or eq('right')
+        expect(commons.location_of('sleek steel mixing bowl')).to eq(haversack)
+      end
+    end
+
+    # The continue form, as the player ran it after the refusal below: the
+    # herb taken out of the mortar, put in the sleek steel mixing bowl and
+    # mixed once by hand, and the brine added by hand (6105:614-665), the
+    # bowl still held. ;remedy continue then carried the draught on from
+    # its analysis to 6 uses. No brine cue comes in this window (the brine
+    # was already in); the catalyst cue does (6105:807).
+    context 'a deep-sea draught carried on with the continue form in the mixing bowl held (6105:687-968)' do
+      let(:carried_on) { transcript('nezhiri_6105_687') }
+      let(:inventory) { nezhiri_tools.except('sleek steel mixing bowl').merge(nezhiri_supplies) }
+      let(:settings) { super().merge(mark_crafted_goods: false) } # the logged run marked nothing (6105:942-950)
+      let(:continue_line) { typed('continue none "coal nugget" bowl draught') } # 6105:687, the doubled quotes as one pair
+      # remedy's own commands in the window, as the log has them.
+      let(:own) { /\A(?:analyze my draught|mix my mixing bowl|smell my draught|turn my mixing bowl|push my draught|put my coal nugget in my mixing bowl|get my draught from|count my draught)/ }
+
+      # Scripts every reply to remedy's own commands from the analysis
+      # (6105:724-732) to the count (6105:952); the product get (6105:944)
+      # hands the draught over.
+      #
+      # @return [void]
+      def script_carried_on
+        $right_hand = 'sleek steel mixing bowl'
+        carried_on.script(game, commands: /\A(?:analyze my draught|mix my mixing bowl|smell my draught|turn my mixing bowl|put my coal nugget in my mixing bowl|count my draught)/)
+        script_step(carried_on, 942, after: ->(_game) { commons.hold('deep-sea draught') })
+      end
+
+      it 'gets the stirrer, analyses (6105:726-731), rubs in the coal on the catalyst cue (6105:807), mixes to the final touches (6105:934) and makes 6 uses (6105:952)' do
+        script_carried_on
+        expect(run_remedy(continue_line)).to eq(:exited)
+        expect(game.sent).to eq(logged_sends(carried_on, own)), game.report
+        expect(game.sent.first).to eq('analyze my draught')
+        expect(remedy_messages).to eq(['Remedy: made 6 uses of deep-sea draught.']) # 6105:953
+        expect([game.clock, game.diagnostics]).to eq([0.0, []])
+        expect(game.flag_sets.map(&:first)).to include('remedy-catalyst')
+        expect(game.flag_sets.map(&:first)).not_to include('remedy-brine')
+        expect(commons.moves.first).to eq("grooved covellite mixing stick: #{toolstrap} -> hand") # 6105:708-710, before the analysis
+        expect(commons.moves).to include("massive coal nugget: #{haversack} -> hand", "massive coal nugget: hand -> #{haversack}") # 6105:817-827
+        expect(commons.moves.grep(/brine/)).to be_empty
+        expect(commons.location_of('deep-sea draught')).to eq('left').or eq('right')
+        expect(nezhiri_tools.keys.to_h { |tool| [tool, commons.location_of(tool)] }).to eq(nezhiri_tools) # the bowl put away (6105:946-948), the stick tied back (6105:938-940)
+        exit_hooks.each(&:call)
+        expect(remedy_messages.size).to eq(1) # no continue line after a finish
+      end
+
+      # The same run with the brine not yet in: the player's own first stir
+      # of this draught got Roundtime and then the brine cue (6105:648 ->
+      # 6105:649-652); here remedy's first mix gets that reply (an analog),
+      # as a continue run does after a stop for brine. remedy's brine put,
+      # aliased to the player's `put my brine in my bowl` (6105:662), gets
+      # its reply (6105:663), and the run goes on as logged.
+      it 'adds the brine at the cue on its first mix (6105:649-652, the brine put answered by 6105:663), then crafts on to 6 uses' do
+        $right_hand = 'sleek steel mixing bowl'
+        commands = /\A(?:analyze my draught|mix my mixing bowl|smell my draught|turn my mixing bowl|put my coal nugget in my mixing bowl|count my draught)/
+        carried_on.script(game, commands: commands, inject: { 734 => %w[6105:649 6105:650 6105:652].map { |cite| log(cite) } })
+        script_step(carried_on, 942, after: ->(_game) { commons.hold('deep-sea draught') })
+        game.alias_command('put brine in my mixing bowl', as: 'put my brine in my bowl')
+        game.script('put my brine in my bowl', log('6105:663'))
+
+        expect(run_remedy(continue_line)).to eq(:exited)
+        expect(game.sent).to eq(logged_sends(carried_on, own).insert(1, 'mix my mixing bowl with my mixing stick', 'put brine in my mixing bowl')), game.report
+        expect(remedy_messages).to eq(['Remedy: made 6 uses of deep-sea draught.'])
+        expect([game.clock, game.diagnostics]).to eq([0.0, []])
+        expect(game.flag_sets.select { |flag, _cite| flag == 'remedy-brine' }).to eq([%w[remedy-brine 6105:652]])
+        expect(commons.moves.grep(/brine/)).to eq(brine_moves)
+        expect(commons.location_of("brewer's brine")).to eq(haversack)
+      end
+    end
+
+    context 'a deep-sea draught begun in the rustic mortar (6105:501-606)' do
+      let(:refused) { transcript('nezhiri_6105_501') }
+      let(:inventory) { nezhiri_tools.merge(nezhiri_supplies, 'deep-sea draught instructions' => haversack, 'crushed junliar' => haversack) }
+      let(:item_ids) { { 'crushed junliar' => '2300832' } } # 6105:583
+      let(:refused_line) { typed('instructions junliar "coal nugget" mortar draught 25') } # 6105:501
+      let(:crush) { 'crush my junliar with my rustic pestle' }
+
+      # Scripts the studies (6105:541, 6105:547), the herb (6105:575-585)
+      # and the first crush, refused (6105:603 -> 6105:605). The player
+      # paused remedy at once (6105:606), so no resend is logged; a resend
+      # gets the same refusal (an analog).
+      #
+      # @return [void]
+      def script_refused
+        [541, 547, 575, 579].each { |line| script_step(refused, line) }
+        script_step(refused, 583, after: ->(_game) { commons.release('junliar') })
+        script_step(refused, 603)
+        game.fallback(crush, *refused.step(603).lines)
+      end
+
+      it 'stops at once on "requires a cooking pot and mixing stick" (6105:605), naming the bowl, with no timeout and no continue line' do
+        script_refused
+        outcome = run_remedy(refused_line) { allow(DRC).to receive(:beep) }
+        expect(outcome).to eq(:exited)
+        expect(game.sent).to eq(logged_sends(refused, /\A(?:study my|count my|combine my|put #|crush my)/))
+        expect(game.sent.count(crush)).to eq(1)
+        # 0.2 s is create_item's pause after the first stows; no bput waited.
+        expect([game.clock, game.diagnostics]).to eq([0.2, []])
+        expect(remedy_messages).to eq(['Remedy: 15 uses left on the draught instructions.', # 6105:557
+                                       "Remedy: the game says junliar needs a cooking pot and mixing stick, not the rustic mortar: it refused #{crush.inspect}. " \
+                                       'Take the herb out of the rustic mortar and run remedy again with bowl as the vessel (a bowl or cauldron, mixed with a mixing stick). Stopping.'])
+        expect(DRC).to have_received(:beep).once
+        exit_hooks.each(&:call)
+        expect(remedy_messages.size).to eq(2)
+        expect(commons.location_of('rustic pestle')).to eq(toolstrap)
+        expect(commons.location_of('rustic mortar')).to eq('left').or eq('right')
+        expect(commons.moves).to include('crushed junliar: hand -> game')
+      end
+
+      # code-derived: the refusal 6105:605 in the speech form other
+      # players' lines take.
+      it "does not stop for another player saying the refusal: that crush counts as unanswered, and the game's own refusal on the resend stops it" do
+        spoken = code(%(<preset id='speech'>Mallory says</preset>, "#{log('6105:605').text}"), from: '6105:605 as player speech')
+        [541, 547, 575, 579].each { |line| script_step(refused, line) }
+        script_step(refused, 583, after: ->(_game) { commons.release('junliar') })
+        game.script(crush, spoken)
+        game.fallback(crush, *refused.step(603).lines)
+        outcome = run_remedy(refused_line) { allow(DRC).to receive(:beep) }
+        expect(outcome).to eq(:exited)
+        expect(game.sent.last(2)).to eq([crush, crush])
+        expect(game.clock).to eq(0.2 + ReplayGame::BPUT_TIMEOUT) # create_item's 0.2 s pause, then one bput timeout
+        expect(remedy_messages.last).to start_with('Remedy: the game says junliar needs a cooking pot and mixing stick')
+      end
+    end
+  end
 end
 
 # Layer 03: the named patterns, the Flag list and the split of
@@ -4433,12 +4781,13 @@ RSpec.describe 'Remedy patterns, Flags and entry' do
     flags.select { |_name, patterns| patterns.any? { |pattern| pattern.match?(text) } }.keys
   end
 
-  # Every real line the remedy fixtures hold: the cited lines and every reply
-  # line of every transcript.
+  # Every real line the remedy fixtures hold: the cited lines (the logs of
+  # 2026-10-25 and 2026-10-26, and the Nezhiri logs 6100 to 6106) and every
+  # reply line of every transcript.
   #
   # @return [Array<ReplayGame::Line>]
   def every_fixture_line
-    cited = ReplayGame.log_lines.keys.select { |cite| cite.start_with?('25:', '26:') }.map { |cite| log(cite) }
+    cited = ReplayGame.log_lines.keys.grep(/\A(?:25|26|610[0-6]):/).map { |cite| log(cite) }
     transcripts = Dir[File.expand_path('fixtures/remedy/transcripts/*.json', __dir__)].sort
     replies = transcripts.flat_map { |path| ReplayTranscript.load(path).steps.flat_map(&:lines) }
     cited + replies
@@ -4446,7 +4795,31 @@ RSpec.describe 'Remedy patterns, Flags and entry' do
 
   describe 'Remedy::FLAGS' do
     it 'lists the Flags in the order the crafting loop handles them: the ingredients, then the steps' do
-      expect(Remedy::FLAGS.keys).to eq(%w[remedy-water remedy-alcohol remedy-catalyst remedy-herb remedy-sieve remedy-turn remedy-smell])
+      expect(Remedy::FLAGS.keys).to eq(%w[remedy-water remedy-alcohol remedy-brine remedy-catalyst remedy-herb remedy-sieve remedy-turn remedy-smell])
+    end
+
+    # The brine cue in its bowl wording (deep-sea draught 6102:221 and
+    # 6105:652, landsickness potion 6103:452) and its mortar wording (gill
+    # glop 6104:695 and 6106:708, scale moisturizer 6105:2506).
+    %w[6102:221 6105:652 6103:452 6104:695 6106:708 6105:2506].each do |cite|
+      it "sets remedy-brine, and no other remedy Flag, on the game's line #{cite}" do
+        expect(flags_set_by(Remedy::FLAGS, log(cite).text)).to eq(['remedy-brine'])
+      end
+    end
+
+    it 'sets remedy-brine on the brine cue 6102:221, and not when another player says, thinks or whispers it' do
+      # code-derived: the speech, ESP and whisper forms other players' lines take (Remedy::NO_QUOTE).
+      text = log('6102:221').text
+      spoofs = [%(<preset id='speech'>Mallory says</preset>, "#{text}"),
+                %(<pushStream id="thoughts"/>[General][Mallory] "#{text}"<popStream/>),
+                %(<pushStream id="whispers"/><preset id="whisper">Mallory whispers,</preset> "#{text}")]
+      expect([text, *spoofs].map { |line| flags_set_by(Remedy::FLAGS, line) }).to eq([['remedy-brine'], [], [], []])
+    end
+
+    it 'sets remedy-brine on 6106:708 behind an XML tag' do
+      # code-derived: 6106:708 behind a bold tag, the form NO_QUOTE allows.
+      tagged = ReplayGame.code("<pushBold/>#{log('6106:708').text}", from: '6106:708 behind an XML tag (Remedy::NO_QUOTE)')
+      expect(flags_set_by(Remedy::FLAGS, tagged.text)).to eq(['remedy-brine'])
     end
 
     [['25:50210', 'remedy-water'],
@@ -4489,8 +4862,20 @@ RSpec.describe 'Remedy patterns, Flags and entry' do
       # The sweep is not vacuous: real lines set every Flag but remedy-herb,
       # whose cue is in no log.
       expect(lines.flat_map { |line| flags_set_by(Remedy::FLAGS, line.text) }.uniq).to match_array(Remedy::FLAGS.keys - ['remedy-herb'])
-      changed = lines.reject { |line| flags_set_by(before, line.text).sort == flags_set_by(Remedy::FLAGS, line.text).sort }
+      # remedy-brine is new: it is compared on its own below.
+      old_flags = Remedy::FLAGS.except('remedy-brine')
+      changed = lines.reject { |line| flags_set_by(before, line.text).sort == flags_set_by(old_flags, line.text).sort }
       expect(changed.map(&:label)).to be_empty
+    end
+
+    it "sets remedy-brine on exactly the real lines of the fixtures that start with the game's brine cue" do
+      lines = every_fixture_line
+      cues = lines.select { |line| line.text.start_with?("You need another splash of brewer's brine") }
+      expect(cues.map(&:cite)).to include('6102:221', '6106:708', '6106:734')
+      # Lines about brine that ask for nothing: the get (6106:758), the put's
+      # reply (6102:250, 6106:760), the put away (6102:252).
+      expect(lines.map(&:cite)).to include('6106:758', '6102:250', '6106:760', '6102:252')
+      expect(lines.select { |line| flags_set_by(Remedy::FLAGS, line.text).include?('remedy-brine') }.map(&:label)).to eq(cues.map(&:label))
     end
 
     it 'still sets remedy-smell on 26:12950, the "you should smell the mixture" line, behind an XML tag' do
@@ -4684,6 +5069,52 @@ RSpec.describe 'Remedy patterns, Flags and entry' do
       expect(DRC.bput('combine my nemoih', *Remedy::Patterns::COMBINE_REPLIES)).to eq('That stack of herbs is too large to add')
     end
 
+    it 'CRAFT_REPLIES: returns the refusal "requires a cooking pot and mixing stick" for the crush it answered (6105:603 -> 6105:605)' do
+      game.install(self)
+      game.script('crush my junliar with my rustic pestle', log('6105:605'))
+      expect(DRC.bput('crush my junliar with my rustic pestle', *Remedy::Patterns::CRAFT_REPLIES)).to eq(log('6105:605').text.chomp('.'))
+      expect(game.clock).to eq(0)
+    end
+
+    it "CRAFT_REPLIES: ignores another player saying the refusal 6105:605, then reads the game's own line" do
+      game.install(self)
+      # code-derived: the speech form other players' lines take.
+      spoof = ReplayGame.code(%(Mallory says, "#{log('6105:605').text}"), from: '6105:605 as player speech')
+      game.script('crush my junliar with my rustic pestle', spoof, log('6105:605'))
+      expect(DRC.bput('crush my junliar with my rustic pestle', *Remedy::Patterns::CRAFT_REPLIES)).to eq(log('6105:605').text.chomp('.'))
+    end
+
+    # A crafting command the game refuses while it waits for brine gets the
+    # cue alone: the crush 6106:731 got 6106:734, the mix 6102:227 got
+    # 6102:229.
+    [['crush my glop with my rustic pestle', '6106:734'], ['mix my mixing bowl with my mixing stick', '6102:229']].each do |command, cite|
+      it "CRAFT_REPLIES: returns the brine cue at once for #{command.inspect} refused by #{cite} alone, and the loop reads it as no answer" do
+        game.install(self)
+        game.script(command, log(cite))
+        reply = DRC.bput(command, *Remedy::Patterns::CRAFT_REPLIES)
+        expect(reply).to eq("You need another splash of brewer's brine")
+        expect(game.clock).to eq(0)
+        expect(game.diagnostics).to be_empty
+        expect(Remedy::CraftLoop.allocate.send(:classify, reply)).to eq(:silent)
+      end
+    end
+
+    # The cue ends the bput only as the game's own line, and only when no
+    # Roundtime came before it: the done crush 6106:703 got Roundtime and
+    # then the cue (6106:705-708).
+    it "CRAFT_REPLIES: passes over another player saying the brine cue, returns the game's cue alone (6106:734), and returns Roundtime when it comes first (6106:706)" do
+      game.install(self)
+      crush = 'crush my glop with my rustic pestle'
+      # code-derived: the speech form other players' lines take.
+      spoof = ReplayGame.code(%(Mallory says, "#{log('6106:734').text}"), from: '6106:734 as player speech')
+      game.script(crush, spoof, log('6106:734'))
+      game.script(crush, log('6106:705'), log('6106:706'), log('6106:708'))
+      expect(DRC.bput(crush, *Remedy::Patterns::CRAFT_REPLIES)).to eq("You need another splash of brewer's brine")
+      expect(DRC.bput(crush, *Remedy::Patterns::CRAFT_REPLIES)).to eq('Roundtime:')
+      expect(game.clock).to eq(0)
+      expect(game.diagnostics).to be_empty
+    end
+
     it 'CRAFT_REPLIES: returns the refusal "You need a more suitable type of herb" for the crush it answered (25:50933)' do
       game.install(self)
       game.script('crush my georin with my rounded pestle', log('25:50933'))
@@ -4694,7 +5125,9 @@ RSpec.describe 'Remedy patterns, Flags and entry' do
      ['turn my heavy cauldron', '26:25113', "The cauldron doesn't appear suitable for working on"],
      ['push my curative with my sieve', '26:39150', 'You need another catalyst material'],
      ['push my tonic with my sieve', '26:24636', 'You need another splash of water'],
-     ['turn my large mortar', '26:21642', 'You need another splash of alcohol']].each do |command, cite, text|
+     ['turn my large mortar', '26:21642', 'You need another splash of alcohol'],
+     # 6106:734 answered a crush (6106:731); for the push it is an analog.
+     ['push my glop with my sieve', '6106:734', "You need another splash of brewer's brine"]].each do |command, cite, text|
       it "STEP_REPLIES: returns #{text.inspect} at once for #{command.inspect} refused by #{cite}" do
         game.install(self)
         game.script(command, log(cite))
@@ -5891,6 +6324,42 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
       expect(Flags['remedy-water']).to be(false)
     end
 
+    # The handlers here are built with no brine: the default is the plain brine.
+    # The hand moves as in game: the get brings "brewer's brine" (6106:758)
+    # to the hand the stow emptied, the stow empties it, so the second stow
+    # must put the brine back, not the pestle.
+    it "adds brine (6106:708) with \"put brine in my large mortar\": a guarded get of brine, the put (6106:760), the brine put back, then the pestle back" do
+      add_remedy_flags
+      game_says(log('6106:708'))
+      $left_hand = 'rounded pestle'
+      allow(DRCC).to receive(:stow_crafting_item) { |*args| calls << [:stow, *args] && ($left_hand = nil).nil? }
+      allow(DRCC).to receive(:get_crafting_item) do |*args|
+        calls << [:get, *args]
+        $left_hand = args.first == 'brine' ? "brewer's brine" : args.first
+        true
+      end
+      game.script('put brine in my large mortar', log('6106:760'))
+      handlers = handlers_for
+      expect(handlers.pending).to eq('remedy-brine')
+      handlers.run('remedy-brine')
+      expect(game.sent).to eq(['look', 'put brine in my large mortar'])
+      expect(calls).to eq([[:stow, 'rounded pestle', toolbag, toolstrap], [:get, 'brine', toolbag, bag_items, toolstrap, true],
+                           [:stow, "brewer's brine", toolbag, toolstrap], [:get, 'rounded pestle', toolbag, bag_items, toolstrap, true]])
+      expect($left_hand).to eq('rounded pestle')
+      expect(DRCI).to have_received(:in_hands?).with('brine')
+      expect(Flags['remedy-brine']).to be(false)
+      expect(game.diagnostics.size).to eq(1) # the `look` of game_says; the put was answered
+    end
+
+    it 'answers the brine (6106:708) before the catalyst (25:11049) and the smell (25:11004) when one reply sets all three' do
+      add_remedy_flags
+      game_says(log('25:11004'), log('25:11049'), log('6106:708'))
+      handlers = handlers_for
+      expect(handlers.pending).to eq('remedy-brine')
+      Flags.reset('remedy-brine')
+      expect(handlers.pending).to eq('remedy-catalyst')
+    end
+
     it 'pours alcohol from its vessel (25:10873) with the vessel in hand' do
       jug = Remedy::Liquid.new(kind: 'alcohol', source: 'moonshine jug', verb: 'pour')
       game.script('pour moonshine jug in my heavy cauldron', log('25:10905'))
@@ -5997,6 +6466,16 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
         expect(Flags['remedy-catalyst']).to be_a(MatchData)
       end
 
+      it 'stops before it resets the Flag or sends when no brine is in hand after its get, saying remedy does not buy it' do
+        allow(DRCI).to receive(:in_hands?) { |item| item != 'brine' }
+        game_says(log('6106:708'))
+        expect { handlers_for.run('remedy-brine') }.to raise_error(SystemExit)
+        expect(messages).to eq(["Remedy: the game asks for brewer's brine, and none could be got. remedy does not buy brine; keep some in your #{toolbag}. Stopping."])
+        expect(game.sent).to eq(['look'])
+        expect(Flags['remedy-brine']).to be_a(MatchData)
+        expect(calls.map { |call| call[0, 2] }).to eq([[:stow, nil], [:get, 'brine']])
+      end
+
       it 'stops at once when the put finds no pewter ingot (26:39194), without getting the pestle back' do
         game.script('put my pewter ingot in my large mortar', log('26:39194'))
         expect { handlers_for.run('remedy-catalyst') }.to raise_error(SystemExit)
@@ -6039,6 +6518,16 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
 
     it 'refuses a Flag it has no method for' do
       expect { handlers_for.run('remedy-done') }.to raise_error(KeyError)
+    end
+  end
+
+  describe 'Remedy::Liquid.plain' do
+    it 'is the plain liquid put by its own name, for brine as for water, sending nothing' do
+      brine = Remedy::Liquid.plain('brine')
+      expect(brine.to_h).to eq(kind: 'brine', source: 'brine', verb: 'put')
+      expect([brine.plain?, brine.flag]).to eq([true, 'remedy-brine'])
+      expect(Remedy::Liquid.plain('water')).to eq(Remedy::Liquid.find('water', nil, inventory))
+      expect(game.sent).to be_empty
     end
   end
 

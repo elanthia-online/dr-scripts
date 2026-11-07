@@ -89,6 +89,9 @@ class ReplayTranscript
   #   unanswered before the logged reply);
   # - replace: other lines for a step's reply (e.g. the same lines in another
   #   order).
+  # A third, after:, changes no line: it runs a hook once a step's logged
+  # reply has arrived (ReplayGame#script's after:), e.g. to move what the
+  # hands hold the way the game did.
   #
   # @param game [ReplayGame] the replay to script
   # @param commands [Regexp] the logged commands to take (the ones the script
@@ -102,20 +105,22 @@ class ReplayTranscript
   #   before the step's own
   # @param replace [Hash{Integer => Array<ReplayGame::Line>}] step line => the
   #   lines to reply with instead of the logged ones
+  # @param after [Hash{Integer => Proc}] step line => a hook called with the
+  #   game once that step's reply has arrived
   # @return [Array<Step>] the steps scripted
-  # @raise [ArgumentError] when a skip, inject or replace line names no step,
-  #   or names a step that is not scripted
-  def script(game, commands:, skip: [], from: nil, inject: {}, replace: {})
+  # @raise [ArgumentError] when a skip, inject, replace or after line names
+  #   no step, or names a step that is not scripted
+  def script(game, commands:, skip: [], from: nil, inject: {}, replace: {}, after: {})
     skip.each { |line| step(line) }
     chosen = @steps.select do |step|
       commands.match?(step.command) && !skip.include?(step.line) && (from.nil? || step.line >= from)
     end
-    (inject.keys + replace.keys).each do |line|
+    (inject.keys + replace.keys + after.keys).each do |line|
       raise ArgumentError, "#{@run}: line #{line} is not a scripted step" unless chosen.include?(step(line))
     end
     chosen.each do |step|
       extra_replies(inject[step.line]).each { |reply| game.script(step.command, *reply) } if inject.key?(step.line)
-      game.script(step.command, *replace.fetch(step.line, step.lines))
+      game.script(step.command, *replace.fetch(step.line, step.lines), after: after[step.line])
     end
   end
 

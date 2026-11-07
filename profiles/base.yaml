@@ -3051,6 +3051,13 @@ task_unpack_keepers: false
 # with it, the walk to the bin room for leftover stock is skipped. Bins your own pieces of those stocks
 # in the crafting bag too. Never runs in marathon mode, which carries its restock stock between tasks.
 task_bin_leftover_stock: false
+# Setting for taskmaster - A container (your stow container, say "backpack") to sweep once: before the
+# first Poltu or Bradyn metal task of a run, every bronze and steel ingot in it is binned. Forge used to
+# leave the unused part of a split ingot in the stow container, where taskmaster never looked, so a
+# character could carry dozens. Bins your own bronze and steel ingots there too: unset it once it says
+# none are left (until then it tries again before each metal task). Ignored when it has the same noun as
+# crafting_container, since it may be the same container.
+task_bin_metal_from:
 
 # Setting for taskmaster - boosts to use. task: BOOST TASK when a task is on cooldown
 # (task_use_boost: true also turns this on). haste: keep BOOST HASTE running between tasks.

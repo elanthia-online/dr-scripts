@@ -911,6 +911,15 @@ class WorkOrders
       exit
     end
 
+    # forge can't make an item bigger than the ingot ("You need a larger ingot
+    # to forge this item."), so every ingot bought for one would be wasted.
+    # Stop before buying any, for a new order or a resumed one. Which orders
+    # are taken is up to workorder_recipes.
+    if recipe['volume'] > materials_info['stock-volume']
+      Lich::Messaging.msg('bold', "WorkOrders: #{item['name']} needs #{recipe['volume']} volume of metal, more than one #{materials_info['stock-name']} ingot holds (#{materials_info['stock-volume']}). Not buying ingots for it: list only items that fit in workorder_recipes, or set workorders_materials metal_type to a larger ingot.")
+      exit
+    end
+
     info['trash-room'] = nil if @worn_trashcan && @worn_trashcan_verb
 
     # A bulk ingot can cost more than the default copper on hand. crafting_cost

@@ -3862,6 +3862,179 @@ crafting_recipes:
   chapter: 9
   part:
   - hilt
+# Weaponsmithing recipes made from stand-alone instructions, not the
+# crafting book: the Special Instructions list of Elanthipedia's
+# Weaponsmithing products page. `;smith <metal> "<name>"` runs
+# `;forge instructions <metal> <noun>`, which studies "<noun> instructions";
+# workorders.lic never selects them (instructions: true). Volumes are from
+# each weapon's page, parts from the ingredient list its instructions show
+# (quoted on the instructions item page). Where no page lists the
+# ingredients the recipe has no parts here; forge.lic stops and names a
+# missing hilt, haft or pole if the game asks for one.
+- name: a metal folded katana
+  noun: katana
+  volume: 12
+  type: weaponsmithing
+  work_order: false
+  chapter: # Instructions only, not in crafting book.
+  instructions: true
+  part:
+  - hilt
+- name: a metal half-handled kanabo
+  noun: kanabo
+  volume: 12
+  type: weaponsmithing
+  work_order: false
+  chapter: # Instructions only, not in crafting book.
+  instructions: true
+  part:
+  - short pole
+- name: a metal hawkbill
+  noun: hawkbill
+  volume: 1
+  type: weaponsmithing
+  work_order: false
+  chapter: # Instructions only, not in crafting book.
+  instructions: true
+  # From the instructions read in game (Kurtus, 2026-11-07): "(1) refined
+  # metal ingot (1 volume)" and "(1) finished wooden hilt".
+  part:
+  - hilt
+- name: a metal hunga-munga
+  noun: hunga-munga
+  volume: 9
+  type: weaponsmithing
+  work_order: false
+  chapter: # Instructions only, not in crafting book.
+  instructions: true
+  part:
+  - hilt
+- name: a metal Imperial spear
+  noun: spear
+  volume: 13
+  type: weaponsmithing
+  work_order: false
+  chapter: # Instructions only, not in crafting book.
+  instructions: true
+  part:
+  - long pole
+- name: a metal light pernach
+  noun: pernach
+  volume: 9
+  type: weaponsmithing
+  work_order: false
+  chapter: # Instructions only, not in crafting book.
+  instructions: true
+- name: a metal long-handled naginata
+  noun: naginata
+  volume: 15
+  type: weaponsmithing
+  work_order: false
+  chapter: # Instructions only, not in crafting book.
+  instructions: true
+  part:
+  - long pole
+- name: a metal pattern welded tekkan
+  noun: tekkan
+  volume: 14
+  type: weaponsmithing
+  work_order: false
+  chapter: # Instructions only, not in crafting book.
+  instructions: true
+  part:
+  - hilt
+- name: a metal phalanx sword
+  noun: sword
+  volume: 9
+  type: weaponsmithing
+  work_order: false
+  chapter: # Instructions only, not in crafting book.
+  instructions: true
+  part:
+  - hilt
+- name: a metal pinwheel
+  noun: pinwheel
+  volume: 2
+  type: weaponsmithing
+  work_order: false
+  chapter: # Instructions only, not in crafting book.
+  instructions: true
+- name: a metal serrated iltesh
+  noun: iltesh
+  volume: 7
+  type: weaponsmithing
+  work_order: false
+  chapter: # Instructions only, not in crafting book.
+  instructions: true
+  # Parts unconfirmed: no wiki page lists this recipe's ingredients.
+- name: a metal serrated khopesh
+  noun: khopesh
+  volume: 7
+  type: weaponsmithing
+  work_order: false
+  chapter: # Instructions only, not in crafting book.
+  instructions: true
+  part:
+  - hilt
+- name: a metal serrated kudalata
+  noun: kudalata
+  volume: 7
+  type: weaponsmithing
+  work_order: false
+  chapter: # Instructions only, not in crafting book.
+  instructions: true
+  # Parts unconfirmed: no wiki page lists this recipe's ingredients.
+- name: a metal serrated naginata
+  noun: naginata
+  volume: 14
+  type: weaponsmithing
+  work_order: false
+  chapter: # Instructions only, not in crafting book.
+  instructions: true
+  part:
+  - long pole
+- name: a metal serrated parazonium
+  noun: parazonium
+  volume: 5
+  type: weaponsmithing
+  work_order: false
+  chapter: # Instructions only, not in crafting book.
+  instructions: true
+  part:
+  - hilt
+- name: a metal serrated recade
+  noun: recade
+  volume: 8
+  type: weaponsmithing
+  work_order: false
+  chapter: # Instructions only, not in crafting book.
+  instructions: true
+  # Parts unconfirmed: no wiki page lists this recipe's ingredients.
+- name: a metal short-hafted glaive
+  noun: glaive
+  volume: 8
+  type: weaponsmithing
+  work_order: false
+  chapter: # Instructions only, not in crafting book.
+  instructions: true
+  part:
+  - haft
+- name: a metal sterak axe
+  noun: axe
+  volume: 9
+  type: weaponsmithing
+  work_order: false
+  chapter: # Instructions only, not in crafting book.
+  instructions: true
+  part:
+  - haft
+- name: a metal svidaw sis
+  noun: sis
+  volume: 12
+  type: weaponsmithing
+  work_order: false
+  chapter: # Instructions only, not in crafting book.
+  instructions: true
 ###############################
 ##### Forging section end #####
 ###############################
