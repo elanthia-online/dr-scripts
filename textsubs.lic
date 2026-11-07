@@ -1472,12 +1472,8 @@ class TextSubs
   # requires_any gates every sub of the section: a line holding none of the
   # words skips their regexes. It must only name words each pattern needs.
   #
-  # The other kind, 'guild_spells_link', is the one sub whose replacement
-  # names the character's guild. Its fields are pattern, preresult, prelink,
-  # poslink and posresult, and it expands to
-  #   [pattern, preresult + TextSubs.wiki_link(prelink + guild page + poslink, guild) + posresult]
-  # or to no sub at all while the guild is not known, as a link to no guild
-  # would only drop the guild's name from the line.
+  # A section's kind names the Generators class that checks its fields and
+  # turns them into subs (see kinds); 'pairs' lists them as they are.
   #
   # Sections run in file order and subs in list order; both orders are kept,
   # because two subs that match the same line apply in that order. Every key
@@ -1488,11 +1484,13 @@ class TextSubs
       1
     end
 
-    # @return [Hash{String=>Array<String>}] each section kind and the fields
-    #   it needs, all frozen
+    # Each section kind and the generator that expands it. A new kind is one
+    # more generator and one more row here; nothing else in Catalog changes.
+    #
+    # @return [Hash{String=>Class}] frozen
     def self.kinds
-      { 'pairs'             => %w[subs].freeze,
-        'guild_spells_link' => %w[pattern preresult prelink poslink posresult].freeze }.freeze
+      { 'pairs'             => Generators::Pairs,
+        'guild_spells_link' => Generators::GuildSpellsLink }.freeze
     end
 
     # @return [Array<String>] the keys every kind of section may hold, frozen
@@ -1585,49 +1583,46 @@ class TextSubs
       raise ArgumentError, "has no 'name'" unless section['name'].is_a?(String) && !section['name'].empty?
 
       kind = section.fetch('kind', 'pairs')
-      fields = kinds[kind]
-      raise ArgumentError, "has unknown kind #{kind.inspect}; kinds are #{kinds.keys.join(', ')}" unless fields
+      generator = kinds[kind]
+      raise ArgumentError, "has unknown kind #{kind.inspect}; kinds are #{kinds.keys.join(', ')}" unless generator
 
-      unknown = section.keys - section_keys - fields
+      unknown = section.keys - section_keys - generator.fields - generator.optional_fields
       raise ArgumentError, "has unknown key(s) #{unknown.map(&:inspect).join(', ')}" unless unknown.empty?
 
-      missing = fields - section.keys
+      missing = generator.fields - section.keys
       raise ArgumentError, "has no #{missing.join(', ')}" unless missing.empty?
 
       Context.check_gate(section['when'])
       Registry.check_requires_any(section['requires_any'])
-      kind == 'pairs' ? check_pairs(section['subs']) : check_link(section)
+      generator.check(section)
     rescue ArgumentError => e
       label = section.is_a?(Hash) && section['name'].is_a?(String) ? " (#{section['name']})" : ''
       raise ArgumentError, "section #{index + 1}#{label} #{e.message}"
     end
 
-    # @param subs [Object] a pairs section's 'subs'
-    # @return [Array<Regexp>] the patterns, compiled, in order
-    # @raise [ArgumentError] unless subs is a non-empty list of
-    #   [pattern, replacement] String pairs whose patterns compile
-    def self.check_pairs(subs)
-      raise ArgumentError, "'subs' must be a non-empty list" unless subs.is_a?(Array) && !subs.empty?
-
-      subs.each_with_index.map do |pair, index|
-        unless pair.is_a?(Array) && pair.size == 2 && pair.all?(String)
-          raise ArgumentError, "sub #{index + 1} must be a ['pattern', 'replacement'] pair of quoted strings, not #{pair.inspect}"
-        end
-
-        check_pattern(pair.first)
-      end
+    # @param section [Hash] a checked section
+    # @param context [TextSubs::Context]
+    # @return [Array<Array(String, String, Hash)>] its subs, each with the
+    #   section's meta
+    def self.expand(section, context)
+      meta = { section: section['name'], requires_any: section['requires_any'] }.compact.freeze
+      kinds.fetch(section.fetch('kind', 'pairs')).expand(section, context).map { |pattern, replacement| [pattern, replacement, meta] }
     end
+    private_class_method :check, :check_section, :expand
+  end
 
-    # @param section [Hash] a guild_spells_link section
-    # @return [Array<Regexp>] its one pattern, compiled
-    # @raise [ArgumentError] unless every field is a String and the pattern compiles
-    def self.check_link(section)
-      kinds['guild_spells_link'].each do |field|
-        raise ArgumentError, "'#{field}' must be a quoted string, not #{section[field].inspect}" unless section[field].is_a?(String)
-      end
-      [check_pattern(section['pattern'])]
-    end
-
+  # One class per section kind of data/base-textsubs.yaml (see Catalog.kinds),
+  # each turning a section into its [regex source, replacement] pairs. Every
+  # generator is pure and answers the same four calls:
+  #   fields                     the keys a section of its kind must hold
+  #   optional_fields            the keys it may also hold, besides
+  #                              Catalog.section_keys
+  #   check(section)             raises ArgumentError naming what is wrong,
+  #                              else returns every pattern expand can give,
+  #                              compiled (Catalog keeps them as the keys);
+  #                              called with every key known and present
+  #   expand(section, context)   the pairs, in order, of a checked section
+  module Generators
     # @param pattern [String] regex source
     # @return [Regexp] the pattern, compiled and frozen, as a Regexp literal is
     # @raise [ArgumentError] when it does not compile
@@ -1637,21 +1632,98 @@ class TextSubs
       raise ArgumentError, "pattern #{pattern.inspect} does not compile: #{e.message}"
     end
 
-    # @param section [Hash] a checked section
-    # @param context [TextSubs::Context]
-    # @return [Array<Array(String, String, Hash)>] its subs; none for a
-    #   guild_spells_link section while the guild is nil
-    def self.expand(section, context)
-      meta = { section: section['name'], requires_any: section['requires_any'] }.compact.freeze
-      return section['subs'].map { |pattern, replacement| [pattern, replacement, meta] } unless section['kind'] == 'guild_spells_link'
-
-      guild = context.guild
-      return [] if guild.nil?
-
-      link = TextSubs.wiki_link(section['prelink'] + guild.tr(' ', '_') + section['poslink'], guild)
-      [[section['pattern'], section['preresult'] + link + section['posresult'], meta]]
+    # @param section [Hash] a section
+    # @param fields [Array<String>] the keys whose values must be Strings,
+    #   when the section holds them
+    # @return [nil]
+    # @raise [ArgumentError] naming the first field that is not a String
+    def self.check_strings(section, fields)
+      fields.each do |field|
+        next unless section.key?(field)
+        raise ArgumentError, "'#{field}' must be a quoted string, not #{section[field].inspect}" unless section[field].is_a?(String)
+      end
+      nil
     end
-    private_class_method :check, :check_section, :check_pairs, :check_link, :check_pattern, :expand
+
+    # The 'pairs' kind: subs written out as they apply.
+    #
+    # @example
+    #   section = { 'name' => 'x', 'subs' => [['fine', 'FINE']] }
+    #   TextSubs::Generators::Pairs.expand(section, context) # => [['fine', 'FINE']]
+    class Pairs
+      # @return [Array<String>] frozen
+      def self.fields
+        %w[subs].freeze
+      end
+
+      # @return [Array<String>] frozen
+      def self.optional_fields
+        [].freeze
+      end
+
+      # @param section [Hash] a pairs section
+      # @return [Array<Regexp>] the patterns, compiled, in order
+      # @raise [ArgumentError] unless 'subs' is a non-empty list of
+      #   [pattern, replacement] String pairs whose patterns compile
+      def self.check(section)
+        subs = section['subs']
+        raise ArgumentError, "'subs' must be a non-empty list" unless subs.is_a?(Array) && !subs.empty?
+
+        subs.each_with_index.map do |pair, index|
+          unless pair.is_a?(Array) && pair.size == 2 && pair.all?(String)
+            raise ArgumentError, "sub #{index + 1} must be a ['pattern', 'replacement'] pair of quoted strings, not #{pair.inspect}"
+          end
+
+          Generators.check_pattern(pair.first)
+        end
+      end
+
+      # @param section [Hash] a checked pairs section
+      # @param _context [TextSubs::Context] unused: a pair is the same for
+      #   every character
+      # @return [Array<Array(String, String)>] its subs, in list order
+      def self.expand(section, _context)
+        section['subs'].map { |pattern, replacement| [pattern, replacement] }
+      end
+    end
+
+    # The 'guild_spells_link' kind, the one sub whose replacement names the
+    # character's guild. Its fields are pattern, preresult, prelink, poslink
+    # and posresult, and it expands to
+    #   [pattern, preresult + TextSubs.wiki_link(prelink + guild page + poslink, guild) + posresult]
+    # or to no sub at all while the guild is not known, as a link to no guild
+    # would only drop the guild's name from the line.
+    class GuildSpellsLink
+      # @return [Array<String>] frozen
+      def self.fields
+        %w[pattern preresult prelink poslink posresult].freeze
+      end
+
+      # @return [Array<String>] frozen
+      def self.optional_fields
+        [].freeze
+      end
+
+      # @param section [Hash] a guild_spells_link section
+      # @return [Array<Regexp>] its one pattern, compiled
+      # @raise [ArgumentError] unless every field is a String and the pattern compiles
+      def self.check(section)
+        Generators.check_strings(section, fields)
+        [Generators.check_pattern(section['pattern'])]
+      end
+
+      # @param section [Hash] a checked guild_spells_link section
+      # @param context [TextSubs::Context] its guild names the page
+      # @return [Array<Array(String, String)>] the one link, or none while the
+      #   guild is nil
+      def self.expand(section, context)
+        guild = context.guild
+        return [] if guild.nil?
+
+        link = TextSubs.wiki_link(section['prelink'] + guild.tr(' ', '_') + section['poslink'], guild)
+        [[section['pattern'], section['preresult'] + link + section['posresult']]]
+      end
+    end
   end
 
   # Parsers for the subs a character's own settings and files give. Each is
