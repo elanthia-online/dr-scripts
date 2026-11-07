@@ -144,4 +144,148 @@ RSpec.describe 'textsubs.lic' do
       end
     end
   end
+
+  describe 'settings gating' do
+    flags = %w[textsubs_spell_links herb_textsubs textsubs_use_plat_grouping]
+
+    # The one contiguous run where two catalogs part: what only `off` holds
+    # there and what only `on` holds there. Everything before and after the run
+    # is identical in both, so a flag that touched two separate places would
+    # show the untouched entries between them in both :removed and :added.
+    #
+    # @param off [Array<Array>] catalog with the flag off
+    # @param on [Array<Array>] catalog with the flag on
+    # @return [Hash{Symbol=>Array<Array>}] :removed and :added entries
+    def changed_run(off, on)
+      prefix = off.zip(on).take_while { |a, b| a == b }.size
+      room = [off.size, on.size].min - prefix
+      suffix = off.reverse.zip(on.reverse).first(room).take_while { |a, b| a == b }.size
+      { removed: off[prefix...(off.size - suffix)], added: on[prefix...(on.size - suffix)] }
+    end
+
+    # @param guild [String]
+    # @param flag [String] the flag to toggle
+    # @param others [Boolean] the value of the other two flags
+    # @return [Hash{Symbol=>Array<Array>}] changed_run for toggling `flag`
+    # (define_method so the body sees `flags`)
+    define_method(:toggle) do |guild, flag, others:|
+      base = (flags - [flag]).to_h { |other| [other, others] }
+      changed_run(build_catalog(guild, base.merge(flag => false)), build_catalog(guild, base.merge(flag => true)))
+    end
+
+    it 'textsubs_spell_links inserts one block of Elanthipedia links and removes nothing' do
+      run = toggle('Trader', 'textsubs_spell_links', others: false)
+      expect(run[:removed]).to eq([])
+      expect(run[:added]).not_to be_empty
+      expect(run[:added].map(&:last)).to all(include('<a href="https://elanthipedia.play.net/'))
+    end
+
+    it 'herb_textsubs inserts one block of "<herb> (<area>)" annotations and removes nothing' do
+      run = toggle('Trader', 'herb_textsubs', others: false)
+      expect(run[:removed]).to eq([])
+      expect(run[:added]).not_to be_empty
+      expect(run[:added]).to all(satisfy { |source, _options, replacement| replacement.start_with?("#{source} (") })
+    end
+
+    it 'textsubs_use_plat_grouping swaps the one coin-comma rule for two platinum-aware ones' do
+      run = toggle('Trader', 'textsubs_use_plat_grouping', others: false)
+      expect(run[:removed].size).to eq(1)
+      expect(run[:added].size).to eq(2)
+      expect((run[:removed] + run[:added]).map(&:last)).to all(eq('\\&,'))
+      expect(run[:removed].first.first).not_to include('platinum')
+      expect(run[:added].map(&:first)).to all(include('platinum'))
+    end
+
+    flags.each do |flag|
+      it "#{flag} changes the same entries when the other two flags are on" do
+        expect(toggle('Empath', flag, others: true)).to eq(toggle('Empath', flag, others: false))
+      end
+    end
+
+    it 'treats an unset flag (nil, as base.yaml leaves textsubs_spell_links) like false' do
+      expect(build_catalog('Cleric', 'herb_textsubs' => false, 'textsubs_use_plat_grouping' => false))
+        .to eq(build_catalog('Cleric', 'textsubs_spell_links' => false, 'herb_textsubs' => false,
+                                       'textsubs_use_plat_grouping' => false))
+    end
+
+    it 'links the guild spell list to the guild category only with textsubs_spell_links on' do
+      sources = build_catalog('Moon Mage', 'textsubs_spell_links' => true).map(&:last)
+      expect(sources).to include(a_string_including('Category:Moon_Mage_spells">Moon Mage</a> training.'))
+      expect(build_catalog('Moon Mage', 'textsubs_spell_links' => false).map(&:last))
+        .not_to include(a_string_including('Category:Moon_Mage_spells'))
+    end
+  end
+
+  describe 'shit list' do
+    # Runs the entry inside a temporary directory holding
+    # "<checkname>_shit.list" with the given content (or no file when nil).
+    #
+    # @param content [String, nil] the shit-list file body
+    # @param integrate [Boolean] integrate_shit_list_with_textsubs
+    # @return [Array<Array>] the catalog built
+    def catalog_with_shit_list(content, integrate:)
+      Dir.mktmpdir('textsubs-shit-list') do |dir|
+        File.write(File.join(dir, "#{checkname}_shit.list"), content) if content
+        Dir.chdir(dir) { build_catalog('Commoner', 'integrate_shit_list_with_textsubs' => integrate) }
+      end
+    end
+
+    let(:plain_catalog) { build_catalog('Commoner') }
+
+    it 'adds a capitalized "(SL)" entry per name, ahead of the built-in catalog' do
+      catalog = catalog_with_shit_list("zorvex,stole my kill\nqUIMBLE,spammer\n", integrate: true)
+      expect(catalog.first(2)).to eq([['Zorvex', 0, 'Zorvex (SL)'], ['Quimble', 0, 'Quimble (SL)']])
+      expect(catalog.drop(2)).to eq(plain_catalog)
+    end
+
+    it 'adds nothing when integrate_shit_list_with_textsubs is off, even with a file present' do
+      expect(catalog_with_shit_list("zorvex,stole my kill\n", integrate: false)).to eq(plain_catalog)
+    end
+
+    it 'adds nothing, and does not fail, when the flag is on but the file is missing' do
+      expect(catalog_with_shit_list(nil, integrate: true)).to eq(plain_catalog)
+    end
+  end
+
+  describe 'private_textsubs' do
+    it 'adds each private pair, in order, ahead of the built-in catalog' do
+      private_subs = { 'You feel fine' => 'You feel FINE', 'a (\w+) widget' => 'a \1 gadget' }
+      catalog = build_catalog('Commoner', 'private_textsubs' => private_subs)
+      expect(catalog.first(2)).to eq([['You feel fine', 0, 'You feel FINE'], ['a (\w+) widget', 0, 'a \1 gadget']])
+      expect(catalog.drop(2)).to eq(build_catalog('Commoner'))
+    end
+
+    it 'puts shit-list entries before private ones' do
+      Dir.mktmpdir('textsubs-shit-list') do |dir|
+        File.write(File.join(dir, "#{checkname}_shit.list"), "zorvex,reason\n")
+        settings = { 'integrate_shit_list_with_textsubs' => true, 'private_textsubs' => { 'You feel fine' => 'You feel FINE' } }
+        catalog = Dir.chdir(dir) { build_catalog('Commoner', settings) }
+        expect(catalog.first(2)).to eq([['Zorvex', 0, 'Zorvex (SL)'], ['You feel fine', 0, 'You feel FINE']])
+      end
+    end
+  end
+
+  describe "the 'textsub' hook" do
+    it "registers 'textsub', and the registered hook applies the catalog" do
+      build_catalog('Commoner', 'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
+      expect(DownstreamHook.list).to include('textsub')
+      expect(DownstreamHook.run("You feel fine today.\n")).to eq("You feel FINE today.\n")
+    end
+
+    it "removes 'textsub', and only 'textsub', in before_dying" do
+      teardown = nil
+      # Stubbed on main (where run_lic_entry evaluates the entry), not on
+      # Script.at_exit: another spec replaces the top-level before_dying.
+      allow(TOPLEVEL_BINDING.receiver).to receive(:before_dying) { |&block| teardown = block }
+      DownstreamHook.add('other-script', proc { |line| line })
+      build_catalog('Commoner')
+      expect(teardown).to be_a(Proc)
+
+      teardown.call
+      expect(DownstreamHook.list).not_to include('textsub')
+      expect(DownstreamHook.list).to include('other-script')
+    ensure
+      DownstreamHook.remove('other-script')
+    end
+  end
 end
