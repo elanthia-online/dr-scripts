@@ -127,6 +127,14 @@ RSpec.describe InventoryManager do
       expect(messages).to eq(['Checking Alpha:', 'Match 1): a red gem pouch (character)', "Found 1 match on Alpha\n"])
     end
 
+    it 'shows a deep vault row without its container chain' do
+      item_data[:Beta] = ['a gem (nested container - a box (nested container - a pouch (in container - a backpack))) (in vault) (vault)']
+
+      search('gem')
+
+      expect(messages).to include('Match 1): a gem (in vault) (vault)')
+    end
+
     it 'searches nesting text only when nest is requested' do
       search('/in container/')
       expect(messages).to eq(['No matches for /in container/.'])
@@ -480,6 +488,25 @@ RSpec.describe InventoryManager do
 
       expect(manager.strip_nesting(row)).to eq('a forest green towel (on a large shelf) (vault)')
       expect(manager.strip_nesting('a windsteel mask (on a large shelf) (vault)')).to eq('a windsteel mask (on a large shelf) (vault)')
+    end
+
+    it 'hides a container chain of any depth in a plain search' do
+      deep = 'a gem (nested container - a box (nested container - a pouch (in container - a backpack))) (in vault) (vault)'
+
+      expect(manager.strip_nesting(deep)).to eq('a gem (in vault) (vault)')
+      expect(manager.strip_nesting('a box (nested container - a pouch (in container - a backpack)) (in vault) (vault)')).to eq('a box (in vault) (vault)')
+    end
+
+    it 'hides the chain whatever characters the names use' do
+      expect(manager.strip_nesting('a 2nd gem (in container - a backpack) (eddy)')).to eq('a 2nd gem (eddy)')
+      expect(manager.strip_nesting('a gem, cut (in container - a St. Elmo pack (closed)) (worn) (eddy)')).to eq('a gem, cut (worn) (eddy)')
+      expect(manager.strip_nesting('a sack (closed) (in container - a backpack) (eddy)')).to eq('a sack (closed) (eddy)')
+    end
+
+    it 'leaves a row alone when the chain has no closing paren' do
+      row = 'a gem (in container - a pouch (closed) (eddy)'
+
+      expect(manager.strip_nesting(row)).to eq(row)
     end
   end
 end

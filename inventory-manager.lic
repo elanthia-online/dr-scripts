@@ -870,12 +870,24 @@ class InventoryManager
     DRC.message("No matches for #{term}.") unless found
   end
 
+  # Cuts the container chain, however deep, from a row:
+  # "a gem (nested container - a box (in container - a pack)) (in vault) (vault)"
+  # becomes "a gem (in vault) (vault)". The chain runs from its opening paren
+  # to the matching close; a row whose parens never balance is left alone.
   def strip_nesting(item)
-    if (match = /^(?<tap>[a-z "':!-]*(?<closed>\(closed\))?)\s\((?<nest1>(?<nest2>nested container[a-z "':!-]*)\s\()?(?<main>in container[a-z "':!-]*)\)?\)\s(?<origin>\(.*\))$/i.match(item))
-      return "#{match["tap"]} #{match["origin"]}"
-    else
-      return item
+    start = item =~ /\s\((?:nested|in) container\b/i
+    return item unless start
+
+    depth = 0
+    (start + 1...item.length).each do |index|
+      case item[index]
+      when '(' then depth += 1
+      when ')'
+        depth -= 1
+        return item[0...start] + item[(index + 1)..-1] if depth.zero?
+      end
     end
+    item
   end
 
   # The GUI is strictly opt-in via ;inventory-manager gui. HAVE_GTK is only
