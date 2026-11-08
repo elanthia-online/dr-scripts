@@ -627,18 +627,16 @@ RSpec.describe 'textsubs.lic' do
     end
 
     # The spell kinds put names into templates, so the patterns to check are
-    # the ones Catalog builds, here for every guild with every setting on.
-    # Catalog.entries compiles every pattern it builds and raises on the
-    # first that does not compile, naming it.
+    # the ones Catalog builds. Catalog.entries compiles every pattern of every
+    # section, those the guild and settings do not select too ('refuses a
+    # problem in a section the guild does not get' pins that), and raises on
+    # the first that does not compile, naming it: one call checks the whole
+    # file, so this makes one rather than one per guild.
     it 'holds only patterns that compile' do
       settings = OpenStruct.new(textsubs_spell_links: true, herb_textsubs: true, textsubs_use_plat_grouping: true)
-      patterns = []
-      expect do
-        guilds.each do |guild|
-          patterns.concat(TextSubs::Catalog.entries(data, TextSubs::Context.new(guild: guild, settings: settings)).map(&:first))
-        end
-      end.not_to raise_error
-      expect(patterns.uniq.size).to be > 1500
+      entries = []
+      expect { entries = TextSubs::Catalog.entries(data, TextSubs::Context.new(guild: 'Bard', settings: settings)) }.not_to raise_error
+      expect(entries.map(&:first).uniq.size).to be > 1200
     end
 
     it 'gates the two coin-comma sections, and only them, on the three currency words' do
