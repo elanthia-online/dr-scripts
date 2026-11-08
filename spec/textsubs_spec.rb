@@ -330,9 +330,12 @@ RSpec.describe 'textsubs.lic' do
     before { allow(TextSubs).to receive(:client_attached?).and_return(true) }
   end
 
+  # Installing a freshly staged Registry empties the catalog and ends any
+  # staging an example left behind (TextSubs.clear alone keeps a staging), so
+  # no example's adds land in a Registry staged by an earlier one.
   after do
     DownstreamHook.remove('textsub')
-    TextSubs.clear
+    TextSubs.install(TextSubs.stage(TextSubs::Registry.new))
   end
 
   if ENV['TEXTSUBS_GOLDEN_WRITE'] == '1'
@@ -1140,8 +1143,6 @@ RSpec.describe 'textsubs.lic' do
       TextSubs.add('cat', 'dog')
       expect(TextSubs.subs).to eq({})
       expect(staged.snapshot).to eq(/cat/ => 'dog')
-    ensure
-      TextSubs.install(staged)
     end
 
     it 'refuses anything but a Registry and leaves the staging alone' do
@@ -1152,8 +1153,6 @@ RSpec.describe 'textsubs.lic' do
       TextSubs.add('cat', 'dog')
       expect(staged.snapshot).to eq(/cat/ => 'dog')
       expect(TextSubs.subs).to eq({})
-    ensure
-      TextSubs.install(staged)
     end
   end
 
