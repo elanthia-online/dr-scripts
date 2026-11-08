@@ -212,7 +212,8 @@ RSpec.describe 'textsubs.lic' do
   # compiled. on_registry_write's TracePoint leaves Registry#add as it is;
   # rspec-mocks wrappers on the ~100,000 writes of the 96 builds doubled the
   # time of the builds. The observer also keeps the Registry written last,
-  # the fresh one the entry point fills and installs, to read its gates from.
+  # the fresh one the entry point installs and then fills, to read its gates
+  # from; the build raises if that Registry is not the installed one.
   #
   # @param combination [Hash{String=>Object}] one element of `combinations`
   # @return [Hash{Symbol=>Object}] deep-frozen, because every caller shares it.
@@ -225,6 +226,8 @@ RSpec.describe 'textsubs.lic' do
   #   call order; :gates [Hash{Array(String, Integer)=>Array<String>}], the
   #   [source, options] of each key the built Registry gates and its
   #   requires_any words, as Registry#gates holds them once the build is done
+  # @raise [RuntimeError] when the Registry written last is not the one
+  #   TextSubs.subs reads, so its gates would not be the installed ones
   def traced_build(combination)
     sources = []
     registry = nil
@@ -233,6 +236,8 @@ RSpec.describe 'textsubs.lic' do
       sources << key.source.freeze
     end
     catalog = on_registry_write(record) { build_combination(combination) }
+    raise 'traced_build: the Registry written last is not the installed one' unless registry.snapshot.equal?(TextSubs.subs)
+
     { catalog: catalog.map { |entry| entry.map { |value| frozen_copy(value) }.freeze }.freeze,
       write_sources: sources.freeze,
       gates: registry.gates.to_h { |key, words| [[key.source.freeze, key.options].freeze, words] }.freeze }.freeze
