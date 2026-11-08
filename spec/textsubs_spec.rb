@@ -34,10 +34,11 @@ require_relative '../test/textsubs_corpus'
 #     composite lines, each two of those samples joined by a space, that two or
 #     more keys of every guild catalog match; in a few of them the order the
 #     keys run in changes the output (a coin amount before a spell link, whose
-#     '>' turns the coin rule off; a scroll label before a link to the same
-#     spell, which the link rule then finds inside the label), so the
-#     per-guild sweeps also pin the order of real keys, not just each key. The
-#     lines of samples_hand_added.jsonl come last;
+#     '>' turns the coin rule off), so the per-guild sweeps also pin the order
+#     of real keys, not just each key. A scroll label before a link to the
+#     same spell gives one output in either order: the label keeps the full
+#     stop after the title, so the link rule's '..\(' cannot match inside it.
+#     The lines of samples_hand_added.jsonl come last;
 #   - synthetic_stream.xml is a hand-written XML stream (inv pushStream dump,
 #     room objs with exist ids, prompts, roundTime, coin and wealth lines and a
 #     49 KB digit-heavy inventoryManager line), every line ending in \r\n.
@@ -1112,6 +1113,83 @@ RSpec.describe 'textsubs.lic' do
       it 'leaves the presence lines alone for a guild other than Empath' do
         line = 'The presence of Bob, whose life essence is wavering.'
         expect(hooked(line, guild: 'Cleric')).to eq("#{line}\r\n")
+      end
+    end
+
+    # The first two rungs of the durability ladder spelled the game's word
+    # 'durabiltiy'. Every rung shortens 'you determine it is' to 'it is';
+    # these two now read like the other sixteen.
+    describe 'the durability (1/18) and (2/18) notes' do
+      [['it is extremely weak and easily damaged', 1],
+       ['they are very delicate and easily damaged', 2]].each do |condition, tier|
+        it "spells durability right in the (#{tier}/18) note" do
+          expect(hooked("Assessing the steel sword durability, you determine #{condition}."))
+            .to eq("Assessing the steel sword durability, #{condition} (#{tier}/18).\r\n")
+        end
+      end
+    end
+
+    # Every scroll label keeps the full stop the game puts inside the quoted
+    # title; the Demrris' Resolve one used to drop it.
+    describe "the Demrris' Resolve scroll label" do
+      it 'keeps the full stop inside the quoted title and adds (Bard)' do
+        expect(hooked(%(It is labeled "Demrris' Resolve.")))
+          .to eq(%(It is labeled "Demrris' Resolve." (Bard)\r\n))
+      end
+    end
+
+    # With textsubs_spell_links on, the magic feats list gets a wiki link.
+    # The link used to replace the game's 'magic feats of' with
+    # 'magical feats:', so the list read 'magical feats: Sorcerous
+    # Patterns, ...'. It wraps the game's own words now.
+    describe 'the magic feats link' do
+      feats = 'Sorcerous Patterns, Alternate Preparation and Augmentation Mastery.'
+      link = '<a href="https://elanthipedia.play.net/Magical_feats">magic feats</a>'
+
+      it "links the game's 'magic feats' and keeps the 'of' before the list" do
+        build_catalog('Commoner', 'textsubs_spell_links' => true)
+        expect(run_hooks("You recall proficiency with the magic feats of #{feats}\r\n".b))
+          .to eq("You recall proficiency with the #{link} of #{feats}\r\n")
+      end
+
+      it 'adds no second colon when the game ends the line with one' do
+        build_catalog('Commoner', 'textsubs_spell_links' => true)
+        expect(run_hooks("You recall proficiency with the magic feats of:\r\n".b))
+          .to eq("You recall proficiency with the #{link} of:\r\n")
+      end
+    end
+
+    # The Trader starlight ladder puts each counter before the full stop;
+    # the (1/9) rung used to put the stop inside the parentheses.
+    describe 'the Trader starlight (1/9) note' do
+      it 'puts the full stop after the counter' do
+        expect(hooked('A bare flicker of starlight plays within your aura.', guild: 'Trader'))
+          .to eq("A bare flicker of starlight plays within your aura (1/9).\r\n")
+      end
+    end
+
+    # Three rungs of the crafted-quality ladder wrote a fixed 'is' in place
+    # of the verb and 'of' they matched, so plural items read 'They is
+    # finely-crafted (8/12) quality.' Like the other rungs, they write back
+    # what they matched and add the counter.
+    describe 'the crafted-quality notes' do
+      [['finely-crafted', 8], ['well-crafted', 7], ['poorly-crafted', 2]].each do |quality, tier|
+        it "keeps 'are of' on a plural #{quality} item and adds (#{tier}/12)" do
+          expect(hooked("They are of #{quality} quality."))
+            .to eq("They are of #{quality} (#{tier}/12) quality.\r\n")
+        end
+
+        it "keeps 'is of' on a single #{quality} item and adds (#{tier}/12)" do
+          expect(hooked("It is of #{quality} quality."))
+            .to eq("It is of #{quality} (#{tier}/12) quality.\r\n")
+        end
+
+        # Without 'of' and 'quality' the empty alternatives match, so this
+        # pins that both are written back from the match, never hardcoded.
+        it "adds (#{tier}/12) to a bare 'are #{quality}' with no 'of' or 'quality'" do
+          expect(hooked("They are #{quality}."))
+            .to eq("They are #{quality} (#{tier}/12).\r\n")
+        end
       end
     end
   end

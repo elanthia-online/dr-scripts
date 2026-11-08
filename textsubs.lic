@@ -125,7 +125,7 @@ if settings.textsubs_spell_links
   ### 1. Guild Spells ###
   TextSubs.add("You recall the spells you have learned from your training.", "You recall the spells you have learned from your <a href=\"https://elanthipedia.play.net/Category:#{DRStats.guild.gsub(" ", "_")}_spells\">#{DRStats.guild}</a> training.")
   ### 2. Magic Feats ###
-  TextSubs.add('You recall proficiency with the magic feats of', "You recall proficiency with the <a href=\"https://elanthipedia.play.net/Magical_feats\">magical feats</a>:")
+  TextSubs.add('You recall proficiency with the magic feats of', "You recall proficiency with the <a href=\"https://elanthipedia.play.net/Magical_feats\">magic feats</a> of")
   ### 3. SPELLBOOKS ###
   # spellbook_pre_text_capture = '^'
   # spellbook_post_text_capture = ':'
@@ -710,8 +710,8 @@ TextSubs.add('(Joyous corruption seeps into your mind from your own spell, mutin
 TextSubs.add('(You feel a wave of filth wash over you, heralding the renewed health of your internal gauges\.)', '\1 (You gained some Divine Outrage and your RoC/RoG spell is no longer strong enough to mask your aura from Clerics/Moon Mages. Recast with more mana.)')
 
 # defaults
-TextSubs.add("Assessing the (.*) durability, you determine (it is|is|they are|are) extremely weak and easily damaged", 'Assessing the \1 durabiltiy, \2 extremely weak and easily damaged (1/18)')
-TextSubs.add("Assessing the (.*) durability, you determine (it is|is|they are|are) very delicate and easily damaged", 'Assessing the \1 durabiltiy, \2 very delicate and easily damaged (2/18)')
+TextSubs.add("Assessing the (.*) durability, you determine (it is|is|they are|are) extremely weak and easily damaged", 'Assessing the \1 durability, \2 extremely weak and easily damaged (1/18)')
+TextSubs.add("Assessing the (.*) durability, you determine (it is|is|they are|are) very delicate and easily damaged", 'Assessing the \1 durability, \2 very delicate and easily damaged (2/18)')
 TextSubs.add("Assessing the (.*) durability, you determine (it is|is|they are|are) quite fragile and easily damaged", 'Assessing the \1 durability, \2 quite fragile and easily damaged (3/18)')
 TextSubs.add("Assessing the (.*) durability, you determine (it is|is|they are|are) rather flimsy and easily damaged", 'Assessing the \1 durability, \2 rather flimsy and easily damaged (4/18)')
 TextSubs.add("Assessing the (.*) durability, you determine (it is|is|they are|are) particularly weak against damage", 'Assessing the \1 durability, \2 particularly weak (5/18) against damage')
@@ -939,13 +939,13 @@ TextSubs.add('(is|are)( of|) masterfully-crafted( quality|)', '\1\2 masterfully-
 TextSubs.add('(is|are)( of|) outstanding( quality|)', '\1\2 outstanding (11/12)\3')
 TextSubs.add('(is|are)( of|) exceptional( quality|[^l]+)', '\1\2 exceptional (10/12)\3')
 TextSubs.add('(is|are)( of|) superior( quality|)', '\1\2 superior (9/12)\3')
-TextSubs.add('(is|are)( of|) finely-crafted( quality|)', 'is finely-crafted (8/12)\3')
-TextSubs.add('(is|are)( of|) well-crafted( quality|)', 'is well-crafted (7/12)\3')
+TextSubs.add('(is|are)( of|) finely-crafted( quality|)', '\1\2 finely-crafted (8/12)\3')
+TextSubs.add('(is|are)( of|) well-crafted( quality|)', '\1\2 well-crafted (7/12)\3')
 TextSubs.add('(is|are)( of|) above-average( quality|)', '\1\2 above-average (6/12)\3')
 TextSubs.add('(is|are)( of|) about average( quality|)', '\1\2 about average (5/12)\3')
 TextSubs.add('(is|are)( of|) mediocre( quality|)', '\1\2 mediocre (4/12)\3')
 TextSubs.add('(is|are)( of|) below-average( quality|)', '\1\2 below-average (3/12)\3')
-TextSubs.add('(is|are)( of|) poorly-crafted( quality|)', 'is poorly-crafted (2/12)\3')
+TextSubs.add('(is|are)( of|) poorly-crafted( quality|)', '\1\2 poorly-crafted (2/12)\3')
 # TextSubs.add('(is|are)( of|) dismal( quality|)', '\1\2 dismal (1/12)\3')
 
 TextSubs.add('be tremendously effective at increasing crafting speed', 'be tremendously effective (11/11) at increasing crafting speed')
@@ -1384,7 +1384,7 @@ TextSubs.add("#{spell_recognition} (Butcher\'s Eye|Philosopher\'s Preservation|K
 
 if DRStats.trader?
   TextSubs.add('The smallest hint of starlight flickers within your aura.', 'The smallest hint of starlight flickers within your aura (0/9).')
-  TextSubs.add('A bare flicker of starlight plays within your aura.', 'A bare flicker of starlight plays within your aura (1/9.)')
+  TextSubs.add('A bare flicker of starlight plays within your aura.', 'A bare flicker of starlight plays within your aura (1/9).')
   TextSubs.add('A faint amount of starlight illuminates your aura.', 'A faint amount of starlight illuminates your aura (2/9).')
   TextSubs.add('Your aura pulses slowly with starlight.', 'Your aura pulses slowly with starlight (3/9).')
   TextSubs.add('A steady pulse of starlight runs through your aura.', 'A steady pulse of starlight runs through your aura (4/9).')
@@ -1672,7 +1672,7 @@ TextSubs.add("#{scroll_label} \"Naming of Tears.\"", '\1 "Naming of Tears." (Bar
 TextSubs.add("#{scroll_label} \"Harmony.\"", '\1 "Harmony." (Bard)')
 TextSubs.add("#{scroll_label} \"Hodierna's Lilt.\"", '\1 "Hodierna\'s Lilt." (Bard)')
 TextSubs.add("#{scroll_label} \"Whispers of the Muse.\"", '\1 "Whispers of the Muse." (Bard)')
-TextSubs.add("#{scroll_label} \"Demrris' Resolve.\"", '\1 "Demrris\' Resolve" (Bard)')
+TextSubs.add("#{scroll_label} \"Demrris' Resolve.\"", '\1 "Demrris\' Resolve." (Bard)')
 
 TextSubs.add("#{scroll_label} \"Partial Displacement.\"", '\1 "Partial Displacement." (Moon Mage)')
 TextSubs.add("#{scroll_label} \"Whole Displacement.\"", '\1 "Whole Displacement." (Moon Mage)')
