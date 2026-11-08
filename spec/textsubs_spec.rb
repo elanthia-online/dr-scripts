@@ -654,7 +654,7 @@ RSpec.describe 'textsubs.lic' do
     # that holds for the shipped file too, by breaking a pattern of a section
     # Bards do not get, so it does not lean on that other example. The floor
     # counts the patterns of the Bard catalog alone, not of every guild.
-    it 'holds only patterns that compile' do
+    it 'holds only patterns that compile, and the Bard build refuses one broken in a section only other guilds get' do
       settings = OpenStruct.new(textsubs_spell_links: true, herb_textsubs: true, textsubs_use_plat_grouping: true)
       context = TextSubs::Context.new(guild: 'Bard', settings: settings)
       entries = []
@@ -662,6 +662,7 @@ RSpec.describe 'textsubs.lic' do
       expect(entries.map(&:first).uniq.size).to be > 1200
 
       other_guilds = data['sections'].find { |section| section.key?('subs') && section.dig('when', 'guilds') && !context.allows?(section['when']) }
+      expect(other_guilds).not_to be_nil, 'the shipped file has no pairs section gated to guilds other than Bard'
       broken = data.merge('sections' => data['sections'].map do |section|
         section.equal?(other_guilds) ? section.merge('subs' => [['(broken', 'x']] + section['subs']) : section
       end)
