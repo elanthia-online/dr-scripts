@@ -4715,6 +4715,10 @@ RSpec.describe 'textsubs.lic' do
       expect(TextSubs::Generators.fill('{name} {3}', [{ name: 'a', label: 'b' }, { name: 'c', label: 'd', note: 'e' }]))
         .to eq(['a {3}', 'c {3}'])
     end
+
+    it 'fills a later set that lacks a first-set placeholder the template does not name' do
+      expect(TextSubs::Generators.fill('{name}', [{ name: 'a', label: 'b' }, { name: 'c' }])).to eq(%w[a c])
+    end
   end
 
   describe 'TextSubs::SpellTable' do
