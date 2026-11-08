@@ -121,12 +121,13 @@ RSpec.describe 'performance-monitor.lic' do
     # Feeds one broadsword hit line, then a roundtime line, to the filter.
     #
     # @param damage [String] the damage phrase the hit line carries
+    # @param seconds [Integer] the roundtime the roundtime line reports
     # @return [Array(String, Boolean)] the hit line as the filter left it, and
     #   whether the roundtime line completed a hit
-    def hit_then_roundtime(damage)
+    def hit_then_roundtime(damage, seconds: 3)
       hit = "< You slash your broadsword at a goblin.  The blade lands #{damage} to the goblin's chest.".b
       filter.process_line(hit)
-      [hit, filter.process_line('Roundtime: 3 sec.'.b)]
+      [hit, filter.process_line("Roundtime: #{seconds} sec.".b)]
     end
 
     it 'ranks a devastating hit 17 and averages that rank' do
@@ -145,6 +146,13 @@ RSpec.describe 'performance-monitor.lic' do
       expect(line).not_to include('17/23')
       expect(completed).to be(true)
       expect(filter.weapon_stats).to eq([{ weapon: 'broadsword', avgrt: 3.0, avgdps: 18 / 3.0 }])
+    end
+
+    it 'reads every digit of a two-digit roundtime' do
+      _line, completed = hit_then_roundtime('a devastating hit', seconds: 12)
+
+      expect(completed).to be(true)
+      expect(filter.weapon_stats).to eq([{ weapon: 'broadsword', avgrt: 12.0, avgdps: 17 / 12.0 }])
     end
   end
 end

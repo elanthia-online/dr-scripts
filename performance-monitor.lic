@@ -67,7 +67,7 @@ class PerformanceFilter
       @new_hit = true
     end
 
-    if @new_hit && /roundtime.*(\d+)/i =~ line
+    if @new_hit && /roundtime\D*(\d+)/i =~ line
       @new_hit = false
       @weapon_rts[@last_weapon].push(Regexp.last_match(1).to_i)
       update_stats
