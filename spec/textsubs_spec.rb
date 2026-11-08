@@ -130,10 +130,11 @@ RSpec.describe 'textsubs.lic' do
     build_catalog(combination['guild'], combination.except('guild'))
   end
 
-  # Each combination's catalog, built once per run by whichever example asks
-  # first. The examples that only read a catalog share these builds, so the 96
-  # catalogs are not rebuilt once per such example. The examples that need
-  # TextSubs.subs to hold the catalog call build_combination instead.
+  # Each combination's traced build (see traced_build), made once per run by
+  # whichever example asks first. The examples that only read a catalog, or
+  # the calls that made it, share these builds, so the 96 catalogs are not
+  # rebuilt once per such example. The examples that need TextSubs.subs to
+  # hold the catalog call build_combination instead.
   built_catalogs = {}
 
   # The stubs active in this example that could change what build_catalog
@@ -156,35 +157,82 @@ RSpec.describe 'textsubs.lic' do
               .map { |name| "TextSubs.#{name}" }
   end
 
-  # Memoized build_combination, for examples that only read the returned
-  # catalog. Whether TextSubs.subs holds that catalog afterwards depends on
+  # build_combination, recording the calls that wrote the catalog: the source
+  # passed to each TextSubs.add, and how many times TextSubs.elanthipedia ran
+  # (it writes its key itself). TracePoints record them, which leaves both
+  # methods as they are; rspec-mocks wrappers on the ~100,000 calls of the 96
+  # builds doubled the time of the builds. The add source is read by its
+  # position, so renaming TextSubs.add's parameter does not break the trace;
+  # its name is looked up once per build, not once per call.
+  #
+  # @param combination [Hash{String=>Object}] one element of `combinations`
+  # @return [Hash{Symbol=>Object}] deep-frozen, because every caller shares it.
+  #   Every string in it is a frozen copy (see frozen_copy), so the record
+  #   never shares a mutable string with TextSubs.subs or with the caller of
+  #   TextSubs.add. :catalog, as build_combination returns it;
+  #   :add_sources [Array<String>], the first argument of each TextSubs.add
+  #   call, in call order; :link_calls [Integer], the number of
+  #   TextSubs.elanthipedia calls
+  def traced_build(combination)
+    sources = []
+    links = 0
+    source_param = TextSubs.method(:add).parameters.first.last
+    adds = TracePoint.new(:call) { |trace| sources << frozen_copy(trace.binding.local_variable_get(source_param).to_s) }
+    link_calls = TracePoint.new(:call) { links += 1 }
+    catalog = adds.enable(target: TextSubs.method(:add)) do
+      link_calls.enable(target: TextSubs.method(:elanthipedia)) { build_combination(combination) }
+    end
+    { catalog: catalog.map { |entry| entry.map { |value| frozen_copy(value) }.freeze }.freeze,
+      add_sources: sources.freeze, link_calls: links }.freeze
+  end
+
+  # A frozen value that shares no mutable object with the one given: a frozen
+  # value as it is, anything else a frozen copy. Freezing the given object
+  # itself would freeze a string the script still holds (String#to_s returns
+  # the receiver), and a later `<<` on it would raise FrozenError in whichever
+  # example built that combination first.
+  #
+  # @param value [Object] a catalog value (String or Integer) or an add source
+  # @return [Object] `value` when frozen, else a frozen dup of it
+  def frozen_copy(value)
+    value.frozen? ? value : value.dup.freeze
+  end
+
+  # Memoized traced_build, for examples that only read the returned catalog or
+  # calls. Whether TextSubs.subs holds that catalog afterwards depends on
   # whether this call built it, so callers must not rely on TextSubs.subs
   # either way; examples that need it call build_combination.
   #
   # Under --order random (as the seed gate runs it) any caller may be the first
   # to ask for a combination, and the first caller builds it in its own
   # context, so a stub on something catalog building reads would leak into
-  # every later caller's catalog. Every call therefore refuses to run while
+  # every later caller's record. Every call therefore refuses to run while
   # such a stub is active (see stubs_on_catalog_reads), cached or not, so a
   # caller in a stubbing group fails on every run, whatever the order.
   #
   # @param combination [Hash{String=>Object}] one element of `combinations`
-  # @return [Array<Array(String, Integer, String)>] that combination's catalog,
-  #   deep-frozen (outer array, entries and their strings), because every
-  #   caller shares it. An unfrozen string is copied before it is frozen, so
-  #   the cache never shares a mutable string with TextSubs.subs.
+  # @return [Hash{Symbol=>Object}] that combination's shared, deep-frozen
+  #   record, as traced_build returns it
   # @raise [RuntimeError] when a stub on something catalog building reads is
   #   active in the calling example
-  define_method(:catalog_of) do |combination|
+  define_method(:catalog_build_of) do |combination|
     stubbed = stubs_on_catalog_reads
     unless stubbed.empty?
-      raise "catalog_of: #{stubbed.join(', ')} stubbed here would change the shared catalog; " \
+      raise "catalog_build_of: #{stubbed.join(', ')} stubbed here would change the shared catalog; " \
             'call build_combination in this group instead'
     end
 
-    built_catalogs[combination] ||= build_combination(combination).map do |entry|
-      entry.map { |value| value.frozen? ? value : value.dup.freeze }.freeze
-    end.freeze
+    built_catalogs[combination] ||= traced_build(combination)
+  end
+
+  # The catalog half of catalog_build_of, for examples that only read entries.
+  #
+  # @param combination [Hash{String=>Object}] one element of `combinations`
+  # @return [Array<Array(String, Integer, String)>] that combination's shared,
+  #   deep-frozen catalog (see catalog_build_of)
+  # @raise [RuntimeError] as catalog_build_of does
+  def catalog_of(combination)
+    catalog_build_of(combination)[:catalog]
   end
 
   # Expands a list of inclusive [first, last] index ranges into entries.
@@ -363,11 +411,15 @@ RSpec.describe 'textsubs.lic' do
       expect(run[:added].map(&:last)).to all(include('<a href="https://elanthipedia.play.net/'))
     end
 
+    # A herb's annotation repeats the herb's name, or writes \0 (the matched
+    # text) where the key takes more than one form ('jadice flowers?').
     it 'herb_textsubs inserts one block of "<herb> (<area>)" annotations and removes nothing' do
       run = toggle('Trader', 'herb_textsubs', others: false)
       expect(run[:removed]).to eq([])
       expect(run[:added]).not_to be_empty
-      expect(run[:added]).to all(satisfy { |source, _options, replacement| replacement.start_with?("#{source} (") })
+      expect(run[:added]).to all(satisfy { |source, _options, replacement|
+        replacement.start_with?("#{source} (", '\0 (')
+      })
     end
 
     it 'textsubs_use_plat_grouping swaps the one coin-comma rule for two platinum-aware ones' do
@@ -757,10 +809,19 @@ RSpec.describe 'textsubs.lic' do
 
     # A double-quoted literal turns "\1" into byte 0x01 and "\b" into a
     # backspace; a single-quoted one keeps the backslash for the regex engine.
+    #
+    # The 96 catalogs hold ~100,000 entries but only ~1,600 distinct ones, so
+    # each distinct entry's bytes are read once and every combination that
+    # holds it is still named.
     it 'holds no control byte (0x00-0x1f) in any key or value of any catalog' do
+      control_byte = Hash.new do |seen, entry|
+        source, _options, replacement = entry
+        seen[entry] = [source, replacement].any? { |text| text.bytes.any? { |byte| byte < 0x20 } }
+      end
       offenders = combinations.flat_map do |combination|
-        catalog_of(combination).filter_map do |source, _options, replacement|
-          [combination, source, replacement] if [source, replacement].any? { |text| text.bytes.any? { |byte| byte < 0x20 } }
+        catalog_of(combination).filter_map do |entry|
+          source, _options, replacement = entry
+          [combination, source, replacement] if control_byte[entry]
         end
       end
       expect(offenders).to be_empty, lambda {
@@ -814,6 +875,59 @@ RSpec.describe 'textsubs.lic' do
         catalog_of(combination).filter_map { |source, _options, _replacement| [combination['guild'], source] if leading_wildcard?(source) }
       end
       expect(offenders.uniq).to be_empty, -> { "keys that swallow the start of the line:\n#{offenders.uniq.map { |entry| "  #{entry.inspect}" }.join("\n")}" }
+    end
+
+    # TextSubs.add stores /#{target}/ as the Hash key, so a second add of the
+    # same source keeps the first slot with the last value and the first
+    # value is lost without a word ('jadice' was added as limb-ES and then
+    # as limb-EW). TextSubs.elanthipedia writes its own keys, so every call
+    # to either method has to leave one more key behind.
+    #
+    # catalog_build_of records both methods' calls in the one build the
+    # catalog examples share, so this example does not build the 96 catalogs
+    # a second time.
+    it 'adds every key source once in every combination' do
+      offenders = combinations.filter_map do |combination|
+        build = catalog_build_of(combination)
+        sources = build[:add_sources]
+        calls = sources.size + build[:link_calls]
+        size = build[:catalog].size
+        repeated = sources.tally.select { |_, count| count > 1 }.keys
+        [combination, repeated, calls, size] unless repeated.empty? && calls == size
+      end
+      expect(offenders).to be_empty, lambda {
+        "#{offenders.size} combination(s) add a key twice ([combination, repeated sources, calls, keys]):\n" \
+          "#{offenders.first(5).map { |entry| "  #{entry.inspect}" }.join("\n")}"
+      }
+    end
+
+    # data/base-herbs.yaml lists jadice flower as the external remedy for
+    # limb wounds and jadice pollen as the one for limb scars.
+    describe 'the jadice herb notes' do
+      [['jadice flower', 'limb-EW'], ['jadice pollen', 'limb-ES']].each do |herb, tag|
+        it "tags a #{herb} (#{tag}) with herb_textsubs on" do
+          build_catalog('Commoner', 'herb_textsubs' => true)
+          expect(run_hooks("You get some #{herb} from your pouch.\r\n".b)).to eq("You get some #{herb} (#{tag}) from your pouch.\r\n")
+        end
+      end
+
+      # The game writes the plural too ("some jadice flowers"); the tag goes
+      # after the whole noun, not between "flower" and its "s".
+      it 'tags the plural jadice flowers after the plural noun' do
+        build_catalog('Commoner', 'herb_textsubs' => true)
+        expect(run_hooks("You get some jadice flowers from your pouch.\r\n".b))
+          .to eq("You get some jadice flowers (limb-EW) from your pouch.\r\n")
+      end
+
+      it 'leaves a bare jadice, which could be either herb, untagged' do
+        build_catalog('Commoner', 'herb_textsubs' => true)
+        expect(run_hooks("You see some jadice here.\r\n".b)).to eq("You see some jadice here.\r\n")
+      end
+
+      it 'tags neither herb with herb_textsubs off' do
+        expect(hooked('You get some jadice flower and some jadice pollen.'))
+          .to eq("You get some jadice flower and some jadice pollen.\r\n")
+      end
     end
 
     describe 'the RoC/RoG aura notes' do
@@ -900,6 +1014,59 @@ RSpec.describe 'textsubs.lic' do
         expect(hooked(line, guild: 'Thief')).to eq("#{line}\r\n")
       end
     end
+
+    # Two Bard blocks used to hold a song ladder each: one keyed on the end of
+    # every message, one on the whole message, so a Bard got each counter
+    # twice ("bowing your head (4/7). (4/7)"). Every message gets its counter
+    # once, before the full stop.
+    describe 'the Bard song assessment' do
+      [['You stop only after those first few lines, however, unable to remember any more', 1],
+       ['Your voice cracks on the second line, however, and you stop, unable to remember any more of the song anyway', 1],
+       ['At one point you hesitate as you mentally grasp for the next line of the song, and stop in confusion, ' \
+        'but pick it up a moment later and bring it to a strong conclusion', 2],
+       ['You feel a bit tired as you finish, but grin despite that for the ease at which you sang', 3],
+       ['You bring the song to a close, bowing your head', 4],
+       ['Your voice carries strongly on the air as you effortlessly recite the Common words so that all may hear, ' \
+        'bowing your head as they come to a close', 5],
+       ['Tears fill your eyes as the emotion of your ancient aire grips you, and you raise your chin with pride ' \
+        'as it comes to a close', 6],
+       ['When the song finally comes to a close, you bow your head, your ears ringing in the silence', 7]].each do |message, tier|
+        it "labels \"#{message[0, 40]}...\" (#{tier}/7) once" do
+          expect(hooked("#{message}.", guild: 'Bard')).to eq("#{message} (#{tier}/7).\r\n")
+        end
+      end
+
+      # The (5/7) message names the language the song is sung in. The key
+      # takes any language name spelled with letters (A-Z, a-z), apostrophes,
+      # hyphens and spaces, as in race names such as S'Kra Mur and Gor'Tog,
+      # not just the Common the ladder above pins. 'Old-Common' is synthetic:
+      # it pins the hyphen.
+      ['Elothean', "S'Kra Mur", "Gor'Tog", 'Old-Common'].each do |language|
+        it "labels the (5/7) message once when the words are #{language}" do
+          message = "Your voice carries strongly on the air as you effortlessly recite the #{language} words so that " \
+                    'all may hear, bowing your head as they come to a close'
+          expect(hooked("#{message}.", guild: 'Bard')).to eq("#{message} (5/7).\r\n")
+        end
+      end
+
+      # The slot takes nothing else, and is never empty, so each of these
+      # synthetic lines gets no (5/7) counter: markup sent in the server line
+      # (which a class loosened to .+ would take), a digit, an underscore
+      # (each of which \w would take) and an empty slot (which * in place of
+      # + would take).
+      ['<b>Common</b>', 'C0mmon', 'Old_Common', ''].each do |slot|
+        it "leaves the (5/7) message alone when the language slot holds #{slot.inspect}" do
+          line = "Your voice carries strongly on the air as you effortlessly recite the #{slot} words so that " \
+                 'all may hear, bowing your head as they come to a close.'
+          expect(hooked(line, guild: 'Bard')).to eq("#{line}\r\n")
+        end
+      end
+
+      it 'leaves the song messages alone for a guild other than Bard' do
+        line = 'You bring the song to a close, bowing your head.'
+        expect(hooked(line, guild: 'Empath')).to eq("#{line}\r\n")
+      end
+    end
   end
 
   describe 'reference-engine oracle' do
@@ -976,15 +1143,30 @@ RSpec.describe 'textsubs.lic' do
       keys.each_with_object(line.dup) { |key, output| output.gsub!(key, subs[key]) }
     end
 
-    # reference_apply's output for every corpus line, with its select step
-    # looked up in corpus_matches.
+    # Each catalog's reference run (see reference_run), keyed by the catalog's
+    # [key, value] pairs, worked out the first time an example installs that
+    # catalog. Several examples install the same catalog (each guild's with
+    # every flag on is installed by its sweep, its key order example and the
+    # two-counter example), so each catalog's lines are worked out once per
+    # run instead of once per example.
+    reference_runs = {}
+
+    # reference_apply's select step and output for every corpus line, with the
+    # select step looked up in corpus_matches, shared by every example that
+    # installs the same catalog. Two catalogs share a run only when they hold
+    # the same keys with the same values in the same order, which is
+    # everything reference_apply reads.
     #
     # @param subs [Hash{Regexp=>String}] ordered catalog (TextSubs.subs)
-    # @param corpus [Array<String>] the corpus lines
-    # @param corpus_matches [Hash{Regexp=>Array<Integer>}] corpus line indexes per key
-    # @return [Array<String>] the reference output for each corpus line
-    def looked_up_reference(subs, corpus, corpus_matches)
-      selected_keys(subs, corpus_matches, corpus.size).each_with_index.map { |keys, at| apply_selected(subs, keys, corpus[at]) }
+    # @return [Hash{Symbol=>Array}] deep-frozen, because every caller shares it:
+    #   :selected [Array<Array<Regexp>>], selected_keys for every corpus line;
+    #   :output [Array<String>], the reference output for every corpus line
+    define_method(:reference_run) do |subs|
+      reference_runs[subs.to_a.freeze] ||= begin
+        selected = selected_keys(subs, corpus_matches, corpus.size).each(&:freeze).freeze
+        output = selected.each_with_index.map { |keys, at| apply_selected(subs, keys, corpus[at]).freeze }.freeze
+        { selected: selected, output: output }.freeze
+      end
     end
 
     # Sends each line through the registered hooks and compares the output
@@ -1138,7 +1320,7 @@ RSpec.describe 'textsubs.lic' do
     guilds.each do |guild|
       it "gives reference_apply's output for every sample and stream line with the #{guild} catalog" do
         build_catalog(guild, every_flag_on)
-        mismatches = oracle_mismatches(corpus, looked_up_reference(TextSubs.subs, corpus, corpus_matches))
+        mismatches = oracle_mismatches(corpus, reference_run(TextSubs.subs)[:output])
         expect(mismatches).to be_empty, -> { mismatch_report(guild, mismatches) }
       end
 
@@ -1160,7 +1342,7 @@ RSpec.describe 'textsubs.lic' do
         # runs them in reverse order.
         build_catalog(guild, every_flag_on)
         subs = TextSubs.subs
-        selected = selected_keys(subs, corpus_matches, corpus.size).first(samples.size)
+        selected = reference_run(subs)[:selected].first(samples.size)
         shared = samples.each_index.select { |at| selected[at].size >= 2 }
         order_sensitive = shared.reject do |at|
           apply_selected(subs, selected[at].reverse, samples[at]) == apply_selected(subs, selected[at], samples[at])
@@ -1173,6 +1355,40 @@ RSpec.describe 'textsubs.lic' do
       end
     end
 
+    # A progress counter: "(4/7)", "(10/10)". Ingot sizes "(1)" and percent
+    # bands "(40-50%)" are not counters.
+    counter = %r{\(\d+/\d+\)}
+
+    # Two keys that label the same message stack their counters. No single
+    # sample is one message with two counters, so a sample whose output under
+    # a catalog gets a second new counter is two keys labelling it. The
+    # composite lines at the end of samples.jsonl join two samples, each of
+    # which may have its own counter, so they are judged by their parts.
+    #
+    # The output for a sample is reference_apply's, from the same reference run
+    # the per-guild sweeps above read; those sweeps hold the hook to it on
+    # every sample with these same catalogs, and sending the ~28,000 lines
+    # through the hook again here took ~3.8 s.
+    it 'gives no sample of any guild catalog two new (n/m) counters' do
+      known = samples.to_set
+      composite = lambda do |sample|
+        (0...sample.size).any? { |i| sample[i] == ' ' && known.include?(sample[0...i]) && known.include?(sample[(i + 1)..]) }
+      end
+      single_indexes = samples.each_index.reject { |at| composite.call(samples[at]) }
+      expect(samples.size - single_indexes.size).to be >= 10
+      offenders = guilds.flat_map do |guild|
+        build_catalog(guild, every_flag_on)
+        output = reference_run(TextSubs.subs)[:output]
+        single_indexes.filter_map do |at|
+          sample = samples[at]
+          [guild, sample, output[at]] if output[at].scan(counter).size - sample.scan(counter).size > 1
+        end
+      end
+      expect(offenders).to be_empty, lambda {
+        "#{offenders.size} sample(s) get two counters:\n#{offenders.first(10).map { |entry| "  #{entry.inspect}" }.join("\n")}"
+      }
+    end
+
     it "gives reference_apply's output for the whole stream, 49 KB line included, with the default coin rule" do
       build_catalog('Trader', every_flag_on.merge('textsubs_use_plat_grouping' => false))
       mismatches = oracle_mismatches(stream)
@@ -1183,11 +1399,12 @@ RSpec.describe 'textsubs.lic' do
       # The 49 KB line is left out: through the two platinum-aware coin rules it
       # costs ~3.5 s, and the coin rules see it in the default-rule example above.
       build_catalog('Trader', every_flag_on.merge('textsubs_use_plat_grouping' => true))
-      mismatches = oracle_mismatches(corpus, looked_up_reference(TextSubs.subs, corpus, corpus_matches))
+      run = reference_run(TextSubs.subs)
+      mismatches = oracle_mismatches(corpus, run[:output])
       expect(mismatches).to be_empty, -> { mismatch_report('Trader (plat grouping on)', mismatches) }
       # The per-guild key order examples check the composites with plat
       # grouping off; its two coin rules have to match them too.
-      selected = selected_keys(TextSubs.subs, corpus_matches, corpus.size)
+      selected = run[:selected]
       expect(corpus_generator[:composite_indexes].reject { |at| selected[at].size >= 2 }.map { |at| samples[at] }).to eq([])
     end
 
@@ -1199,7 +1416,8 @@ RSpec.describe 'textsubs.lic' do
     # examples. reference_apply runs on every corpus line with the Trader
     # catalog; the keys its select step picks (recorded from a copy of the
     # catalog, so the regexes run once) have to be the looked-up ones, in
-    # catalog order, and its output the looked-up output.
+    # catalog order, and its output the looked-up output, both as the shared
+    # reference run (reference_run) the sweeps read holds them.
     it 'looks up the same select step reference_apply runs, on every corpus line' do
       extra = every_key.select { |key| corpus_matches[key].any? { |at| (key =~ corpus[at]).nil? } }
       build_catalog('Trader', every_flag_on.merge('textsubs_use_plat_grouping' => true))
@@ -1207,9 +1425,10 @@ RSpec.describe 'textsubs.lic' do
       selections = []
       recording = subs.dup
       recording.define_singleton_method(:select) { |&block| super(&block).tap { |matches| selections << matches.keys } }
-      looked_up = looked_up_reference(subs, corpus, corpus_matches)
+      run = reference_run(subs)
+      looked_up = run[:output]
       differ = corpus.each_index.reject { |at| looked_up[at] == reference_apply(recording, corpus[at]) }
-      selected = selected_keys(subs, corpus_matches, corpus.size)
+      selected = run[:selected]
       expect(extra.map(&:source)).to eq([])
       expect(selections.size).to eq(corpus.size)
       expect(corpus.each_index.reject { |at| selected[at] == selections[at] }.map { |at| corpus[at] }).to eq([])

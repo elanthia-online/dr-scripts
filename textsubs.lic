@@ -621,15 +621,8 @@ if DRStats.necromancer?
   TextSubs.add('manage to extract a poor', 'manage to extract a poor (1/10)')
 end
 
-# Bard Assessment
+# Bard play and dance assessment (the song ladder is the later Bard block)
 if DRStats.bard?
-  TextSubs.add("unable to remember any more of the song anyway.", "unable to remember any more of the song anyway. (1/7)")
-  TextSubs.add("but pick it up a moment later and bring it to a strong conclusion.", "but pick it up a moment later and bring it to a strong conclusion. (2/7)")
-  TextSubs.add("but grin despite that for the ease at which you sang.", "but grin despite that for the ease at which you sang. (3/7)")
-  TextSubs.add("You bring the song to a close, bowing your head.", "You bring the song to a close, bowing your head. (4/7)")
-  TextSubs.add(" bowing your head as they come to a close.", " bowing your head as they come to a close. (5/7)")
-  TextSubs.add("and you raise your chin with pride as it comes to a close.", "and you raise your chin with pride as it comes to a close. (6/7)")
-  TextSubs.add("you bow your head, your ears ringing in the silence.", "you bow your head, your ears ringing in the silence. (7/7)")
   TextSubs.add("the simplest musical phrase in your current state of mind.", "the simplest musical phrase in your current state of mind. (1/10)")
   TextSubs.add("feel very sure of your ability to perform just now.", "feel very sure of your ability to perform just now. (2/10)")
   TextSubs.add("you give up in exasperation and stop trying to play altogether.", "you give up in exasperation and stop trying to play altogether. (3/10)")
@@ -686,9 +679,10 @@ if settings.herb_textsubs
   TextSubs.add('nemoih', "nemoih (head-EW)")
   TextSubs.add('eghmok', "eghmok (head-IW)")
   TextSubs.add('blocil', "blocil (limb-ES)")
-  TextSubs.add('jadice', "jadice (limb-ES)")
+  TextSubs.add('jadice pollen', "jadice pollen (limb-ES)")
   TextSubs.add('nuloe', "nuloe (limb-IS)")
-  TextSubs.add('jadice', "jadice (limb-EW)")
+  # \0 keeps the noun as written, so the plural reads "jadice flowers (limb-EW)"
+  TextSubs.add('jadice flowers?', '\0 (limb-EW)')
   TextSubs.add('yelith', "yelith (limb-IW)")
   TextSubs.add('georin', "georin (neck-EW)")
   TextSubs.add('riolur', "riolur (neck-IW)")
@@ -1129,13 +1123,16 @@ if DRStats.paladin?
   TextSubs.add('You believe you catch the faintest flicker of light. You might have imagined it\.', 'You believe you catch the faintest flicker of light. You might have imagined it (1/11).')
 end
 
+# Bard song assessment: one key per whole message, so each gets one counter
 if DRStats.bard?
   TextSubs.add('You stop only after those first few lines, however, unable to remember any more\.', 'You stop only after those first few lines, however, unable to remember any more (1/7).')
   TextSubs.add('Your voice cracks on the second line, however, and you stop, unable to remember any more of the song anyway\.', 'Your voice cracks on the second line, however, and you stop, unable to remember any more of the song anyway (1/7).')
   TextSubs.add('At one point you hesitate as you mentally grasp for the next line of the song, and stop in confusion, but pick it up a moment later and bring it to a strong conclusion\.', 'At one point you hesitate as you mentally grasp for the next line of the song, and stop in confusion, but pick it up a moment later and bring it to a strong conclusion (2/7).')
   TextSubs.add('You feel a bit tired as you finish, but grin despite that for the ease at which you sang\.', 'You feel a bit tired as you finish, but grin despite that for the ease at which you sang (3/7).')
   TextSubs.add('You bring the song to a close, bowing your head\.', 'You bring the song to a close, bowing your head (4/7).')
-  TextSubs.add('Your voice carries strongly on the air as you effortlessly recite the Common words so that all may hear, bowing your head as they come to a close\.', 'Your voice carries strongly on the air as you effortlessly recite the Common words so that all may hear, bowing your head as they come to a close (5/7).')
+  # The message names the song's language; the key takes any language name
+  # spelled with letters, apostrophes, hyphens and spaces (S'Kra Mur)
+  TextSubs.add('(Your voice carries strongly on the air as you effortlessly recite the [A-Za-z\' -]+ words so that all may hear, bowing your head as they come to a close)\.', '\1 (5/7).')
   TextSubs.add('Tears fill your eyes as the emotion of your ancient aire grips you, and you raise your chin with pride as it comes to a close\.', 'Tears fill your eyes as the emotion of your ancient aire grips you, and you raise your chin with pride as it comes to a close (6/7).')
   TextSubs.add('When the song finally comes to a close, you bow your head, your ears ringing in the silence\.', 'When the song finally comes to a close, you bow your head, your ears ringing in the silence (7/7).')
 end
