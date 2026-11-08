@@ -1901,7 +1901,10 @@ class TextSubs
     #           order
     #   style   'append' (the default) puts ' (n/of)' after the phrase;
     #           'before_period' puts it before the full stop the phrase
-    #           ends with
+    #           ends with; 'optional_period' is for a phrase that leaves out
+    #           a full stop the game may or may not send: the pattern takes
+    #           one if it follows, and the counter goes after it, or after
+    #           the phrase when there is none
     #   anchor  optional '^', put before the phrase in the pattern only
     #   prefix  optional text the phrases share, put before each one with a
     #           space between, in the pattern and the replacement alike
@@ -1944,6 +1947,11 @@ class TextSubs
     #               'steps' => [[1, 'it would be taking candy from a baby\.']] }
     #   TextSubs::Generators::Ladder.expand(section, context, spells)
     #   # => [['^it would be taking candy from a baby\.', 'it would be taking candy from a baby (1/13).']]
+    # @example An optional_period step: '\1' writes back the full stop the line had, if any
+    #   section = { 'name' => 'x', 'kind' => 'ladder', 'style' => 'optional_period', 'of' => 11,
+    #               'steps' => [[1, "a stream in your mind's eye"]] }
+    #   TextSubs::Generators::Ladder.expand(section, context, spells)
+    #   # => [["a stream in your mind's eye(\\.?)", "a stream in your mind's eye\\1 (1/11)"]]
     class Ladder
       # @return [Array<String>] frozen
       def self.fields
@@ -1957,7 +1965,7 @@ class TextSubs
 
       # @return [Array<String>] the styles a section may name, frozen
       def self.styles
-        %w[append before_period].freeze
+        %w[append before_period optional_period].freeze
       end
 
       # Checks one section on its own, its steps against each other
@@ -1971,8 +1979,9 @@ class TextSubs
       #   anchor is not '^', of is not a positive whole number, the prefix is
       #   not literal text or scale is empty; steps is not a non-empty list;
       #   a step (in list order) is not an [n, 'phrase'] pair, its n is out of
-      #   range, its phrase is not literal text, or its before_period phrase
-      #   does not end in a full stop; a pattern does not compile; an n is
+      #   range, its phrase is not literal text, its before_period phrase
+      #   does not end in a full stop, or its optional_period phrase does;
+      #   a pattern does not compile; an n is
       #   used more than once; a step's text is matched by another step's
       #   pattern (check_matches); a step's text ends with the start of
       #   another's (check_overlaps)
@@ -2076,9 +2085,11 @@ class TextSubs
         raise ArgumentError, "#{label} counts #{n}, outside -#{of} to #{of}" unless n.between?(-of, of)
 
         check_literal(phrase, "#{label} phrase")
-        return unless section['style'] == 'before_period' && !literal(phrase).end_with?('.')
+        stop = literal(phrase).end_with?('.')
+        raise ArgumentError, "#{label} phrase #{phrase.inspect} must end in a full stop, as its style is before_period" if section['style'] == 'before_period' && !stop
+        return unless section['style'] == 'optional_period' && stop
 
-        raise ArgumentError, "#{label} phrase #{phrase.inspect} must end in a full stop, as its style is before_period"
+        raise ArgumentError, "#{label} phrase #{phrase.inspect} must leave out its full stop, as its style is optional_period"
       end
 
       # @param text [String] a phrase or the prefix
@@ -2090,7 +2101,7 @@ class TextSubs
         return if text.match?(/\A(?:[^\\()\[\]{}*+?|^$]|\\[!-\/:-@\[\]^-`{-~])+\z/)
 
         raise ArgumentError, "#{label} #{text.inspect} must be literal text: escape each regex metacharacter " \
-                             'but . with a backslash, and escape nothing else'
+                             '(a . may stay unescaped) with a backslash, and put one before nothing but punctuation'
       end
 
       # @param section [Hash] a checked ladder section
@@ -2310,9 +2321,12 @@ class TextSubs
 
       # @param section [Hash] a ladder section
       # @param phrase [String] one step's phrase
-      # @return [String] the step's pattern: the anchor, then phrase_source
+      # @return [String] the step's pattern: the anchor, then phrase_source,
+      #   then for optional_period '(\.?)', which takes the full stop if
+      #   the game sent one
       def self.pattern_source(section, phrase)
-        "#{section['anchor']}#{phrase_source(section, phrase)}"
+        stop = section['style'] == 'optional_period' ? '(\.?)' : ''
+        "#{section['anchor']}#{phrase_source(section, phrase)}#{stop}"
       end
 
       # @param section [Hash] a checked ladder section
@@ -2322,7 +2336,11 @@ class TextSubs
       def self.step_sub(section, n, phrase)
         text = literal(phrase_source(section, phrase))
         counter = "(#{n}/#{section['of']})"
-        replacement = section['style'] == 'before_period' ? "#{text.delete_suffix('.')} #{counter}." : "#{text} #{counter}"
+        replacement = case section['style']
+                      when 'before_period' then "#{text.delete_suffix('.')} #{counter}."
+                      when 'optional_period' then "#{text}\\1 #{counter}"
+                      else "#{text} #{counter}"
+                      end
         [pattern_source(section, phrase), replacement]
       end
       private_class_method :check_options, :check_step, :check_literal, :scale, :check_scale, :check_numbers, :check_matches,
@@ -2558,10 +2576,10 @@ class TextSubs
     # sub shows one label for them all.
     #
     # @example
-    #   section = { 'pattern' => '^You recognize the ({names}) spell.', 'replacement' => '\0 [{label}]',
+    #   section = { 'pattern' => '^You recognize the ({names}) spell\.', 'replacement' => '\0 [{label}]',
     #               'groups' => [['Lay Ward', 'Manifest Force']] }
     #   TextSubs::Generators::SpellRecognition.expand(section, context, spells)
-    #   # => [['^You recognize the (Lay Ward|Manifest Force) spell.', '\0 [Analogous Patterns: basic warding]']]
+    #   # => [['^You recognize the (Lay Ward|Manifest Force) spell\.', '\0 [Analogous Patterns: basic warding]']]
     class SpellRecognition
       # @return [Array<String>] frozen
       def self.fields

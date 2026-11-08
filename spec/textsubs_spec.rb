@@ -6,6 +6,7 @@ require 'stringio'
 require 'tmpdir'
 require 'yaml'
 require_relative '../test/textsubs_corpus'
+require_relative '../test/textsubs_parent_quotes'
 
 # textsubs.lic builds its whole substitution catalog when it starts: the entry
 # point adds the shit-list and private_textsubs entries, then the ~1,600
@@ -26,6 +27,14 @@ require_relative '../test/textsubs_corpus'
 # Regenerate it (only in a commit that changes the catalog on purpose) with
 #   TEXTSUBS_GOLDEN_WRITE=1 bundle exec rspec spec/textsubs_spec.rb
 # and review the fixture diff: it names every entry the change touched.
+#
+# parent_double_quoted.jsonl, beside them, lists the 271 catalog calls in the
+# textsubs.lic the catalog came from whose double-quoted arguments lost a
+# backslash escape ("\." became '.'; 1116 calls used double quotes in all),
+# each as its author wrote it; 'the subs the parent wrote in double quotes'
+# holds the catalogs to that, and holds the list to what
+# test/textsubs_parent_quotes.rb, which says how to rewrite it, reads from
+# the parent.
 #
 # A nil guild (textsubs started before DRStats knows the guild) is not part of
 # the golden set; 'a guild DRStats does not know yet' covers it, holding the
@@ -109,6 +118,7 @@ RSpec.describe 'textsubs.lic' do
   samples_path = File.join(fixture_dir, 'samples.jsonl')
   stream_path = File.join(fixture_dir, 'synthetic_stream.xml')
   hand_added_path = File.join(fixture_dir, 'samples_hand_added.jsonl')
+  parent_quotes_path = File.join(fixture_dir, 'parent_double_quoted.jsonl')
   # @return [Array<Array(String, Integer, String)>] the rows of catalog_entries.jsonl
   read_entries = -> { File.readlines(entries_path).map { |line| JSON.parse(line) } }
   # Every key of every catalog a player can run: the keys of
@@ -4563,7 +4573,7 @@ RSpec.describe 'textsubs.lic' do
       end
       let(:recognition) do
         { 'name' => 'recognition', 'kind' => 'spell_recognition',
-          'pattern' => '^(You recognize|You decipher) the ({names}) spell.', 'replacement' => '\1 the \2 spell. [{label}]',
+          'pattern' => '^(You recognize|You decipher) the ({names}) spell\.', 'replacement' => '\1 the \2 spell. [{label}]',
           'groups' => [['Halo'], ['Strange Arrow'], ['Lay Ward', 'Manifest Force']] }
       end
 
@@ -4649,9 +4659,9 @@ RSpec.describe 'textsubs.lic' do
 
       it 'gives one recognition sub per group, in list order, with the names joined and the label the table computes' do
         expect(pairs_for(spell_catalog(recognition))).to eq(
-          [['^(You recognize|You decipher) the (Halo) spell.', '\1 the \2 spell. [signature Cleric (Holy Defense): advanced debilitation/warding]'],
-           ['^(You recognize|You decipher) the (Strange Arrow) spell.', '\1 the \2 spell. [Analogous Patterns: introductory targeted]'],
-           ['^(You recognize|You decipher) the (Lay Ward|Manifest Force) spell.', '\1 the \2 spell. [Analogous Patterns: basic warding]']]
+          [['^(You recognize|You decipher) the (Halo) spell\.', '\1 the \2 spell. [signature Cleric (Holy Defense): advanced debilitation/warding]'],
+           ['^(You recognize|You decipher) the (Strange Arrow) spell\.', '\1 the \2 spell. [Analogous Patterns: introductory targeted]'],
+           ['^(You recognize|You decipher) the (Lay Ward|Manifest Force) spell\.', '\1 the \2 spell. [Analogous Patterns: basic warding]']]
         )
       end
 
@@ -4794,6 +4804,16 @@ RSpec.describe 'textsubs.lic' do
                              'steps' => [[1, 'it would be taking candy from a baby\.'], [2, 'Your aura pulses slowly.']])
         expect(pairs).to eq([['it would be taking candy from a baby\.', 'it would be taking candy from a baby (1/13).'],
                              ['Your aura pulses slowly.', 'Your aura pulses slowly (2/13).']])
+      end
+
+      it 'puts the counter after the full stop for optional_period when the line has one, and straight after the phrase when not' do
+        pairs = ladder_pairs('style' => 'optional_period', 'anchor' => '^', 'of' => 11, 'steps' => [[1, "a stream in your mind's eye"]])
+        expect(pairs).to eq([["^a stream in your mind's eye(\\.?)", "a stream in your mind's eye\\1 (1/11)"]])
+        pattern = Regexp.new(pairs.first.first)
+        replacement = pairs.first.last
+        expect("a stream in your mind's eye.\r\n".sub(pattern, replacement)).to eq("a stream in your mind's eye. (1/11)\r\n")
+        expect("a stream in your mind's eye\r\n".sub(pattern, replacement)).to eq("a stream in your mind's eye (1/11)\r\n")
+        expect("a stream in your mind's eye, fading.".sub(pattern, replacement)).to eq("a stream in your mind's eye (1/11), fading.")
       end
 
       it "puts the '^' anchor in the pattern only, so the step matches at the start of a line and nowhere else" do
@@ -5143,7 +5163,7 @@ RSpec.describe 'textsubs.lic' do
       end
 
       {
-        'an unknown style'             => [{ 'style' => 'prepend' }, /has unknown style "prepend"; styles are append, before_period\z/],
+        'an unknown style'             => [{ 'style' => 'prepend' }, /has unknown style "prepend"; styles are append, before_period, optional_period\z/],
         'a style that is not a string' => [{ 'style' => 1 }, /'style' must be a quoted string, not 1/],
         "an anchor other than '^'"     => [{ 'anchor' => '\A' }, /'anchor' must be '\^', not "\\\\A"/],
         'an of of zero'                => [{ 'of' => 0 }, /'of' must be a positive whole number, not 0/],
@@ -5167,7 +5187,10 @@ RSpec.describe 'textsubs.lic' do
         'a misspelt field'             => [{ 'step' => [[1, 'a']] }, /has unknown key\(s\) "step"/],
         'a before_period phrase with no full stop' =>
           [{ 'style' => 'before_period', 'steps' => [[1, 'Your aura is blinding!']] },
-           /steps 1 phrase "Your aura is blinding!" must end in a full stop, as its style is before_period/]
+           /steps 1 phrase "Your aura is blinding!" must end in a full stop, as its style is before_period/],
+        'an optional_period phrase with its full stop' =>
+          [{ 'style' => 'optional_period', 'steps' => [[1, 'Your aura is blinding\.']] },
+           /steps 1 phrase "Your aura is blinding\\\\." must leave out its full stop, as its style is optional_period/]
       }.each do |label, (change, message)|
         it "refuses #{label}" do
           expect { ladder_pairs({ 'of' => 5, 'steps' => [[1, 'a hit']] }.merge(change)) }
@@ -5183,7 +5206,8 @@ RSpec.describe 'textsubs.lic' do
       # The acceptance check for every ladder the data file ships: written
       # out as a game line, the text of a step is matched by that step alone
       # within its ladder and comes back with that step's counter and nothing
-      # else changed.
+      # else changed. An optional_period step's text goes out both without
+      # its full stop and with it.
       it 'gives each shipped step, sent as its own line, its own counter and no other step of its ladder' do
         ladders = shipped_catalog['textsubs']['sections'].select { |section| section['kind'] == 'ladder' }
         checked = 0
@@ -5191,13 +5215,18 @@ RSpec.describe 'textsubs.lic' do
           subs = TextSubs::Generators::Ladder.expand(section, nil, nil)
           keys = subs.map { |source, _| Regexp.new(source) }
           section['steps'].each_with_index do |(n, phrase), index|
-            line = [section['prefix'], phrase].compact.join(' ').gsub(/\\(.)/, '\1')
+            text = [section['prefix'], phrase].compact.join(' ').gsub(/\\(.)/, '\1')
             counter = "(#{n}/#{section['of']})"
-            expected = section['style'] == 'before_period' ? "#{line.delete_suffix('.')} #{counter}." : "#{line} #{counter}"
-            label = "#{section['name']} step #{index + 1} (#{line.inspect})"
-
-            expect(keys.each_index.select { |key| keys[key].match?(line) }).to eq([index]), label
-            expect(TextSubs::Engine.apply(keys.zip(subs.map(&:last)).to_h, line)).to eq(expected), label
+            sent = case section['style']
+                   when 'before_period' then [[text, "#{text.delete_suffix('.')} #{counter}."]]
+                   when 'optional_period' then [[text, "#{text} #{counter}"], ["#{text}.", "#{text}. #{counter}"]]
+                   else [[text, "#{text} #{counter}"]]
+                   end
+            sent.each do |line, expected|
+              label = "#{section['name']} step #{index + 1} (#{line.inspect})"
+              expect(keys.each_index.select { |key| keys[key].match?(line) }).to eq([index]), label
+              expect(TextSubs::Engine.apply(keys.zip(subs.map(&:last)).to_h, line)).to eq(expected), label
+            end
             checked += 1
           end
         end
@@ -6156,6 +6185,432 @@ RSpec.describe 'textsubs.lic' do
             .to eq("They are #{quality} (#{tier}/12).\r\n")
         end
       end
+    end
+
+    # The catalog left textsubs.lic at TextsubsParentQuotes::PARENT_COMMIT,
+    # where 271 catalog calls written in double quotes lost a backslash
+    # escape (1116 used double quotes in all), as Ruby takes the backslash
+    # out of an escape it has no meaning for: "spell\." reached the regex as
+    # 'spell.', whose full stop matches any character, and "\1" as byte
+    # 0x01. parent_double_quoted.jsonl lists every such call with what its
+    # author wrote, read as single-quoted text; the catalog holds that.
+    describe 'the subs the parent wrote in double quotes' do
+      parent_rows = File.readlines(parent_quotes_path).map { |line| JSON.parse(line) }
+
+      # @param row [Hash] a row of parent_double_quoted.jsonl
+      # @return [Array<String>] its arguments as Ruby read them
+      def ruby_reading(row)
+        row['intent'].each_with_index.map { |text, index| row['dropped'].include?(index) ? TextsubsParentQuotes.double_quoted(text) : text }
+      end
+
+      # Every [key source, replacement] of the 96 catalogs, once each.
+      #
+      # @return [Set<Array(String, String)>]
+      define_method(:catalog_pairs) do
+        combinations.flat_map { |combination| catalog_of(combination) }.to_set { |source, _options, replacement| [source, replacement] }
+      end
+
+      # Three kinds of add are held otherwise than as written; every other
+      # add is held as its author wrote it.
+      # - The two end-anchored Ranger howl tiers (parent lines 821 and 824)
+      #   end in '(?=\r?$)' where their author wrote '$', as raw lines end in
+      #   \r\n ('the end-anchored Ranger howl tiers' above).
+      # - The 11 Osrel Meraud capacity steps (parent lines 796-806) end in
+      #   '(\.?)' where their author wrote '\.', and their replacements in
+      #   '\1 (n/11)' where the author wrote '. (n/11)'. No capacity line
+      #   turns up in the October 2026 game logs, so whether the game ends it
+      #   with a full stop is not known; before the restore the bare '.'
+      #   matched the \r of a line without one, so the counter showed either
+      #   way. It still does, now without eating the \r, and after the full
+      #   stop where the line has one, as the author wrote it.
+      # - The (16/16) presence (parent line 780) takes "Sana'ati" as well as
+      #   "sana'ati": that line does not turn up in the logs either, and the
+      #   game writes the word lowercase in common text ("a tiny painted
+      #   sana'ati tree pin") but capitalised in the name "Sana'ati Dyaus",
+      #   so which this line uses is not known.
+      #
+      # @param row [Hash] a row of parent_double_quoted.jsonl for an add
+      # @return [Array(String, String)] the [key source, replacement] the catalog holds for it
+      def held_as(row)
+        pattern, replacement = row['intent']
+        case row['line']
+        when 821, 824 then pattern = pattern.delete_suffix('$') + '(?=\r?$)'
+        when 796..806
+          pattern = "#{pattern.delete_suffix('\.')}(\\.?)"
+          replacement = replacement.sub(/\.(?= \(\d+\/11\)\z)/) { '\1' }
+        when 780 then pattern = pattern.sub("sana'ati", "[Ss]ana'ati")
+        end
+        [pattern, replacement]
+      end
+
+      # The list is the reader's, not a hand-kept one: an edit to a row (and
+      # to the catalog with it) fails here. The test job's checkout is
+      # shallow and has no PARENT_COMMIT, so there it is skipped, saying why;
+      # 'the restored full stops' still covers every restored family there.
+      it "is the list the reader makes of the parent's textsubs.lic, row for row" do
+        source = begin
+          TextsubsParentQuotes.parent_source
+        rescue RuntimeError => e
+          raise unless TextsubsParentQuotes.shallow_clone?
+
+          skip "#{e.message}; this clone is shallow (git fetch --unshallow to run it)"
+        end
+        expect(TextsubsParentQuotes.rows(source)).to eq(parent_rows)
+      end
+
+      it 'holds every add the parent wrote in double quotes as its author wrote it' do
+        pairs = catalog_pairs
+        adds = parent_rows.select { |row| row['method'] == 'add' }
+        missing = adds.reject { |row| pairs.include?(held_as(row)) }
+        expect(adds.size).to eq(270)
+        expect(missing).to be_empty, -> { "#{missing.size} parent sub(s) not held as written:\n#{missing.first(5).map { |row| "  #{row.inspect}" }.join("\n")}" }
+      end
+
+      it 'holds no key or replacement the way Ruby read a double-quoted escape' do
+        pairs = catalog_pairs
+        sources = pairs.to_set(&:first)
+        replacements = pairs.to_set(&:last)
+        as_read = parent_rows.select { |row| row['method'] == 'add' }.flat_map do |row|
+          pattern, replacement = ruby_reading(row)
+          [(pattern if row['dropped'].include?(0) && sources.include?(pattern)),
+           (replacement if row['dropped'].include?(1) && replacements.include?(replacement))].compact
+        end
+        expect(as_read).to be_empty, -> { "held as Ruby read them:\n#{as_read.first(5).map { |text| "  #{text.inspect}" }.join("\n")}" }
+      end
+
+      # TextSubs.elanthipedia writes its text back as the link's name and
+      # target too, and '\-' outside a bracket expression matches what '-'
+      # does, so 'Iyqaromos Fire-Lens', as Ruby read it, is the text meant:
+      # a backslash there would show in the link.
+      it "keeps the one double-quoted elanthipedia text, 'Iyqaromos Fire\\-Lens', as Ruby read it" do
+        links = parent_rows.select { |row| row['method'] == 'elanthipedia' }
+        sources = catalog_pairs.map(&:first)
+        expect(links.map { |row| [row['line'], row['intent'].first, ruby_reading(row).first] })
+          .to eq([[372, 'Iyqaromos Fire\-Lens', 'Iyqaromos Fire-Lens']])
+        expect(sources.grep(/\(Iyqaromos Fire-Lens\)/)).not_to be_empty
+        expect(sources.grep(/Fire\\-Lens/)).to be_empty
+      end
+
+      describe TextsubsParentQuotes do
+        it "reads a double-quoted argument's escapes as written, fills in its string locals, and skips the rest" do
+          source = <<~'PARENT'
+            pre = 'The air'
+            TextSubs.add("^#{pre} hums\.", "#{pre} hums. (1/2)")
+            TextSubs.add("it\'s \"so\"", 'kept')
+            TextSubs.add('single\. \"kept\"', 'kept')
+            TextSubs.add("(\w+) waves", "\1 waves")
+            words = %w[a\ b] << 'c\.' << "d"
+            TextSubs.elanthipedia("Fire\-Lens", '^', ':')
+            TextSubs.add("one\.", "one \\ backslash")
+            TextSubs.add(%q(percent q\. \"kept\"), 'kept')
+            TextSubs.add(<<~'HEREDOC', 'kept')
+              heredoc \\ kept
+            HEREDOC
+            dq = "^The sky\."
+            TextSubs.add("#{dq} hums", 'x')
+            TextSubs.add("one" 'it\'s \"so\"', /#{words}\/\./)
+            if Gate.open?
+              gated = "The rain"
+              TextSubs.add("#{gated} falls\.", 'x')
+            end
+            air = 'The air'
+            [1].each { TextSubs.add("#{air} hums\.", 'x') }
+            unread = "never \. read"
+            nil
+          PARENT
+          expect(described_class.rows(source)).to eq(
+            [{ 'line' => 2, 'method' => 'add', 'intent' => ['^The air hums\.', 'The air hums. (1/2)'], 'dropped' => [0] },
+             { 'line' => 5, 'method' => 'add', 'intent' => ['(\w+) waves', '\1 waves'], 'dropped' => [0, 1] },
+             { 'line' => 7, 'method' => 'elanthipedia', 'intent' => ['Fire\-Lens', '^', ':'], 'dropped' => [0] },
+             { 'line' => 8, 'method' => 'add', 'intent' => ['one\.', 'one \ backslash'], 'dropped' => [0] },
+             { 'line' => 14, 'method' => 'add', 'intent' => ['^The sky\. hums', 'x'], 'dropped' => [0] },
+             { 'line' => 18, 'method' => 'add', 'intent' => ['The rain falls\.', 'x'], 'dropped' => [0] },
+             { 'line' => 21, 'method' => 'add', 'intent' => ['The air hums\.', 'x'], 'dropped' => [0] }]
+          )
+        end
+
+        it 'refuses to guess an interpolation other than a string local' do
+          source = <<~'PARENT'
+            TextSubs.add("#{DRStats.guild} hums\.", "x")
+          PARENT
+          expect { described_class.rows(source) }
+            .to raise_error(ArgumentError, /cannot read #\{DRStats.guild\} at line 1/)
+          expect { described_class.rows(%(pre = 'The air'\nTextSubs.add("\#{pre; x} hums\\.", 'x'))) }
+            .to raise_error(ArgumentError, /cannot read #\{pre; x\} at line 2/)
+        end
+
+        # Any second write, of any kind, leaves the value at the call to
+        # the order Ruby runs them in, which the reader does not follow.
+        { 'a plain write' => 'pre = pre.upcase', 'a second string literal' => "pre = 'The sea'", 'an operator write' => "pre += 'x'",
+          'an or-write' => "pre ||= 'x'", 'an and-write' => "pre &&= 'x'",
+          'a multiple assignment' => "pre, other = 'x', 'y'", 'a rescue target' => "begin\nrescue => pre\nend",
+          'a for loop' => "for pre in ['x']\nend", 'a named capture' => "/(?<pre>x)/ =~ 'x'" }.each do |kind, write|
+          it "takes a local set again by #{kind} for no string local" do
+            source = "pre = 'The air'\n#{write}\nTextSubs.add(\"\#{pre} hums\\.\", 'x')\n"
+            expect { described_class.rows(source) }
+              .to raise_error(ArgumentError, /cannot read #\{pre\} at line #{source.lines.size}\z/)
+          end
+        end
+
+        # Each source sets pre once, to a string, but the read does not
+        # see that write: a def's or a block's parameter is a variable of
+        # its own, and a write in a branch the read is outside of may not
+        # have run.
+        {
+          "a def's parameter"                          => <<~'PARENT',
+            pre = 'The air'
+            def hum(pre)
+              TextSubs.add("#{pre} hums\.", 'x')
+            end
+          PARENT
+          "a block's parameter"                        => <<~'PARENT',
+            pre = 'The air'
+            [1].each do |pre|
+              TextSubs.add("#{pre} hums\.", 'x')
+            end
+          PARENT
+          'a local of another def'                     => <<~'PARENT',
+            def a
+              pre = 'The air'
+              nil
+            end
+
+            def b(pre)
+              TextSubs.add("#{pre} hums\.", 'x')
+            end
+          PARENT
+          'a write in a branch the read is outside of' => <<~'PARENT'
+            if Gate.open?
+              pre = 'The air'
+            end
+            TextSubs.add("#{pre} hums\.", 'x')
+          PARENT
+        }.each do |kind, source|
+          it "fills in no string local from #{kind}" do
+            line = source.lines.index { |text| text.include?('TextSubs') } + 1
+            expect { described_class.rows(source) }
+              .to raise_error(ArgumentError, /cannot read #\{pre\} at line #{line}\z/)
+          end
+        end
+
+        # The text of a literal whose escape Ruby dropped could reach a
+        # catalog call by any of these ways, so the reader refuses it rather
+        # than list fewer calls than it should.
+        {
+          'an operator write'                     => <<~'PARENT',
+            pre = 'a'
+            pre += "b\."
+            TextSubs.add("#{pre} c", 'x')
+          PARENT
+          'a copy into another local'             => <<~'PARENT',
+            dq = "b\."
+            copy = dq
+            TextSubs.add("#{copy} c", 'x')
+          PARENT
+          "an operator write's value"             => <<~'PARENT',
+            dq = "b\."
+            copy = (dq += 'c')
+            TextSubs.add("#{copy} c", 'x')
+          PARENT
+          'a constant'                            => <<~'PARENT',
+            PRE = "b\."
+            TextSubs.add("#{PRE} c", 'x')
+          PARENT
+          "a write that is its def's value"       => <<~'PARENT',
+            def pre
+              dq = "b\."
+            end
+            TextSubs.add("#{pre} c", 'x')
+          PARENT
+          'a symbol'                              => <<~'PARENT',
+            TextSubs.add(:"b\.".to_s, 'x')
+          PARENT
+          'a call other than add or elanthipedia' => <<~'PARENT'
+            Other.add("b\.", 'x')
+            TextSubs.other("b\.")
+          PARENT
+        }.each do |way, source|
+          it "refuses a dropped escape that could reach a catalog call by #{way}" do
+            line = source.lines.index { |text| text.include?('b\.') } + 1
+            expect { described_class.rows(source) }
+              .to raise_error(ArgumentError, /\Acannot follow \S*b\\\.\S* at line #{line}, whose escape Ruby dropped/)
+          end
+        end
+
+        # Ruby takes a <<- or << heredoc's text as written, so its escapes
+        # are read as a double-quoted literal's are; a <<~ heredoc has its
+        # indentation taken out as well, which the reader does not rebuild.
+        it 'reads the escapes of a <<- or << heredoc' do
+          source = <<~'PARENT'
+            TextSubs.add(<<-END, 'x')
+              dash\.
+              END
+            TextSubs.add(<<END, 'x')
+            plain\.
+            END
+          PARENT
+          expect(described_class.rows(source)).to eq(
+            [{ 'line' => 1, 'method' => 'add', 'intent' => ["  dash\\.\n", 'x'], 'dropped' => [0] },
+             { 'line' => 4, 'method' => 'add', 'intent' => ["plain\\.\n", 'x'], 'dropped' => [0] }]
+          )
+        end
+
+        {
+          'an argument with no escape'          => ['<<~END', <<~'PARENT'],
+            TextSubs.add(<<~END, 'x')
+              no escapes here
+            END
+          PARENT
+          'an argument of lines indented apart' => ['<<~"END"', <<~'PARENT'],
+            TextSubs.add(<<~"END", 'x')
+              one
+                two\.
+            END
+          PARENT
+          'a local no call reads'               => ['<<~END', <<~'PARENT']
+            pre = <<~END
+              The air
+            END
+            nil
+          PARENT
+        }.each do |kind, (opening, source)|
+          it "refuses an interpolating <<~ heredoc, as #{kind}" do
+            expect { described_class.rows(source) }
+              .to raise_error(ArgumentError, /\Acannot read #{Regexp.escape(opening)} at line 1: an interpolating <<~ heredoc/)
+          end
+        end
+
+        # double_quoted of a dropped argument's intent has to give what Ruby
+        # read; a '\\' (read as one backslash) or a single-quoted local's
+        # backslash would come out of it as an escape instead.
+        it 'refuses a dropped argument whose Ruby reading its intent cannot rebuild' do
+          expect { described_class.rows(%q(TextSubs.add("a\\\\b\.", 'x'))) }
+            .to raise_error(ArgumentError, %q{cannot rebuild Ruby's reading of "a\\\\b\\." at line 1 from "a\\\\b\\\\."})
+          expect { described_class.rows(%(pre = 'a\\\\.'\nTextSubs.add("\#{pre} b\\.", 'x'))) }
+            .to raise_error(ArgumentError, %q{cannot rebuild Ruby's reading of "#{pre} b\\." at line 2 from "a\\\\. b\\\\."})
+        end
+
+        it 'gives what Ruby makes of text between double quotes, without interpolating' do
+          expect(described_class.double_quoted('spell\.')).to eq('spell.')
+          expect(described_class.double_quoted('\1')).to eq("\u0001")
+          expect(described_class.double_quoted("say \"hi\" \#{x}")).to eq("say \"hi\" \#{x}")
+        end
+
+        it 'refuses text Ruby cannot read between double quotes' do
+          expect { described_class.double_quoted('abc\\') }
+            .to raise_error(ArgumentError, /"abc\\\\" is not the body of one double-quoted literal/)
+          expect { described_class.double_quoted('a\u{zz}b') }.to raise_error(ArgumentError)
+        end
+      end
+    end
+
+    # The full stops the parent's double quotes dropped, back in: each of
+    # these keys used to match any character there. The Osrel Meraud
+    # capacity steps, which take a full stop or none, are here too, as are
+    # both spellings of the (16/16) presence.
+    describe 'the restored full stops' do
+      recognition = 'You recognize the familiar mnemonics of the Burden spell'
+
+      it 'labels a recognized spell on a line that ends in a full stop' do
+        expect(hooked("#{recognition}.")).to eq("#{recognition}. [Analogous Patterns: introductory debilitation]\r\n")
+      end
+
+      it 'labels a deciphered signature spell, a name with a quote in it' do
+        expect(hooked("You decipher the telltale signs of the Murrula's Flames spell."))
+          .to eq("You decipher the telltale signs of the Murrula's Flames spell. " \
+                 "[signature Cleric (Divine Intervention): advanced utility]\r\n")
+      end
+
+      it 'leaves a recognition line alone when no full stop follows the spell' do
+        expect(hooked("#{recognition}!")).to eq("#{recognition}!\r\n")
+      end
+
+      # Every Osrel Meraud power step, written out, so a step put back to its
+      # dropped form fails here even if its fixture row changed with it.
+      power = 'The strength of the sensation evokes the image of'
+      [['a pile of cold ashes', '1/10'], ['a pile of smoldering ashes', '2/10'],
+       ['a nearly burnt-out candle wick', '3/10'], ['a half-melted burning candle', '4/10'],
+       ['a tall burning candle', '5/10'], ['a blazing torch', '6/10'], ['a small campfire', '7/10'],
+       ['a roaring bonfire', '8/10'], ['flaming magma pouring through a volcanic crevasse', '9/10'],
+       ["torrents of fiery rain falling upon Elanthia from the World Dragon's maw", '10/10']].each do |step, tier|
+        image = "#{power} #{step}"
+
+        it "counts the Osrel Meraud image '#{step}.' (#{tier})" do
+          expect(hooked("#{image}.", guild: 'Cleric')).to eq("#{image}. (#{tier})\r\n")
+        end
+
+        it "leaves the Osrel Meraud image '#{step}' alone without its full stop" do
+          expect(hooked("#{image}, fading.", guild: 'Cleric')).to eq("#{image}, fading.\r\n")
+        end
+      end
+
+      # No game line shows whether a full stop ends the capacity steps, so
+      # they take one if it follows: the counter goes after the stop when
+      # there is one, as on the power steps, and at the end of a line that
+      # ends with the phrase, the line ending kept.
+      capacity = 'The pervasiveness of the sensation evokes the image of'
+      [["a stream in your mind's eye", '1/11'], ["a pond in your mind's eye", '2/11'],
+       ["a river in your mind's eye", '3/11'], ["a lake in your mind's eye", '4/11'],
+       ["a sea in your mind's eye", '5/11'], ["an ocean in your mind's eye", '6/11'],
+       ["Drogor's deeps in your mind's eye", '7/11'],
+       ["Elanthia's tides rising toward Katamba in your mind's eye", '8/11'],
+       ["the sapphirine planet Merewalda in your mind's eye", '9/11'],
+       ["Alamhif's Bridge arching from the cold seas of Death in your mind's eye", '10/11'],
+       ["the fathomless ebon abysms of the Starry Road in your mind's eye", '11/11']].each do |step, tier|
+        image = "#{capacity} #{step}"
+
+        it "counts the Osrel Meraud image '#{step}.' (#{tier}) after its full stop" do
+          expect(hooked("#{image}.", guild: 'Cleric')).to eq("#{image}. (#{tier})\r\n")
+        end
+
+        it "counts the Osrel Meraud image '#{step}' (#{tier}) without a full stop, keeping the line ending" do
+          expect(hooked(image, guild: 'Cleric')).to eq("#{image} (#{tier})\r\n")
+          expect(hooked(image, guild: 'Cleric', line_ending: "\n")).to eq("#{image} (#{tier})\n")
+        end
+      end
+
+      # A capacity key takes a full stop after its phrase or nothing, so the
+      # counter goes before any other text that follows the phrase.
+      it 'puts the Osrel Meraud capacity counter straight after the phrase when other text follows it' do
+        image = "#{capacity} a stream in your mind's eye"
+        expect(hooked("#{image}, fading.", guild: 'Cleric')).to eq("#{image} (1/11), fading.\r\n")
+      end
+
+      it 'counts no capacity image for a guild other than Cleric' do
+        image = "#{capacity} a stream in your mind's eye."
+        expect(hooked(image)).to eq("#{image}\r\n")
+      end
+
+      it 'counts no (16/16) presence for a guild other than Cleric' do
+        presence = "After a moment, you feel a clear presence like a warm blanket covering you beneath the shade of a giant Sana'ati tree."
+        expect(hooked(presence)).to eq("#{presence}\r\n")
+      end
+
+      sanaati = "After a moment, you feel a clear presence like a warm blanket covering you beneath the shade of a giant sana'ati tree"
+      capital = sanaati.sub('sana', 'Sana')
+
+      it "counts the Cleric (16/16) presence and writes Sana'ati with its capital" do
+        expect(hooked("#{sanaati}.", guild: 'Cleric')).to eq("#{capital}. (16/16)\r\n")
+      end
+
+      it "counts the Cleric (16/16) presence when the game writes Sana'ati with its capital" do
+        expect(hooked("#{capital}.", guild: 'Cleric')).to eq("#{capital}. (16/16)\r\n")
+      end
+
+      it 'leaves the (16/16) presence alone without its full stop' do
+        expect(hooked("#{sanaati}s.", guild: 'Cleric')).to eq("#{sanaati}s.\r\n")
+        expect(hooked("#{capital}s.", guild: 'Cleric')).to eq("#{capital}s.\r\n")
+      end
+
+      # Restored by the howl-tier fix; 'the end-anchored Ranger howl tiers'
+      # above labels them with their full stop.
+      ["You open your mouth and roar with everything you've got!  A few soft sounds reminiscent of a baby robin's " \
+       'first song twitter sweetly from within you', "You howl quietly to yourself, echoing a soft, desolate sound that doesn't sound quite right"]
+        .zip(%w[4/15 7/15]).each do |howl, tier|
+          it "leaves the (#{tier}) howl alone when it ends in something other than a full stop" do
+            expect(hooked("#{howl}!", guild: 'Ranger')).to eq("#{howl}!\r\n")
+          end
+        end
     end
   end
 
