@@ -85,4 +85,41 @@ RSpec.describe 'performance-monitor.lic' do
       expect($started_scripts.map(&:first)).not_to include('textsubs')
     end
   end
+
+  # PerformanceFilter ranks each hit with its own (n/23) tag, then reads the
+  # rank back to average damage over roundtime per weapon. The filter class is
+  # the one the real script defined on the runner.
+  describe 'devastating hit ranks' do
+    let(:runner) { run_script(with_start_helper: true) }
+    let(:filter) { runner.singleton_class.const_get(:PerformanceFilter).new }
+
+    # Feeds one broadsword hit line, then a roundtime line, to the filter.
+    #
+    # @param damage [String] the damage phrase the hit line carries
+    # @return [Array(String, Boolean)] the hit line as the filter left it, and
+    #   whether the roundtime line completed a hit
+    def hit_then_roundtime(damage)
+      hit = "< You slash your broadsword at a goblin.  The blade lands #{damage} to the goblin's chest.".b
+      filter.process_line(hit)
+      [hit, filter.process_line('Roundtime: 3 sec.'.b)]
+    end
+
+    it 'ranks a devastating hit 17 and averages that rank' do
+      line, completed = hit_then_roundtime('a devastating hit')
+
+      expect(line).to include('lands a devastating hit (17/23) to')
+      expect(line).not_to include('18/23')
+      expect(completed).to be(true)
+      expect(filter.weapon_stats).to eq([{ weapon: 'broadsword', avgrt: 3.0, avgdps: 17 / 3.0 }])
+    end
+
+    it "ranks a devastating hit (That'll leave a mark!) 18 and averages that rank" do
+      line, completed = hit_then_roundtime("a devastating hit (That'll leave a mark!)")
+
+      expect(line).to include("lands a devastating hit (That'll leave a mark!) (18/23) to")
+      expect(line).not_to include('17/23')
+      expect(completed).to be(true)
+      expect(filter.weapon_stats).to eq([{ weapon: 'broadsword', avgrt: 3.0, avgdps: 18 / 3.0 }])
+    end
+  end
 end
