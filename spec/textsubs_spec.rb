@@ -823,8 +823,10 @@ RSpec.describe 'textsubs.lic' do
       seen = []
       # A reader before every line of clear and at its return, as the hook
       # thread can run between any two of them. It records each new state:
-      # the count, and whether subs is still the catalog clear replaces. Only
-      # the order is pinned, not how many lines clear spends on it.
+      # the count, and whether subs is still the catalog clear replaces. The
+      # probe sees only the gaps between lines of clear, so two writes on one
+      # line, or in one parallel assignment, show up as the start state and
+      # the end state with no step between.
       probe = TracePoint.new(:line, :return) do
         state = [TextSubs.generation, TextSubs.subs.equal?(old_catalog) ? :old : :new]
         seen << state unless seen.last == state
@@ -833,6 +835,16 @@ RSpec.describe 'textsubs.lic' do
       expect(seen.first).to eq([before_clear, :old])
       expect(seen).not_to include([before_clear + 1, :old])
       expect(seen.last).to eq([before_clear + 1, :new])
+    end
+
+    it 'writes subs before generation in its own bytecode, however clear lays the two writes out on its lines' do
+      # The class variable writes clear compiles to, in the order the VM runs
+      # them. This holds for one line or a parallel assignment, which the line
+      # probe above cannot split. It also pins that clear makes both writes
+      # itself: a write moved into a helper drops out of this list.
+      bytecode = RubyVM::InstructionSequence.of(TextSubs.method(:clear)).disasm
+      writes = bytecode.scan(/setclassvariable\s+:(@@\w+)/).flatten
+      expect(writes).to eq(%w[@@subs @@generation])
     end
 
     it 'keeps the return values add, elanthipedia and clear had before the counter' do
