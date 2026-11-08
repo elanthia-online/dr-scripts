@@ -1945,8 +1945,8 @@ RSpec.describe 'textsubs.lic' do
 
         expect(seen).to eq(["SUNG\r\n"])
         expect(displayed_messages.grep(/is also a built-in sub/))
-          .to eq(["private_textsubs #{teaching.inspect} is also a built-in sub; your replacement is used instead of the built-in one.",
-                  "private_textsubs #{bard_song.inspect} is also a built-in sub; your replacement is used instead of the built-in one."])
+          .to eq(["private_textsubs \"#{teaching}\" is also a built-in sub; your replacement is used instead of the built-in one.",
+                  "private_textsubs \"#{bard_song}\" is also a built-in sub; your replacement is used instead of the built-in one."])
       end
 
       it 'builds the Bard catalog in one watch check and installs it, saying so once' do
