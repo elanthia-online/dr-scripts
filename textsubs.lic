@@ -8,8 +8,9 @@ no_kill_all
 
 # The text substitution catalog and the engine that applies it to game lines.
 #
-# The script's entry point installs a fresh, empty Registry on every start,
-# fills it through add and elanthipedia, and only then registers a 'textsub'
+# The script's entry point stages a fresh, empty Registry on every start,
+# fills it through add and elanthipedia while the installed catalog goes on
+# serving apply, installs it whole, and only then registers a 'textsub'
 # DownstreamHook (persist: false, so Lich removes it when the script ends) that
 # hands every server line to apply while a front end is attached.
 #
@@ -76,6 +77,7 @@ class TextSubs
   end
 
   @@registry = Registry.new
+  @@staged = nil
   @@generation = 0
 
   # The catalog, in the order its keys were first added.
@@ -104,13 +106,12 @@ class TextSubs
   # one assignment, so a reader sees either the old Registry or the new one,
   # never a mix of the two. It swaps the catalog in first and counts the
   # change after, the same order store keeps, so the generation never runs
-  # ahead of subs. The swap is only as complete as registry is: the entry
-  # point installs an empty Registry on every start, so a restart never
-  # inherits the keys of the run before it, and then adds the catalog into it
-  # while it is installed.
-  # Until the last add, subs shows a catalog that is still growing; the
-  # 'textsub' hook is registered after that, so apply never runs on a partial
-  # catalog.
+  # ahead of subs. The swap is only as complete as registry is, so the entry
+  # point fills a staged Registry (see stage) and installs it once every key
+  # is in: a hook still registered while it builds, such as the one of a run
+  # that is being stopped, applies the catalog it replaces, whole, and never
+  # a part of the new one. Installing the staged Registry ends the staging,
+  # so add and elanthipedia write to it as the installed catalog from then on.
   #
   # An add that runs on another thread while install swaps the catalog may
   # land in the Registry being replaced.
@@ -122,12 +123,46 @@ class TextSubs
   # @example Start over with an empty catalog
   #   TextSubs.install(TextSubs::Registry.new)
   def self.install(registry)
-    raise ArgumentError, "TextSubs.install needs a TextSubs::Registry, not #{registry.class}" unless registry.is_a?(Registry)
-
+    check_registry(registry, 'install')
     @@registry = registry
+    @@staged = nil if registry.equal?(@@staged)
     @@generation += 1
     registry
   end
+
+  # Makes add and elanthipedia write to registry, which is not installed, so a
+  # catalog can be built while subs and apply go on using the installed one.
+  # install(registry) swaps it in whole and ends the staging. A sub another
+  # script adds meanwhile goes into registry too, so the swap keeps it.
+  #
+  # Staging another Registry replaces the first one. A Registry staged by a
+  # start that dies before it installs it stays staged, catching the adds of
+  # other scripts unseen, until the next start: that start re-runs the class
+  # body, which drops the staging and every key anyway.
+  #
+  # @param registry [TextSubs::Registry] the catalog to build
+  # @return [TextSubs::Registry] registry
+  # @raise [ArgumentError] when registry is not a TextSubs::Registry; nothing
+  #   is staged
+  # @example How the entry point builds the catalog on a start
+  #   catalog = TextSubs.stage(TextSubs::Registry.new)
+  #   TextSubs.add('You feel fine', 'You feel FINE') # into catalog; subs is unchanged
+  #   TextSubs.install(catalog)
+  def self.stage(registry)
+    check_registry(registry, 'stage')
+    @@staged = registry
+  end
+
+  # @param registry [Object] what install or stage was given
+  # @param caller_name [String] the method's name, for the message
+  # @return [nil]
+  # @raise [ArgumentError] unless registry is a TextSubs::Registry
+  def self.check_registry(registry, caller_name)
+    return if registry.is_a?(Registry)
+
+    raise ArgumentError, "TextSubs.#{caller_name} needs a TextSubs::Registry, not #{registry.class}"
+  end
+  private_class_method :check_registry
 
   # Empties the catalog by installing a fresh Registry.
   #
@@ -248,9 +283,12 @@ class TextSubs
     store(target, result)
   end
 
-  # The one writer of the installed catalog, shared by add and elanthipedia so
-  # a call to either is one key and one generation. It writes the key first
-  # and counts it after, so the generation never runs ahead of the catalog.
+  # The one writer of the catalog, shared by add and elanthipedia: it writes
+  # the staged Registry while there is one (see stage), else the installed
+  # one. A key written to the installed catalog counts one generation, after
+  # it is written, so the generation never runs ahead of the catalog; a key
+  # written to a staged Registry is not in subs yet and counts none, as
+  # install counts that whole catalog once, when it swaps it in.
   #
   # @param target [String] regex source, compiled unescaped
   # @param result [String] the gsub replacement
@@ -259,8 +297,9 @@ class TextSubs
   #   and the generation are left as they were
   def self.store(target, result)
     key = /#{target}/
-    @@registry.add(key, result)
-    @@generation += 1
+    registry = @@staged || @@registry
+    registry.add(key, result)
+    @@generation += 1 if registry.equal?(@@registry)
     result
   end
   private_class_method :store
@@ -269,10 +308,13 @@ end
 settings = get_settings
 
 # Every start builds its catalog from nothing: a restart with other settings
-# keeps none of the keys the run before it added. The 'textsub' hook is
-# registered only once the catalog is complete, at the end of the script, so a
-# line that arrives while it is built passes through untouched.
-TextSubs.install(TextSubs::Registry.new)
+# keeps none of the keys the run before it added. The catalog is built in a
+# staged Registry and installed whole once it is complete, so a hook of the
+# run before that is still registered applies the old catalog until then,
+# never a part of the new one. The 'textsub' hook is registered after that,
+# at the end of the script, so with no older hook a line that arrives while
+# the catalog is built passes through untouched.
+new_catalog = TextSubs.stage(TextSubs::Registry.new)
 
 # Put shit list players in textsubs
 if settings.integrate_shit_list_with_textsubs && File.file?("#{checkname}_shit.list")
@@ -2048,6 +2090,8 @@ TextSubs.add('^(\d\d)\)\.  an enormous (\w+) (ingot|nugget)(\.+) ([\d,]+) (\w+)'
 TextSubs.add('^(\d\d)\)\.  an immense (\w+) (ingot|nugget)(\.+) ([\d,]+) (\w+)',  '\1).  an  (50) immense \2 \3\4.. \5 \6')
 TextSubs.add('^(\d\d)\)\.  a gigantic (\w+) (ingot|nugget)(\.+) ([\d,]+) (\w+)',  '\1).  a  (100) gigantic \2 \3\4. \5 \6')
 TextSubs.add('^(\d\d)\)\.  a colossal (\w+) (ingot|nugget)(\.+) ([\d,]+) (\w+)',  '\1).  a  (200) colossal \2 \3\4. \5 \6')
+
+TextSubs.install(new_catalog)
 
 action = proc do |client_string|
   # Headless: nobody would see the rewrite, so skip every key.

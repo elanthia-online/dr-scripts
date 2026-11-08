@@ -555,11 +555,15 @@ RSpec.describe 'textsubs.lic' do
       DownstreamHook.remove('other-script')
     end
 
-    it 'registers the hook once, only after a fresh Registry is installed and the whole catalog is in it' do
+    it 'stages a fresh Registry, installs it once the whole catalog is in it, and registers the hook once, last' do
       TextSubs.add('stale', 'left over from the run before')
       events = []
+      allow(TextSubs).to(receive(:stage).and_wrap_original do |original, registry|
+        events << [:stage, registry, registry.snapshot]
+        original.call(registry)
+      end)
       allow(TextSubs).to(receive(:install).and_wrap_original do |original, registry|
-        events << [:install, registry.snapshot]
+        events << [:install, registry, registry.snapshot]
         original.call(registry)
       end)
       allow(DownstreamHook).to(receive(:add).and_wrap_original do |original, name, action, **options|
@@ -569,12 +573,42 @@ RSpec.describe 'textsubs.lic' do
 
       catalog = build_catalog('Commoner', 'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
 
-      expect(events.map(&:first)).to eq(%i[install hook])
-      expect(events.first.last).to eq({})
-      _, name, options, subs_at_hook = events.last
+      expect(events.map(&:first)).to eq(%i[stage install hook])
+      (_, staged, staged_subs), (_, installed, installed_subs), (_, name, options, subs_at_hook) = events
+      expect(staged_subs).to eq({})
+      expect(installed).to equal(staged)
+      expect(installed_subs.map { |pattern, replacement| [pattern.source, pattern.options, replacement] }).to eq(catalog)
       expect([name, options]).to eq(['textsub', { persist: false }])
-      expect(subs_at_hook.map { |pattern, replacement| [pattern.source, pattern.options, replacement] }).to eq(catalog)
+      expect(subs_at_hook).to equal(installed_subs)
       expect(catalog.map(&:first)).not_to include('stale')
+    end
+
+    it 'leaves a hook of the run before applying its whole catalog while a restart builds the new one' do
+      build_catalog('Ranger', 'herb_textsubs' => true)
+      old_catalog = TextSubs.subs
+      lines = ["You pick some nilos.\r\n", "You feel fine.\r\n"]
+      old_output = ["You pick some nilos (abdo-EW).\r\n", "You feel fine.\r\n"]
+      partial = []
+      seen = []
+      adds = 0
+      # The old run's 'textsub' hook stays registered until the new run
+      # registers its own, as when Lich has not yet removed the hook of a run
+      # that is being stopped. After every add the hook would see the old
+      # catalog itself, and every 250th add sends the lines through it.
+      allow(TextSubs).to(receive(:add).and_wrap_original do |original, target, result|
+        stored = original.call(target, result)
+        partial << target unless TextSubs.subs.equal?(old_catalog)
+        seen << lines.map { |line| run_hooks(line.b) } if (adds += 1) % 250 == 1
+        stored
+      end)
+
+      build_catalog('Ranger', 'herb_textsubs' => false, 'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
+
+      expect(adds).to be > 500
+      expect(partial).to be_empty, -> { "the old hook saw a catalog of the new run after adding #{partial.first.inspect}" }
+      expect(seen.size).to be > 3
+      expect(seen).to all(eq(old_output))
+      expect(lines.map { |line| run_hooks(line.b) }).to eq(["You pick some nilos.\r\n", "You feel FINE.\r\n"])
     end
 
     it 'passes a line through untouched while the catalog is still being built' do
@@ -1065,6 +1099,61 @@ RSpec.describe 'textsubs.lic' do
       end
       expect(TextSubs.generation).to eq(start)
       expect(TextSubs.subs).to eq(/cat/ => 'dog')
+    end
+  end
+
+  describe 'TextSubs.stage' do
+    it 'sends add and elanthipedia to the staged Registry, leaving subs, apply and the generation alone' do
+      TextSubs.add('cat', 'dog')
+      installed = TextSubs.subs
+      start = TextSubs.generation
+      staged = TextSubs::Registry.new
+      expect(TextSubs.stage(staged)).to equal(staged)
+
+      TextSubs.add('bird', 'fish')
+      TextSubs.elanthipedia('Fae Arts')
+      expect(staged.snapshot.keys.map(&:source)).to eq(['bird', '()(Fae Arts)()'])
+      expect(TextSubs.subs).to equal(installed)
+      expect(TextSubs.apply(+'The cat and the bird.')).to eq('The dog and the bird.')
+      expect(TextSubs.generation).to eq(start)
+    end
+
+    it 'ends with install of the staged Registry, which then takes add as the installed catalog' do
+      staged = TextSubs.stage(TextSubs::Registry.new)
+      TextSubs.add('cat', 'dog')
+      start = TextSubs.generation
+      TextSubs.install(staged)
+      expect(TextSubs.subs).to eq(/cat/ => 'dog')
+      expect(TextSubs.generation).to eq(start + 1)
+
+      TextSubs.add('bird', 'fish')
+      expect(TextSubs.generation).to eq(start + 2)
+      TextSubs.clear
+      TextSubs.add('cow', 'moo')
+      expect(TextSubs.subs).to eq(/cow/ => 'moo')
+      expect(staged.snapshot.keys).to eq([/cat/, /bird/])
+    end
+
+    it 'goes on staging when another Registry is installed meanwhile' do
+      staged = TextSubs.stage(TextSubs::Registry.new)
+      TextSubs.clear
+      TextSubs.add('cat', 'dog')
+      expect(TextSubs.subs).to eq({})
+      expect(staged.snapshot).to eq(/cat/ => 'dog')
+    ensure
+      TextSubs.install(staged)
+    end
+
+    it 'refuses anything but a Registry and leaves the staging alone' do
+      staged = TextSubs.stage(TextSubs::Registry.new)
+      [nil, {}, { /cat/ => 'lion' }].each do |not_a_registry|
+        expect { TextSubs.stage(not_a_registry) }.to raise_error(ArgumentError, /TextSubs.stage needs a TextSubs::Registry/)
+      end
+      TextSubs.add('cat', 'dog')
+      expect(staged.snapshot).to eq(/cat/ => 'dog')
+      expect(TextSubs.subs).to eq({})
+    ensure
+      TextSubs.install(staged)
     end
   end
 
