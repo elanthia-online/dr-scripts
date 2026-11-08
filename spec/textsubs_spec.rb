@@ -1036,6 +1036,18 @@ RSpec.describe 'textsubs.lic' do
         end
       end
 
+      # The (5/7) message names the language the song is sung in. The key
+      # takes any language name (letters, apostrophes, hyphens and spaces, as
+      # in race names such as S'Kra Mur and Gor'Tog), not just the Common the
+      # ladder above pins.
+      ['Elothean', "S'Kra Mur", "Gor'Tog"].each do |language|
+        it "labels the (5/7) message once when the words are #{language}" do
+          message = "Your voice carries strongly on the air as you effortlessly recite the #{language} words so that " \
+                    'all may hear, bowing your head as they come to a close'
+          expect(hooked("#{message}.", guild: 'Bard')).to eq("#{message} (5/7).\r\n")
+        end
+      end
+
       it 'leaves the song messages alone for a guild other than Bard' do
         line = 'You bring the song to a close, bowing your head.'
         expect(hooked(line, guild: 'Empath')).to eq("#{line}\r\n")
