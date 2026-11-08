@@ -459,7 +459,8 @@ class TextSubs
       %w[name when kind].freeze
     end
 
-    # The subs data gives a character, in order.
+    # The subs data gives a character, in order, as regex source: the same
+    # subs as keyed_entries, each key given by its source.
     #
     # @param data [Hash, nil] the `textsubs:` value of get_data('textsubs');
     #   nil when the file is missing or did not parse
@@ -472,15 +473,39 @@ class TextSubs
     #   data = { 'schema' => 1, 'sections' => [{ 'name' => 'all', 'subs' => [['fine', 'FINE']] }] }
     #   TextSubs::Catalog.entries(data, context) # => [['fine', 'FINE', { section: 'all' }]]
     def self.entries(data, context)
+      keyed_entries(data, context).map { |key, replacement, meta| [key.source, replacement, meta] }
+    end
+
+    # The subs data gives a character, in order, each with its key compiled.
+    # Checking the data compiles every pattern, those of the sections context
+    # does not select too, and each selected sub reuses the Regexp that check
+    # compiled, so no pattern is compiled twice on a start. Regexp.new keeps
+    # the source it is given, and a key compiled from source with
+    # Regexp.new is eql? to /#{source}/, the key TextSubs.add stores.
+    #
+    # @param data [Hash, nil] the `textsubs:` value of get_data('textsubs');
+    #   nil when the file is missing or did not parse
+    # @param context [TextSubs::Context] the guild and settings to gate on
+    # @return [Array<Array(Regexp, String, Hash)>] [key, replacement, meta]
+    #   for each sub, where meta is a frozen { section: name }
+    # @raise [ArgumentError] naming the first problem found anywhere in data,
+    #   including in sections context does not select
+    # @example
+    #   data = { 'schema' => 1, 'sections' => [{ 'name' => 'all', 'subs' => [['fine', 'FINE']] }] }
+    #   TextSubs::Catalog.keyed_entries(data, context) # => [[/fine/, 'FINE', { section: 'all' }]]
+    def self.keyed_entries(data, context)
+      sections, keys = check(data)
       # check has validated every gate already, so allows? checks each one a
       # second time. That is deliberate: allows? is public and stays safe on
       # its own, and the repeat costs nothing at catalog size.
-      check(data).select { |section| context.allows?(section['when']) }
-                 .flat_map { |section| expand(section, context) }
+      sections.select { |section| context.allows?(section['when']) }
+              .flat_map { |section| expand(section, context) }
+              .map { |source, replacement, meta| [keys.fetch(source), replacement, meta] }
     end
 
     # @param data [Object] the `textsubs:` value
-    # @return [Array<Hash>] its sections, every one checked
+    # @return [Array(Array<Hash>, Hash{String=>Regexp})] its sections, every
+    #   one checked, and every pattern in them compiled, by its source
     # @raise [ArgumentError] naming the first problem found
     def self.check(data)
       raise ArgumentError, "no 'textsubs:' mapping (the file is missing or did not parse)" unless data.is_a?(Hash)
@@ -492,17 +517,17 @@ class TextSubs
       sections = data['sections']
       raise ArgumentError, "'sections' must be a non-empty list" unless sections.is_a?(Array) && !sections.empty?
 
-      sections.each_with_index { |section, index| check_section(section, index) }
+      keys = sections.each_with_index.flat_map { |section, index| check_section(section, index) }
       names = sections.map { |section| section['name'] }
       repeated = names.tally.select { |_, count| count > 1 }.keys
       raise ArgumentError, "section name(s) used more than once: #{repeated.map(&:inspect).join(', ')}" unless repeated.empty?
 
-      sections
+      [sections, keys.to_h { |key| [key.source, key] }]
     end
 
     # @param section [Object] one element of 'sections'
     # @param index [Integer] its position, for the message
-    # @return [nil]
+    # @return [Array<Regexp>] its patterns, compiled, in order
     # @raise [ArgumentError] naming the section and what is wrong with it
     def self.check_section(section, index)
       raise ArgumentError, 'is not a mapping' unless section.is_a?(Hash)
@@ -520,45 +545,42 @@ class TextSubs
 
       Context.check_gate(section['when'])
       kind == 'pairs' ? check_pairs(section['subs']) : check_link(section)
-      nil
     rescue ArgumentError => e
       label = section.is_a?(Hash) && section['name'].is_a?(String) ? " (#{section['name']})" : ''
       raise ArgumentError, "section #{index + 1}#{label} #{e.message}"
     end
 
     # @param subs [Object] a pairs section's 'subs'
-    # @return [nil]
+    # @return [Array<Regexp>] the patterns, compiled, in order
     # @raise [ArgumentError] unless subs is a non-empty list of
     #   [pattern, replacement] String pairs whose patterns compile
     def self.check_pairs(subs)
       raise ArgumentError, "'subs' must be a non-empty list" unless subs.is_a?(Array) && !subs.empty?
 
-      subs.each_with_index do |pair, index|
+      subs.each_with_index.map do |pair, index|
         unless pair.is_a?(Array) && pair.size == 2 && pair.all?(String)
           raise ArgumentError, "sub #{index + 1} must be a ['pattern', 'replacement'] pair of quoted strings, not #{pair.inspect}"
         end
 
         check_pattern(pair.first)
       end
-      nil
     end
 
     # @param section [Hash] a guild_spells_link section
-    # @return [nil]
+    # @return [Array<Regexp>] its one pattern, compiled
     # @raise [ArgumentError] unless every field is a String and the pattern compiles
     def self.check_link(section)
       kinds['guild_spells_link'].each do |field|
         raise ArgumentError, "'#{field}' must be a quoted string, not #{section[field].inspect}" unless section[field].is_a?(String)
       end
-      check_pattern(section['pattern'])
+      [check_pattern(section['pattern'])]
     end
 
     # @param pattern [String] regex source
-    # @return [nil]
+    # @return [Regexp] the pattern, compiled
     # @raise [ArgumentError] when it does not compile
     def self.check_pattern(pattern)
       Regexp.new(pattern)
-      nil
     rescue RegexpError => e
       raise ArgumentError, "pattern #{pattern.inspect} does not compile: #{e.message}"
     end
@@ -671,9 +693,11 @@ class TextSubs
   end
 
   # Adds the built-in subs the catalog data gives the character, in order,
-  # through add. Data that cannot be used adds nothing at all, never part of a
-  # catalog, and the caller shows the message this returns: the script then
-  # runs with the private_textsubs and shit-list subs alone.
+  # each under the key Catalog.keyed_entries compiled while it checked the
+  # data, so no pattern is compiled a second time. Data that cannot be used
+  # adds nothing at all, never part of a catalog, and the caller shows the
+  # message this returns: the script then runs with the private_textsubs and
+  # shit-list subs alone.
   #
   # @param data [Hash, nil] the `textsubs:` value of get_data('textsubs')
   # @param context [TextSubs::Context] the guild and settings to gate on
@@ -684,24 +708,18 @@ class TextSubs
   #   TextSubs.add_catalog({ 'schema' => 0 }, context, file: 'data/base-textsubs.yaml')
   #   # => "No built-in subs: data/base-textsubs.yaml cannot be used (schema 0, ...). ..."
   def self.add_catalog(data, context, file:)
-    entries = Catalog.entries(data, context)
+    entries = Catalog.keyed_entries(data, context)
   rescue ArgumentError => e
     "No built-in subs: #{file} cannot be used (#{e.message}). This textsubs.lic needs a 'textsubs:' mapping " \
       "with schema: #{Catalog.schema}; update dr-scripts, or fix or remove a copy in data/custom. " \
       'Only private_textsubs and shit-list subs are active.'
   else
-    entries.each { |source, replacement, _meta| add(source, replacement) }
+    entries.each { |key, replacement, _meta| store_key(key, replacement) }
     nil
   end
 
-  # The one writer of the catalog, shared by add and elanthipedia: it writes
-  # write_target, under the lock, so no stage, unstage or install of another
-  # thread lands between choosing the Registry and counting the key. A key
-  # written to the installed catalog counts one generation, after it is
-  # written, so the generation never runs ahead of the catalog; a key written
-  # to a staged Registry or this thread's own build is not in subs yet and
-  # counts none, as install counts that whole catalog once, when it swaps it
-  # in.
+  # Compiles target unescaped and hands the key to store_key, for add and
+  # elanthipedia, whose subs are regex source.
   #
   # @param target [String] regex source, compiled unescaped
   # @param result [String] the gsub replacement
@@ -709,7 +727,25 @@ class TextSubs
   # @raise [RegexpError] when target is not valid regex source; the catalog
   #   and the generation are left as they were
   def self.store(target, result)
-    key = /#{target}/
+    store_key(/#{target}/, result)
+  end
+
+  # The one writer of the catalog: add and elanthipedia reach it through
+  # store, and add_catalog calls it straight, as its keys are compiled
+  # already. It writes write_target, under the lock, so no stage, unstage or
+  # install of another thread lands between choosing the Registry and
+  # counting the key. A key written to the installed catalog counts one
+  # generation, after it is written, so the generation never runs ahead of
+  # the catalog; a key written to a staged Registry or this thread's own
+  # build is not in subs yet and counts none, as install counts that whole
+  # catalog once, when it swaps it in.
+  #
+  # @param key [Regexp] the pattern
+  # @param result [String] the gsub replacement
+  # @return [String] result
+  # @raise [ArgumentError] when key is not a Regexp; the catalog and the
+  #   generation are left as they were
+  def self.store_key(key, result)
     @@lock.synchronize do
       registry = write_target
       registry.add(key, result)
@@ -726,7 +762,7 @@ class TextSubs
   def self.write_target
     own_build || @@staged || @@registry
   end
-  private_class_method :store, :write_target
+  private_class_method :store, :store_key, :write_target
 end
 
 settings = get_settings

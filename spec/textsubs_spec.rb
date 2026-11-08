@@ -152,7 +152,7 @@ RSpec.describe 'textsubs.lic' do
 
   # Each combination's traced build (see traced_build), made once per run by
   # whichever example asks first. The examples that only read a catalog, or
-  # the calls that made it, share these builds, so the 96 catalogs are not
+  # the writes that made it, share these builds, so the 96 catalogs are not
   # rebuilt once per such example. The examples that need TextSubs.subs to
   # hold the catalog call build_combination instead.
   built_catalogs = {}
@@ -177,49 +177,47 @@ RSpec.describe 'textsubs.lic' do
               .map { |name| "TextSubs.#{name}" }
   end
 
-  # build_combination, recording the calls that wrote the catalog: the source
-  # passed to each TextSubs.add, and how many times TextSubs.elanthipedia ran
-  # (it writes its key itself). TracePoints record them, which leaves both
-  # methods as they are; rspec-mocks wrappers on the ~100,000 calls of the 96
-  # builds doubled the time of the builds. The add source is read by its
-  # position, so renaming TextSubs.add's parameter does not break the trace;
-  # its name is looked up once per build, not once per call.
+  # build_combination, recording the source of every key written to a
+  # Registry while it builds. Every writer, add, elanthipedia and the catalog
+  # data alike, ends in Registry#add (see on_registry_write); the catalog data
+  # does not pass through add, as it stores the keys its check compiled. A
+  # TracePoint records the writes, which leaves Registry#add as it is;
+  # rspec-mocks wrappers on the ~100,000 writes of the 96 builds doubled the
+  # time of the builds. The key is read by its position, so renaming
+  # Registry#add's parameter does not break the trace; its name is looked up
+  # once per build, not once per call.
   #
   # @param combination [Hash{String=>Object}] one element of `combinations`
   # @return [Hash{Symbol=>Object}] deep-frozen, because every caller shares it.
-  #   Every string in it is a frozen copy (see frozen_copy), so the record
-  #   never shares a mutable string with TextSubs.subs or with the caller of
-  #   TextSubs.add. :catalog, as build_combination returns it;
-  #   :add_sources [Array<String>], the first argument of each TextSubs.add
-  #   call, in call order; :link_calls [Integer], the number of
-  #   TextSubs.elanthipedia calls
+  #   No string in it is shared with TextSubs.subs: catalog strings are frozen
+  #   copies (see frozen_copy), and Regexp#source returns a new string on each
+  #   call. :catalog, as build_combination returns it; :write_sources
+  #   [Array<String>], the source of the key of each Registry#add call, in
+  #   call order
   def traced_build(combination)
     sources = []
-    links = 0
-    source_param = TextSubs.method(:add).parameters.first.last
-    adds = TracePoint.new(:call) { |trace| sources << frozen_copy(trace.binding.local_variable_get(source_param).to_s) }
-    link_calls = TracePoint.new(:call) { links += 1 }
-    catalog = adds.enable(target: TextSubs.method(:add)) do
-      link_calls.enable(target: TextSubs.method(:elanthipedia)) { build_combination(combination) }
-    end
+    write = TextSubs::Registry.instance_method(:add)
+    key_param = write.parameters.first.last
+    writes = TracePoint.new(:call) { |trace| sources << trace.binding.local_variable_get(key_param).source.freeze }
+    catalog = writes.enable(target: write) { build_combination(combination) }
     { catalog: catalog.map { |entry| entry.map { |value| frozen_copy(value) }.freeze }.freeze,
-      add_sources: sources.freeze, link_calls: links }.freeze
+      write_sources: sources.freeze }.freeze
   end
 
   # A frozen value that shares no mutable object with the one given: a frozen
   # value as it is, anything else a frozen copy. Freezing the given object
-  # itself would freeze a string the script still holds (String#to_s returns
-  # the receiver), and a later `<<` on it would raise FrozenError in whichever
-  # example built that combination first.
+  # itself would freeze a string the script still holds, and a later `<<` on
+  # it would raise FrozenError in whichever example built that combination
+  # first.
   #
-  # @param value [Object] a catalog value (String or Integer) or an add source
+  # @param value [Object] a catalog value (String or Integer)
   # @return [Object] `value` when frozen, else a frozen dup of it
   def frozen_copy(value)
     value.frozen? ? value : value.dup.freeze
   end
 
   # Memoized traced_build, for examples that only read the returned catalog or
-  # calls. Whether TextSubs.subs holds that catalog afterwards depends on
+  # writes. Whether TextSubs.subs holds that catalog afterwards depends on
   # whether this call built it, so callers must not rely on TextSubs.subs
   # either way; examples that need it call build_combination.
   #
@@ -343,6 +341,28 @@ RSpec.describe 'textsubs.lic' do
   # include this.
   shared_context 'with a front end attached' do
     before { allow(TextSubs).to receive(:client_attached?).and_return(true) }
+  end
+
+  # Calls the block after every write to each Registry that TextSubs.stage
+  # stages or TextSubs.install installs from here on in the example (the entry
+  # point stages a fresh one on every start, fills it, then installs it).
+  # Every writer, add, elanthipedia and the catalog data alike, ends in
+  # Registry#add, so the block sees each sub as it lands. A Registry staged
+  # and then installed gets the same singleton twice, the second replacing the
+  # first, so each write still calls the block once.
+  #
+  # @yieldparam key [Regexp] the key written
+  # @yieldparam value [String] its replacement
+  # @return [void]
+  def on_registry_write(&block)
+    %i[stage install].each do |step|
+      allow(TextSubs).to(receive(step).and_wrap_original do |original, registry|
+        registry.define_singleton_method(:add) do |key, value|
+          super(key, value).tap { block.call(key, value) }
+        end
+        original.call(registry)
+      end)
+    end
   end
 
   # Installing a freshly staged Registry empties the catalog and ends any
@@ -798,26 +818,24 @@ RSpec.describe 'textsubs.lic' do
       old_output = ["You pick some nilos (abdo-EW).\r\n", "You feel fine.\r\n"]
       partial = []
       seen = []
-      adds = 0
+      writes = 0
       # The old run's 'textsub' hook stays registered until the new run
       # registers its own, as when Lich has not yet removed the hook of a run
       # that is being stopped. The class body is not evaluated again here, so
       # the installed catalog is still the old run's; that isolates what the
       # staging alone guarantees (the restart Lich runs, which re-runs the
       # class body, is covered under 'a start in Lich, which evaluates the
-      # class body before the entry point'). After every add, subs has to be
-      # the old catalog itself, and every 250th add sends the lines through it.
-      allow(TextSubs).to(receive(:add).and_wrap_original do |original, target, result|
-        stored = original.call(target, result)
-        partial << target unless TextSubs.subs.equal?(old_catalog)
-        seen << lines.map { |line| run_hooks(line.b) } if (adds += 1) % 250 == 1
-        stored
-      end)
+      # class body before the entry point'). After every write, subs has to be
+      # the old catalog itself, and every 250th write sends the lines through it.
+      on_registry_write do |key, _value|
+        partial << key.source unless TextSubs.subs.equal?(old_catalog)
+        seen << lines.map { |line| run_hooks(line.b) } if (writes += 1) % 250 == 1
+      end
 
       build_catalog('Ranger', 'herb_textsubs' => false, 'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
 
-      expect(adds).to be > 500
-      expect(partial).to be_empty, -> { "the old hook saw a catalog of the new run after adding #{partial.first.inspect}" }
+      expect(writes).to be > 500
+      expect(partial).to be_empty, -> { "the old hook saw a catalog of the new run after writing #{partial.first.inspect}" }
       expect(seen.size).to be > 3
       expect(seen).to all(eq(old_output))
       expect(lines.map { |line| run_hooks(line.b) }).to eq(["You pick some nilos.\r\n", "You feel FINE.\r\n"])
@@ -828,17 +846,15 @@ RSpec.describe 'textsubs.lic' do
       # the line, so a hook the new run registered before its build was done
       # would apply that catalog to it (and, filling the installed catalog,
       # its private key). Sends the line through the hooks right after the
-      # private key is staged, and after every 250th add from then on.
+      # private key is staged, and after every 250th write from then on.
       TextSubs.add('You feel fine', 'You feel OLD')
       expect(TextSubs.apply(+"You feel fine.\r\n")).to eq("You feel OLD.\r\n")
       seen = []
-      adds = 0
-      allow(TextSubs).to(receive(:add).and_wrap_original do |original, target, result|
-        stored = original.call(target, result)
-        adds += 1 unless seen.empty? && target != 'You feel fine'
-        seen << run_hooks("You feel fine.\r\n".b) if adds % 250 == 1
-        stored
-      end)
+      writes = 0
+      on_registry_write do |key, _value|
+        writes += 1 unless seen.empty? && key.source != 'You feel fine'
+        seen << run_hooks("You feel fine.\r\n".b) if writes % 250 == 1
+      end
 
       build_catalog('Commoner', 'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
 
@@ -869,21 +885,19 @@ RSpec.describe 'textsubs.lic' do
       allow(TextSubs).to receive(:client_attached?).and_return(true)
       lines = ["You pick some nilos.\r\n", "You feel fine.\r\n"]
       seen = []
-      adds = 0
+      writes = 0
       # The old run's 'textsub' hook is still registered, as when Lich has not
-      # yet removed the hook of a run that is being stopped. The first add
+      # yet removed the hook of a run that is being stopped. The first write
       # (the private key) and every 250th after it send the lines through it.
-      allow(TextSubs).to(receive(:add).and_wrap_original do |original, target, result|
-        stored = original.call(target, result)
-        seen << lines.map { |line| run_hooks(line.b) } if (adds += 1) % 250 == 1
-        stored
-      end)
+      on_registry_write do |_key, _value|
+        seen << lines.map { |line| run_hooks(line.b) } if (writes += 1) % 250 == 1
+      end
       expect(DownstreamHook.list).to include('textsub')
       expect(TextSubs.subs).to eq({})
 
       build_catalog('Ranger', 'herb_textsubs' => false, 'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
 
-      expect(adds).to be > 500
+      expect(writes).to be > 500
       expect(seen.size).to be > 3
       expect(seen).to all(eq(lines))
       expect(lines.map { |line| run_hooks(line.b) }).to eq(["You pick some nilos.\r\n", "You feel FINE.\r\n"])
@@ -1899,6 +1913,29 @@ RSpec.describe 'textsubs.lic' do
       expect(metas).to all(be_frozen)
     end
 
+    # add_catalog stores these keys, so each has to be the key TextSubs.add
+    # would store for its source (eql? and the same hash, as a Hash key needs).
+    it 'gives the same subs through keyed_entries, each key the one add would store for its source' do
+      data = catalog_data(<<~'YAML')
+        textsubs:
+          schema: 1
+          sections:
+            - name: 'keys'
+              subs:
+                - ['^(It is labeled) "Burden\."', 'x']
+                - ['a/b', 'y']
+                - ['(?<n>\d+) coins?', 'z']
+      YAML
+      context = TextSubs::Context.new(guild: 'Bard', settings: settings)
+      keyed = TextSubs::Catalog.keyed_entries(data, context)
+
+      expect(keyed.map { |key, replacement, meta| [key.source, replacement, meta] }).to eq(TextSubs::Catalog.entries(data, context))
+      keyed.each do |key, _replacement, _meta|
+        expect(key).to eql(/#{key.source}/)
+        expect(key.hash).to eq(/#{key.source}/.hash)
+      end
+    end
+
     it 'reads backslashes, quotes and colons in single-quoted scalars as they are written' do
       data = catalog_data(<<~'YAML')
         textsubs:
@@ -2060,16 +2097,29 @@ RSpec.describe 'textsubs.lic' do
       { 'schema' => 1, 'sections' => [{ 'name' => 'one', 'subs' => [%w[fine FINE], %w[cat dog]] }] }
     end
 
-    it 'adds every sub through TextSubs.add, in order, and returns nil' do
-      allow(TextSubs).to receive(:add).and_call_original
+    it 'adds every sub after what is there, in order, under the key add would store, one generation each, and returns nil' do
       TextSubs.add('mine', 'MINE')
       generation = TextSubs.generation
 
       expect(TextSubs.add_catalog(good, context, file: 'data/base-textsubs.yaml')).to be_nil
+      expect(TextSubs.subs.to_a).to eq([[/mine/, 'MINE'], [/fine/, 'FINE'], [/cat/, 'dog']])
       expect(TextSubs.subs).to eq(/mine/ => 'MINE', /fine/ => 'FINE', /cat/ => 'dog')
-      expect(TextSubs).to have_received(:add).with('fine', 'FINE').ordered
-      expect(TextSubs).to have_received(:add).with('cat', 'dog').ordered
       expect(TextSubs.generation).to eq(generation + 2)
+    end
+
+    # Checking the data compiles every pattern, a section the guild does not
+    # get included; the selected subs are stored under those same Regexps
+    # rather than compiled again (a start compiles ~1,600 patterns).
+    it 'compiles each pattern once, and stores the Regexp the check compiled' do
+      data = good.merge('sections' => good['sections'] + [{ 'name' => 'Clerics', 'when' => { 'guilds' => ['Cleric'] },
+                                                             'subs' => [%w[pray PRAY]] }])
+      compiled = []
+      allow(Regexp).to(receive(:new).and_wrap_original { |original, *args| original.call(*args).tap { |key| compiled << key } })
+
+      TextSubs.add_catalog(data, context, file: 'data/base-textsubs.yaml')
+
+      expect(compiled.map(&:source)).to eq(%w[fine cat pray])
+      expect(TextSubs.subs.keys.map(&:object_id)).to eq(compiled.first(2).map(&:object_id))
     end
 
     it 'adds nothing, not even the good sections before the bad one, and says why, naming the file and the schema' do
@@ -2088,7 +2138,7 @@ RSpec.describe 'textsubs.lic' do
     end
 
     it 'lets an error that is not about the data through' do
-      allow(TextSubs::Catalog).to receive(:entries).and_raise(NoMethodError, 'a bug, not bad data')
+      allow(TextSubs::Catalog).to receive(:keyed_entries).and_raise(NoMethodError, 'a bug, not bad data')
       expect { TextSubs.add_catalog(good, context, file: 'f') }.to raise_error(NoMethodError, 'a bug, not bad data')
     end
   end
@@ -2359,26 +2409,24 @@ RSpec.describe 'textsubs.lic' do
       }
     end
 
-    # TextSubs.add stores /#{target}/ as the Hash key, so a second add of the
-    # same source keeps the first slot with the last value and the first
-    # value is lost without a word ('jadice' was added as limb-ES and then
-    # as limb-EW). TextSubs.elanthipedia writes its own keys, so every call
-    # to either method has to leave one more key behind.
+    # The Registry keys on /#{target}/, so a second write of the same source
+    # keeps the first slot with the last value and the first value is lost
+    # without a word ('jadice' was added as limb-ES and then as limb-EW).
+    # Every write has to leave one more key behind.
     #
-    # catalog_build_of records both methods' calls in the one build the
-    # catalog examples share, so this example does not build the 96 catalogs
-    # a second time.
+    # catalog_build_of records the writes in the one build the catalog
+    # examples share, so this example does not build the 96 catalogs a
+    # second time.
     it 'adds every key source once in every combination' do
       offenders = combinations.filter_map do |combination|
         build = catalog_build_of(combination)
-        sources = build[:add_sources]
-        calls = sources.size + build[:link_calls]
+        sources = build[:write_sources]
         size = build[:catalog].size
         repeated = sources.tally.select { |_, count| count > 1 }.keys
-        [combination, repeated, calls, size] unless repeated.empty? && calls == size
+        [combination, repeated, sources.size, size] unless repeated.empty? && sources.size == size
       end
       expect(offenders).to be_empty, lambda {
-        "#{offenders.size} combination(s) add a key twice ([combination, repeated sources, calls, keys]):\n" \
+        "#{offenders.size} combination(s) add a key twice ([combination, repeated sources, writes, keys]):\n" \
           "#{offenders.first(5).map { |entry| "  #{entry.inspect}" }.join("\n")}"
       }
     end
