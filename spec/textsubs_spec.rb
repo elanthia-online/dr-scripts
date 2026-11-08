@@ -1262,21 +1262,21 @@ RSpec.describe 'textsubs.lic' do
       end
     end
 
-    it "ends by watching 'textsub', once, after the hook is registered, as the run its staged Registry stands for" do
+    it "ends by watching 'textsub', once, after the hook is registered, as the run its start_run token stands for" do
       events = []
-      staged = []
+      tokens = []
       allow(DownstreamHook).to(receive(:add).and_wrap_original do |original, name, *args, **options|
         events << [:hook, name]
         original.call(name, *args, **options)
       end)
-      allow(TextSubs).to(receive(:stage).and_wrap_original { |original, registry| original.call(registry).tap { |run| staged << run } })
+      allow(TextSubs).to(receive(:start_run).and_wrap_original { |original| original.call.tap { |token| tokens << token } })
       allow(TextSubs).to receive(:watch) { |hook, **options| events << [:watch, hook, options] }
 
       build_catalog('Commoner')
 
-      expect(staged.size).to eq(1)
-      expect(events).to eq([[:hook, 'textsub'], [:watch, 'textsub', { guild: 'Commoner', run: staged.first }]])
-      expect(events.last.last[:run]).to equal(staged.first)
+      expect(tokens.size).to eq(1)
+      expect(tokens.first).not_to be_a(TextSubs::Registry)
+      expect(events).to eq([[:hook, 'textsub'], [:watch, 'textsub', { guild: 'Commoner', run: tokens.first }]])
     end
 
     it 'ends the script, saying so, once Lich removes the hook because it raised' do
@@ -1726,11 +1726,11 @@ RSpec.describe 'textsubs.lic' do
       end
     end
 
-    describe 'given the run a start staged, as the entry point passes it' do
+    describe 'given the token start_run gave a start, as the entry point passes it' do
       let(:superseded) { 'A newer textsubs has started, so this one stops here and leaves the subs to it.' }
 
       it 'keeps waiting while that run is the latest start, and returns when the hook goes' do
-        run = TextSubs.stage(TextSubs::Registry.new)
+        run = TextSubs.start_run
         allow(DownstreamHook).to receive(:list).and_return(%w[textsub], %w[textsub], [])
 
         expect(TextSubs.watch('textsub', script: script, run: run)).to be_nil
@@ -1738,15 +1738,15 @@ RSpec.describe 'textsubs.lic' do
         expect(displayed_messages.last).to start_with("The 'textsub' hook is gone")
       end
 
-      it 'returns at the check after a newer start stages, though the hook name is still registered' do
-        run = TextSubs.stage(TextSubs::Registry.new)
+      it 'returns at the check after a newer start takes its token, though the hook name is still registered' do
+        run = TextSubs.start_run
         allow(DownstreamHook).to receive(:list).and_return(%w[textsub])
-        # The newer start stages on a thread of its own, as a Lich script does.
+        # The newer start runs on a thread of its own, as a Lich script does.
         allow(TextSubs).to receive(:pause) do |seconds|
           pauses << seconds
           raise 'TextSubs.watch is still waiting after 10 polls' if pauses.size > 10
 
-          Thread.new { TextSubs.stage(TextSubs::Registry.new) }.join if pauses.size == 2
+          Thread.new { TextSubs.start_run }.join if pauses.size == 2
         end
 
         expect(TextSubs.watch('textsub', script: script, run: run)).to be_nil
@@ -1754,8 +1754,23 @@ RSpec.describe 'textsubs.lic' do
         expect(displayed_messages.last).to eq(superseded)
       end
 
-      it 'returns at its first check once a newer start has re-run the class body, before that start stages' do
-        run = TextSubs.stage(TextSubs::Registry.new)
+      it 'keeps waiting when another script stages a Registry of its own, as that starts no textsubs' do
+        run = TextSubs.start_run
+        allow(DownstreamHook).to receive(:list).and_return(%w[textsub], %w[textsub], %w[textsub], [])
+        allow(TextSubs).to receive(:pause) do |seconds|
+          pauses << seconds
+          raise 'TextSubs.watch is still waiting after 10 polls' if pauses.size > 10
+
+          Thread.new { TextSubs.stage(TextSubs::Registry.new) }.join if pauses.size == 1
+        end
+
+        expect(TextSubs.watch('textsub', script: script, run: run)).to be_nil
+        expect(pauses.size).to eq(3)
+        expect(displayed_messages.last).to start_with("The 'textsub' hook is gone")
+      end
+
+      it 'returns at its first check once a newer start has re-run the class body, before that start takes its token' do
+        run = TextSubs.start_run
         # reload_lic_class resets every stub on TextSubs, so they go on after it.
         reload_lic_class('textsubs.lic', 'TextSubs')
         allow(TextSubs).to receive(:watch).and_call_original
@@ -3438,10 +3453,11 @@ RSpec.describe 'textsubs.lic' do
       expect(TextSubs.subs).to equal(before)
     end
 
-    describe 'given the run a start staged' do
-      it 'installs the catalog while that run is the latest start' do
-        run = TextSubs.stage(TextSubs::Registry.new)
-        TextSubs.install(run)
+    describe 'given the token start_run gave a start' do
+      it 'installs the catalog while that run is the latest start, though another script staged a Registry since' do
+        run = TextSubs.start_run
+        TextSubs.install(TextSubs.stage(TextSubs::Registry.new))
+        Thread.new { TextSubs.stage(TextSubs::Registry.new) }.join
         start = TextSubs.generation
         registry = built_again
 
@@ -3450,10 +3466,11 @@ RSpec.describe 'textsubs.lic' do
         expect(TextSubs.subs).to eq(/fine/ => 'FINE', /raises/ => 'again')
       end
 
-      it 'installs nothing, and returns nil, once a newer start has staged, even before that start installs' do
-        run = TextSubs.install(TextSubs.stage(TextSubs::Registry.new))
+      it 'installs nothing, and returns nil, once a newer start has taken its token, even before that start installs' do
+        run = TextSubs.start_run
+        TextSubs.install(TextSubs.stage(TextSubs::Registry.new))
         TextSubs.add('cat', 'dog')
-        newer = Thread.new { TextSubs.stage(TextSubs::Registry.new) }.value
+        Thread.new { TextSubs.start_run }.join
         start = TextSubs.generation
         before = TextSubs.subs
 
@@ -3461,8 +3478,6 @@ RSpec.describe 'textsubs.lic' do
         expect(TextSubs.generation).to eq(start)
         expect(TextSubs.subs).to equal(before)
         expect(TextSubs.subs).to eq(/cat/ => 'dog')
-
-        TextSubs.unstage(newer)
       end
     end
   end
