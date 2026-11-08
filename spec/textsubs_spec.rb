@@ -544,16 +544,18 @@ RSpec.describe 'textsubs.lic' do
       expect(TextSubs).to have_received(:apply).with(line).once
     end
 
-    it "registers 'textsub' with persist: false, leaving its removal to Lich alone, with no before_dying" do
+    it "registers 'textsub' with persist: false, leaving its removal to Lich alone: its before_dying keeps every hook" do
       # Stubbed on main (where run_lic_entry evaluates the entry), not on
       # Script.at_exit: another spec replaces the top-level before_dying.
-      allow(TOPLEVEL_BINDING.receiver).to receive(:before_dying)
+      dying = []
+      allow(TOPLEVEL_BINDING.receiver).to(receive(:before_dying)) { |&block| dying << block }
       DownstreamHook.add('other-script', proc { |line| line })
       build_catalog('Commoner')
+      dying.each(&:call)
 
+      expect(dying.size).to eq(1)
       expect(DownstreamHook._hook_persist).to include('textsub' => false)
-      expect(TOPLEVEL_BINDING.receiver).not_to have_received(:before_dying)
-      expect(DownstreamHook.list).to include('other-script')
+      expect(DownstreamHook.list).to include('textsub', 'other-script')
     ensure
       DownstreamHook.remove('other-script')
     end
@@ -641,6 +643,29 @@ RSpec.describe 'textsubs.lic' do
       build_catalog('Ranger', 'herb_textsubs' => false)
       expect(DownstreamHook.list.count('textsub')).to eq(1)
       expect(run_hooks("You pick some nilos.\r\n".b)).to eq("You pick some nilos.\r\n")
+    end
+  end
+
+  describe 'a start that raises while it builds the catalog' do
+    it 'ends the staging of a build that raises when the script dies, installing none of it' do
+      # Stubbed on main (where run_lic_entry evaluates the entry), not on
+      # Script.at_exit: another spec replaces the top-level before_dying.
+      dying = []
+      allow(TOPLEVEL_BINDING.receiver).to(receive(:before_dying)) { |&block| dying << block }
+      TextSubs.add('before', 'BEFORE')
+      installed = TextSubs.subs
+      private_subs = { 'You feel fine' => 'You feel FINE', '(' => 'not valid regex source' }
+
+      expect { build_catalog('Commoner', 'private_textsubs' => private_subs) }.to raise_error(RegexpError)
+      expect(TextSubs.subs).to equal(installed)
+      dying.each(&:call)
+
+      TextSubs.add('You feel fine', 'You feel FINE')
+      expect(TextSubs.subs.keys).to eq([/before/, /You feel fine/])
+      expect(TextSubs.apply(+'You feel fine.')).to eq('You feel FINE.')
+      TextSubs.clear
+      TextSubs.add('cat', 'dog')
+      expect(TextSubs.subs).to eq(/cat/ => 'dog')
     end
   end
 
@@ -1153,6 +1178,46 @@ RSpec.describe 'textsubs.lic' do
       TextSubs.add('cat', 'dog')
       expect(staged.snapshot).to eq(/cat/ => 'dog')
       expect(TextSubs.subs).to eq({})
+    end
+  end
+
+  describe 'TextSubs.unstage' do
+    it 'ends the staging without installing it, so add reaches the installed catalog again' do
+      TextSubs.add('cat', 'dog')
+      installed = TextSubs.subs
+      start = TextSubs.generation
+      staged = TextSubs.stage(TextSubs::Registry.new)
+      TextSubs.add('bird', 'fish')
+
+      expect(TextSubs.unstage(staged)).to be(true)
+      expect(TextSubs.subs).to equal(installed)
+      expect(TextSubs.generation).to eq(start)
+
+      TextSubs.add('cow', 'moo')
+      expect(TextSubs.subs).to eq(/cat/ => 'dog', /cow/ => 'moo')
+      expect(staged.snapshot).to eq(/bird/ => 'fish')
+    end
+
+    it 'leaves a newer staging alone, and does nothing once the Registry is installed' do
+      first = TextSubs.stage(TextSubs::Registry.new)
+      second = TextSubs.stage(TextSubs::Registry.new)
+      expect(TextSubs.unstage(first)).to be(false)
+      TextSubs.add('cat', 'dog')
+      expect(second.snapshot).to eq(/cat/ => 'dog')
+
+      TextSubs.install(second)
+      expect(TextSubs.unstage(second)).to be(false)
+      TextSubs.add('bird', 'fish')
+      expect(TextSubs.subs).to eq(/cat/ => 'dog', /bird/ => 'fish')
+    end
+
+    it 'refuses anything but a Registry and leaves the staging alone' do
+      staged = TextSubs.stage(TextSubs::Registry.new)
+      [nil, {}, { /cat/ => 'lion' }].each do |not_a_registry|
+        expect { TextSubs.unstage(not_a_registry) }.to raise_error(ArgumentError, /TextSubs.unstage needs a TextSubs::Registry/)
+      end
+      TextSubs.add('cat', 'dog')
+      expect(staged.snapshot).to eq(/cat/ => 'dog')
     end
   end
 

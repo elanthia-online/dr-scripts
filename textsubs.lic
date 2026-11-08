@@ -135,10 +135,9 @@ class TextSubs
   # install(registry) swaps it in whole and ends the staging. A sub another
   # script adds meanwhile goes into registry too, so the swap keeps it.
   #
-  # Staging another Registry replaces the first one. A Registry staged by a
-  # start that dies before it installs it stays staged, catching the adds of
-  # other scripts unseen, until the next start: that start re-runs the class
-  # body, which drops the staging and every key anyway.
+  # Staging another Registry replaces the first one. A start that dies before
+  # it installs its staged Registry ends the staging with unstage, so the adds
+  # of other scripts reach the installed catalog again.
   #
   # @param registry [TextSubs::Registry] the catalog to build
   # @return [TextSubs::Registry] registry
@@ -153,7 +152,34 @@ class TextSubs
     @@staged = registry
   end
 
-  # @param registry [Object] what install or stage was given
+  # Ends the staging of registry without installing it, for a build that did
+  # not finish: add and elanthipedia write to the installed catalog again, and
+  # the keys registry holds, a sub another script added meanwhile among them,
+  # are dropped with it. A partial catalog is never installed. When registry
+  # is not the one staged (it was installed, or another Registry was staged
+  # since), nothing changes, so a run that ends late cannot end the staging
+  # of a newer start.
+  #
+  # @param registry [TextSubs::Registry] the Registry the caller staged
+  # @return [Boolean] true when it ended the staging, false when registry was
+  #   not staged
+  # @raise [ArgumentError] when registry is not a TextSubs::Registry; the
+  #   staging is left as it was
+  # @example How the entry point ends its staging when the script dies early
+  #   catalog = TextSubs.stage(TextSubs::Registry.new)
+  #   before_dying { TextSubs.unstage(catalog) }
+  def self.unstage(registry)
+    check_registry(registry, 'unstage')
+    return false unless registry.equal?(@@staged)
+
+    @@staged = nil
+    true
+  end
+
+  # Refuses anything but a TextSubs::Registry, naming the public method that
+  # was given it.
+  #
+  # @param registry [Object] what install, stage or unstage was given
   # @param caller_name [String] the method's name, for the message
   # @return [nil]
   # @raise [ArgumentError] unless registry is a TextSubs::Registry
@@ -314,7 +340,11 @@ settings = get_settings
 # never a part of the new one. The 'textsub' hook is registered after that,
 # at the end of the script, so with no older hook a line that arrives while
 # the catalog is built passes through untouched.
+# A build that raises ends the staging when the script dies, so the adds of
+# other scripts reach the installed catalog again; the partial catalog is
+# never installed. Once the catalog is installed, unstage changes nothing.
 new_catalog = TextSubs.stage(TextSubs::Registry.new)
+before_dying { TextSubs.unstage(new_catalog) }
 
 # Put shit list players in textsubs
 if settings.integrate_shit_list_with_textsubs && File.file?("#{checkname}_shit.list")
