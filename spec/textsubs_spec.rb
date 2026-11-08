@@ -75,11 +75,11 @@ require_relative '../test/textsubs_corpus'
 # holds the one gated section to the oracle and checks that its gate is sound.
 #
 # The index only picks which keys run on a line, so every oracle sweep above
-# also holds it to reference_apply. On top of those, 'every catalog, with the
-# select step looked up' covers all 96 catalogs and mutated samples, and
-# 'TextSubs::TokenIndex' pins each tier, every construct the parser refuses
-# (with a line a naive reading of the source would wrongly skip) and a seeded
-# fuzz of 2,000 generated regexes.
+# also holds it to reference_apply. On top of those, 'every catalog, through
+# one index over all their keys' covers the keys of all 96 catalogs on every
+# corpus line and on mutated samples, and 'TextSubs::TokenIndex' pins each
+# tier, every construct the parser refuses (with a line a naive reading of the
+# source would wrongly skip) and a seeded fuzz of 2,000 generated regexes.
 #
 # The hook skips every key when no front end is attached (TextSubs.client_attached?
 # is false), and the harness has none, so the examples that send lines through
@@ -1769,12 +1769,13 @@ RSpec.describe 'textsubs.lic' do
       expect { TextSubs::Engine.apply({ key => 'X' }, line.dup) }.to raise_error(Encoding::CompatibilityError)
     end
 
-    it 'checks only the three gated coin-comma rules of every guild catalog on every line' do
-      always = guilds.product([false, true]).flat_map do |guild, plat|
-        build_catalog(guild, 'textsubs_spell_links' => true, 'herb_textsubs' => true, 'textsubs_use_plat_grouping' => plat)
-        TextSubs.subs.keys.select { |key| TextSubs::TokenIndex.tier(key) == [:always] }.map(&:source)
-      end
-      expect(always.uniq).to contain_exactly(
+    # catalog_entries.jsonl holds every key of the 96 catalogs, as the golden
+    # examples check against what the script builds.
+    it 'checks only the three gated coin-comma rules of every catalog on every line' do
+      keys = read_entries.call.map { |source, options, _replacement| Regexp.new(source, options) }.uniq
+      always = keys.select { |key| TextSubs::TokenIndex.tier(key) == [:always] }.map(&:source)
+      expect(keys.size).to be > 1_500
+      expect(always).to contain_exactly(
         '(?!.*>)\d{1,3}(?=(\d{3})+(?!\d).*(Kronar|Dokora|Lirum))',
         '(?!.*>)\d{1,3}(?=((\d{3})*(\d{4}))(?!\d)(?! platinum).*(Kronar|Dokora|Lirum))',
         '(?!.*>)\d{1,3}(?=(\d{3})+(?!\d) platinum.*(Kronar|Dokora|Lirum))'
@@ -3693,95 +3694,65 @@ RSpec.describe 'textsubs.lic' do
       end
     end
 
-    # The sweeps above run reference_apply itself, once per guild. Across all
-    # 96 catalogs that would cost about a minute, so the first example below
-    # looks its select step up instead: each distinct key runs key =~ line on
-    # every line once, the first time a catalog holds it, and a catalog's
-    # reference output for a line is then its matching keys gsub!'d in its
-    # own order, exactly as reference_apply would.
-    describe 'every catalog, with the select step looked up' do
-      # @param lines [Array<String>] the lines the catalogs are held to
-      # @return [Proc] call it with a catalog (TextSubs.subs) to get a Proc
-      #   that takes a line index and gives reference_apply's output for that
-      #   catalog and line
-      def lookup_reference(lines)
-        seen = Set.new
-        matching = Array.new(lines.size) { [] }
-        lambda do |subs|
-          subs.each_key do |key|
-            next unless seen.add?(key)
-
-            lines.each_with_index { |line, index| matching[index] << key if key =~ line }
-          end
-          order = subs.keys.each_with_index.to_h
-          lambda do |at|
-            output = lines[at].dup
-            matching[at].select { |key| order.key?(key) }.sort_by { |key| order[key] }.each { |key| output.gsub!(key, subs[key]) }
-            output
-          end
+    # The sweeps above run each guild's catalog through the hook, its own
+    # Registry and index included. The engine runs exactly the candidates that
+    # match the line, in catalog order, so any catalog gives reference_apply's
+    # output on a line as long as every key of it that matches the line is a
+    # candidate. A key's tier depends on the key alone and its gate on its
+    # section, so one index over every key of every catalog (every_key, which
+    # the golden examples hold to what the 96 builds write), gated as the
+    # shipped catalog gates it, checks that for all 96 catalogs at once: one
+    # candidates call per line instead of 96 index builds and hook sweeps.
+    describe 'every catalog, through one index over all their keys' do
+      # @return [TextSubs::TokenIndex] over every_key, each key of a
+      #   requires_any section gated on its section's words
+      define_method(:every_key_index) do
+        gates = shipped_catalog['textsubs']['sections'].select { |section| section.key?('requires_any') }.flat_map do |section|
+          section['subs'].map { |pattern, _| [Regexp.new(pattern), section['requires_any']] }
         end
+        expect(gates.map(&:first) - every_key).to eq([])
+        TextSubs::TokenIndex.new(every_key, gates.to_h)
       end
 
       # @param lines [Array<String>]
-      # @param catalogs [Array<Hash>] combinations to build, in turn
-      # @return [Array(Array<Array>, Integer)] [combination, line, apply
-      #   output, reference output] for each line where the two differ, and
-      #   the number of catalog lines the reference rewrote
-      def lookup_mismatches(lines, catalogs)
-        reference = lookup_reference(lines)
-        rewritten = 0
-        mismatches = catalogs.flat_map do |combination|
-          build_combination(combination)
-          expected_for = reference.call(TextSubs.subs)
-          lines.each_index.filter_map do |at|
-            expected = expected_for.call(at)
-            rewritten += 1 unless expected == lines[at]
-            applied = TextSubs.apply(lines[at].dup)
-            [combination, lines[at], applied, expected] unless applied == expected
-          end
+      # @param matching [Proc] takes a line index and gives the keys of
+      #   every_key that match that line
+      # @return [Array(Array<Array(String, String)>, Integer)] [key source,
+      #   line] for each key every_key_index leaves out of a line it matches,
+      #   and the number of key and line pairs that match
+      def missed_keys(lines, matching)
+        index = every_key_index
+        matched = 0
+        missed = lines.each_with_index.flat_map do |line, at|
+          candidates = index.candidates(line).to_set
+          keys = matching.call(at)
+          matched += keys.size
+          keys.reject { |key| candidates.include?(key) }.map { |key| [key.source, line] }
         end
-        [mismatches, rewritten]
+        [missed, matched]
       end
 
-      it "gives reference_apply's output for every sample and stream line with each of the 96 catalogs" do
-        mismatches, rewritten = lookup_mismatches(samples + stream_without_big_line, combinations)
-        expect(rewritten).to be > 96 * 1_000
-        expect(mismatches).to be_empty, lambda {
-          "#{mismatches.size} line(s) differ:\n#{mismatches.first(5).map { |entry| "  #{entry.inspect[0, 400]}" }.join("\n")}"
+      it 'names every key of every catalog that matches a sample or stream line, the gated coin-comma keys included' do
+        matching = Array.new(corpus.size) { [] }
+        every_key.each { |key| corpus_matches[key].each { |at| matching[at] << key } }
+        missed, matched = missed_keys(corpus, matching.method(:[]))
+        coin_lines = matching.count { |keys| keys.any? { |key| key.source.end_with?('.*(Kronar|Dokora|Lirum))') } }
+        expect(every_key.size).to be > 1_500
+        expect(matched).to be > 2_000
+        expect(coin_lines).to be > 10
+        expect(missed).to be_empty, lambda {
+          "#{missed.size} key(s) left out of a corpus line they match:\n#{missed.first(10).map { |entry| "  #{entry.inspect}" }.join("\n")}"
         }
       end
 
       # Each mutation moves token edges or line ends the index reads: a letter
       # glued to the first or last token, markup around the sample, every
       # letter's case flipped, and a \r\n line end.
-      #
-      # The engine runs exactly the candidates that match the line, so a
-      # catalog gives reference_apply's output on a line as long as every key
-      # of it that matches the line is a candidate. A key's tier depends on
-      # the key alone, so one index over every key of every catalog (the 24
-      # catalogs with both flags on hold all the keys the 96 do) checks that
-      # for all 96 catalogs at once: one regex call per key and line instead
-      # of 96 hook sweeps.
       it 'names every key of every catalog that matches a mutated sample' do
         mutated = samples.flat_map do |sample|
           ["x#{sample}", "#{sample}x", "<pushBold/>#{sample}<popBold/>", sample.swapcase, "#{sample}\r\n"].map(&:b)
-        end
-        keys = combinations.select { |combination| combination['textsubs_spell_links'] && combination['herb_textsubs'] }.flat_map do |combination|
-          build_combination(combination)
-          TextSubs.subs.keys
         end.uniq
-        index = TextSubs::TokenIndex.new(keys)
-        matched = 0
-        missed = mutated.flat_map do |line|
-          candidates = index.candidates(line).to_set
-          keys.filter_map do |key|
-            next unless key.match?(line)
-
-            matched += 1
-            [key.source, line] unless candidates.include?(key)
-          end
-        end
-        expect(keys.size).to be > 1_500
+        missed, matched = missed_keys(mutated, ->(at) { every_key.select { |key| key.match?(mutated[at]) } })
         expect(matched).to be > 5_000
         expect(missed).to be_empty, lambda {
           "#{missed.size} key(s) left out of a mutated sample they match:\n#{missed.first(10).map { |entry| "  #{entry.inspect}" }.join("\n")}"
