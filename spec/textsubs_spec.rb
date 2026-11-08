@@ -4690,6 +4690,22 @@ RSpec.describe 'textsubs.lic' do
     end
   end
 
+  # Both spell kinds build uniform value sets, so no data file reaches these
+  # cases; fill is public, and a set that breaks its contract has to fail as
+  # every other data problem does, with an ArgumentError Catalog can name the
+  # section in.
+  describe 'TextSubs::Generators.fill' do
+    it 'refuses a value set that lacks a placeholder the template names, naming the set and the placeholder' do
+      expect { TextSubs::Generators.fill('{name} {label}', [{ name: 'a', label: 'b' }, { name: 'c' }]) }
+        .to raise_error(ArgumentError, 'value set 2 has no {label} for "{name} {label}"')
+    end
+
+    it 'fills a set that holds more than the template names, and leaves a brace that names no placeholder' do
+      expect(TextSubs::Generators.fill('{name} {3}', [{ name: 'a', label: 'b' }, { name: 'c', label: 'd', note: 'e' }]))
+        .to eq(['a {3}', 'c {3}'])
+    end
+  end
+
   describe 'TextSubs::SpellTable' do
     let(:rows) do
       [{ 'name' => 'Halo', 'guild' => 'Cleric', 'book' => 'Holy Defense', 'signature' => true, 'tier' => 'advanced',

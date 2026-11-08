@@ -1718,8 +1718,12 @@ class TextSubs
     # @param template [String] regex source or replacement text
     # @param value_sets [Array<Hash{Symbol=>String}>] each sub's placeholders
     #   and their text, put in as it is (a spell name is regex source, as in
-    #   the hand-written subs); every set holds the keys of the first
+    #   the hand-written subs); the keys of the first set are the
+    #   placeholders, and every set must hold each of them that the template
+    #   names
     # @return [Array<String>] the template filled with each set, in order
+    # @raise [ArgumentError] naming the first set, by its position, that
+    #   lacks a placeholder the template names
     # @example
     #   TextSubs::Generators.fill('^(It is labeled) "{name}."', [{ name: 'Burden' }, { name: 'Halo' }])
     #   # => ["^(It is labeled) \"Burden.\"", "^(It is labeled) \"Halo.\""]
@@ -1730,7 +1734,11 @@ class TextSubs
       format_string = template.gsub('%', '%%').gsub(/\{(\w+)\}/) do
         placeholders.include?(Regexp.last_match(1)) ? "%<#{Regexp.last_match(1)}>s" : Regexp.last_match(0)
       end
-      value_sets.map { |values| Kernel.format(format_string, values) }
+      value_sets.each_with_index.map do |values, index|
+        Kernel.format(format_string, values)
+      rescue KeyError => e
+        raise ArgumentError, "value set #{index + 1} has no {#{e.key}} for #{template.inspect}"
+      end
     end
 
     # Checks the pattern and replacement templates of a scroll_labels or
