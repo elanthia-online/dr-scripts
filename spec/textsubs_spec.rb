@@ -652,16 +652,41 @@ RSpec.describe 'textsubs.lic' do
     base_profile = YAML.unsafe_load_file(File.expand_path('../profiles/base.yaml', __dir__), freeze: true)
     # A stand-in for the OpenStruct get_settings returns: it answers values
     # (nil for a key values lacks) and adds the name of each key read to read.
+    # It is a BasicObject, so a call Object would answer (respond_to?, to_h,
+    # each_pair) reaches method_missing instead of passing by unrecorded.
     recorder = Class.new(BasicObject) do
+      # @param values [Hash{String=>Object}] the value of each key, by name
+      # @param read [Array<String>] where each key read is added, shared by
+      #   every recorder of one record_reads run
       define_method(:initialize) do |values, read|
         @values = values
         @read = read
       end
+
+      # Reads a key by index, as Context#setting? does for a when: gate.
+      #
+      # @param key [String, Symbol] the key's name
+      # @return [Object, nil] its value, nil when values lacks it
       define_method(:[]) do |key|
         @read << key.to_s
         @values[key.to_s]
       end
+
+      # Reads key, as #[] does, and digs the rest into its value.
+      #
+      # @param key [String, Symbol] the key's name
+      # @param rest [Array<Object>] the keys or indexes inside its value
+      # @return [Object, nil] the value found, nil when any step is missing
       define_method(:dig) { |key, *rest| rest.empty? ? self[key] : self[key]&.dig(*rest) }
+
+      # Reads a key by name (settings.<key>), as #[] does.
+      #
+      # @param name [Symbol] the key's name
+      # @param args [Array<Object>] must be empty
+      # @return [Object, nil] the key's value, nil when values lacks it
+      # @raise [NoMethodError] for any call with arguments (fetch, setters,
+      #   respond_to?), so a way of reading a key this recorder cannot see
+      #   fails the examples instead of passing by unseen
       define_method(:method_missing) do |name, *args|
         ::Kernel.raise ::NoMethodError, "the settings recorder reads no key through #{name}(...)" unless args.empty?
 
