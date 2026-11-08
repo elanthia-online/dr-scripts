@@ -189,11 +189,12 @@ RSpec.describe 'textsubs.lic' do
   #
   # @param combination [Hash{String=>Object}] one element of `combinations`
   # @return [Hash{Symbol=>Object}] deep-frozen, because every caller shares it.
-  #   No string in it is shared with TextSubs.subs: catalog strings are frozen
-  #   copies (see frozen_copy), and Regexp#source returns a new string on each
-  #   call. :catalog, as build_combination returns it; :write_sources
-  #   [Array<String>], the source of the key of each Registry#add call, in
-  #   call order
+  #   It shares no mutable string with TextSubs.subs or the script: each
+  #   replacement is the frozen String the Registry keeps, shared as it is,
+  #   and each source is a new String (Regexp#source returns one per call),
+  #   kept as a frozen copy (see frozen_copy). :catalog, as build_combination
+  #   returns it; :write_sources [Array<String>], the source of the key of
+  #   each Registry#add call, in call order
   def traced_build(combination)
     sources = []
     write = TextSubs::Registry.instance_method(:add)
@@ -205,10 +206,12 @@ RSpec.describe 'textsubs.lic' do
   end
 
   # A frozen value that shares no mutable object with the one given: a frozen
-  # value as it is, anything else a frozen copy. Freezing the given object
-  # itself would freeze a string the script still holds, and a later `<<` on
-  # it would raise FrozenError in whichever example built that combination
-  # first.
+  # value as it is, anything else a frozen copy. A catalog entry holds a new
+  # source String, an Integer and the frozen replacement the Registry keeps,
+  # so today only the source is copied. The copy, rather than freezing the
+  # given object, keeps the record from freezing a String someone else holds,
+  # should build_catalog ever return one (a later `<<` on it would raise
+  # FrozenError in whichever example built that combination first).
   #
   # @param value [Object] a catalog value (String or Integer)
   # @return [Object] `value` when frozen, else a frozen dup of it
