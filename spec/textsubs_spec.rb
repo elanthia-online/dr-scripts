@@ -1272,13 +1272,17 @@ RSpec.describe 'textsubs.lic' do
         events << [:hook, name]
         original.call(name, *args, **options)
       end)
+      staged = []
       allow(TextSubs).to(receive(:start_run).and_wrap_original { |original| original.call.tap { |token| tokens << token } })
+      allow(TextSubs).to(receive(:stage).and_wrap_original { |original, registry| original.call(registry).tap { |built| staged << built } })
       allow(TextSubs).to receive(:watch) { |hook, **options| events << [:watch, hook, options] }
 
       build_catalog('Commoner')
 
       expect(tokens.size).to eq(1)
-      expect(tokens.first).not_to be_a(TextSubs::Registry)
+      # The token keeps no catalog alive: it is not the Registry the start built.
+      expect(staged.size).to eq(1)
+      expect(tokens.first).not_to equal(staged.first)
       expect(events).to eq([[:hook, 'textsub'], [:watch, 'textsub', { guild: 'Commoner', run: tokens.first }]])
     end
 
