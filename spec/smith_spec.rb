@@ -930,6 +930,17 @@ RSpec.describe Smith do
       expect(DRCT).to have_received(:buy_item).with(anything, 'hilt')
     end
 
+    # Fizzlestiks' rummage on 2026-11-07. Taking the drawknife for a hilt,
+    # smith bought none, so every kasai stopped at "You need another
+    # finished wooden hilt" and workorders forged ten for a five-kasai order.
+    it 'does not take a hilt named in a tool description for a hilt' do
+      carrying('icesteel drawknife with a gold wire wrapped hilt', 'steel ingot')
+
+      instance.buy_parts(%w[hilt])
+
+      expect(DRCT).to have_received(:buy_item).with(anything, 'hilt')
+    end
+
     # forge.lic asks for "another finished wooden hilt", so an unfinished
     # piece left in the bag is not a part it can use.
     it 'does not count an unfinished part as one already carried' do

@@ -329,11 +329,21 @@ class Smith
   # @param parts [Array<String>] part names from the recipe (may repeat)
   # @return [Array<String>] the parts to buy
   def missing_parts(parts)
-    carried = DRCI.get_item_list(@bag) || []
+    carried = (DRCI.get_item_list(@bag) || []).map { |item| without_description(item) }
     parts.reject do |part|
       index = carried.index { |item| item =~ part_pattern(part) && item !~ /\bunfinished\b/i }
       carried.delete_at(index) if index
     end
+  end
+
+  # RUMMAGE lists each item's full description, which can go on past its
+  # noun: "icesteel drawknife with a gold wire wrapped hilt" is a drawknife,
+  # not a hilt. Cut the description off at " with " (no part name has one).
+  #
+  # @param item [String] an item as get_item_list gives it
+  # @return [String] the item up to its description
+  def without_description(item)
+    item.split(/\s+with\s+/i, 2).first
   end
 
   # @param part [String] a part name, e.g. "short cord"
