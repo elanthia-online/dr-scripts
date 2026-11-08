@@ -126,9 +126,12 @@ class TextSubs
   # hyperlink" help).
   #
   # The key is three capture groups, (pretext)(text)(postext), so the context
-  # around the text can be matched and put back. text, pretext and postext are
-  # regex source, compiled unescaped; preresult, text and posresult are also
-  # gsub replacement text, so a backslash in them is a backreference.
+  # around the text can be matched and put back. pretext, text and postext
+  # build the key: they are regex source, compiled unescaped. preresult,
+  # posresult, prelink and poslink are never regex source, only gsub
+  # replacement text. text is the one argument that is both, since the link
+  # shows it, so a backslash in any argument but pretext and postext is a
+  # backreference.
   #
   # @param text [String] the text to link; also the page name, spaces turned
   #   into underscores
