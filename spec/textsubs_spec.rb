@@ -151,9 +151,11 @@ RSpec.describe 'textsubs.lic' do
   # What the real Catalog.check gave for the shipped catalog the first time
   # any example built from it. check reads nothing but its data, and the
   # shipped data is one deep-frozen object (shipped_catalog), so every later
-  # build from that very object gets the sections, spells table and keys the
-  # first check gave, all frozen; data that is not that object (a copy, a
-  # change, a synthetic catalog) is checked in full every time. Each catalog
+  # build from that very object gets the same objects the first check gave:
+  # the sections (the frozen shipped data itself), and the spells table and
+  # keys Hash, which are not frozen but which keyed_entries only reads. Data
+  # that is not that object (a copy, a change, a synthetic catalog) is
+  # checked in full every time. Each catalog
   # build checks the whole file, ~1,600 patterns compiled in ~4.7 ms, and the
   # file makes some 450 builds: without the memo it ran in about 10.0 s wall
   # instead of about 8.0 s, over the 10 s budget for this file.
