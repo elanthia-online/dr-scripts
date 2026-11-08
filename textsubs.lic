@@ -14,7 +14,8 @@ no_kill_all
 # then registers a 'textsub' DownstreamHook (persist: false, so Lich removes it
 # when the script ends) that hands every server line to apply while a front
 # end is attached. Until the install, apply serves the empty catalog the class
-# body installed when the start evaluated it.
+# body installed when the start evaluated it. The script then waits in watch,
+# which ends it once that hook is gone.
 #
 # Lich evaluates this class body inside Lich::Common on every start, and the
 # class itself persists for the session, so it defines no constants but its
@@ -34,8 +35,13 @@ class TextSubs
   # their lookahead needs Kronar, Dokora or Lirum, and without the gate they
   # scan from every digit to the end of the line.
   #
-  # One thread writes a Registry while others may read it, so readers never
-  # see the entries themselves, only a frozen snapshot of them.
+  # Readers never see the entries themselves, only a frozen snapshot of them,
+  # as the entries change while others read: through add, from whichever
+  # script calls it, and through drop, from the game thread the hook runs on.
+  # Two writers at once can lose one @version increment between them. That is
+  # still safe: each writer changes the entries before it reads @version, so a
+  # reader that sees the bumped number copies both changes, and a copy cached
+  # under the old number holds more than that number says and is rebuilt.
   #
   # @example
   #   registry = TextSubs::Registry.new
@@ -97,9 +103,32 @@ class TextSubs
       result
     end
 
+    # Removes one entry and its gate, but only while key still holds value:
+    # a key given a new value since value was read keeps it. The engine uses
+    # it to put away an entry that raised, so another add of the key since is
+    # left alone, and so is the next caller once the first one has removed it.
+    #
+    # @param key [Regexp] the pattern
+    # @param value [Object] the value the caller read for key; compared by
+    #   identity, as the registry hands out its own frozen copies
+    # @return [Boolean] true when the entry was removed, false when key is not
+    #   held or holds another value (the registry is then left as it was)
+    # @example
+    #   registry.add(/cat/, 'dog')
+    #   registry.drop(/cat/, registry.snapshot[/cat/]) # => true
+    #   registry.drop(/cat/, nil)                      # => false
+    def drop(key, value)
+      return false unless @entries.key?(key) && @entries[key].equal?(value)
+
+      @entries.delete(key)
+      @gates.delete(key)
+      @version += 1
+      true
+    end
+
     # The entries as they stand, in order, as a frozen Hash. The same Hash
-    # comes back until the next add, so a reader calling once per line copies
-    # the catalog only after it changes.
+    # comes back until the next add or drop, so a reader calling once per
+    # line copies the catalog only after it changes.
     #
     # @return [Hash{Regexp=>String}] frozen, with frozen values
     def snapshot
@@ -122,8 +151,8 @@ class TextSubs
 
     # The snapshot and a TokenIndex over exactly its keys and gates, both from
     # the same copy, so the index never misses a key the snapshot holds. The
-    # index is built the first time it is asked for after an add, not on
-    # every add: the entry point adds ~1,600 subs and then asks once.
+    # index is built the first time it is asked for after an add or drop, not
+    # on every add: the entry point adds ~1,600 subs and then asks once.
     #
     # @return [Array(Hash{Regexp=>String}, TextSubs::TokenIndex)] frozen
     #   [snapshot, index]
@@ -177,8 +206,9 @@ class TextSubs
   end
 
   # How many times the catalog has changed this session. install and clear
-  # count once each. Every writer (add, elanthipedia and add_catalog; see
-  # store_key) counts once per key it writes to the installed catalog, and
+  # count once each, and so does a sub that apply drops because it raised.
+  # Every writer (add, elanthipedia and add_catalog; see store_key) counts
+  # once per key it writes to the installed catalog, and
   # not at all while a Registry is staged (see stage): install counts that
   # whole catalog once, when it swaps it in.
   #
@@ -195,6 +225,11 @@ class TextSubs
   # A cache keyed on the generation should read it before it reads subs: if a
   # change lands in between, the cache holds a newer catalog under an older
   # number and rebuilds on the next call, never the other way round.
+  #
+  # The hook thread counts a drop while a script may count an add, so two
+  # changes at once can count as one. The rule above still holds: both changes
+  # are in subs before either is counted, so the number they share is never
+  # older than the catalog a reader sees with it.
   #
   # @return [Integer] 0 until the catalog first changes in this session
   def self.generation
@@ -372,14 +407,68 @@ class TextSubs
   # another script) builds the index anew, so a key added at any time is
   # tried from the next line on.
   #
+  # A sub that raises (a nil or Integer value, a UTF-8 key on a line with
+  # high bytes, a regex timeout) is dropped from the catalog for the rest of
+  # the session and reported once, and the line goes on through the other
+  # keys: an error that left the hook would make Lich remove the hook, and
+  # every sub with it.
+  #
   # @param line [String] a server line, as the DownstreamHook receives it
   # @return [String] the same String, rewritten in place
   # @raise [FrozenError] when a key matches a frozen line
   # @example After TextSubs.add('fine', 'FINE')
   #   TextSubs.apply(+"You feel fine.\r\n") # => "You feel FINE.\r\n"
+  # @example After TextSubs.add('foo', nil)
+  #   TextSubs.apply(+'foo') # => "foo", reports the sub once and drops it
   def self.apply(line)
     subs, index = @@registry.indexed_snapshot
-    Engine.apply(subs, line, index: index)
+    Engine.apply(subs, line, index: index, on_error: ->(key, error) { drop(key, subs[key], error) })
+  end
+
+  # Takes a sub that raised out of the installed catalog, and says so, once:
+  # only the call that removes it reports it, so a key that already went, or
+  # was given a new value since the line began, is neither removed nor
+  # reported again.
+  #
+  # It answers to the hook's thread, where Script.current is nil, so it
+  # names textsubs itself instead of echoing.
+  #
+  # @param key [Regexp] the key that raised
+  # @param value [Object] its value in the snapshot the line ran through
+  # @param error [StandardError] what it raised
+  # @return [Boolean] whether this call removed it
+  def self.drop(key, value, error)
+    return false unless @@registry.drop(key, value)
+
+    @@generation += 1
+    respond "[textsubs: the sub #{key.source.inspect} raised #{error.class} (#{error.message}) " \
+            'and is off until textsubs restarts; fix or remove it where it was added, usually private_textsubs]'
+    true
+  end
+  private_class_method :drop
+
+  # Keeps the script alive exactly as long as its hook is registered, so
+  # ;list and Script.running?('textsubs') tell the truth: Lich removes a
+  # hook that raises (and another script may remove it by name), and a
+  # script still running without its hook would never be restarted by the
+  # helpers that start textsubs only when it is not running.
+  #
+  # The script reads no game lines itself, so it stops Lich from buffering
+  # them for it, then checks the hook list every interval seconds. Lich
+  # kills the script during a pause as it would during any wait.
+  #
+  # @param hook [String] the DownstreamHook name to watch
+  # @param script [#want_downstream=] the running script
+  # @param interval [Numeric] seconds between checks
+  # @return [nil] once hook is no longer registered, after saying so
+  # @example The last line of the entry point
+  #   TextSubs.watch('textsub') # returns when the hook goes, ending the script
+  def self.watch(hook, script: Script.current, interval: 5)
+    script.want_downstream = false
+    pause(interval) while DownstreamHook.list.include?(hook)
+    echo "The '#{hook}' hook is gone, so nothing is substituted any more and textsubs stops here " \
+         "(a '--- Lich: DownstreamHook:' line above says why, if it raised). Start it again with ;textsubs."
+    nil
   end
 
   # The matching engine behind TextSubs.apply, kept apart from the catalog so
@@ -408,23 +497,57 @@ class TextSubs
     #   of subs and their gates; nil builds one for this call, which parses
     #   every key, so a caller that runs many lines through one catalog
     #   passes it (Registry#indexed_snapshot)
-    # @return [String] the same String, rewritten in place
+    # @param on_error [#call, nil] called with the key and the StandardError
+    #   when matching or applying one key raises; that key then counts as not
+    #   matching and the line goes on through the rest. nil lets the error
+    #   out. Errors that are the caller's, not the key's, always get out: a
+    #   FrozenError (the line is frozen) and the KeyError below.
+    # @return [String] the same String, rewritten in place; a key that raised
+    #   left it as it was before that key
     # @raise [ArgumentError] when both gates and index are given, since the
     #   gates would be silently ignored
     # @raise [FrozenError] when a key matches a frozen line
     # @raise [KeyError] when index names a key subs does not hold
+    # @raise [StandardError] whatever a key raised, when on_error is nil
     # @example
     #   TextSubs::Engine.apply({ /cat/ => 'dog', /dog/ => 'bird' }, +'The cat.') # => "The dog."
     # @example A gate the line does not meet
     #   TextSubs::Engine.apply({ /\d+/ => '#' }, +'7 coins', gates: { /\d+/ => ['Kronar'] }) # => "7 coins"
-    def self.apply(subs, line, gates: nil, index: nil)
+    # @example A key that raises, set aside
+    #   TextSubs::Engine.apply({ /cat/ => nil, /The/ => 'A' }, +'The cat.', on_error: ->(key, error) { warn key.source })
+    #   # => "A cat.", after warning "cat"
+    def self.apply(subs, line, gates: nil, index: nil, on_error: nil)
       raise ArgumentError, 'pass gates: or index:, not both: an index already holds its gates' if gates && index
 
       index ||= TokenIndex.new(subs.keys, gates || {})
-      matches = index.candidates(line).select { |key| key.match?(line) }
-      matches.each { |key| line.gsub!(key, subs.fetch(key)) }
+      matches = index.candidates(line).select { |key| attempt(key, on_error) { key.match?(line) } }
+      matches.each do |key|
+        replacement = subs.fetch(key)
+        attempt(key, on_error) { line.gsub!(key, replacement) }
+      end
       line
     end
+
+    # Runs one key's step, handing an error it raises to on_error.
+    #
+    # @param key [Regexp] the key the step runs
+    # @param on_error [#call, nil] see apply
+    # @yieldreturn [Object] the step's result
+    # @return [Object, false] the block's result, or false once on_error has
+    #   taken the error
+    # @raise [StandardError] the error, when on_error is nil or it is a
+    #   FrozenError
+    def self.attempt(key, on_error)
+      yield
+    rescue FrozenError
+      raise
+    rescue StandardError => e
+      raise unless on_error
+
+      on_error.call(key, e)
+      false
+    end
+    private_class_method :attempt
   end
 
   # Picks, for a line, the keys that could match it, so the engine runs a
@@ -1480,4 +1603,6 @@ end
 # re-registered 'textsub' keeps its hook when an older one dies.
 DownstreamHook.add('textsub', action, persist: false)
 
-clear until script.gets.nil?
+# Runs until the hook is gone, then ends the script, so restart helpers see
+# that textsubs is no longer running.
+TextSubs.watch('textsub')

@@ -120,9 +120,14 @@ RSpec.describe 'textsubs.lic' do
   # Every example starts as a fresh install: get_data('textsubs') answers with
   # the shipped file, as an OpenStruct of its top-level keys like lich-5's, and
   # SCRIPT_DIR points nowhere, so there is no data/custom copy.
+  #
+  # The entry point ends in TextSubs.watch, which waits as long as the
+  # 'textsub' hook is registered: stubbed here so run_lic_entry returns with
+  # the hook still in place. 'TextSubs.watch' runs the real one.
   before do
     stub_const('SCRIPT_DIR', '/nonexistent-textsubs-spec')
     $test_data[:textsubs] = OpenStruct.new(shipped_catalog)
+    allow(TextSubs).to receive(:watch)
   end
 
   # Each key's tier, as the real TokenIndex.tier gave it the first time any
@@ -189,7 +194,9 @@ RSpec.describe 'textsubs.lic' do
   # builds: any stub on DRStats (the guild predicates), File (run_lic_entry
   # reads the script through it, and the shit-list branch reads a file), or the
   # top-level object (get_settings), and any stub on TextSubs except
-  # client_attached?, which the script reads only inside the hook.
+  # client_attached?, which the script reads only inside the hook, and watch,
+  # which the entry point calls only after it has built the catalog (and which
+  # the before block above stubs for every example alike).
   #
   # @return [Array<String>] one label per stubbed object or TextSubs method;
   #   empty when nothing that catalog building reads is stubbed
@@ -200,7 +207,7 @@ RSpec.describe 'textsubs.lic' do
     return stubbed unless space.registered?(TextSubs)
 
     proxy = space.proxy_for(TextSubs)
-    stubbed + (TextSubs.singleton_methods - [:client_attached?])
+    stubbed + (TextSubs.singleton_methods - %i[client_attached? watch])
               .select { |name| proxy.method_double_if_exists_for_message(name) }
               .map { |name| "TextSubs.#{name}" }
   end
@@ -934,17 +941,121 @@ RSpec.describe 'textsubs.lic' do
       expect(DownstreamHook.list.count('textsub')).to eq(1)
       expect(run_hooks("You pick some nilos.\r\n".b)).to eq("You pick some nilos.\r\n")
     end
+
+    it "ends by watching 'textsub', once, after the hook is registered" do
+      events = []
+      allow(DownstreamHook).to(receive(:add).and_wrap_original do |original, name, *args, **options|
+        events << [:hook, name]
+        original.call(name, *args, **options)
+      end)
+      allow(TextSubs).to receive(:watch) { |hook, **options| events << [:watch, hook, options] }
+
+      build_catalog('Commoner')
+
+      expect(events).to eq([[:hook, 'textsub'], [:watch, 'textsub', {}]])
+    end
+
+    it 'ends the script, saying so, once Lich removes the hook because it raised' do
+      allow(TextSubs).to receive(:watch).and_call_original
+      allow(TextSubs).to receive(:apply).and_raise(ArgumentError, 'invalid byte sequence')
+      pauses = 0
+      # Each poll sends a line through the hooks, as the game would between
+      # two polls: the first one raises, and Lich removes the hook.
+      allow(TextSubs).to receive(:pause) do
+        pauses += 1
+        raise 'TextSubs.watch kept waiting after the hook was gone' if pauses > 3
+
+        run_hooks("You feel fine.\r\n".b)
+      end
+
+      build_catalog('Commoner')
+
+      expect(pauses).to eq(1)
+      expect(DownstreamHook.list).not_to include('textsub')
+      expect(displayed_messages.grep(/--- Lich: DownstreamHook: invalid byte sequence/).size).to eq(1)
+      expect(displayed_messages.last).to start_with("The 'textsub' hook is gone")
+    end
+
+    # DownstreamHook.run removes a hook that raises, for good, and every sub
+    # goes with it. A sub that raises is the one thing dropped instead.
+    describe 'a sub that raises' do
+      # @param source [String] the key's regex source, as added
+      # @return [Array<String>] the messages that report that key
+      def reports_of(source)
+        displayed_messages.select { |message| message.include?("the sub #{Regexp.new(source).source.inspect} raised") }
+      end
+
+      # @return [Array<String>] Lich's own reports of a hook it removed
+      def lich_removals
+        displayed_messages.grep(/--- Lich: DownstreamHook/)
+      end
+
+      it 'drops a nil-valued key, keeps the hook and the other subs on the line, and reports it once' do
+        build_catalog('Commoner', 'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
+        TextSubs.add('foo', nil)
+
+        expect(run_hooks("You feel fine, foo.\r\n".b)).to eq("You feel FINE, foo.\r\n")
+        expect(DownstreamHook.list).to include('textsub')
+        expect(reports_of('foo').size).to eq(1)
+        expect(reports_of('foo').first).to include('TypeError')
+        expect(lich_removals).to be_empty
+
+        expect(run_hooks("foo. You feel fine.\r\n".b)).to eq("foo. You feel FINE.\r\n")
+        expect(reports_of('foo').size).to eq(1)
+        expect(TextSubs.subs.keys).not_to include(/foo/)
+      end
+
+      it 'drops a nil private_textsubs value set ahead of the other subs, as a blank YAML value gives' do
+        build_catalog('Commoner', 'private_textsubs' => { 'Bob' => nil, 'You feel fine' => 'You feel FINE' })
+
+        expect(run_hooks("Bob nods. You feel fine.\r\n".b)).to eq("Bob nods. You feel FINE.\r\n")
+        expect(run_hooks("Bob waves.\r\n".b)).to eq("Bob waves.\r\n")
+        expect(DownstreamHook.list).to include('textsub')
+        expect(reports_of('Bob').size).to eq(1)
+        expect(lich_removals).to be_empty
+      end
+
+      it 'drops a UTF-8 key on the first binary line with high bytes, keeping the hook and the other subs' do
+        key = "Caf#{0xE9.chr(Encoding::UTF_8)}"
+        build_catalog('Commoner', 'private_textsubs' => { key => 'Cafe', 'You feel fine' => 'You feel FINE' })
+
+        # On a line of ASCII bytes alone the key is merely tried, and misses.
+        expect(run_hooks("You feel fine.\r\n".b)).to eq("You feel FINE.\r\n")
+        expect(reports_of(key)).to be_empty
+
+        expect(run_hooks("na#{0xEF.chr}ve. You feel fine.\r\n".b)).to eq("na#{0xEF.chr}ve. You feel FINE.\r\n")
+        expect(DownstreamHook.list).to include('textsub')
+        expect(reports_of(key).size).to eq(1)
+        expect(reports_of(key).first).to include('Encoding::CompatibilityError')
+        expect(lich_removals).to be_empty
+
+        expect(run_hooks("na#{0xEF.chr}ve again.\r\n".b)).to eq("na#{0xEF.chr}ve again.\r\n")
+        expect(reports_of(key).size).to eq(1)
+      end
+
+      it 'takes the key back when it is added again with a good value' do
+        build_catalog('Commoner')
+        TextSubs.add('foo', nil)
+        run_hooks("foo\r\n".b)
+
+        TextSubs.add('foo', 'bar')
+        expect(run_hooks("foo\r\n".b)).to eq("bar\r\n")
+        expect(reports_of('foo').size).to eq(1)
+      end
+    end
   end
 
   # Lich evaluates the whole of textsubs.lic on every start, so the class body
   # runs again (reload_lic_class) before the entry point. That redefines every
-  # TextSubs method, and with them any stub of one, so these examples stub
-  # TextSubs only after it.
+  # TextSubs method, and reload_lic_class ends every stub on TextSubs first,
+  # so these examples stub TextSubs only after it: watch again, as the
+  # file-wide before hook did, so the next start returns.
   describe 'a start in Lich, which evaluates the class body before the entry point' do
     it 'leaves a hook of the run before passing every line through untouched until the new catalog is installed' do
       build_catalog('Ranger', 'herb_textsubs' => true)
       expect(TextSubs.apply(+"You pick some nilos.\r\n")).to eq("You pick some nilos (abdo-EW).\r\n")
       reload_lic_class('textsubs.lic', 'TextSubs')
+      allow(TextSubs).to receive(:watch)
       allow(TextSubs).to receive(:client_attached?).and_return(true)
       lines = ["You pick some nilos.\r\n", "You feel fine.\r\n"]
       seen = []
@@ -974,6 +1085,7 @@ RSpec.describe 'textsubs.lic' do
       expect(TextSubs.subs).not_to be_empty
 
       reload_lic_class('textsubs.lic', 'TextSubs')
+      allow(TextSubs).to receive(:watch)
       emptied = TextSubs.generation
       expect(TextSubs.subs).to eq({})
       expect(emptied).to eq(first + 1)
@@ -1159,6 +1271,78 @@ RSpec.describe 'textsubs.lic' do
     end
   end
 
+  # The poll seam is stubbed: DownstreamHook.list where a sequence of lists
+  # is wanted, and pause everywhere, counting calls so a watch that never
+  # returns fails instead of hanging the run.
+  describe 'TextSubs.watch' do
+    let(:script) { OpenStruct.new(want_downstream: true) }
+    let(:pauses) { [] }
+
+    before do
+      allow(TextSubs).to receive(:watch).and_call_original
+      allow(TextSubs).to receive(:pause) do |seconds|
+        pauses << seconds
+        raise 'TextSubs.watch is still waiting after 10 polls' if pauses.size > 10
+      end
+    end
+
+    it 'returns nil once the hook leaves DownstreamHook.list, pausing the interval between checks' do
+      allow(DownstreamHook).to receive(:list).and_return(%w[other textsub], %w[textsub other], %w[other])
+
+      expect(TextSubs.watch('textsub', script: script, interval: 7)).to be_nil
+      expect(pauses).to eq([7, 7])
+      expect(DownstreamHook).to have_received(:list).exactly(3).times
+    end
+
+    it 'pauses five seconds by default' do
+      allow(DownstreamHook).to receive(:list).and_return(%w[textsub], [])
+      TextSubs.watch('textsub', script: script)
+      expect(pauses).to eq([5])
+    end
+
+    it 'stops Lich buffering game lines for the script before it waits' do
+      allow(DownstreamHook).to(receive(:list).and_wrap_original do
+        expect(script.want_downstream).to be(false)
+        []
+      end)
+      TextSubs.watch('textsub', script: script)
+      expect(script.want_downstream).to be(false)
+    end
+
+    it 'says the hook is gone, and how to start textsubs again, when it returns' do
+      allow(DownstreamHook).to receive(:list).and_return([])
+      TextSubs.watch('textsub', script: script)
+      expect(displayed_messages.last).to start_with("The 'textsub' hook is gone")
+      expect(displayed_messages.last).to end_with('Start it again with ;textsubs.')
+    end
+
+    it 'returns at once, without pausing, when the hook was never registered' do
+      allow(DownstreamHook).to receive(:list).and_return(%w[textsubs textsub-old Textsub])
+      expect(TextSubs.watch('textsub', script: script)).to be_nil
+      expect(pauses).to be_empty
+    end
+
+    it 'keeps waiting while the real hook list holds the hook, and returns the poll after it is removed' do
+      DownstreamHook.add('textsub', proc { |line| line }, persist: false)
+      allow(TextSubs).to receive(:pause) do |seconds|
+        pauses << seconds
+        raise 'TextSubs.watch is still waiting after 10 polls' if pauses.size > 10
+
+        DownstreamHook.remove('textsub') if pauses.size == 3
+      end
+
+      TextSubs.watch('textsub', script: script)
+      expect(pauses.size).to eq(3)
+    end
+
+    it 'reads the running script from Script.current by default' do
+      allow(Script).to receive(:current).and_return(script)
+      allow(DownstreamHook).to receive(:list).and_return([])
+      TextSubs.watch('textsub')
+      expect(script.want_downstream).to be(false)
+    end
+  end
+
   describe 'hook engine semantics' do
     include_context 'with a front end attached'
 
@@ -1300,6 +1484,40 @@ RSpec.describe 'textsubs.lic' do
       expect(TextSubs.apply(+'The cat and the bird.')).to eq('The dog and the fish.')
     end
 
+    it 'drops a key that raises, counts one generation for it, and applies the keys on either side' do
+      catalog(%w[red blue], ['cat', nil], %w[bird fish])
+      start = TextSubs.generation
+
+      expect(TextSubs.apply(+'red cat bird')).to eq('blue cat fish')
+      expect(TextSubs.subs.keys).to eq([/red/, /bird/])
+      expect(TextSubs.generation).to eq(start + 1)
+      expect(displayed_messages.grep(/the sub "cat" raised TypeError/).size).to eq(1)
+    end
+
+    it 'lets a FrozenError out and drops nothing, since the frozen line is at fault, not the key' do
+      catalog(%w[cat dog])
+      expect { TextSubs.apply(String.new('The cat.').freeze) }.to raise_error(FrozenError)
+      expect(TextSubs.subs).to eq(/cat/ => 'dog')
+      expect(displayed_messages.grep(/the sub/)).to be_empty
+    end
+
+    it 'leaves alone a key given a good value after the line began, and reports nothing' do
+      catalog(['cat', nil])
+      # The add lands between the snapshot the line runs through and the
+      # drop, as another script's add on its own thread can.
+      allow(TextSubs::Engine).to(receive(:apply).and_wrap_original do |original, *args, **options|
+        on_error = options[:on_error]
+        original.call(*args, **options, on_error: lambda { |key, error|
+          TextSubs.add('cat', 'dog')
+          on_error.call(key, error)
+        })
+      end)
+
+      expect(TextSubs.apply(+'The cat.')).to eq('The cat.')
+      expect(TextSubs.subs).to eq(/cat/ => 'dog')
+      expect(displayed_messages.grep(/the sub/)).to be_empty
+    end
+
     describe 'TextSubs::Engine.apply' do
       it 'runs on a hand-made ordered Hash, leaving that Hash and the TextSubs catalog alone' do
         subs = { /cat/ => 'dog', /dog/ => 'bird', /CAT/i => 'never' }.freeze
@@ -1313,6 +1531,76 @@ RSpec.describe 'textsubs.lic' do
       it 'uses each key with its own options' do
         expect(TextSubs::Engine.apply({ /CAT/i => 'dog' }, +'The Cat.')).to eq('The dog.')
         expect(TextSubs::Engine.apply({ /CAT/ => 'dog' }, +'The Cat.')).to eq('The Cat.')
+      end
+
+      describe 'with on_error' do
+        let(:errors) { [] }
+        let(:on_error) { ->(key, error) { errors << [key, error.class] } }
+        let(:high) { 0xEF.chr }
+
+        it 'lets an error out when there is no on_error, as before' do
+          expect { TextSubs::Engine.apply({ /cat/ => nil }, +'The cat.') }.to raise_error(TypeError)
+        end
+
+        it 'hands on_error a key whose replacement raises, and applies the keys before and after it' do
+          subs = { /The/ => 'A', /cat/ => nil, /sleeps/ => 'naps' }.freeze
+          expect(TextSubs::Engine.apply(subs, +'The cat sleeps.', on_error: on_error)).to eq('A cat naps.')
+          expect(errors).to eq([[/cat/, TypeError]])
+        end
+
+        it 'hands on_error a key whose match raises, and treats it as not matching' do
+          utf8 = Regexp.new("caf#{0xE9.chr(Encoding::UTF_8)}")
+          subs = { utf8 => 'cafe', /fine/ => 'FINE' }.freeze
+          expect(TextSubs::Engine.apply(subs, "#{high} fine".b, on_error: on_error)).to eq("#{high} FINE".b)
+          expect(errors).to eq([[utf8, Encoding::CompatibilityError]])
+        end
+
+        it 'hands on_error a regex timeout, and goes on' do
+          # Three repeats in a row, not nested, so the work grows as roughly
+          # n**4 or worse (nearer n**5 at these sizes) rather than
+          # exponentially; the back-reference keeps Onigmo from memoizing it
+          # away. Untimed, 250 a's run a few hundred times past the 10 ms
+          # timeout, yet only for seconds: the timeout caps the run only
+          # while the key keeps it, so a key that lost it fails here in
+          # seconds rather than in minutes.
+          slow = Regexp.new('(a*)a*a*\\1$', timeout: 0.01)
+          subs = { slow => 'x', /fine/ => 'FINE' }.freeze
+          run = 'a' * 250
+          expect(TextSubs::Engine.apply(subs, +"#{run}! fine", on_error: on_error)).to eq("#{run}! FINE")
+          expect(errors).to eq([[slow, Regexp::TimeoutError]])
+        end
+
+        it 'hands on_error every key that raises on the line, each once' do
+          subs = { /cat/ => nil, /dog/ => 5, /bird/ => 'fish' }.freeze
+          expect(TextSubs::Engine.apply(subs, +'cat dog bird', on_error: on_error)).to eq('cat dog fish')
+          expect(errors).to eq([[/cat/, TypeError], [/dog/, TypeError]])
+        end
+
+        it 'lets a FrozenError out, as the frozen line is at fault and not the key' do
+          expect { TextSubs::Engine.apply({ /cat/ => 'dog' }, String.new('cat').freeze, on_error: on_error) }.to raise_error(FrozenError)
+          expect(errors).to be_empty
+        end
+
+        # Only StandardError is a key's fault; NoMemoryError, Interrupt or
+        # SystemExit belong to the process and must not drop a sub.
+        it 'lets out an error that is not a StandardError, without handing it to on_error' do
+          replacement = Object.new
+          def replacement.to_str = raise(NoMemoryError, 'from to_str')
+          subs = { /cat/ => replacement, /dog/ => 'fox' }.freeze
+          expect { TextSubs::Engine.apply(subs, +'cat dog', on_error: on_error) }.to raise_error(NoMemoryError, 'from to_str')
+          expect(errors).to be_empty
+        end
+
+        it 'lets out the KeyError of an index that names a key subs does not hold' do
+          index = TextSubs::TokenIndex.new([/cat/])
+          expect { TextSubs::Engine.apply({}, +'cat', index: index, on_error: on_error) }.to raise_error(KeyError)
+          expect(errors).to be_empty
+        end
+
+        it 'lets out an error on_error itself raises' do
+          raising = ->(_key, _error) { raise ArgumentError, 'from on_error' }
+          expect { TextSubs::Engine.apply({ /cat/ => nil }, +'cat', on_error: raising) }.to raise_error(ArgumentError, 'from on_error')
+        end
       end
 
       # An index already holds its gates, so gates passed beside it would be
@@ -1640,6 +1928,53 @@ RSpec.describe 'textsubs.lic' do
       expect(newer_subs).to equal(registry.snapshot)
       expect(newer_index.candidates('The cat and the bird.')).to eq([/cat/, /bird/])
       expect(index.candidates('The cat and the bird.')).to eq([/cat/])
+    end
+
+    describe '#drop' do
+      it 'removes the key and its gate while it holds the value given, and takes a new snapshot' do
+        registry.add(/cat/, 'dog')
+        registry.add(/\d+/, '#', requires_any: ['Kronar'])
+        before = registry.snapshot
+
+        expect(registry.drop(/\d+/, before[/\d+/])).to be(true)
+        expect(registry.snapshot).to eq(/cat/ => 'dog')
+        expect(registry.gates).to eq({})
+        expect(before.keys).to eq([/cat/, /\d+/])
+        expect(registry.indexed_snapshot.last.candidates('7 Kronars')).to eq([])
+      end
+
+      it 'drops a nil value, which is held like any other' do
+        registry.add(/cat/, nil)
+        expect(registry.drop(/cat/, nil)).to be(true)
+        expect(registry.snapshot).to eq({})
+      end
+
+      it 'leaves a key given another value since, even an equal one, and keeps the same snapshot' do
+        registry.add(/cat/, 'dog')
+        stale = registry.snapshot[/cat/]
+        registry.add(/cat/, 'dog')
+        current = registry.snapshot
+
+        expect(registry.drop(/cat/, stale)).to be(false)
+        expect(registry.snapshot).to equal(current)
+        expect(registry.snapshot).to eq(/cat/ => 'dog')
+      end
+
+      it 'answers false for a key it does not hold, nil value included, and for a second drop' do
+        expect(registry.drop(/cat/, nil)).to be(false)
+        registry.add(/cat/, 'dog')
+        value = registry.snapshot[/cat/]
+        expect(registry.drop(/cat/, value)).to be(true)
+        expect(registry.drop(/cat/, value)).to be(false)
+      end
+
+      it 'lets the key be added again, in last place' do
+        registry.add(/cat/, 'dog')
+        registry.add(/bird/, 'fish')
+        registry.drop(/cat/, registry.snapshot[/cat/])
+        registry.add(/cat/, 'lion')
+        expect(registry.snapshot.to_a).to eq([[/bird/, 'fish'], [/cat/, 'lion']])
+      end
     end
 
     it 'gives the index the gates of the same copy, so a gated key stays out of a line without its word' do
