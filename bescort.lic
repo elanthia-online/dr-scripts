@@ -2255,7 +2255,7 @@ class Bescort
   end
 
   def get_fare?(amount, town, room)
-    return false unless @settings.bescort_fare_handling
+    return wait_for_fare?(amount, town, room) unless @settings.bescort_fare_handling
 
     echo 'GETTING MONEY, YOU SLOB.'
     echo "Heading to #{town} for public transportation fare"
@@ -2273,6 +2273,54 @@ class Bescort
     echo "Put some fare money in the #{town} bank!" unless succeeded
     manual_go2(room)
     succeeded
+  end
+
+  # Without bescort_fare_handling, pause and tell the player how to fetch the
+  # fare themselves: the nearest bank, what to withdraw, and the room to come
+  # back to. go2 waits on bescort, so the trip carries on after the unpause.
+  # Re-checks on every unpause until the player is back in the room with the
+  # fare on hand.
+  def wait_for_fare?(amount, town, room)
+    currency = DRCM.hometown_currency(town)
+    bank = get_data('town')[town]['deposit']['id']
+    loop do
+      on_hand = DRCM.wealth(town)
+      return true if on_hand >= amount && Room.current.id == room
+
+      if on_hand >= amount
+        DRC.message("You have the fare. Return to #{room_label(room)}, then ;unpause bescort")
+      else
+        withdraw = DRCM.minimize_coins(amount - on_hand).map { |coins| "withdraw #{coins}" }.join(', ')
+        DRC.message("Not enough #{currency} for the fare: you need #{amount} copper #{currency} and are carrying #{on_hand}. bescort is paused.")
+        DRC.message("  1. Go to the bank: #{room_label(bank)}. go2 is still waiting on this trip, so use ;force go2 #{bank}")
+        DRC.message("  2. #{withdraw}")
+        DRC.message("  3. Return to #{room_label(room)}, then ;unpause bescort")
+        DRC.message('  Set bescort_fare_handling: true in your yaml to have bescort do this for you.')
+      end
+      return false unless paused_for_fare?
+    end
+  end
+
+  # Pauses until the player unpauses bescort. Returns false, unpaused, if the
+  # go2 that started this leg is killed meanwhile, so a paused bescort is not
+  # left behind to refuse the next trip. Script.current, Script.running? and
+  # pause_script all block while paused; Script#paused?, Script.running and
+  # pause do not, so the wait loop uses only those.
+  def paused_for_fare?
+    me = Script.current
+    go2 = Script.running.find { |script| script.name == 'go2' }
+    me.pause
+    pause 1 while me.paused? && (go2.nil? || Script.running.include?(go2))
+    return true unless me.paused?
+
+    me.unpause
+    DRC.message('go2 has stopped, so bescort is stopping too.')
+    false
+  end
+
+  def room_label(id)
+    title = Map[id]&.title&.first.to_s.delete('[]')
+    title.empty? ? "room #{id}" : "#{title} (room #{id})"
   end
 
   def hide?
