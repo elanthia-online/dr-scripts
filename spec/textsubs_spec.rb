@@ -2144,7 +2144,9 @@ RSpec.describe 'textsubs.lic' do
       data = good.merge('sections' => good['sections'] + [{ 'name' => 'Clerics', 'when' => { 'guilds' => ['Cleric'] },
                                                              'subs' => [%w[pray PRAY]] }])
       compiled = []
-      allow(Regexp).to(receive(:new).and_wrap_original { |original, *args| original.call(*args).tap { |key| compiled << key } })
+      allow(Regexp).to(receive(:new).and_wrap_original do |original, *args, **kwargs, &block|
+        original.call(*args, **kwargs, &block).tap { |key| compiled << key }
+      end)
 
       TextSubs.add_catalog(data, context, file: 'data/base-textsubs.yaml')
 
