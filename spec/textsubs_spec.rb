@@ -881,6 +881,21 @@ RSpec.describe 'textsubs.lic' do
       expect(TextSubs.apply(+'Fae Arts:'))
         .to eq('(<a href="https://elanthipedia.play.net/:Fae_Arts_:">Fae Arts</a>)')
     end
+
+    it 'matches a regex escape in text in the key, and shows it verbatim in the link and the page name' do
+      TextSubs.elanthipedia('Fae\\sArts', '^', ':')
+      expect(TextSubs.subs.keys).to eq([/(^)(Fae\sArts)(:)/])
+      expect(TextSubs.apply(+'Fae Arts:'))
+        .to eq('<a href="https://elanthipedia.play.net/Fae\\sArts">Fae\\sArts</a>:')
+    end
+
+    it 'reads a substitution in text as gsub replacement text, in the link and in the page name' do
+      # \& in the key matches a literal '&'; in the replacement it is the whole
+      # match, postext included, put between 'Salt' and 'Pepper' in both copies.
+      TextSubs.elanthipedia('Salt\\&Pepper', '^', ':')
+      expect(TextSubs.apply(+'Salt&Pepper:'))
+        .to eq('<a href="https://elanthipedia.play.net/SaltSalt&Pepper:Pepper">SaltSalt&Pepper:Pepper</a>:')
+    end
   end
 
   describe 'front end guard' do

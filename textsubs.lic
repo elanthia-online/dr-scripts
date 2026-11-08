@@ -130,10 +130,14 @@ class TextSubs
   # around the text can be matched and put back. pretext, text and postext
   # build the key: they are regex source, compiled unescaped. preresult,
   # posresult, prelink, poslink and text are gsub replacement text, so \0 to
-  # \9, \k<name>, \&, \`, \' and \\ in them are substitutions; any other
-  # backslash stays as written. text is the one argument that is both, so a
-  # regex escape in it (such as \s) matches in the key but shows verbatim in
-  # the link and the page name.
+  # \9, \&, \`, \', \+ and \\ in them are substitutions; any other
+  # backslash stays as written. \k<name> is one too, but the key's three
+  # groups have no name, so it raises IndexError on the hook thread unless
+  # pretext or postext names that group; a named group also stops the three
+  # plain groups from capturing, so \1 to \3 then count named groups only.
+  # text is the one argument that is both, so a regex escape in it (such as
+  # \s) matches in the key but shows verbatim in the link and the page name,
+  # while a substitution in it (such as \&) is replaced in both.
   #
   # @param text [String] the text to link; also the page name, spaces turned
   #   into underscores
