@@ -712,8 +712,8 @@ TextSubs.add('As though in response, you feel a deep pain in your chest\.', 'As 
 TextSubs.add('The experience leaves you feeling naked for all to see\.', 'The experience leaves you feeling naked for all to see. (4/4 - Extreme DO. You are at risk of being smote. Stop generating DO!)')
 TextSubs.add('((?:The back of your neck prickles|You feel judged and hated|Muddled thoughts of paranoia nag at you|You are exposed and vulnerable in this place|You have a feeling that you aren\'t welcome here|You worry for your safety and well-being)\.)', '\1 (DO gained from being in a Holy area. Move away to avoid this hit.)')
 TextSubs.add('(The experience leaves you feeling somehow exposed\.)', '\1 (Detectable by Moon Mages/Clerics - Use RoC/RoG with enough mana to mask it.)')
-TextSubs.add('.*(Joyous corruption seeps into your mind from your own spell, muting your unconscious sense of shame\.)', '\1 (Your RoC/RoG spell is strong enough to mask your aura from Clerics and Moon Mages.)')
-TextSubs.add('.*(You feel a wave of filth wash over you, heralding the renewed health of your internal gauges\.)', '\1 (You gained some Divine Outrage and your RoC/RoG spell is no longer strong enough to mask your aura from Clerics/Moon Mages. Recast with more mana.)')
+TextSubs.add('(Joyous corruption seeps into your mind from your own spell, muting your unconscious sense of shame\.)', '\1 (Your RoC/RoG spell is strong enough to mask your aura from Clerics and Moon Mages.)')
+TextSubs.add('(You feel a wave of filth wash over you, heralding the renewed health of your internal gauges\.)', '\1 (You gained some Divine Outrage and your RoC/RoG spell is no longer strong enough to mask your aura from Clerics/Moon Mages. Recast with more mana.)')
 
 # defaults
 TextSubs.add("Assessing the (.*) durability, you determine (it is|is|they are|are) extremely weak and easily damaged", 'Assessing the \1 durabiltiy, \2 extremely weak and easily damaged (1/18)')
@@ -845,10 +845,10 @@ if DRStats.ranger?
   TextSubs.add('^You take in a deep breath to howl, and let loose with a mighty\.\.\. Moo\?!  The sounds that erupt from within you sound startlingly like the loud bleating of a young heifer giving birth to her first calf\.', 'You take in a deep breath to howl, and let loose with a mighty... Moo?!  The sounds that erupt from within you sound startlingly like the loud bleating of a young heifer giving birth to her first calf. (1/15)')
   TextSubs.add('^You open your mouth to howl, but it sounds more like a dying chicken than anything else\.', 'You open your mouth to howl, but it sounds more like a dying chicken than anything else. (2/15)')
   TextSubs.add('^You give forth a mighty\.\.\. yelp, which sounds more like a domesticated puppy than anything else\.', 'You give forth a mighty... yelp, which sounds more like a domesticated puppy than anything else. (3/15)')
-  TextSubs.add("^You open your mouth and roar with everything you've got!  A few soft sounds reminiscent of a baby robin's first song twitter sweetly from within you\.$", "You open your mouth and roar with everything you've got!  A few soft sounds reminiscent of a baby robin's first song twitter sweetly from within you. (4/15)")
+  TextSubs.add('^You open your mouth and roar with everything you\'ve got!  A few soft sounds reminiscent of a baby robin\'s first song twitter sweetly from within you\.(?=\r?$)', "You open your mouth and roar with everything you've got!  A few soft sounds reminiscent of a baby robin's first song twitter sweetly from within you. (4/15)")
   TextSubs.add('^You open your mouth to howl, but you merely sigh like the softest wind through the trees\.(\s+)Sadly, not even a leaf flutters with your "mighty" breath\.', 'You open your mouth to howl, but you merely sigh like the softest wind through the trees.\1Sadly, not even a leaf flutters with your "mighty" breath. (5/15)')
   TextSubs.add('^You take in a deep breath to howl loudly, but instead cough and choke on the air around you\.', 'You take in a deep breath to howl loudly, but instead cough and choke on the air around you. (6/15)')
-  TextSubs.add("^You howl quietly to yourself, echoing a soft, desolate sound that doesn't sound quite right\.$", "You howl quietly to yourself, echoing a soft, desolate sound that doesn't sound quite right. (7/15)")
+  TextSubs.add('^You howl quietly to yourself, echoing a soft, desolate sound that doesn\'t sound quite right\.(?=\r?$)', "You howl quietly to yourself, echoing a soft, desolate sound that doesn't sound quite right. (7/15)")
   TextSubs.add('^You take in a deep breath to howl, but it comes out as a whimper, like a lost wolf looking for his pack\.', 'You take in a deep breath to howl, but it comes out as a whimper, like a lost wolf looking for his pack. (8/15)')
   TextSubs.add('^You howl meekly, unsure of yourself\.', 'You howl meekly, unsure of yourself. (9/15)')
   TextSubs.add('^You take in a deep breath of air and howl softly\.', 'You take in a deep breath of air and howl softly. (10/15)')
@@ -1047,7 +1047,7 @@ if DRStats.thief?
   TextSubs.add('it\'s somewhat of a long shot\.', 'it\'s somewhat of a long shot (10/13).')
   TextSubs.add('you\'re pretty sure you\'ll be caught\.', 'you\'re pretty sure you\'ll be caught (11/13).')
   TextSubs.add('the shopkeep is paying far too much attention to it\.', 'the shopkeep is paying far too much attention to it (12/13).')
-  TextSubs.add('the heavy *THUD* of a judge\'s gavel echoes through your mind\.', 'the heavy *THUD* of a judge\'s gavel echoes through your mind (13/13).')
+  TextSubs.add('the heavy \*THUD\* of a judge\'s gavel echoes through your mind\.', 'the heavy *THUD* of a judge\'s gavel echoes through your mind (13/13).')
 
   TextSubs.add('shouldn\'t really affect you\.', 'shouldn\'t really affect you (1/6).')
   TextSubs.add('hinders your chances slightly\.', 'hinders your chances slightly (2/6).')

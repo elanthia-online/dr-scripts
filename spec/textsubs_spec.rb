@@ -745,13 +745,14 @@ RSpec.describe 'textsubs.lic' do
     #
     # @param line [String] a server line without its line ending
     # @param guild [String] whose catalog to build
-    # @return [String, nil] what the hooks pass on for "#{line}\r\n"
+    # @param line_ending [String] appended to `line`; raw server lines end in "\r\n"
+    # @return [String, nil] what the hooks pass on for "#{line}#{line_ending}"
     # @example
     #   hooked('The back of your neck prickles.', guild: 'Necromancer')
     #   # => "The back of your neck prickles. (DO gained from being in a Holy area. Move away to avoid this hit.)\r\n"
-    def hooked(line, guild: 'Commoner')
+    def hooked(line, guild: 'Commoner', line_ending: "\r\n")
       build_catalog(guild)
-      run_hooks("#{line}\r\n".b)
+      run_hooks("#{line}#{line_ending}".b)
     end
 
     # A double-quoted literal turns "\1" into byte 0x01 and "\b" into a
@@ -766,6 +767,70 @@ RSpec.describe 'textsubs.lic' do
         "#{offenders.size} entr(y/ies) hold a control byte (a double-quoted \"\\1\" or \"\\b\"?):\n" \
           "#{offenders.uniq { |entry| entry.drop(1) }.first(5).map { |entry| "  #{entry.inspect}" }.join("\n")}"
       }
+    end
+
+    # Whether a catalog key starts with a wildcard. Keys are unanchored and
+    # gsub! replaces only what they match, so a leading wildcard swallows
+    # whatever came before the message on the line (XML tags, other text):
+    # a value that drops it deletes that text, and one that puts it back
+    # gains nothing a key without it could not do. Either way no key needs one.
+    #
+    # The wildcard is any character ('.', '\X', '\N') or any character but
+    # a few: a negated class ('[^\n]'), shorthand ('\S', '\W', '\D', '\H')
+    # or property ('\P{...}'), under '*', '+' or a '{m,n}' range, lazy or
+    # not. A positive class ('[a-z]*', '\s*') is not a wildcard.
+    # It may follow an optional '^' or '\A', inline flags ('(?i)') and any
+    # number of opening groups: plain, non-capturing, named or flag-scoped
+    # ('(', '(?:', '(?<name>', '(?i:'). Lookarounds ('(?!.*>)') consume
+    # nothing and do not count.
+    #
+    # @param source [String] a catalog key's regex source
+    # @return [Boolean] true when the key opens with a wildcard
+    # @example
+    #   leading_wildcard?('(?<before>.*)You feel')   # => true
+    #   leading_wildcard?('(?!.*>)\d{1,3}')           # => false
+    def leading_wildcard?(source)
+      source.match?(
+        /\A(?:\^|\\A)?(?:\(\?[imx-]+\))*(?:\((?:\?(?::|<[A-Za-z_]\w*>|'[A-Za-z_]\w*'|[imx-]+:))?)*
+         (?:\.|\[\^(?:\\.|[^\]\\])*\]|\\[SWDHNX]|\\P\{[^}]*\})(?:[*+]|\{\d*,\d*\})/x
+      )
+    end
+
+    it 'counts each form of leading wildcard as one, and a literal or a later wildcard as none' do
+      wildcards = ['.*You feel', '.+You feel', '.*?You feel', '^.*You feel', '\A.+?You feel', '(?:.*)You feel',
+                   '(.*)You feel', '(.+?)You feel', '(?<before>.*)You feel', "(?'before'.*)You feel", '((?:.*))You feel',
+                   '.{0,}You feel', '.{1,40}You feel', '[^\n]*You feel', '[^\]]+You feel', '\S*You feel',
+                   '\P{Space}*You feel', '\X*You feel', '(?m).*You feel', '(?i).*You feel', '(?i:.*)You feel']
+      literals = ['You feel (.*) fine', '^You feel', '^(You feel)', '(^)(Fae Arts)(:)', '\.\.\. You feel', '\.*You feel',
+                  '(?!.*>)\d{1,3}', '(?<!receiving )(a|an) (glancing)', '(?=.*You)You feel', '(?i)You feel', '.You feel',
+                  '.{3}You feel', '[a-z]*You feel', '\s*You feel', '\p{Alpha}*You feel']
+
+      expect(wildcards.reject { |source| leading_wildcard?(source) }).to be_empty
+      expect(literals.select { |source| leading_wildcard?(source) }).to be_empty
+    end
+
+    it 'holds no key in any catalog that starts with a wildcard' do
+      offenders = combinations.flat_map do |combination|
+        catalog_of(combination).filter_map { |source, _options, _replacement| [combination['guild'], source] if leading_wildcard?(source) }
+      end
+      expect(offenders.uniq).to be_empty, -> { "keys that swallow the start of the line:\n#{offenders.uniq.map { |entry| "  #{entry.inspect}" }.join("\n")}" }
+    end
+
+    describe 'the RoC/RoG aura notes' do
+      [['Joyous corruption seeps into your mind from your own spell, muting your unconscious sense of shame.',
+        ' (Your RoC/RoG spell is strong enough to mask your aura from Clerics and Moon Mages.)'],
+       ['You feel a wave of filth wash over you, heralding the renewed health of your internal gauges.',
+        ' (You gained some Divine Outrage and your RoC/RoG spell is no longer strong enough to mask your aura from ' \
+        'Clerics/Moon Mages. Recast with more mana.)']].each do |message, note|
+        it "keeps the tags before \"#{message[0, 30]}...\" and adds the note after it" do
+          prefix = '<roundTime value="1"/><pushStream id="combat"/>'
+          expect(hooked("#{prefix}#{message}<popStream/>")).to eq("#{prefix}#{message}#{note}<popStream/>\r\n")
+        end
+
+        it "keeps the text before \"#{message[0, 30]}...\" on the same line" do
+          expect(hooked("You feel fine.  #{message}")).to eq("You feel fine.  #{message}#{note}\r\n")
+        end
+      end
     end
 
     describe 'the Holy-area Divine Outrage warning' do
@@ -797,6 +862,42 @@ RSpec.describe 'textsubs.lic' do
       it "labels a devastating hit (That'll leave a mark!) (18/23) and nothing else" do
         expect(hooked("The punch lands a devastating hit (That'll leave a mark!) to the goblin's chest."))
           .to eq("The punch lands a devastating hit (That'll leave a mark!) (18/23) to the goblin's chest.\r\n")
+      end
+    end
+
+    # Raw server lines end in \r\n and Ruby's '$' matches only before \n, so
+    # these two end-anchored keys have to allow the \r in front of it.
+    describe 'the end-anchored Ranger howl tiers' do
+      [["You open your mouth and roar with everything you've got!  A few soft sounds reminiscent of a baby robin's " \
+        'first song twitter sweetly from within you.', '4/15'],
+       ["You howl quietly to yourself, echoing a soft, desolate sound that doesn't sound quite right.", '7/15']].each do |howl, tier|
+        it "labels the (#{tier}) howl on a line that ends in \\r\\n" do
+          expect(hooked(howl, guild: 'Ranger')).to eq("#{howl} (#{tier})\r\n")
+        end
+
+        it "labels the (#{tier}) howl on a line that ends in a bare \\n" do
+          expect(hooked(howl, guild: 'Ranger', line_ending: "\n")).to eq("#{howl} (#{tier})\n")
+        end
+
+        it "leaves the (#{tier}) howl alone when more text follows it on the line" do
+          line = "#{howl}  You cough."
+          expect(hooked(line, guild: 'Ranger')).to eq("#{line}\r\n")
+        end
+      end
+    end
+
+    # The game wraps the gavel's sound in literal asterisks, so the key has to
+    # escape them: unescaped, ' *' and 'D*' are quantifiers.
+    describe 'the Thief (13/13) gavel warning' do
+      gavel = "the heavy *THUD* of a judge's gavel echoes through your mind"
+
+      it 'labels the line with the literal *THUD* (13/13)' do
+        expect(hooked("Glancing about, #{gavel}.", guild: 'Thief')).to eq("Glancing about, #{gavel} (13/13).\r\n")
+      end
+
+      it 'leaves the line alone when the asterisks are missing' do
+        line = "Glancing about, the heavy THUD of a judge's gavel echoes through your mind."
+        expect(hooked(line, guild: 'Thief')).to eq("#{line}\r\n")
       end
     end
   end
