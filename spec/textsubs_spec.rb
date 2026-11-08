@@ -843,23 +843,36 @@ RSpec.describe 'textsubs.lic' do
       old_catalog = TextSubs.subs
       before_clear = TextSubs.generation
       seen = []
-      # A count that records, at the moment clear asks it for the next number,
-      # whether subs is still the catalog clear replaces. The line probe above
-      # cannot split two writes on one line or in one parallel assignment;
-      # this reader runs inside the count write itself, wherever clear puts it.
+      # A count that records, at the moment clear works out the next number
+      # from it, whether subs is still the catalog clear replaces. The line
+      # probe above cannot split two writes on one line; this reader can. A
+      # class variable write cannot be hooked, so it watches the step that
+      # feeds the write: + / succ / next on the count, or coerce when clear
+      # puts the count on the right of the +. That is a stronger rule than the
+      # write order alone, and it is the rule here by design: clear must work
+      # out the next count after the swap, so a parallel assignment (its right
+      # side runs before either write) or a count worked out ahead of the swap
+      # is red even when the writes land in the right order.
       # It forwards everything else to the real count.
       counter = SimpleDelegator.new(before_clear)
+      note_catalog = -> { seen << (TextSubs.subs.equal?(old_catalog) ? :old : :new) }
       %i[+ succ next].each do |step|
         counter.define_singleton_method(step) do |by = 1|
-          seen << (TextSubs.subs.equal?(old_catalog) ? :old : :new)
+          note_catalog.call
           before_clear + by
         end
+      end
+      counter.define_singleton_method(:coerce) do |other|
+        note_catalog.call
+        [other, before_clear]
       end
       TextSubs.class_variable_set(:@@generation, counter)
       begin
         expect(TextSubs.clear).to eq({})
       ensure
-        TextSubs.class_variable_set(:@@generation, before_clear + 1) unless TextSubs.generation.instance_of?(Integer)
+        # Still the stand-in means clear never wrote a count: put back the real
+        # one, so the count check below sees what clear did, not a guess.
+        TextSubs.class_variable_set(:@@generation, before_clear) if TextSubs.generation.equal?(counter)
       end
       expect(seen).to eq([:new])
       expect(TextSubs.generation).to eq(before_clear + 1)
