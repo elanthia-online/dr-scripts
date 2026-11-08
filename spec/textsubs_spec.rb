@@ -6525,8 +6525,9 @@ RSpec.describe 'textsubs.lic' do
       end
 
       # The capacity steps leave the full stop out, as no game line shows
-      # whether one ends them: the counter goes before the game's full stop,
-      # or at the end of a line without one, and the line ending stays.
+      # whether one ends them: the counter goes straight after the phrase, so
+      # before the game's full stop if one follows, or at the end of a line
+      # that ends there, and the line ending stays.
       capacity = 'The pervasiveness of the sensation evokes the image of'
       [["a stream in your mind's eye", '1/11'], ["a pond in your mind's eye", '2/11'],
        ["a river in your mind's eye", '3/11'], ["a lake in your mind's eye", '4/11'],
@@ -6546,6 +6547,20 @@ RSpec.describe 'textsubs.lic' do
           expect(hooked(image, guild: 'Cleric')).to eq("#{image} (#{tier})\r\n")
           expect(hooked(image, guild: 'Cleric', line_ending: "\n")).to eq("#{image} (#{tier})\n")
         end
+      end
+
+      # Nothing ends a capacity key after its phrase, so the counter goes
+      # before whatever follows it, not only before a full stop.
+      it 'puts the Osrel Meraud capacity counter straight after the phrase when other text follows it' do
+        image = "#{capacity} a stream in your mind's eye"
+        expect(hooked("#{image}, fading.", guild: 'Cleric')).to eq("#{image} (1/11), fading.\r\n")
+      end
+
+      it 'counts neither the capacity image nor the (16/16) presence for a guild other than Cleric' do
+        image = "#{capacity} a stream in your mind's eye"
+        presence = "After a moment, you feel a clear presence like a warm blanket covering you beneath the shade of a giant Sana'ati tree."
+        expect(hooked("#{image}.")).to eq("#{image}.\r\n")
+        expect(hooked(presence)).to eq("#{presence}\r\n")
       end
 
       sanaati = "After a moment, you feel a clear presence like a warm blanket covering you beneath the shade of a giant sana'ati tree"

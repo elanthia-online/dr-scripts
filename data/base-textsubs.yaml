@@ -37,9 +37,11 @@
 # (as the Osrel Meraud power steps do) when only the game's full stop
 # should match; either way the replacement writes '.'. Leave the full
 # stop out when the game may not send one (the Osrel Meraud capacity
-# steps): the counter then goes before the game's full stop, or at the
-# end of a line without one. Each n is from -of to of and used once on
-# its scale.
+# steps): the counter then goes straight after the phrase, so before the
+# game's full stop if one follows it, or at the end of a line that ends
+# there. Nothing ends the match after the phrase, so the counter goes
+# before any other text that follows it too. Each n is from -of to of and
+# used once on its scale.
 # A scale split over ladder sections, around messages that stay pairs, gives
 # each of them scale: 'name' and the same of; a scale is the section's own
 # name otherwise. The load refuses a step whose text another step's
@@ -452,8 +454,12 @@ textsubs:
         - [10, 'torrents of fiery rain falling upon Elanthia from the World Dragon''s maw\.']
 
     # No capacity line has been seen to say whether the game ends it with a
-    # full stop, so the steps leave it out and match either way: the
-    # counter goes before the game's full stop, or at the end of the line.
+    # full stop, so the steps leave it out and match either way. The counter
+    # goes straight after the phrase: before the game's full stop if one
+    # follows it ("... mind's eye (1/11)."), or at the end of a line that
+    # ends there. That is unlike the power steps above, whose counter goes
+    # after their full stop ("... a blazing torch. (6/10)"), because their
+    # keys hold the stop and these do not.
     - name: 'Cleric Osrel Meraud capacity'
       when:
         guilds: ['Cleric']
