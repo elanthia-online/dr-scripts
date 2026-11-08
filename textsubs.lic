@@ -464,7 +464,10 @@ class TextSubs
     end
 
     # The subs data gives a character, in order, as regex source: the same
-    # subs as keyed_entries, each key given by its source.
+    # subs as keyed_entries, each key given by its source. add_catalog stores
+    # keyed_entries; this stays public as the plain-data view of a catalog,
+    # whose sources compare with == and print as the YAML writes them, for
+    # checking a data/custom copy from ;e or a tool, and for the specs.
     #
     # @param data [Hash, nil] the `textsubs:` value of get_data('textsubs');
     #   nil when the file is missing or did not parse
