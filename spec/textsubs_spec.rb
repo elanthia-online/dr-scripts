@@ -536,25 +536,31 @@ RSpec.describe 'textsubs.lic' do
     let(:data) { shipped_catalog['textsubs'] }
 
     # Every scalar of a parsed YAML stream that is a value, not a mapping key.
+    # Two scalars with the same text are different nodes, so the keys are
+    # told apart by identity; a Set keeps that lookup flat, where the ~2,000
+    # keys of the spells table made a scan of a list per scalar the slowest
+    # part of this group.
     #
     # @param tree [Psych::Nodes::Node] a parsed stream or document
     # @return [Array<Psych::Nodes::Scalar>]
     def value_scalars(tree)
-      keys = tree.each.grep(Psych::Nodes::Mapping).flat_map { |mapping| mapping.children.each_slice(2).map(&:first) }
-      tree.each.grep(Psych::Nodes::Scalar).reject { |scalar| keys.any? { |key| key.equal?(scalar) } }
+      keys = Set.new.compare_by_identity.merge(tree.each.grep(Psych::Nodes::Mapping).flat_map { |mapping| mapping.children.each_slice(2).map(&:first) })
+      tree.each.grep(Psych::Nodes::Scalar).reject { |scalar| keys.include?(scalar) }
     end
 
     # The value scalars written plain on purpose: the number under a schema
     # key, and a spell's `signature: true`, written exactly so.
     #
     # @param tree [Psych::Nodes::Node]
-    # @return [Array<Psych::Nodes::Scalar>]
+    # @return [Set<Psych::Nodes::Scalar>] compared by identity, as
+    #   value_scalars compares the keys
     def plain_by_design(tree)
-      tree.each.grep(Psych::Nodes::Mapping).flat_map do |mapping|
+      plain = tree.each.grep(Psych::Nodes::Mapping).flat_map do |mapping|
         mapping.children.each_slice(2).filter_map do |key, value|
           value if key.value == 'schema' || (key.value == 'signature' && value.is_a?(Psych::Nodes::Scalar) && value.value == 'true')
         end
       end
+      Set.new.compare_by_identity.merge(plain)
     end
 
     # @param tree [Psych::Nodes::Node]
@@ -562,7 +568,7 @@ RSpec.describe 'textsubs.lic' do
     #   single quotes, but those plain_by_design allows
     def unquoted_values(tree)
       allowed = plain_by_design(tree)
-      value_scalars(tree).reject { |scalar| scalar.style == Psych::Nodes::Scalar::SINGLE_QUOTED || allowed.any? { |plain| plain.equal?(scalar) } }
+      value_scalars(tree).reject { |scalar| scalar.style == Psych::Nodes::Scalar::SINGLE_QUOTED || allowed.include?(scalar) }
                          .map { |scalar| "line #{scalar.start_line + 1}: #{scalar.value}" }
     end
 
