@@ -1251,22 +1251,22 @@ RSpec.describe 'textsubs.lic' do
       # A private_textsubs key that is not regex source is skipped with a
       # warning now, so the build is made to die on its second write to the
       # staged Registry instead, as a build stopped (;kill) or broken partway
-      # would.
+      # would. A TracePoint on Registry#add raises before that write lands,
+      # and only while the build runs: a stub giving the staged Registry a
+      # raising add would also reach the Registry the after hook stages for
+      # the next example.
       build_died = Class.new(StandardError)
-      allow(TextSubs).to(receive(:stage).and_wrap_original do |original, registry|
-        writes = 0
-        registry.define_singleton_method(:add) do |*args, **options|
-          raise build_died, 'the build died partway' if (writes += 1) == 2
-
-          super(*args, **options)
-        end
-        original.call(registry)
-      end)
+      writes = 0
+      dies = TracePoint.new(:call) { raise build_died, 'the build died partway' if (writes += 1) == 2 }
       installed = TextSubs.subs
       expect(installed).to eq({})
 
-      expect { build_catalog('Commoner', 'private_textsubs' => { 'You feel fine' => 'You feel FINE' }) }
-        .to raise_error(build_died)
+      expect do
+        dies.enable(target: TextSubs::Registry.instance_method(:add)) do
+          build_catalog('Commoner', 'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
+        end
+      end.to raise_error(build_died)
+      expect(writes).to eq(2)
       expect(TextSubs.subs).to equal(installed)
       dying.each(&:call)
 
