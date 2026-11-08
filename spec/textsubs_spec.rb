@@ -805,10 +805,19 @@ RSpec.describe 'textsubs.lic' do
 
     # A double-quoted literal turns "\1" into byte 0x01 and "\b" into a
     # backspace; a single-quoted one keeps the backslash for the regex engine.
+    #
+    # The 96 catalogs hold ~100,000 entries but only ~1,600 distinct ones, so
+    # each distinct entry's bytes are read once and every combination that
+    # holds it is still named.
     it 'holds no control byte (0x00-0x1f) in any key or value of any catalog' do
+      control_byte = Hash.new do |seen, entry|
+        source, _options, replacement = entry
+        seen[entry] = [source, replacement].any? { |text| text.bytes.any? { |byte| byte < 0x20 } }
+      end
       offenders = combinations.flat_map do |combination|
-        catalog_of(combination).filter_map do |source, _options, replacement|
-          [combination, source, replacement] if [source, replacement].any? { |text| text.bytes.any? { |byte| byte < 0x20 } }
+        catalog_of(combination).filter_map do |entry|
+          source, _options, replacement = entry
+          [combination, source, replacement] if control_byte[entry]
         end
       end
       expect(offenders).to be_empty, lambda {
@@ -1096,15 +1105,30 @@ RSpec.describe 'textsubs.lic' do
       keys.each_with_object(line.dup) { |key, output| output.gsub!(key, subs[key]) }
     end
 
-    # reference_apply's output for every corpus line, with its select step
-    # looked up in corpus_matches.
+    # Each catalog's reference run (see reference_run), keyed by the catalog's
+    # [key, value] pairs, worked out the first time an example installs that
+    # catalog. Several examples install the same catalog (each guild's with
+    # every flag on is installed by its sweep, its key order example and the
+    # two-counter example), so each catalog's lines are worked out once per
+    # run instead of once per example.
+    reference_runs = {}
+
+    # reference_apply's select step and output for every corpus line, with the
+    # select step looked up in corpus_matches, shared by every example that
+    # installs the same catalog. Two catalogs share a run only when they hold
+    # the same keys with the same values in the same order, which is
+    # everything reference_apply reads.
     #
     # @param subs [Hash{Regexp=>String}] ordered catalog (TextSubs.subs)
-    # @param corpus [Array<String>] the corpus lines
-    # @param corpus_matches [Hash{Regexp=>Array<Integer>}] corpus line indexes per key
-    # @return [Array<String>] the reference output for each corpus line
-    def looked_up_reference(subs, corpus, corpus_matches)
-      selected_keys(subs, corpus_matches, corpus.size).each_with_index.map { |keys, at| apply_selected(subs, keys, corpus[at]) }
+    # @return [Hash{Symbol=>Array}] deep-frozen, because every caller shares it:
+    #   :selected [Array<Array<Regexp>>], selected_keys for every corpus line;
+    #   :output [Array<String>], the reference output for every corpus line
+    define_method(:reference_run) do |subs|
+      reference_runs[subs.to_a.freeze] ||= begin
+        selected = selected_keys(subs, corpus_matches, corpus.size).each(&:freeze).freeze
+        output = selected.each_with_index.map { |keys, at| apply_selected(subs, keys, corpus[at]).freeze }.freeze
+        { selected: selected, output: output }.freeze
+      end
     end
 
     # Sends each line through the registered hooks and compares the output
@@ -1258,7 +1282,7 @@ RSpec.describe 'textsubs.lic' do
     guilds.each do |guild|
       it "gives reference_apply's output for every sample and stream line with the #{guild} catalog" do
         build_catalog(guild, every_flag_on)
-        mismatches = oracle_mismatches(corpus, looked_up_reference(TextSubs.subs, corpus, corpus_matches))
+        mismatches = oracle_mismatches(corpus, reference_run(TextSubs.subs)[:output])
         expect(mismatches).to be_empty, -> { mismatch_report(guild, mismatches) }
       end
 
@@ -1280,7 +1304,7 @@ RSpec.describe 'textsubs.lic' do
         # runs them in reverse order.
         build_catalog(guild, every_flag_on)
         subs = TextSubs.subs
-        selected = selected_keys(subs, corpus_matches, corpus.size).first(samples.size)
+        selected = reference_run(subs)[:selected].first(samples.size)
         shared = samples.each_index.select { |at| selected[at].size >= 2 }
         order_sensitive = shared.reject do |at|
           apply_selected(subs, selected[at].reverse, samples[at]) == apply_selected(subs, selected[at], samples[at])
@@ -1303,10 +1327,10 @@ RSpec.describe 'textsubs.lic' do
     # composite lines at the end of samples.jsonl join two samples, each of
     # which may have its own counter, so they are judged by their parts.
     #
-    # The output for a sample is reference_apply's, looked up as the per-guild
-    # sweeps above look it up; those sweeps hold the hook to it on every sample
-    # with these same catalogs, and sending the ~28,000 lines through the hook
-    # again here took ~3.8 s.
+    # The output for a sample is reference_apply's, from the same reference run
+    # the per-guild sweeps above read; those sweeps hold the hook to it on
+    # every sample with these same catalogs, and sending the ~28,000 lines
+    # through the hook again here took ~3.8 s.
     it 'gives no sample of any guild catalog two new (n/m) counters' do
       known = samples.to_set
       composite = lambda do |sample|
@@ -1316,12 +1340,10 @@ RSpec.describe 'textsubs.lic' do
       expect(samples.size - single_indexes.size).to be >= 10
       offenders = guilds.flat_map do |guild|
         build_catalog(guild, every_flag_on)
-        subs = TextSubs.subs
-        selected = selected_keys(subs, corpus_matches, corpus.size)
+        output = reference_run(TextSubs.subs)[:output]
         single_indexes.filter_map do |at|
           sample = samples[at]
-          output = apply_selected(subs, selected[at], sample)
-          [guild, sample, output] if output.scan(counter).size - sample.scan(counter).size > 1
+          [guild, sample, output[at]] if output[at].scan(counter).size - sample.scan(counter).size > 1
         end
       end
       expect(offenders).to be_empty, lambda {
@@ -1339,11 +1361,12 @@ RSpec.describe 'textsubs.lic' do
       # The 49 KB line is left out: through the two platinum-aware coin rules it
       # costs ~3.5 s, and the coin rules see it in the default-rule example above.
       build_catalog('Trader', every_flag_on.merge('textsubs_use_plat_grouping' => true))
-      mismatches = oracle_mismatches(corpus, looked_up_reference(TextSubs.subs, corpus, corpus_matches))
+      run = reference_run(TextSubs.subs)
+      mismatches = oracle_mismatches(corpus, run[:output])
       expect(mismatches).to be_empty, -> { mismatch_report('Trader (plat grouping on)', mismatches) }
       # The per-guild key order examples check the composites with plat
       # grouping off; its two coin rules have to match them too.
-      selected = selected_keys(TextSubs.subs, corpus_matches, corpus.size)
+      selected = run[:selected]
       expect(corpus_generator[:composite_indexes].reject { |at| selected[at].size >= 2 }.map { |at| samples[at] }).to eq([])
     end
 
@@ -1355,7 +1378,8 @@ RSpec.describe 'textsubs.lic' do
     # examples. reference_apply runs on every corpus line with the Trader
     # catalog; the keys its select step picks (recorded from a copy of the
     # catalog, so the regexes run once) have to be the looked-up ones, in
-    # catalog order, and its output the looked-up output.
+    # catalog order, and its output the looked-up output, both as the shared
+    # reference run (reference_run) the sweeps read holds them.
     it 'looks up the same select step reference_apply runs, on every corpus line' do
       extra = every_key.select { |key| corpus_matches[key].any? { |at| (key =~ corpus[at]).nil? } }
       build_catalog('Trader', every_flag_on.merge('textsubs_use_plat_grouping' => true))
@@ -1363,9 +1387,10 @@ RSpec.describe 'textsubs.lic' do
       selections = []
       recording = subs.dup
       recording.define_singleton_method(:select) { |&block| super(&block).tap { |matches| selections << matches.keys } }
-      looked_up = looked_up_reference(subs, corpus, corpus_matches)
+      run = reference_run(subs)
+      looked_up = run[:output]
       differ = corpus.each_index.reject { |at| looked_up[at] == reference_apply(recording, corpus[at]) }
-      selected = selected_keys(subs, corpus_matches, corpus.size)
+      selected = run[:selected]
       expect(extra.map(&:source)).to eq([])
       expect(selections.size).to eq(corpus.size)
       expect(corpus.each_index.reject { |at| selected[at] == selections[at] }.map { |at| corpus[at] }).to eq([])
