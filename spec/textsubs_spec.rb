@@ -801,6 +801,56 @@ RSpec.describe 'textsubs.lic' do
       end
     end
 
+    # A YAML key written as !ruby/regexp /.../i arrives as a Regexp, which
+    # YAML.unsafe_load gives with its flags.
+    describe 'a !ruby/regexp key' do
+      it 'is added with its flags and the timeout, saying nothing, and rewrites a line in any case through the hook' do
+        plain = build_catalog('Commoner')
+
+        catalog = build_catalog('Commoner', 'private_textsubs' => { /you feel fine/i => 'MINE' })
+
+        expect(displayed_messages).to be_empty
+        expect(catalog.first).to eq(['you feel fine', Regexp::IGNORECASE, 'MINE'])
+        expect(catalog.drop(1)).to eq(plain)
+        key = TextSubs.subs.keys.first
+        expect(key.timeout).to eq(1.0)
+        line = "YOU Feel FINE.\r\n".b
+        expect(TextSubs::TokenIndex.new(TextSubs.subs.keys).candidates(line)).to include(key)
+        expect(TextSubs.apply(line.dup)).to eq("MINE.\r\n")
+        expect(run_hooks(line)).to eq("MINE.\r\n")
+      end
+
+      # Regexp#== compares the flags, so /source/i is a key of its own beside
+      # the built-in /source/: both stay in the catalog and both run, the
+      # private one first, as they did when a key was interpolated whole.
+      it 'with a flag is not the built-in key of the same source: both run, the private one first, saying nothing' do
+        plain = build_catalog('Commoner')
+        builtin = plain.find { |source, _, _| source == durability }
+
+        catalog = build_catalog('Commoner', 'private_textsubs' => { Regexp.new(durability, Regexp::IGNORECASE) => 'MINE: \1' })
+
+        expect(displayed_messages).to be_empty
+        expect(catalog.first).to eq([durability, Regexp::IGNORECASE, 'MINE: \1'])
+        expect(catalog.drop(1)).to eq(plain)
+        expect(catalog).to include(builtin)
+        line = "ASSESSING the sword durability, you determine it is extremely weak and easily damaged.\r\n".b
+        expect(run_hooks(line)).to eq("MINE: sword.\r\n")
+        line = "Assessing the sword durability, you determine it is extremely weak and easily damaged.\r\n".b
+        expect(run_hooks(line)).to eq("MINE: sword.\r\n")
+      end
+
+      it 'without a flag is the built-in key of the same source: it keeps the private slot and value, and says so once' do
+        plain = build_catalog('Commoner')
+
+        catalog = build_catalog('Commoner', 'private_textsubs' => { Regexp.new(durability) => 'MINE: \1' })
+
+        expect(catalog.first).to eq([durability, 0, 'MINE: \1'])
+        expect(catalog.drop(1)).to eq(plain.reject { |source, _, _| source == durability })
+        expect(displayed_messages).to eq(["private_textsubs #{durability.inspect} is also a built-in sub; " \
+                                          'your replacement is used instead of the built-in one.'])
+      end
+    end
+
     it 'puts shit-list entries before private ones' do
       Dir.mktmpdir('textsubs-shit-list') do |dir|
         File.write(File.join(dir, "#{checkname}_shit.list"), "zorvex,reason\n")
@@ -3247,6 +3297,23 @@ RSpec.describe 'textsubs.lic' do
                                'private_textsubs "three" is skipped: its replacement ["x"] is an Array, not a quoted string; quote it in your YAML.',
                                "private_textsubs \"four\" is skipped: its replacement #{{ 'x' => 'y' }.inspect} is a Hash, not a quoted string; " \
                                'quote it in your YAML.'
+                             ])
+    end
+
+    it 'compiles a Regexp key (!ruby/regexp) from its source and flags, with the timeout' do
+      entries, warnings = private_entries(/a(\d)/i => 'A\1', /x y/mx => 'z', /plain/ => 'p')
+      expect(warnings).to eq([])
+      expect(entries).to eq([[/a(\d)/i, 'A\1'], [/x y/mx, 'z'], [/plain/, 'p']])
+      expect(entries.map { |key, _| key.options }).to eq([Regexp::IGNORECASE, Regexp::MULTILINE | Regexp::EXTENDED, 0])
+      expect(entries.map { |key, _| key.timeout }).to eq([1.0, 1.0, 1.0])
+    end
+
+    it 'skips an empty Regexp key or one with a bad value, saying why and never to quote the key' do
+      _, warnings = private_entries(//i => 'x', /Bob/ => nil, /Ann/i => 7)
+      expect(warnings).to eq([
+                               'private_textsubs //i is skipped: an empty pattern matches between every two characters of every line.',
+                               "private_textsubs /Bob/ is skipped: its replacement is empty (nil); write '' to delete the text it matches.",
+                               'private_textsubs /Ann/i is skipped: its replacement 7 is an Integer, not a quoted string; quote it in your YAML.'
                              ])
     end
 

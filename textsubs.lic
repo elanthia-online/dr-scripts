@@ -1365,12 +1365,20 @@ class TextSubs
   # setting itself.
   module Sources
     # The private_textsubs setting: a mapping of 'regex source': 'gsub
-    # replacement' a player writes in their YAML.
+    # replacement' a player writes in their YAML. A key may also be a
+    # !ruby/regexp, which YAML gives as a Regexp: it keeps its flags, so
+    # !ruby/regexp /you feel fine/i matches in any case.
+    #
+    # Regexp#== compares the flags, so a key with a flag is never the
+    # built-in key of the same source (see TextSubs.prefer_private): both are
+    # in the catalog and both run on a line, the private one first.
     #
     # @example
     #   TextSubs::Sources::PrivateSubs.entries('You feel fine' => 'You feel FINE', 'Bob' => nil)
     #   # => [[[/You feel fine/, "You feel FINE"]],
     #   #     ["private_textsubs \"Bob\" is skipped: its replacement is empty (nil) ..."]]
+    # @example A !ruby/regexp key
+    #   TextSubs::Sources::PrivateSubs.entries(/you feel fine/i => 'MINE') # => [[[/you feel fine/i, "MINE"]], []]
     class PrivateSubs
       # The match timeout of every private key, so one runaway pattern cannot
       # stall the game thread: the engine drops a key that times out. It is
@@ -1388,10 +1396,12 @@ class TextSubs
       # valid regex source would end the script at load, so neither is added.
       #
       # @param value [Object] the private_textsubs setting: a Hash, or nil
-      #   when it is unset (base.yaml leaves it empty)
+      #   when it is unset (base.yaml leaves it empty); its keys are regex
+      #   source (String) or Regexp
       # @return [Array(Array<Array(Regexp, String)>, Array<String>)] frozen
-      #   [entries, warnings]: each entry a key compiled with regex_timeout and
-      #   its replacement, each warning one sentence naming a skipped key
+      #   [entries, warnings]: each entry a key compiled with regex_timeout
+      #   (a Regexp key with its own flags) and its replacement, each warning
+      #   one sentence naming a skipped key
       # @example A setting that is not a mapping
       #   TextSubs::Sources::PrivateSubs.entries(nil)   # => [[], []]
       #   TextSubs::Sources::PrivateSubs.entries('Bob') # => [[], ["private_textsubs is a String, not a mapping ..."]]
@@ -1417,17 +1427,20 @@ class TextSubs
       # @param replacement [Object] its value
       # @return [String, nil] why the pair cannot be used, before compiling
       def self.problem(source, replacement)
-        return "it is #{article(source)}, not a quoted string; quote it in your YAML" unless source.is_a?(String)
-        return 'an empty pattern matches between every two characters of every line' if source.empty?
+        return "it is #{article(source)}, not a quoted string; quote it in your YAML" unless source.is_a?(String) || source.is_a?(Regexp)
+        return 'an empty pattern matches between every two characters of every line' if (source.is_a?(Regexp) ? source.source : source).empty?
         return "its replacement is empty (nil); write '' to delete the text it matches" if replacement.nil?
         return "its replacement #{replacement.inspect} is #{article(replacement)}, not a quoted string; quote it in your YAML" unless replacement.is_a?(String)
 
         nil
       end
 
-      # @param source [String] regex source
+      # @param source [String, Regexp] regex source, or a Regexp whose source
+      #   and flags the key takes
       # @return [Regexp, String] the key, or why it does not compile
       def self.compile(source)
+        return Regexp.new(source.source, source.options, timeout: regex_timeout) if source.is_a?(Regexp)
+
         Regexp.new(source, timeout: regex_timeout)
       rescue RegexpError => e
         "it is not a valid regex (#{e.message})"
