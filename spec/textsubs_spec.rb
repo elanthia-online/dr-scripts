@@ -180,6 +180,21 @@ RSpec.describe 'textsubs.lic' do
       'herb_textsubs' => false, 'textsubs_use_plat_grouping' => false }.freeze
   end
 
+  # Runs the block inside a new temporary directory that holds
+  # "<checkname>_shit.list" with the given content, or no such file when
+  # content is nil: the entry point reads the shit list from the current
+  # directory, so a build in the block sees exactly this file.
+  #
+  # @param content [String, nil] the shit-list file body, or nil for no file
+  # @yieldreturn [Object] what the block builds
+  # @return [Object] what the block returned
+  def with_shit_list(content, &)
+    Dir.mktmpdir('textsubs-shit-list') do |dir|
+      File.write(File.join(dir, "#{checkname}_shit.list"), content) if content
+      Dir.chdir(dir, &)
+    end
+  end
+
   # @param combination [Hash{String=>Object}] one element of `combinations`
   # @return [Array<Array(String, Integer, String)>] that combination's catalog
   def build_combination(combination)
@@ -485,13 +500,10 @@ RSpec.describe 'textsubs.lic' do
       end
 
       it 'rebuilds from nothing on a restart, keeping no herb, shit-list or private key of the run before' do
-        Dir.mktmpdir('textsubs-restart') do |dir|
-          File.write(File.join(dir, "#{checkname}_shit.list"), "zorvex,stole my kill\n")
-          Dir.chdir(dir) do
-            first = build_catalog('Ranger', 'herb_textsubs' => true, 'integrate_shit_list_with_textsubs' => true,
-                                            'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
-            expect(first.map(&:first)).to include('\\bZorvex\\b', 'You feel fine', 'nilos')
-          end
+        with_shit_list("zorvex,stole my kill\n") do
+          first = build_catalog('Ranger', 'herb_textsubs' => true, 'integrate_shit_list_with_textsubs' => true,
+                                          'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
+          expect(first.map(&:first)).to include('\\bZorvex\\b', 'You feel fine', 'nilos')
         end
 
         combination = { 'guild' => 'Ranger', 'textsubs_spell_links' => false, 'herb_textsubs' => false,
@@ -660,16 +672,13 @@ RSpec.describe 'textsubs.lic' do
     define_method(:record_reads) do
       read = []
       allow(TextSubs).to receive(:pause)
-      Dir.mktmpdir do |dir|
-        File.write(File.join(dir, "#{checkname}_shit.list"), "zorvex,stole my kill\n")
-        Dir.chdir(dir) do
-          [{ 'guild' => nil }, *combinations].each do |combination|
-            values = combination.except('guild')
-                                .merge('integrate_shit_list_with_textsubs' => true, 'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
-            allow(TOPLEVEL_BINDING.receiver).to receive(:get_settings).and_return(recorder.new(values, read))
-            DRStats.guild = combination['guild']
-            run_lic_entry('textsubs.lic', 'TextSubs')
-          end
+      with_shit_list("zorvex,stole my kill\n") do
+        [{ 'guild' => nil }, *combinations].each do |combination|
+          values = combination.except('guild')
+                              .merge('integrate_shit_list_with_textsubs' => true, 'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
+          allow(TOPLEVEL_BINDING.receiver).to receive(:get_settings).and_return(recorder.new(values, read))
+          DRStats.guild = combination['guild']
+          run_lic_entry('textsubs.lic', 'TextSubs')
         end
       end
       read.uniq
@@ -788,17 +797,14 @@ RSpec.describe 'textsubs.lic' do
   end
 
   describe 'shit list' do
-    # Runs the entry inside a temporary directory holding
-    # "<checkname>_shit.list" with the given content (or no file when nil).
+    # Builds the Commoner catalog with "<checkname>_shit.list" holding the
+    # given content (or no file when nil); see with_shit_list.
     #
     # @param content [String, nil] the shit-list file body
     # @param integrate [Boolean] integrate_shit_list_with_textsubs
     # @return [Array<Array>] the catalog built
     def catalog_with_shit_list(content, integrate:)
-      Dir.mktmpdir('textsubs-shit-list') do |dir|
-        File.write(File.join(dir, "#{checkname}_shit.list"), content) if content
-        Dir.chdir(dir) { build_catalog('Commoner', 'integrate_shit_list_with_textsubs' => integrate) }
-      end
+      with_shit_list(content) { build_catalog('Commoner', 'integrate_shit_list_with_textsubs' => integrate) }
     end
 
     let(:plain_catalog) { build_catalog('Commoner') }
@@ -1064,12 +1070,9 @@ RSpec.describe 'textsubs.lic' do
     end
 
     it 'puts shit-list entries before private ones' do
-      Dir.mktmpdir('textsubs-shit-list') do |dir|
-        File.write(File.join(dir, "#{checkname}_shit.list"), "zorvex,reason\n")
-        settings = { 'integrate_shit_list_with_textsubs' => true, 'private_textsubs' => { 'You feel fine' => 'You feel FINE' } }
-        catalog = Dir.chdir(dir) { build_catalog('Commoner', settings) }
-        expect(catalog.first(2)).to eq([['\\bZorvex\\b', 0, 'Zorvex (SL)'], ['You feel fine', 0, 'You feel FINE']])
-      end
+      settings = { 'integrate_shit_list_with_textsubs' => true, 'private_textsubs' => { 'You feel fine' => 'You feel FINE' } }
+      catalog = with_shit_list("zorvex,reason\n") { build_catalog('Commoner', settings) }
+      expect(catalog.first(2)).to eq([['\\bZorvex\\b', 0, 'Zorvex (SL)'], ['You feel fine', 0, 'You feel FINE']])
     end
   end
 
