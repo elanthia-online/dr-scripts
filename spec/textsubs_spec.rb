@@ -877,6 +877,25 @@ RSpec.describe 'textsubs.lic' do
       expect(offenders.uniq).to be_empty, -> { "keys that swallow the start of the line:\n#{offenders.uniq.map { |entry| "  #{entry.inspect}" }.join("\n")}" }
     end
 
+    # The hook rewrites the raw XML stream, so a bare '<' in a value opens a
+    # tag the front end never sees closed: when markup follows on the row,
+    # ProfanityFE drops the annotation and swallows that markup, and Genie
+    # (read from source) buffers it into the next row's XML. The
+    # Elanthipedia links are the only markup a built-in value may add.
+    # Private subs are not built in (and may add markup on purpose), so the
+    # engine does not escape values.
+    it "adds no '<' outside an <a href=\"...\">...</a> link in any value of any catalog" do
+      link = %r{<a href="[^"<>]*">[^<>]*</a>}
+      offenders = combinations.flat_map do |combination|
+        catalog_of(combination).filter_map do |source, _options, replacement|
+          [combination['guild'], source, replacement] if replacement.gsub(link, '').include?('<')
+        end
+      end
+      expect(offenders.uniq).to be_empty, lambda {
+        "values that add a bare '<' ([guild, key, value]):\n#{offenders.uniq.map { |entry| "  #{entry.inspect}" }.join("\n")}"
+      }
+    end
+
     # TextSubs.add stores /#{target}/ as the Hash key, so a second add of the
     # same source keeps the first slot with the last value and the first
     # value is lost without a word ('jadice' was added as limb-ES and then
@@ -1065,6 +1084,34 @@ RSpec.describe 'textsubs.lic' do
       it 'leaves the song messages alone for a guild other than Bard' do
         line = 'You bring the song to a close, bowing your head.'
         expect(hooked(line, guild: 'Empath')).to eq("#{line}\r\n")
+      end
+    end
+
+    # The vitality bands used to read '(vitality <50%)', a bare '<' in the
+    # XML stream; they are plain words now, since no front end is known to
+    # decode an '&lt;' entity in game text.
+    describe 'the Empath vitality notes' do
+      [['The presence of Bob, whose life essence is wavering.', ' (vitality under 50%)'],
+       ['The presence of Bob, whose life essence is almost extinguished.', ' (vitality under 20%)'],
+       ['The presence of Bob, a fellow Empath, whose life essence is wavering.', ' (vitality under 50%)'],
+       ['The presence of Bob, a fellow Empath, whose life essence is almost extinguished.', ' (vitality under 20%)'],
+       ['A wavering life essence nearby.', ' (critter with vitality under 50%)']].each do |message, note|
+        it "notes \"#{message}\" as#{note}" do
+          expect(hooked(message, guild: 'Empath')).to eq("#{message}#{note}\r\n")
+        end
+
+        # A prompt after the message on the same row is where a bare '<'
+        # did its damage: the front end read '<50%) <prompt ...>' as one tag.
+        it "leaves the markup after \"#{message}\" with exactly the tags it came with" do
+          prompt = '<prompt time="1700000000">&gt;</prompt>'
+          output = hooked("#{message}#{prompt}", guild: 'Empath')
+          expect(output).to eq("#{message}#{note}#{prompt}\r\n")
+        end
+      end
+
+      it 'leaves the presence lines alone for a guild other than Empath' do
+        line = 'The presence of Bob, whose life essence is wavering.'
+        expect(hooked(line, guild: 'Cleric')).to eq("#{line}\r\n")
       end
     end
   end
