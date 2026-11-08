@@ -4806,6 +4806,16 @@ RSpec.describe 'textsubs.lic' do
                              ['Your aura pulses slowly.', 'Your aura pulses slowly (2/13).']])
       end
 
+      it 'puts the counter after the full stop for optional_period when the line has one, and straight after the phrase when not' do
+        pairs = ladder_pairs('style' => 'optional_period', 'anchor' => '^', 'of' => 11, 'steps' => [[1, "a stream in your mind's eye"]])
+        expect(pairs).to eq([["^a stream in your mind's eye(\\.?)", "a stream in your mind's eye\\1 (1/11)"]])
+        pattern = Regexp.new(pairs.first.first)
+        replacement = pairs.first.last
+        expect("a stream in your mind's eye.\r\n".sub(pattern, replacement)).to eq("a stream in your mind's eye. (1/11)\r\n")
+        expect("a stream in your mind's eye\r\n".sub(pattern, replacement)).to eq("a stream in your mind's eye (1/11)\r\n")
+        expect("a stream in your mind's eye, fading.".sub(pattern, replacement)).to eq("a stream in your mind's eye (1/11), fading.")
+      end
+
       it "puts the '^' anchor in the pattern only, so the step matches at the start of a line and nowhere else" do
         pairs = ladder_pairs('anchor' => '^', 'prefix' => 'You sense you are', 'of' => 7, 'steps' => [[4, 'half-way done with']])
         expect(pairs).to eq([['^You sense you are half-way done with', 'You sense you are half-way done with (4/7)']])
@@ -5153,7 +5163,7 @@ RSpec.describe 'textsubs.lic' do
       end
 
       {
-        'an unknown style'             => [{ 'style' => 'prepend' }, /has unknown style "prepend"; styles are append, before_period\z/],
+        'an unknown style'             => [{ 'style' => 'prepend' }, /has unknown style "prepend"; styles are append, before_period, optional_period\z/],
         'a style that is not a string' => [{ 'style' => 1 }, /'style' must be a quoted string, not 1/],
         "an anchor other than '^'"     => [{ 'anchor' => '\A' }, /'anchor' must be '\^', not "\\\\A"/],
         'an of of zero'                => [{ 'of' => 0 }, /'of' must be a positive whole number, not 0/],
@@ -5177,7 +5187,10 @@ RSpec.describe 'textsubs.lic' do
         'a misspelt field'             => [{ 'step' => [[1, 'a']] }, /has unknown key\(s\) "step"/],
         'a before_period phrase with no full stop' =>
           [{ 'style' => 'before_period', 'steps' => [[1, 'Your aura is blinding!']] },
-           /steps 1 phrase "Your aura is blinding!" must end in a full stop, as its style is before_period/]
+           /steps 1 phrase "Your aura is blinding!" must end in a full stop, as its style is before_period/],
+        'an optional_period phrase with its full stop' =>
+          [{ 'style' => 'optional_period', 'steps' => [[1, 'Your aura is blinding\.']] },
+           /steps 1 phrase "Your aura is blinding\\\\." must leave out its full stop, as its style is optional_period/]
       }.each do |label, (change, message)|
         it "refuses #{label}" do
           expect { ladder_pairs({ 'of' => 5, 'steps' => [[1, 'a hit']] }.merge(change)) }
@@ -5193,7 +5206,8 @@ RSpec.describe 'textsubs.lic' do
       # The acceptance check for every ladder the data file ships: written
       # out as a game line, the text of a step is matched by that step alone
       # within its ladder and comes back with that step's counter and nothing
-      # else changed.
+      # else changed. An optional_period step's text goes out both without
+      # its full stop and with it.
       it 'gives each shipped step, sent as its own line, its own counter and no other step of its ladder' do
         ladders = shipped_catalog['textsubs']['sections'].select { |section| section['kind'] == 'ladder' }
         checked = 0
@@ -5201,13 +5215,18 @@ RSpec.describe 'textsubs.lic' do
           subs = TextSubs::Generators::Ladder.expand(section, nil, nil)
           keys = subs.map { |source, _| Regexp.new(source) }
           section['steps'].each_with_index do |(n, phrase), index|
-            line = [section['prefix'], phrase].compact.join(' ').gsub(/\\(.)/, '\1')
+            text = [section['prefix'], phrase].compact.join(' ').gsub(/\\(.)/, '\1')
             counter = "(#{n}/#{section['of']})"
-            expected = section['style'] == 'before_period' ? "#{line.delete_suffix('.')} #{counter}." : "#{line} #{counter}"
-            label = "#{section['name']} step #{index + 1} (#{line.inspect})"
-
-            expect(keys.each_index.select { |key| keys[key].match?(line) }).to eq([index]), label
-            expect(TextSubs::Engine.apply(keys.zip(subs.map(&:last)).to_h, line)).to eq(expected), label
+            sent = case section['style']
+                   when 'before_period' then [[text, "#{text.delete_suffix('.')} #{counter}."]]
+                   when 'optional_period' then [[text, "#{text} #{counter}"], ["#{text}.", "#{text}. #{counter}"]]
+                   else [[text, "#{text} #{counter}"]]
+                   end
+            sent.each do |line, expected|
+              label = "#{section['name']} step #{index + 1} (#{line.inspect})"
+              expect(keys.each_index.select { |key| keys[key].match?(line) }).to eq([index]), label
+              expect(TextSubs::Engine.apply(keys.zip(subs.map(&:last)).to_h, line)).to eq(expected), label
+            end
             checked += 1
           end
         end
@@ -6196,13 +6215,14 @@ RSpec.describe 'textsubs.lic' do
       # - The two end-anchored Ranger howl tiers (parent lines 821 and 824)
       #   end in '(?=\r?$)' where their author wrote '$', as raw lines end in
       #   \r\n ('the end-anchored Ranger howl tiers' above).
-      # - The 11 Osrel Meraud capacity steps (parent lines 796-806) leave out
-      #   the '\.' their author wrote, and the counter goes before the full
-      #   stop. No capacity line turns up in the October 2026 game logs, so
-      #   whether the game ends it with a full stop is not known; before the
-      #   restore the bare '.' matched the \r of a line without one, so the
-      #   counter showed either way, and it still does, now without eating
-      #   the \r.
+      # - The 11 Osrel Meraud capacity steps (parent lines 796-806) end in
+      #   '(\.?)' where their author wrote '\.', and their replacements in
+      #   '\1 (n/11)' where the author wrote '. (n/11)'. No capacity line
+      #   turns up in the October 2026 game logs, so whether the game ends it
+      #   with a full stop is not known; before the restore the bare '.'
+      #   matched the \r of a line without one, so the counter showed either
+      #   way. It still does, now without eating the \r, and after the full
+      #   stop where the line has one, as the author wrote it.
       # - The (16/16) presence (parent line 780) takes "Sana'ati" as well as
       #   "sana'ati": that line does not turn up in the logs either, and the
       #   game writes the word lowercase in common text ("a tiny painted
@@ -6216,8 +6236,8 @@ RSpec.describe 'textsubs.lic' do
         case row['line']
         when 821, 824 then pattern = pattern.delete_suffix('$') + '(?=\r?$)'
         when 796..806
-          pattern = pattern.delete_suffix('\.')
-          replacement = replacement.sub(/\. (\(\d+\/11\))\z/, ' \1')
+          pattern = "#{pattern.delete_suffix('\.')}(\\.?)"
+          replacement = replacement.sub(/\.(?= \(\d+\/11\)\z)/) { '\1' }
         when 780 then pattern = pattern.sub("sana'ati", "[Ss]ana'ati")
         end
         [pattern, replacement]
@@ -6486,7 +6506,7 @@ RSpec.describe 'textsubs.lic' do
 
     # The full stops the parent's double quotes dropped, back in: each of
     # these keys used to match any character there. The Osrel Meraud
-    # capacity steps, which leave the full stop out, are here too, as are
+    # capacity steps, which take a full stop or none, are here too, as are
     # both spellings of the (16/16) presence.
     describe 'the restored full stops' do
       recognition = 'You recognize the familiar mnemonics of the Burden spell'
@@ -6524,10 +6544,10 @@ RSpec.describe 'textsubs.lic' do
         end
       end
 
-      # The capacity steps leave the full stop out, as no game line shows
-      # whether one ends them: the counter goes straight after the phrase, so
-      # before the game's full stop if one follows, or at the end of a line
-      # that ends there, and the line ending stays.
+      # No game line shows whether a full stop ends the capacity steps, so
+      # they take one if it follows: the counter goes after the stop when
+      # there is one, as on the power steps, and at the end of a line that
+      # ends with the phrase, the line ending kept.
       capacity = 'The pervasiveness of the sensation evokes the image of'
       [["a stream in your mind's eye", '1/11'], ["a pond in your mind's eye", '2/11'],
        ["a river in your mind's eye", '3/11'], ["a lake in your mind's eye", '4/11'],
@@ -6539,8 +6559,8 @@ RSpec.describe 'textsubs.lic' do
        ["the fathomless ebon abysms of the Starry Road in your mind's eye", '11/11']].each do |step, tier|
         image = "#{capacity} #{step}"
 
-        it "counts the Osrel Meraud image '#{step}.' (#{tier}) before its full stop" do
-          expect(hooked("#{image}.", guild: 'Cleric')).to eq("#{image} (#{tier}).\r\n")
+        it "counts the Osrel Meraud image '#{step}.' (#{tier}) after its full stop" do
+          expect(hooked("#{image}.", guild: 'Cleric')).to eq("#{image}. (#{tier})\r\n")
         end
 
         it "counts the Osrel Meraud image '#{step}' (#{tier}) without a full stop, keeping the line ending" do
@@ -6549,8 +6569,8 @@ RSpec.describe 'textsubs.lic' do
         end
       end
 
-      # Nothing ends a capacity key after its phrase, so the counter goes
-      # before whatever follows it, not only before a full stop.
+      # A capacity key takes a full stop after its phrase or nothing, so the
+      # counter goes before any other text that follows the phrase.
       it 'puts the Osrel Meraud capacity counter straight after the phrase when other text follows it' do
         image = "#{capacity} a stream in your mind's eye"
         expect(hooked("#{image}, fading.", guild: 'Cleric')).to eq("#{image} (1/11), fading.\r\n")
