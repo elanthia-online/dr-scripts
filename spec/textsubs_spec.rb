@@ -3309,11 +3309,28 @@ RSpec.describe 'textsubs.lic' do
 
     it 'compiles each usable key with the timeout, in order, around the skipped ones' do
       entries, warnings = private_entries('a(\d)' => 'A\1', 'Bob' => nil, '[' => 'x', 'c' => '')
-      expect(entries).to eq([[/a(\d)/, 'A\1', 'a(\d)'.inspect], [/c/, '', '"c"']])
+      expect(entries).to eq([[/a(\d)/, 'A\1', '"a(\d)"'], [/c/, '', '"c"']])
       expect(entries.map { |key, _| key.timeout }).to eq([1.0, 1.0])
       expect(warnings.size).to eq(2)
       expect(warnings.first).to start_with('private_textsubs "Bob" is skipped:')
       expect(warnings.last).to start_with('private_textsubs "[" is skipped: it is not a valid regex (')
+    end
+
+    # The name is the key as the player wrote it in their YAML, not Ruby's
+    # String#inspect, which would double each backslash and escape each quote.
+    it 'names a String key as written, backslashes and quotes unescaped, in its entry and in its warning' do
+      entries, warnings = private_entries('say "(\w+)"' => 'A', '[\d' => 'x', 'say "(\w+)" again' => nil)
+      expect(entries.map(&:last)).to eq(['"say "(\w+)""'])
+      expect(warnings.size).to eq(2)
+      expect(warnings.first).to start_with('private_textsubs "[\d" is skipped: it is not a valid regex (')
+      expect(warnings.last).to start_with('private_textsubs "say "(\w+)" again" is skipped: its replacement is empty (nil)')
+    end
+
+    it 'names a !ruby/regexp key as /text/flags, its source unescaped' do
+      entries, warnings = private_entries(/say "(\w+)"/i => 'A', /say "(\w+)" again/ => nil)
+      expect(entries.map(&:last)).to eq(['/say "(\w+)"/i'])
+      expect(warnings).to eq(['private_textsubs /say "(\w+)" again/ is skipped: its replacement is empty (nil); ' \
+                              "write '' to delete the text it matches."])
     end
 
     it 'answers nil with nothing to add and nothing to say' do

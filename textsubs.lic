@@ -1379,6 +1379,9 @@ class TextSubs
     # same pattern, so only the first of them is used and the other is
     # skipped, saying so; the catalog could hold only one of them anyway.
     #
+    # Every message names a key as the player wrote it (see label): a String
+    # in double quotes as it is, with no escaping, and a Regexp as /text/flags.
+    #
     # @example
     #   TextSubs::Sources::PrivateSubs.entries('You feel fine' => 'You feel FINE', 'Bob' => nil)
     #   # => [[[/You feel fine/, "You feel FINE", "\"You feel fine\""]],
@@ -1412,9 +1415,8 @@ class TextSubs
       # @return [Array(Array<Array(Regexp, String, String)>, Array<String>)]
       #   frozen [entries, warnings]: each entry a key compiled with
       #   regex_timeout (a Regexp key with its own flags), its replacement and
-      #   the key named as the player wrote it (its inspect: "text" or
-      #   /text/i), no two entries with the same key; each warning one
-      #   sentence naming a skipped key
+      #   the key's name (see label: "text" or /text/i), no two entries with
+      #   the same key; each warning one sentence naming a skipped key
       # @example A setting that is not a mapping
       #   TextSubs::Sources::PrivateSubs.entries(nil)   # => [[], []]
       #   TextSubs::Sources::PrivateSubs.entries('Bob') # => [[], ["private_textsubs is a String, not a mapping ..."]]
@@ -1423,13 +1425,13 @@ class TextSubs
         warnings = []
         if value.is_a?(Hash)
           value.each do |source, replacement|
-            key = problem(source, replacement) || compile(source)
-            earlier = entries.assoc(key) if key.is_a?(Regexp)
-            key = "it is the same pattern as #{earlier.last}, which is used instead" if earlier
-            if key.is_a?(Regexp)
-              entries << [key, replacement, source.inspect].freeze
+            reason = problem(source, replacement)
+            key, reason = compile(source) unless reason
+            reason ||= duplicate(entries, key)
+            if reason
+              warnings << "private_textsubs #{label(source)} is skipped: #{reason}."
             else
-              warnings << "private_textsubs #{source.inspect} is skipped: #{key}."
+              entries << [key, replacement, label(source)].freeze
             end
           end
         elsif !value.nil?
@@ -1454,11 +1456,37 @@ class TextSubs
 
       # @param source [String, Regexp] regex source, or a Regexp whose source
       #   and flags the key takes
-      # @return [Regexp, String] the key, or why it does not compile
+      # @return [Array(Regexp, nil), Array(nil, String)] [key, nil], or
+      #   [nil, why it does not compile]
       def self.compile(source)
-        Regexp.new(*pattern(source), timeout: regex_timeout)
+        [Regexp.new(*pattern(source), timeout: regex_timeout), nil]
       rescue RegexpError => e
-        "it is not a valid regex (#{e.message})"
+        [nil, "it is not a valid regex (#{e.message})"]
+      end
+
+      # @param entries [Array<Array(Regexp, String, String)>] the entries
+      #   kept so far
+      # @param key [Regexp] a compiled key
+      # @return [String, nil] why key cannot be used when an earlier entry
+      #   has the same key (Regexp#==, as the catalog Hash compares keys)
+      def self.duplicate(entries, key)
+        earlier = entries.assoc(key)
+        "it is the same pattern as #{earlier.last}, which is used instead" if earlier
+      end
+
+      # A key's name in a message, as the player wrote it: a String key in
+      # double quotes with no escaping, so 'a(\d)' reads "a(\d)" and not
+      # Ruby's "a(\\d)"; a Regexp key as /text/flags (Regexp#inspect, which
+      # does not escape its source either); any other key as Ruby shows it.
+      #
+      # @param source [Object] a private_textsubs key
+      # @return [String]
+      # @example
+      #   TextSubs::Sources::PrivateSubs.send(:label, 'a(\d)') # prints "a(\d)"
+      #   TextSubs::Sources::PrivateSubs.send(:label, /a/i)     # => "/a/i"
+      #   TextSubs::Sources::PrivateSubs.send(:label, 12)       # => "12"
+      def self.label(source)
+        source.is_a?(String) ? "\"#{source}\"" : source.inspect
       end
 
       # The regex source and flags a key stands for, the one place a Regexp
@@ -1480,7 +1508,7 @@ class TextSubs
         name = value.class.name
         "#{name.match?(/\A[AEIOU]/) ? 'an' : 'a'} #{name}"
       end
-      private_class_method :problem, :compile, :pattern, :article
+      private_class_method :problem, :compile, :duplicate, :label, :pattern, :article
     end
   end
 
@@ -1626,11 +1654,10 @@ class TextSubs
   # being built: the staged Registry on a start (see stage).
   #
   # @param entries [Array<Array(Regexp, String, String)>] the entries
-  #   add_private added: key, replacement and the key's name as the player
-  #   wrote it
-  # @return [Array<String>] one warning per key given back, naming it as the
-  #   player wrote it ("text" or /text/); empty when no key was replaced, or
-  #   only by the same text
+  #   add_private added: key, replacement and the key's name (see
+  #   Sources::PrivateSubs.label: "text" unescaped, or /text/flags)
+  # @return [Array<String>] one warning per key given back, naming it by
+  #   that name; empty when no key was replaced, or only by the same text
   # @example After add_private([[/You feel fine/, 'MINE', '"You feel fine"']]) and a built-in add of 'You feel fine'
   #   TextSubs.prefer_private([[/You feel fine/, 'MINE', '"You feel fine"']])
   #   # => ["private_textsubs \"You feel fine\" is also a built-in sub; your replacement is used instead of the built-in one."]
