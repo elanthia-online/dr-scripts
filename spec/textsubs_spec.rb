@@ -685,14 +685,18 @@ RSpec.describe 'textsubs.lic' do
       expect(lines.map { |line| run_hooks(line.b) }).to eq(["You pick some nilos.\r\n", "You feel FINE.\r\n"])
     end
 
-    it 'keeps the generation count, so the next start leaves a higher number on its catalog' do
+    it 'counts the empty catalog the class body installs, and the next start leaves a higher number again' do
       build_catalog('Ranger', 'herb_textsubs' => true)
       first = TextSubs.generation
+      expect(TextSubs.subs).not_to be_empty
+
       reload_lic_class('textsubs.lic', 'TextSubs')
-      expect(TextSubs.generation).to eq(first)
+      emptied = TextSubs.generation
+      expect(TextSubs.subs).to eq({})
+      expect(emptied).to eq(first + 1)
 
       build_catalog('Commoner', 'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
-      expect(TextSubs.generation).to be > first
+      expect(TextSubs.generation).to be > emptied
     end
 
     it 'ends the staging of a build that raises when the script dies, installing none of it' do

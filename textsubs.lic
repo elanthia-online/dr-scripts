@@ -19,7 +19,8 @@ no_kill_all
 # class itself persists for the session, so it defines no constants but its
 # nested classes: re-running the body would warn "already initialized
 # constant" for any other. Re-running it installs an empty Registry and drops
-# any staging; only the generation count carries over (see generation).
+# any staging; the generation count carries over and counts that swap once
+# (see generation).
 class TextSubs
   # An ordered catalog of substitutions: a Regexp key and the gsub replacement
   # it applies. A key added again keeps its first position and takes the last
@@ -80,7 +81,7 @@ class TextSubs
 
   @@registry = Registry.new
   @@staged = nil
-  @@generation = 0 unless defined?(@@generation)
+  @@generation = defined?(@@generation) ? @@generation + 1 : 0
 
   # The catalog, in the order its keys were first added.
   #
@@ -95,10 +96,13 @@ class TextSubs
   # installed catalog, and not at all while a Registry is staged (see stage):
   # install counts that whole catalog once, when it swaps it in.
   #
-  # The class body sets the count to 0 only the first time it runs in a
-  # session and keeps it on every later start, so the count only rises: two
-  # starts never leave the same number on two different catalogs, and a cache
-  # keyed on it that outlives a restart rebuilds.
+  # The class body sets the count to 0 the first time it runs in a session.
+  # Every later start runs it again, which installs an empty catalog, and
+  # that swap counts once like any other install, after the empty catalog is
+  # in. So the count only rises: two starts never leave the same number on two
+  # different catalogs, and a cache keyed on it that outlives a restart
+  # rebuilds as soon as the class body has emptied the catalog, not only once
+  # the new catalog is installed.
   #
   # The count rises only after the change is visible in subs, so a reader on
   # another thread that sees a new generation also sees the catalog it counts.
