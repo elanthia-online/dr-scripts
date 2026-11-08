@@ -34,9 +34,13 @@
 # backslash taken out, so write it as literal text: escape every regex
 # metacharacter but '.', and nothing else. An unescaped '.' matches any
 # character and is written back as '.', so escape it where the game's
-# character may differ. Each n is used once, from -of to of, and no step's
-# text may be matched by another step's pattern. A message that does not fit
-# stays a pair in a subs section.
+# character may differ. Each n is from -of to of and used once on its scale.
+# A scale split over ladder sections, around messages that stay pairs, gives
+# each of them scale: 'name' and the same of; a scale is the section's own
+# name otherwise. No step's text may be matched by another step's pattern,
+# in its own ladder section or any other in the file, unless the two
+# sections' when: gates have no guild in common. A message that does not
+# fit stays a pair in a subs section.
 #
 # Each spell is written once, in the spells: table at the end of the file:
 #   name       the spell's name (regex source, as in a pattern)
@@ -338,6 +342,7 @@ textsubs:
 
     - name: 'hit tiers'
       kind: 'ladder'
+      scale: 'hit tiers'
       of: 23
       steps:
         - [1, 'a light hit']
@@ -363,6 +368,7 @@ textsubs:
 
     - name: 'hit tiers, leaving a mark and worse'
       kind: 'ladder'
+      scale: 'hit tiers'
       of: 23
       steps:
         - [18, 'a devastating hit \(That''ll leave a mark!\)']
@@ -849,6 +855,7 @@ textsubs:
       when:
         guilds: ['Paladin']
       kind: 'ladder'
+      scale: 'Paladin soul pool'
       style: 'before_period'
       prefix: 'It brightens with'
       of: 11
@@ -868,6 +875,7 @@ textsubs:
       when:
         guilds: ['Paladin']
       kind: 'ladder'
+      scale: 'Paladin soul pool'
       style: 'before_period'
       of: 11
       steps:

@@ -4765,10 +4765,10 @@ RSpec.describe 'textsubs.lic' do
     # replacement is its text with the escapes taken out, so these hold the
     # pattern and the replacement to each other as well as to the data.
     describe 'the ladder kind' do
-      # @param section [Hash] a ladder section, name and kind included
-      # @return [Hash] the frozen `textsubs:` value holding it alone
-      def ladder_catalog(section)
-        catalog_data({ 'textsubs' => { 'schema' => 1, 'sections' => [section] } }.to_yaml)
+      # @param sections [Array<Hash>] ladder sections, name and kind included
+      # @return [Hash] the frozen `textsubs:` value holding them alone, in order
+      def ladder_catalog(*sections)
+        catalog_data({ 'textsubs' => { 'schema' => 1, 'sections' => sections } }.to_yaml)
       end
 
       # @param fields [Hash] the ladder's fields, besides name and kind
@@ -4869,6 +4869,143 @@ RSpec.describe 'textsubs.lic' do
       it "refuses an unescaped '.' that matches another step's text, as it matches any character" do
         expect { ladder_pairs('of' => 5, 'steps' => [[1, 'a hit.'], [2, 'a hit!']]) }
           .to raise_error(ArgumentError, /steps 2 \(n 2\) phrase "a hit!" is also matched by steps 1 \(n 1\)/)
+      end
+
+      # A scale may be split over ladder sections, around rows that stay
+      # pairs, and a phrase in one section may be matched by a step of
+      # another, so the step checks run across every ladder section of the
+      # file, not one section at a time.
+      describe 'across ladder sections' do
+        # @param name [String] the section's name
+        # @param steps [Array<Array(Integer, String)>]
+        # @param fields [Hash] any other fields: of, scale, when, prefix...
+        # @return [Hash] a ladder section, of 5 unless fields say otherwise
+        def ladder(name, steps, fields = {})
+          { 'name' => name, 'kind' => 'ladder', 'of' => 5, 'steps' => steps }.merge(fields)
+        end
+
+        # The review's repro on the real data: 'a light hit' is step n 1 of
+        # 'hit tiers', and both hit-tier ladders count on one of: 23 scale.
+        # Takes the step to append; gives the changed `textsubs:` value, and
+        # the places of 'hit tiers' and of the section given the step.
+        shipped_with_hit_tier_step = lambda do |step|
+          data = Marshal.load(Marshal.dump(shipped_catalog['textsubs']))
+          names = data['sections'].map { |section| section['name'] }
+          tiers = names.index('hit tiers')
+          worse = names.index('hit tiers, leaving a mark and worse')
+          data['sections'][worse]['steps'] << step
+          [data, tiers, worse]
+        end
+
+        it "refuses the review's repro: a light hit appended as n 2 to the second hit-tier ladder of the shipped file" do
+          data, tiers, worse = shipped_with_hit_tier_step.call([2, 'a light hit'])
+          expect { entries_for('Bard', data) }
+            .to raise_error(ArgumentError, "section #{worse + 1} (hit tiers, leaving a mark and worse) uses step number(s) 2 " \
+                                           "more than once on scale \"hit tiers\", as section #{tiers + 1} (hit tiers) does")
+        end
+
+        it 'refuses the same phrase added to the second hit-tier ladder under an n the scale has free, naming both sections' do
+          data, tiers, worse = shipped_with_hit_tier_step.call([17, 'a light hit'])
+          expect { entries_for('Bard', data) }
+            .to raise_error(ArgumentError, "section #{tiers + 1} (hit tiers) steps 1 (n 1) phrase \"a light hit\" is also matched by " \
+                                           "section #{worse + 1} (hit tiers, leaving a mark and worse) steps 7 (n 17), " \
+                                           'so one of them would lose its counter')
+        end
+
+        it 'refuses the same phrase in two ladders of different scales, which would keep only the later key' do
+          one = ladder('one', [[1, 'a miss'], [3, 'a hit']], 'of' => 3)
+          two = ladder('two', [[3, 'a hit']], 'of' => 3)
+          expect { entries_for('Bard', ladder_catalog(one, two)) }
+            .to raise_error(ArgumentError, 'section 1 (one) steps 2 (n 3) phrase "a hit" is also matched by section 2 (two) ' \
+                                           'steps 1 (n 3), so one of them would lose its counter')
+        end
+
+        it "refuses a phrase another section's step matches, prefix and anchor applied as in one section" do
+          landed = ladder('landed', [[1, 'a hit hard']], 'prefix' => 'You land')
+          anchored = ladder('anchored', [[2, 'a hit']], 'anchor' => '^')
+          loose = ladder('loose', [[2, 'a hit']])
+          expect(pairs_of(ladder_catalog(landed, anchored))).to eq(['You land a hit hard (1/5)', 'a hit (2/5)'])
+          expect { entries_for('Bard', ladder_catalog(landed, loose)) }
+            .to raise_error(ArgumentError, /\Asection 1 \(landed\) steps 1 \(n 1\) phrase "a hit hard" is also matched by section 2 \(loose\) steps 1 \(n 2\),/)
+        end
+
+        # Only gates no single guild passes keep two sections out of every
+        # catalog together; a setting key never does, as both may be on.
+        {
+          'two guilds gates that share no guild' => [{ 'guilds' => ['Bard'] }, { 'guilds' => %w[Thief Cleric] }, true],
+          'a guilds gate and a not_guilds of it' => [{ 'guilds' => %w[Bard Thief] }, { 'not_guilds' => %w[Thief Bard] }, true],
+          'two guilds gates sharing a guild'     => [{ 'guilds' => %w[Bard Thief] }, { 'guilds' => %w[Cleric Thief] }, false],
+          'a guilds gate and no gate'            => [{ 'guilds' => ['Bard'] }, nil, false],
+          'a guilds gate and a not_guilds gate'  => [{ 'guilds' => ['Bard'] }, { 'not_guilds' => ['Thief'] }, false],
+          'two not_guilds gates'                 => [{ 'not_guilds' => ['Bard'] }, { 'not_guilds' => ['Thief'] }, false],
+          'two not_guilds gates of every guild'  => [{ 'not_guilds' => guilds }, { 'not_guilds' => guilds.reverse }, false],
+          'a setting gate and its setting_off'   => [{ 'setting' => 'herb_textsubs' }, { 'setting_off' => 'herb_textsubs' }, false],
+          'one guild, the settings opposed'      => [{ 'guilds' => ['Bard'], 'setting' => 'herb_textsubs' },
+                                                     { 'guilds' => ['Bard'], 'setting_off' => 'herb_textsubs' }, false]
+        }.each do |label, (gate, other, apart)|
+          it "#{apart ? 'lets' : 'refuses'} one phrase in two ladders with #{label}" do
+            catalog = ladder_catalog(ladder('one', [[1, 'a hit']], 'when' => gate), ladder('two', [[2, 'a hit']], 'when' => other))
+            if apart
+              got = guilds.map { |guild| pairs_of(catalog, guild) }
+              expect(pairs_of(catalog, 'Bard')).to eq(['a hit (1/5)'])
+              expect(got).to include(['a hit (2/5)'])
+              expect(got).to all(satisfy { |subs| subs.size <= 1 })
+            else
+              expect { entries_for('Bard', catalog) }.to raise_error(ArgumentError, /\Asection 1 \(one\) steps 1 \(n 1\) phrase "a hit" is also matched by section 2 \(two\) steps 1 \(n 2\),/)
+            end
+          end
+        end
+
+        it 'refuses an n two sections of one scale both use, naming both, and lets two scales each use it' do
+          first = ladder('first', [[1, 'a nick'], [2, 'a cut']], 'scale' => 'wounds')
+          second = ladder('second', [[3, 'a gash'], [2, 'a slash']], 'scale' => 'wounds')
+          expect { entries_for('Bard', ladder_catalog(first, second)) }
+            .to raise_error(ArgumentError, 'section 2 (second) uses step number(s) 2 more than once on scale "wounds", as section 1 (first) does')
+          own_scales = ladder_catalog(first.except('scale'), second.except('scale'))
+          expect(pairs_of(own_scales)).to eq(['a nick (1/5)', 'a cut (2/5)', 'a gash (3/5)', 'a slash (2/5)'])
+        end
+
+        it "takes a section's own name as its scale, so a later section joins it by naming it" do
+          catalog = ladder_catalog(ladder('wounds', [[1, 'a nick']]), ladder('more wounds', [[1, 'a gash']], 'scale' => 'wounds'))
+          expect { entries_for('Bard', catalog) }
+            .to raise_error(ArgumentError, 'section 2 (more wounds) uses step number(s) 1 more than once on scale "wounds", as section 1 (wounds) does')
+        end
+
+        it 'names only the earlier sections that share a repeated n, after an n repeated within the section itself' do
+          catalog = ladder_catalog(ladder('a', [[1, 'a nick']], 'scale' => 's'), ladder('b', [[2, 'a cut']], 'scale' => 's'),
+                                   ladder('c', [[3, 'a gash'], [3, 'a rip'], [2, 'a slash']], 'scale' => 's'))
+          expect { entries_for('Bard', catalog) }
+            .to raise_error(ArgumentError, 'section 3 (c) uses step number(s) 3, 2 more than once on scale "s", as section 2 (b) does')
+        end
+
+        it 'lets guild-disjoint sections of one scale use one n, as no character gets both' do
+          catalog = ladder_catalog(ladder('bard', [[1, 'a nick']], 'scale' => 's', 'when' => { 'guilds' => ['Bard'] }),
+                                   ladder('thief', [[1, 'a gash']], 'scale' => 's', 'when' => { 'guilds' => ['Thief'] }))
+          expect([pairs_of(catalog, 'Bard'), pairs_of(catalog, 'Thief')]).to eq([['a nick (1/5)'], ['a gash (1/5)']])
+        end
+
+        it 'refuses sections of one scale that give it different ofs, naming the first' do
+          catalog = ladder_catalog(ladder('a', [[1, 'a nick']], 'scale' => 's'), ladder('b', [[2, 'a cut']], 'scale' => 's', 'of' => 6))
+          expect { entries_for('Bard', catalog) }
+            .to raise_error(ArgumentError, 'section 2 (b) gives scale "s" of 6, but section 1 (a) gives it of 5')
+        end
+
+        {
+          'an empty scale'       => [{ 'scale' => '' }, "'scale' must name the scale, not be empty"],
+          'a scale not a string' => [{ 'scale' => 3 }, "'scale' must be a quoted string, not 3"]
+        }.each do |label, (change, message)|
+          it "refuses #{label}" do
+            expect { ladder_pairs({ 'of' => 5, 'steps' => [[1, 'a hit']] }.merge(change)) }
+              .to raise_error(ArgumentError, "section 1 (scale) #{message}")
+          end
+        end
+
+        # @param data [Hash] a `textsubs:` value
+        # @param guild [String]
+        # @return [Array<String>] the replacement of each sub the guild gets
+        def pairs_of(data, guild = 'Bard')
+          entries_for(guild, data).map { |_source, replacement, _meta| replacement }
+        end
       end
 
       {
