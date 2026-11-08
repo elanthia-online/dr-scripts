@@ -1727,7 +1727,7 @@ RSpec.describe 'textsubs.lic' do
     end
 
     describe 'given the token start_run gave a start, as the entry point passes it' do
-      let(:superseded) { 'A newer textsubs has started, so this one stops here and leaves the subs to it.' }
+      let(:superseded) { 'A newer textsubs has started, so this one stops here; if no textsubs is running now, start it again with ;textsubs.' }
 
       it 'keeps waiting while that run is the latest start, and returns when the hook goes' do
         run = TextSubs.start_run
@@ -1927,7 +1927,9 @@ RSpec.describe 'textsubs.lic' do
       include_context 'with a front end attached'
 
       let(:song) { "You bring the song to a close, bowing your head.\r\n".b }
-      let(:rebuilt) { displayed_messages.grep(/^Your guild is now/) }
+      let(:rebuilt) { displayed_messages.grep(/^Your guild is now|^textsubs has built its subs again/) }
+      let(:bard_rebuild) { 'Your guild is now Bard, so textsubs builds its subs again for it.' }
+      let(:bard_installed) { 'textsubs has built its subs again for Bard and uses them now.' }
 
       # Runs the real watch: the first pause is where INFO lands and sets the
       # guild, after the block (what happens before it, on the old catalog);
@@ -1980,7 +1982,7 @@ RSpec.describe 'textsubs.lic' do
                                          *golden_catalog(spell_links_on.merge('guild' => 'Bard')),
                                          ['Zorbix', 0, 'ZORBIX'],
                                          ['( )(sings)(\\.)', 0, '\\1<a href="https://elanthipedia.play.net/Category:sings_songs">sings</a>\\3']])
-        expect(rebuilt.size).to eq(1)
+        expect(rebuilt).to eq([bard_rebuild, bard_installed])
       end
 
       it 'leaves out of the catalog built for the guild a sub apply dropped, and reports the drop only once' do
@@ -1996,7 +1998,7 @@ RSpec.describe 'textsubs.lic' do
         end
 
         expect(seen).to eq([line, line])
-        expect(rebuilt.size).to eq(1)
+        expect(rebuilt).to eq([bard_rebuild, bard_installed])
         expect(TextSubs.subs.keys.map(&:source)).not_to include(key)
         expect(installed_entries).to eq(golden_catalog(spell_links_on.merge('guild' => 'Bard')))
         expect(reports.call.size).to eq(1)
@@ -2008,9 +2010,13 @@ RSpec.describe 'textsubs.lic' do
         seen = start_then_learn_bard(private_textsubs: { teaching => 'TAUGHT', bard_song => 'SUNG' })
 
         expect(seen).to eq(["SUNG\r\n"])
-        expect(displayed_messages.grep(/is also a built-in sub/))
-          .to eq(["private_textsubs \"#{teaching}\" is also a built-in sub; your replacement is used instead of the built-in one.",
-                  "private_textsubs \"#{bard_song}\" is also a built-in sub; your replacement is used instead of the built-in one."])
+        teaching_warning = "private_textsubs \"#{teaching}\" is also a built-in sub; your replacement is used instead of the built-in one."
+        song_warning = "private_textsubs \"#{bard_song}\" is also a built-in sub; your replacement is used instead of the built-in one."
+        expect(displayed_messages.grep(/is also a built-in sub/)).to eq([teaching_warning, song_warning])
+        # The song's warning comes with the rebuild, after the line that says
+        # why the subs are built again and before the one that says they are in.
+        expect(displayed_messages.grep(/is also a built-in sub|^Your guild is now|^textsubs has built its subs again/).last(3))
+          .to eq([bard_rebuild, song_warning, bard_installed])
       end
 
       it 'builds the Bard catalog in one watch check and installs it, saying so once' do
@@ -2020,7 +2026,7 @@ RSpec.describe 'textsubs.lic' do
         expect(seen).to eq(["You bring the song to a close, bowing your head (4/7).\r\n"])
         expect(TextSubs.subs.map { |pattern, replacement| [pattern.source, pattern.options, replacement] })
           .to eq([private_key, *golden_catalog(spell_links_on.merge('guild' => 'Bard'))])
-        expect(rebuilt).to eq(['Your guild is now Bard, so textsubs has built its subs again for it.'])
+        expect(rebuilt).to eq([bard_rebuild, bard_installed])
         expect(warnings.size).to eq(1)
       end
 
@@ -2057,7 +2063,7 @@ RSpec.describe 'textsubs.lic' do
         # (the new run's hook now) is still registered, and rebuilds nothing.
         expect(TextSubs.watch(old_hook, **old_options, &old_rebuild)).to be_nil
         expect(pauses).to eq(0)
-        expect(displayed_messages.last).to eq('A newer textsubs has started, so this one stops here and leaves the subs to it.')
+        expect(displayed_messages.last).to eq('A newer textsubs has started, so this one stops here; if no textsubs is running now, start it again with ;textsubs.')
         expect(run_hooks(fine)).to eq("NEW RUN.\r\n")
 
         # Its rebuild, as if its last check had passed just before the newer
@@ -2071,7 +2077,8 @@ RSpec.describe 'textsubs.lic' do
         expect(TextSubs.watch(new_hook, **new_options, &new_rebuild)).to be_nil
         expect(pauses).to eq(1)
         expect(installed_entries).to eq([['You feel fine', 0, 'NEW RUN'], *golden_catalog(spell_links_on.merge('guild' => 'Bard'))])
-        expect(rebuilt).to eq(['Your guild is now Bard, so textsubs has built its subs again for it.'])
+        # The refused rebuild said why it started, but never that it was done.
+        expect(rebuilt).to eq([bard_rebuild, bard_rebuild, bard_installed])
       end
 
       # The first write once the guild is Bard (the rebuild's) and every

@@ -718,7 +718,7 @@ class TextSubs
       pause(interval)
     end
     if registered
-      echo 'A newer textsubs has started, so this one stops here and leaves the subs to it.'
+      echo 'A newer textsubs has started, so this one stops here; if no textsubs is running now, start it again with ;textsubs.'
     else
       echo "The '#{hook}' hook is gone, so nothing is substituted any more and textsubs stops here " \
            "(a '--- Lich: DownstreamHook:' line above says why, if it raised). Start it again with ;textsubs."
@@ -2192,8 +2192,12 @@ DownstreamHook.add('textsub', action, persist: false, priority: TextSubs.hook_pr
 # is built again for it, whole, while the hook goes on applying the old one,
 # and then swapped in with the subs other scripts added since the start, and
 # without those dropped, unless a newer start took over during the build.
+# The line that says why comes before the build, so any warning the build
+# prints follows it, and the one that says it is done only once installed.
 TextSubs.watch('textsub', guild: guild, run: this_run) do |new_guild|
+  guild_name = new_guild || 'not known'
+  echo "Your guild is now #{guild_name}, so textsubs builds its subs again for it."
   if TextSubs.reinstall(fill_catalog.call(TextSubs::Registry.new, new_guild), run: this_run)
-    echo "Your guild is now #{new_guild || 'not known'}, so textsubs has built its subs again for it."
+    echo "textsubs has built its subs again for #{guild_name} and uses them now."
   end
 end
