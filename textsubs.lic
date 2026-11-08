@@ -2100,12 +2100,11 @@ class TextSubs
       def self.check_numbers(name, section, index, earlier)
         numbers = section['steps'].map(&:first)
         counts = numbers.tally
-        sharing = earlier.select { |other, _| other['steps'].any? { |n, _| counts.key?(n) } }
-        taken = sharing.flat_map { |other, _| other['steps'].map(&:first) }
+        taken = earlier.flat_map { |other, _| other['steps'].map(&:first) }
         repeated = numbers.uniq.select { |n| counts[n] > 1 || taken.include?(n) }
         return if repeated.empty?
 
-        also = sharing.select { |other, _| other['steps'].any? { |n, _| repeated.include?(n) } }
+        also = earlier.select { |other, _| other['steps'].any? { |n, _| repeated.include?(n) } }
                       .map { |other, other_index| Catalog.section_label(other, other_index) }
         where = also.empty? ? '' : " on scale #{name.inspect}, as #{also.join(' and ')} does"
         raise ArgumentError, "#{Catalog.section_label(section, index)} uses step number(s) #{repeated.join(', ')} more than once#{where}"
