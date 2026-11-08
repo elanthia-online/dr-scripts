@@ -4884,28 +4884,47 @@ RSpec.describe 'textsubs.lic' do
           { 'name' => name, 'kind' => 'ladder', 'of' => 5, 'steps' => steps }.merge(fields)
         end
 
-        # The review's repro on the real data: 'a light hit' is step n 1 of
-        # 'hit tiers', and both hit-tier ladders count on one of: 23 scale.
-        # Takes the step to append; gives the changed `textsubs:` value, and
-        # the places of 'hit tiers' and of the section given the step.
-        shipped_with_hit_tier_step = lambda do |step|
+        # @param data [Hash] a `textsubs:` value
+        # @param guild [String]
+        # @return [Array<String>] the replacement of each sub the guild gets
+        def replacements_for(data, guild = 'Bard')
+          entries_for(guild, data).map { |_source, replacement, _meta| replacement }
+        end
+
+        # The shipped file with one step appended to one of the two ladder
+        # sections of a split scale ('hit tiers', of 23, or 'Paladin soul
+        # pool', of 11), as the review's repro does.
+        #
+        # @param first [String] the name of the scale's first section
+        # @param second [String] the name of the section given the step
+        # @param step [Array(Integer, String)] the [n, 'phrase'] to append
+        # @return [Array(Hash, Integer, Integer)] the changed `textsubs:`
+        #   value, and the places of the first and second sections
+        shipped_with_step = lambda do |first, second, step|
           data = Marshal.load(Marshal.dump(shipped_catalog['textsubs']))
           names = data['sections'].map { |section| section['name'] }
-          tiers = names.index('hit tiers')
-          worse = names.index('hit tiers, leaving a mark and worse')
-          data['sections'][worse]['steps'] << step
-          [data, tiers, worse]
+          data['sections'][names.index(second)]['steps'] << step
+          [data, names.index(first), names.index(second)]
         end
 
         it "refuses the review's repro: a light hit appended as n 2 to the second hit-tier ladder of the shipped file" do
-          data, tiers, worse = shipped_with_hit_tier_step.call([2, 'a light hit'])
+          data, tiers, worse = shipped_with_step.call('hit tiers', 'hit tiers, leaving a mark and worse', [2, 'a light hit'])
           expect { entries_for('Bard', data) }
             .to raise_error(ArgumentError, "section #{worse + 1} (hit tiers, leaving a mark and worse) uses step number(s) 2 " \
                                            "more than once on scale \"hit tiers\", as section #{tiers + 1} (hit tiers) does")
         end
 
+        it 'refuses an n of the first Paladin soul pool ladder appended to the second, as both count on one scale' do
+          data, brightens, flickers = shipped_with_step.call('Paladin soul pool brightens', 'Paladin soul pool pulses and flickers',
+                                                             [8, 'It glows with an inner light\.'])
+          expect { entries_for('Paladin', data) }
+            .to raise_error(ArgumentError, "section #{flickers + 1} (Paladin soul pool pulses and flickers) uses step number(s) 8 " \
+                                           "more than once on scale \"Paladin soul pool\", as section #{brightens + 1} " \
+                                           '(Paladin soul pool brightens) does')
+        end
+
         it 'refuses the same phrase added to the second hit-tier ladder under an n the scale has free, naming both sections' do
-          data, tiers, worse = shipped_with_hit_tier_step.call([17, 'a light hit'])
+          data, tiers, worse = shipped_with_step.call('hit tiers', 'hit tiers, leaving a mark and worse', [17, 'a light hit'])
           expect { entries_for('Bard', data) }
             .to raise_error(ArgumentError, "section #{tiers + 1} (hit tiers) steps 1 (n 1) phrase \"a light hit\" is also matched by " \
                                            "section #{worse + 1} (hit tiers, leaving a mark and worse) steps 7 (n 17), " \
@@ -4924,7 +4943,7 @@ RSpec.describe 'textsubs.lic' do
           landed = ladder('landed', [[1, 'a hit hard']], 'prefix' => 'You land')
           anchored = ladder('anchored', [[2, 'a hit']], 'anchor' => '^')
           loose = ladder('loose', [[2, 'a hit']])
-          expect(pairs_of(ladder_catalog(landed, anchored))).to eq(['You land a hit hard (1/5)', 'a hit (2/5)'])
+          expect(replacements_for(ladder_catalog(landed, anchored))).to eq(['You land a hit hard (1/5)', 'a hit (2/5)'])
           expect { entries_for('Bard', ladder_catalog(landed, loose)) }
             .to raise_error(ArgumentError, /\Asection 1 \(landed\) steps 1 \(n 1\) phrase "a hit hard" is also matched by section 2 \(loose\) steps 1 \(n 2\),/)
         end
@@ -4949,8 +4968,8 @@ RSpec.describe 'textsubs.lic' do
           it "#{apart ? 'lets' : 'refuses'} one phrase in two ladders with #{label}" do
             catalog = ladder_catalog(ladder('one', [[1, 'a hit']], 'when' => gate), ladder('two', [[2, 'a hit']], 'when' => other))
             if apart
-              got = guilds.map { |guild| pairs_of(catalog, guild) }
-              expect(pairs_of(catalog, 'Bard')).to eq(['a hit (1/5)'])
+              got = guilds.map { |guild| replacements_for(catalog, guild) }
+              expect(replacements_for(catalog, 'Bard')).to eq(['a hit (1/5)'])
               expect(got).to include(['a hit (2/5)'])
               expect(got).to all(satisfy { |subs| subs.size <= 1 })
             else
@@ -4965,7 +4984,7 @@ RSpec.describe 'textsubs.lic' do
           expect { entries_for('Bard', ladder_catalog(first, second)) }
             .to raise_error(ArgumentError, 'section 2 (second) uses step number(s) 2 more than once on scale "wounds", as section 1 (first) does')
           own_scales = ladder_catalog(first.except('scale'), second.except('scale'))
-          expect(pairs_of(own_scales)).to eq(['a nick (1/5)', 'a cut (2/5)', 'a gash (3/5)', 'a slash (2/5)'])
+          expect(replacements_for(own_scales)).to eq(['a nick (1/5)', 'a cut (2/5)', 'a gash (3/5)', 'a slash (2/5)'])
         end
 
         it "takes a section's own name as its scale, so a later section joins it by naming it" do
@@ -4984,7 +5003,7 @@ RSpec.describe 'textsubs.lic' do
         it 'lets guild-disjoint sections of one scale use one n, as no character gets both' do
           catalog = ladder_catalog(ladder('bard', [[1, 'a nick']], 'scale' => 's', 'when' => { 'guilds' => ['Bard'] }),
                                    ladder('thief', [[1, 'a gash']], 'scale' => 's', 'when' => { 'guilds' => ['Thief'] }))
-          expect([pairs_of(catalog, 'Bard'), pairs_of(catalog, 'Thief')]).to eq([['a nick (1/5)'], ['a gash (1/5)']])
+          expect([replacements_for(catalog, 'Bard'), replacements_for(catalog, 'Thief')]).to eq([['a nick (1/5)'], ['a gash (1/5)']])
         end
 
         it 'refuses sections of one scale that give it different ofs, naming the first' do
@@ -5001,13 +5020,6 @@ RSpec.describe 'textsubs.lic' do
             expect { ladder_pairs({ 'of' => 5, 'steps' => [[1, 'a hit']] }.merge(change)) }
               .to raise_error(ArgumentError, "section 1 (scale) #{message}")
           end
-        end
-
-        # @param data [Hash] a `textsubs:` value
-        # @param guild [String]
-        # @return [Array<String>] the replacement of each sub the guild gets
-        def pairs_of(data, guild = 'Bard')
-          entries_for(guild, data).map { |_source, replacement, _meta| replacement }
         end
       end
 
