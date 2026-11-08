@@ -635,18 +635,23 @@ RSpec.describe 'textsubs.lic' do
   # has to be in both.
   #
   # The keys are found by running the real entry point with get_settings
-  # answering a recorder, three ways. The all-on path: once for each of the
+  # answering a recorder, four ways. The all-on path: once for each of the
   # 96 combinations and once more with no guild known, each with a shit list
-  # on disk, integrate_shit_list_with_textsubs on and a private sub. The
+  # on disk, integrate_shit_list_with_textsubs on and a private sub; in the
+  # run with no guild known TextSubs.watch yields 'Bard', so the block the
+  # entry point hands watch runs and builds again with every flag on. The
   # shipped-defaults path: once with textsubs_defaults (which the third
   # example pins to base.yaml: the flags off, private_textsubs nil) and no
   # shit list file, so the branches that run when a setting is off or empty
-  # read through the recorder too. And one rebuild for a new guild: in that
-  # same run TextSubs.watch yields 'Bard', so the block the entry point hands
-  # watch runs and builds again, reading what it reads. After every run a
-  # line goes through the 'textsub' hook the run registered, with a front
-  # end attached and with none, so a key the hook proc reads for each line
-  # is recorded as well.
+  # read through the recorder too; watch yields 'Bard' there as well. The
+  # error path: a private sub that is not valid regex source, a data/custom
+  # copy of the catalog in place of the shipped one, catalog data of an
+  # older schema, and a watch that yields no guild and whose rebuild a newer
+  # start refuses (TextSubs.reinstall answers false), so the warnings, the
+  # override notice, the build message and the refused branch run. After
+  # every run a line goes through the 'textsub' hook the run registered,
+  # with a front end attached and with none, so a key the hook proc reads
+  # for each line is recorded as well.
   #
   # textsubs reads its settings by name (settings.<key>) and by index
   # (settings[key], in Context#setting? for a section's when: gate). The
@@ -727,9 +732,9 @@ RSpec.describe 'textsubs.lic' do
     end
 
     # Runs the real entry point with get_settings answering a recorder, in the
-    # three ways the comment above describes: the all-on path, the
-    # shipped-defaults path, and a rebuild for a new guild through watch.
-    # Each run passes a line through its hook (see record_run).
+    # ways the comment above describes: the all-on path, the shipped-defaults
+    # path, a rebuild for a new guild through watch, and the error path. Each
+    # run passes a line through its hook (see record_run).
     #
     # @return [Array<String>] each key read, once
     define_method(:record_reads) do
@@ -739,6 +744,11 @@ RSpec.describe 'textsubs.lic' do
         [{ 'guild' => nil }, *combinations].each do |combination|
           values = combination.except('guild')
                               .merge('integrate_shit_list_with_textsubs' => true, 'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
+          # The run with no guild known rebuilds for 'Bard' through watch,
+          # so the watch block reads with every flag on too.
+          rebuild = receive(:watch)
+          rebuild = rebuild.and_yield('Bard') unless combination['guild']
+          allow(TextSubs).to rebuild
           DRStats.guild = combination['guild']
           record_run(values, read)
         end
@@ -747,6 +757,17 @@ RSpec.describe 'textsubs.lic' do
         allow(TextSubs).to receive(:watch).and_yield('Bard')
         DRStats.guild = nil
         record_run(textsubs_defaults, read)
+      end
+      # The error path: a private sub that cannot be used, a data/custom copy
+      # in place of the shipped data, catalog data of an older schema, and a
+      # rebuild for a guild no longer known that a newer start refuses.
+      with_shit_list(nil) do
+        allow(TextSubs).to receive(:catalog_override).and_return('/nonexistent-textsubs-spec/data/custom/base-textsubs.yaml')
+        $test_data[:textsubs] = OpenStruct.new(textsubs: { 'schema' => 0 })
+        allow(TextSubs).to receive(:reinstall).and_return(false)
+        allow(TextSubs).to receive(:watch).and_yield(nil)
+        DRStats.guild = 'Bard'
+        record_run(textsubs_defaults.merge('private_textsubs' => { '(' => 'x' }), read)
       end
       read.uniq
     end
