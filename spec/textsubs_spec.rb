@@ -1914,7 +1914,8 @@ RSpec.describe 'textsubs.lic' do
     end
 
     # add_catalog stores these keys, so each has to be the key TextSubs.add
-    # would store for its source (eql? and the same hash, as a Hash key needs).
+    # would store for its source (eql? and the same hash, as a Hash key needs,
+    # and frozen, as the /#{source}/ add compiles is).
     it 'gives the same subs through keyed_entries, each key the one add would store for its source' do
       data = catalog_data(<<~'YAML')
         textsubs:
@@ -1933,6 +1934,7 @@ RSpec.describe 'textsubs.lic' do
       keyed.each do |key, _replacement, _meta|
         expect(key).to eql(/#{key.source}/)
         expect(key.hash).to eq(/#{key.source}/.hash)
+        expect(key).to be_frozen
       end
     end
 
@@ -2120,6 +2122,7 @@ RSpec.describe 'textsubs.lic' do
 
       expect(compiled.map(&:source)).to eq(%w[fine cat pray])
       expect(TextSubs.subs.keys.map(&:object_id)).to eq(compiled.first(2).map(&:object_id))
+      expect(TextSubs.subs.keys).to all(be_frozen)
     end
 
     it 'adds nothing, not even the good sections before the bad one, and says why, naming the file and the schema' do

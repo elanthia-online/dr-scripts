@@ -481,13 +481,16 @@ class TextSubs
     # does not select too, and each selected sub reuses the Regexp that check
     # compiled, so no pattern is compiled twice on a start. Regexp.new keeps
     # the source it is given, and a key compiled from source with
-    # Regexp.new is eql? to /#{source}/, the key TextSubs.add stores.
+    # Regexp.new is eql? to /#{source}/, the key TextSubs.add stores. check
+    # freezes each key, as /#{source}/ is frozen, so a key in TextSubs.subs
+    # cannot be changed whichever writer stored it.
     #
     # @param data [Hash, nil] the `textsubs:` value of get_data('textsubs');
     #   nil when the file is missing or did not parse
     # @param context [TextSubs::Context] the guild and settings to gate on
     # @return [Array<Array(Regexp, String, Hash)>] [key, replacement, meta]
-    #   for each sub, where meta is a frozen { section: name }
+    #   for each sub, where the key is frozen and meta is a frozen
+    #   { section: name }
     # @raise [ArgumentError] naming the first problem found anywhere in data,
     #   including in sections context does not select
     # @example
@@ -577,10 +580,10 @@ class TextSubs
     end
 
     # @param pattern [String] regex source
-    # @return [Regexp] the pattern, compiled
+    # @return [Regexp] the pattern, compiled and frozen, as a Regexp literal is
     # @raise [ArgumentError] when it does not compile
     def self.check_pattern(pattern)
-      Regexp.new(pattern)
+      Regexp.new(pattern).freeze
     rescue RegexpError => e
       raise ArgumentError, "pattern #{pattern.inspect} does not compile: #{e.message}"
     end
