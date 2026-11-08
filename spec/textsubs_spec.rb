@@ -1,6 +1,7 @@
 require 'delegate'
 require 'fileutils'
 require 'json'
+require 'prism'
 require 'stringio'
 require 'tmpdir'
 require 'yaml'
@@ -170,13 +171,29 @@ RSpec.describe 'textsubs.lic' do
   end
 
   # The textsubs settings as profiles/base.yaml ships them: private_textsubs
-  # is nil, as base.yaml leaves it empty, and textsubs_spell_links is nil, as
-  # base.yaml does not set it.
+  # is nil, as base.yaml leaves it empty, and every flag is false.
+  # 'the settings textsubs reads' holds this table to the file.
   #
   # @return [Hash{String=>Object}] frozen default for every key textsubs.lic reads
   def textsubs_defaults
-    { 'private_textsubs' => nil, 'integrate_shit_list_with_textsubs' => false, 'textsubs_spell_links' => nil,
+    { 'private_textsubs' => nil, 'integrate_shit_list_with_textsubs' => false, 'textsubs_spell_links' => false,
       'herb_textsubs' => false, 'textsubs_use_plat_grouping' => false }.freeze
+  end
+
+  # Runs the block inside a new temporary directory that holds
+  # "<checkname>_shit.list" with the given content, or no such file when
+  # content is nil: the entry point reads the shit list from the current
+  # directory, so a build in the block sees exactly this file.
+  #
+  # @param content [String, nil] the shit-list file body, or nil for no file
+  # @yield with the temporary directory as the current directory
+  # @yieldreturn [Object] what the block builds
+  # @return [Object] what the block returned
+  def with_shit_list(content, &)
+    Dir.mktmpdir('textsubs-shit-list') do |dir|
+      File.write(File.join(dir, "#{checkname}_shit.list"), content) if content
+      Dir.chdir(dir, &)
+    end
   end
 
   # @param combination [Hash{String=>Object}] one element of `combinations`
@@ -484,13 +501,10 @@ RSpec.describe 'textsubs.lic' do
       end
 
       it 'rebuilds from nothing on a restart, keeping no herb, shit-list or private key of the run before' do
-        Dir.mktmpdir('textsubs-restart') do |dir|
-          File.write(File.join(dir, "#{checkname}_shit.list"), "zorvex,stole my kill\n")
-          Dir.chdir(dir) do
-            first = build_catalog('Ranger', 'herb_textsubs' => true, 'integrate_shit_list_with_textsubs' => true,
-                                            'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
-            expect(first.map(&:first)).to include('\\bZorvex\\b', 'You feel fine', 'nilos')
-          end
+        with_shit_list("zorvex,stole my kill\n") do
+          first = build_catalog('Ranger', 'herb_textsubs' => true, 'integrate_shit_list_with_textsubs' => true,
+                                          'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
+          expect(first.map(&:first)).to include('\\bZorvex\\b', 'You feel fine', 'nilos')
         end
 
         combination = { 'guild' => 'Ranger', 'textsubs_spell_links' => false, 'herb_textsubs' => false,
@@ -615,6 +629,182 @@ RSpec.describe 'textsubs.lic' do
     end
   end
 
+  # profiles/base.yaml is where a player looks up what a setting does, and
+  # what get_settings answers for a key the player has not set, and the
+  # script's own header lists the settings it reads. Every key textsubs reads
+  # has to be in both.
+  #
+  # The keys are found by running the real entry point with get_settings
+  # answering a recorder, four ways. The all-on path: once for each of the
+  # 96 combinations and once more with no guild known, each with a shit list
+  # on disk, integrate_shit_list_with_textsubs on and a private sub; in the
+  # run with no guild known TextSubs.watch yields 'Bard', so the block the
+  # entry point hands watch runs and builds again with every flag on. The
+  # shipped-defaults path: once with textsubs_defaults (which the third
+  # example pins to base.yaml: the flags off, private_textsubs nil) and no
+  # shit list file, so the branches that run when a setting is off or empty
+  # read through the recorder too; watch yields 'Bard' there as well. The
+  # error path: a private sub that is not valid regex source, a data/custom
+  # copy of the catalog in place of the shipped one, catalog data of an
+  # older schema, and a watch that yields no guild and whose rebuild a newer
+  # start refuses (TextSubs.reinstall answers false), so the warnings, the
+  # override notice, the build message and the refused branch run. After
+  # every run a line goes through the 'textsub' hook the run registered,
+  # with a front end attached and with none, so a key the hook proc reads
+  # for each line is recorded as well.
+  #
+  # textsubs reads its settings by name (settings.<key>) and by index
+  # (settings[key], in Context#setting? for a section's when: gate). The
+  # recorder answers those two and dig. Any other call that takes arguments
+  # (fetch, a setter, respond_to?) raises, so a new way of reading a key
+  # fails here instead of passing by unseen, and one that takes none (to_h,
+  # each_pair) is recorded as a key, which base.yaml does not define.
+  describe 'the settings textsubs reads' do
+    base_profile = YAML.unsafe_load_file(File.expand_path('../profiles/base.yaml', __dir__), freeze: true)
+    # A stand-in for the OpenStruct get_settings returns: it answers values
+    # (nil for a key values lacks) and adds the name of each key read to read.
+    # It is a BasicObject, so a call Object would answer (respond_to?, nil?,
+    # inspect, send, public_send) reaches method_missing instead of passing by
+    # unrecorded.
+    recorder = Class.new(BasicObject) do
+      # @param values [Hash{String=>Object}] the value of each key, by name
+      # @param read [Array<String>] where each key read is added, shared by
+      #   every recorder of one record_reads run
+      define_method(:initialize) do |values, read|
+        @values = values
+        @read = read
+      end
+
+      # Reads a key by index, as Context#setting? does for a when: gate.
+      #
+      # @param key [String, Symbol] the key's name
+      # @return [Object, nil] its value, nil when values lacks it
+      define_method(:[]) do |key|
+        @read << key.to_s
+        @values[key.to_s]
+      end
+
+      # Reads key, as #[] does, and digs the rest into its value.
+      #
+      # @param key [String, Symbol] the key's name
+      # @param rest [Array<Object>] the keys or indexes inside its value
+      # @return [Object, nil] the value found, nil when any step is missing
+      define_method(:dig) { |key, *rest| rest.empty? ? self[key] : self[key]&.dig(*rest) }
+
+      # Reads a key by name (settings.<key>), as #[] does.
+      #
+      # @param name [Symbol] the key's name
+      # @param args [Array<Object>] must be empty
+      # @return [Object, nil] the key's value, nil when values lacks it
+      # @raise [NoMethodError] for any call with arguments (fetch, setters,
+      #   respond_to?), so a way of reading a key this recorder cannot see
+      #   fails the examples instead of passing by unseen
+      define_method(:method_missing) do |name, *args|
+        ::Kernel.raise ::NoMethodError, "the settings recorder reads no key through #{name}(...)" unless args.empty?
+
+        self[name]
+      end
+    end
+    reads = nil
+
+    # Runs the real entry point once with get_settings answering a recorder
+    # over values, then sends one line through the 'textsub' hook it
+    # registered, with a front end attached and with none, so a setting the
+    # hook proc reads, on either side of its front-end guard, is recorded
+    # too. The hook has to be registered still: DownstreamHook.run removes a
+    # hook that raises, as the recorder does for a call it cannot see a key
+    # in, and only says so in a line, so a removed hook fails the examples.
+    #
+    # @param values [Hash{String=>Object}] the value of each setting
+    # @param read [Array<String>] where each key read is added
+    # @return [void]
+    # @raise [RuntimeError] when the hook raised on the line
+    define_method(:record_run) do |values, read|
+      allow(TOPLEVEL_BINDING.receiver).to receive(:get_settings).and_return(recorder.new(values, read))
+      run_lic_entry('textsubs.lic', 'TextSubs')
+      [true, false].each do |attached|
+        allow(TextSubs).to receive(:client_attached?).and_return(attached)
+        run_hooks("You feel fine.\r\n".b)
+        next if DownstreamHook.list.include?('textsub')
+
+        raise "the 'textsub' hook raised on a line (front end attached: #{attached}), so what it read there went unrecorded"
+      end
+    end
+
+    # Runs the real entry point with get_settings answering a recorder, in the
+    # ways the comment above describes: the all-on path, the shipped-defaults
+    # path, a rebuild for a new guild through watch, and the error path. Each
+    # run passes a line through its hook (see record_run).
+    #
+    # @return [Array<String>] each key read, once
+    define_method(:record_reads) do
+      read = []
+      allow(TextSubs).to receive(:pause)
+      with_shit_list("zorvex,stole my kill\n") do
+        [{ 'guild' => nil }, *combinations].each do |combination|
+          values = combination.except('guild')
+                              .merge('integrate_shit_list_with_textsubs' => true, 'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
+          # The run with no guild known rebuilds for 'Bard' through watch,
+          # so the watch block reads with every flag on too.
+          rebuild = receive(:watch)
+          rebuild = rebuild.and_yield('Bard') unless combination['guild']
+          allow(TextSubs).to rebuild
+          DRStats.guild = combination['guild']
+          record_run(values, read)
+        end
+      end
+      with_shit_list(nil) do
+        allow(TextSubs).to receive(:watch).and_yield('Bard')
+        DRStats.guild = nil
+        record_run(textsubs_defaults, read)
+      end
+      # The error path: a private sub that cannot be used, a data/custom copy
+      # in place of the shipped data, catalog data of an older schema, and a
+      # rebuild for a guild no longer known that a newer start refuses.
+      with_shit_list(nil) do
+        allow(TextSubs).to receive(:catalog_override).and_return('/nonexistent-textsubs-spec/data/custom/base-textsubs.yaml')
+        $test_data[:textsubs] = OpenStruct.new(textsubs: { 'schema' => 0 })
+        allow(TextSubs).to receive(:reinstall).and_return(false)
+        allow(TextSubs).to receive(:watch).and_yield(nil)
+        DRStats.guild = 'Bard'
+        record_run(textsubs_defaults.merge('private_textsubs' => { '(' => 'x' }), read)
+      end
+      read.uniq
+    end
+    # Made once, by whichever example asks first.
+    let(:read) { reads ||= record_reads }
+
+    it 'reads exactly the keys textsubs_defaults lists' do
+      expect(read).to match_array(textsubs_defaults.keys)
+    end
+
+    it 'defines every settings key textsubs reads, and reads every textsubs key base.yaml defines' do
+      expect(read.reject { |key| base_profile.key?(key) }).to be_empty
+      expect(base_profile.keys.grep(/textsubs/) - read).to be_empty
+    end
+
+    it 'ships each of those keys with the value the specs build a default catalog with' do
+      expect(base_profile.slice(*read)).to eq(textsubs_defaults)
+    end
+
+    it "lists every one of them in the script's =begin header, each as a key - what it does line" do
+      header = File.read(File.expand_path('../textsubs.lic', __dir__))[/^=begin\n(.*?)^=end\n/m, 1]
+      expect(read.reject { |key| header.match?(/^ +#{key} - \S/) }).to be_empty
+    end
+  end
+
+  # Lich's Script splits a script into goto labels at every line that is a
+  # word and a colon alone (/^(\w+):$/), with no regard for =begin blocks, so
+  # a 'Settings:' line in the header would start a label. The check is broader
+  # than Lich's, indented and with trailing spaces, so a reindent or an
+  # editor cannot turn a near miss into one.
+  describe 'textsubs.lic source' do
+    it 'has no line Lich would read as a label' do
+      lines = File.readlines(File.expand_path('../textsubs.lic', __dir__)).each_with_index
+      expect(lines.filter_map { |line, index| "#{index + 1}: #{line.strip}" if line.match?(/^\s*\w+:\s*$/) }).to be_empty
+    end
+  end
+
   describe 'settings gating' do
     flags = %w[textsubs_spell_links herb_textsubs textsubs_use_plat_grouping]
 
@@ -678,10 +868,11 @@ RSpec.describe 'textsubs.lic' do
       end
     end
 
-    it 'treats an unset flag (nil, as base.yaml leaves textsubs_spell_links) like false' do
-      expect(build_catalog('Cleric', 'herb_textsubs' => false, 'textsubs_use_plat_grouping' => false))
-        .to eq(build_catalog('Cleric', 'textsubs_spell_links' => false, 'herb_textsubs' => false,
-                                       'textsubs_use_plat_grouping' => false))
+    flags.each do |flag|
+      it "treats #{flag} unset (nil, as a key written with no value gives) like false" do
+        others = (flags - [flag]).to_h { |other| [other, false] }
+        expect(build_catalog('Cleric', others.merge(flag => nil))).to eq(build_catalog('Cleric', others.merge(flag => false)))
+      end
     end
 
     it 'links the guild spell list to the guild category only with textsubs_spell_links on' do
@@ -693,17 +884,14 @@ RSpec.describe 'textsubs.lic' do
   end
 
   describe 'shit list' do
-    # Runs the entry inside a temporary directory holding
-    # "<checkname>_shit.list" with the given content (or no file when nil).
+    # Builds the Commoner catalog with "<checkname>_shit.list" holding the
+    # given content (or no file when nil); see with_shit_list.
     #
     # @param content [String, nil] the shit-list file body
     # @param integrate [Boolean] integrate_shit_list_with_textsubs
     # @return [Array<Array>] the catalog built
     def catalog_with_shit_list(content, integrate:)
-      Dir.mktmpdir('textsubs-shit-list') do |dir|
-        File.write(File.join(dir, "#{checkname}_shit.list"), content) if content
-        Dir.chdir(dir) { build_catalog('Commoner', 'integrate_shit_list_with_textsubs' => integrate) }
-      end
+      with_shit_list(content) { build_catalog('Commoner', 'integrate_shit_list_with_textsubs' => integrate) }
     end
 
     let(:plain_catalog) { build_catalog('Commoner') }
@@ -969,12 +1157,9 @@ RSpec.describe 'textsubs.lic' do
     end
 
     it 'puts shit-list entries before private ones' do
-      Dir.mktmpdir('textsubs-shit-list') do |dir|
-        File.write(File.join(dir, "#{checkname}_shit.list"), "zorvex,reason\n")
-        settings = { 'integrate_shit_list_with_textsubs' => true, 'private_textsubs' => { 'You feel fine' => 'You feel FINE' } }
-        catalog = Dir.chdir(dir) { build_catalog('Commoner', settings) }
-        expect(catalog.first(2)).to eq([['\\bZorvex\\b', 0, 'Zorvex (SL)'], ['You feel fine', 0, 'You feel FINE']])
-      end
+      settings = { 'integrate_shit_list_with_textsubs' => true, 'private_textsubs' => { 'You feel fine' => 'You feel FINE' } }
+      catalog = with_shit_list("zorvex,reason\n") { build_catalog('Commoner', settings) }
+      expect(catalog.first(2)).to eq([['\\bZorvex\\b', 0, 'Zorvex (SL)'], ['You feel fine', 0, 'You feel FINE']])
     end
   end
 
@@ -4532,7 +4717,6 @@ RSpec.describe 'textsubs.lic' do
       # misspelt, swapped or nil default would still answer false, so the
       # defaults are read from the parsed source instead.
       it 'defaults each source to the Lich global that holds it' do
-        require 'prism'
         tree = Prism.parse_file(lic_path('textsubs.lic')).value
         definition = tree.breadth_first_search do |node|
           node.is_a?(Prism::DefNode) && node.receiver.is_a?(Prism::SelfNode) && node.name == :client_attached?
