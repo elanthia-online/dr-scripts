@@ -9,14 +9,15 @@ no_kill_all
 # The text substitution catalog and the engine that applies it to game lines.
 #
 # The script's entry point stages a fresh, empty Registry on every start,
-# fills it through add (the shit list, private_textsubs, then the built-in
-# subs Catalog reads from data/base-textsubs.yaml), installs it whole, and only
-# then registers a 'textsub' DownstreamHook (persist: false, so Lich removes it
-# when the script ends, and priority hook_priority, so it runs after every
-# default-priority hook) that hands every server line to apply while a front
-# end is attached. Until the install, apply serves the empty catalog the class
-# body installed when the start evaluated it. The script then waits in watch,
-# which ends it once that hook is gone.
+# fills it (the shit list, private_textsubs, then the built-in subs Catalog
+# reads from data/base-textsubs.yaml, after which prefer_private gives a
+# private key the catalog also has its private value back), installs it
+# whole, and only then registers a 'textsub' DownstreamHook (persist: false,
+# so Lich removes it when the script ends, and priority hook_priority, so it
+# runs after every default-priority hook) that hands every server line to
+# apply while a front end is attached. Until the install, apply serves the
+# empty catalog the class body installed when the start evaluated it. The
+# script then waits in watch, which ends it once that hook is gone.
 #
 # Lich evaluates this class body inside Lich::Common on every start, and the
 # class itself persists for the session, so it defines no constants but its
@@ -1358,6 +1359,162 @@ class TextSubs
     private_class_method :check, :check_section, :check_pairs, :check_link, :check_pattern, :expand
   end
 
+  # Parsers for the subs a character's own settings and files give. Each is
+  # pure: it takes what the entry point read and returns the entries it can
+  # use with a warning for each one it cannot, and never reads a file or a
+  # setting itself.
+  module Sources
+    # The private_textsubs setting: a mapping of 'regex source': 'gsub
+    # replacement' a player writes in their YAML. A key may also be a
+    # !ruby/regexp, which YAML gives as a Regexp: it keeps its flags, so
+    # !ruby/regexp /you feel fine/i matches in any case.
+    #
+    # Regexp#== compares the i, m and x flags, so a key with any of them is
+    # never the built-in key of the same source (see TextSubs.prefer_private):
+    # both are in the catalog and both run on a line, the private one first.
+    # A key with none of them is that built-in key, and the private value
+    # replaces the built-in one. That includes /text/n: on an ASCII-only
+    # source /n gives the same Regexp as the flagless key (== and #hash
+    # agree), so it is treated as that key, not as one of its own.
+    #
+    # A String key and a !ruby/regexp key of the same source with none of
+    # i, m or x are the same pattern, so only the first of them is used and
+    # the other is skipped, saying so; the catalog could hold only one of
+    # them anyway.
+    #
+    # Every message names a key as the player wrote it (see label): a String
+    # in double quotes as it is, with no escaping, and a Regexp as /text/flags.
+    #
+    # @example
+    #   TextSubs::Sources::PrivateSubs.entries('You feel fine' => 'You feel FINE', 'Bob' => nil)
+    #   # => [[[/You feel fine/, "You feel FINE", "\"You feel fine\""]],
+    #   #     ["private_textsubs \"Bob\" is skipped: its replacement is empty (nil) ..."]]
+    # @example A !ruby/regexp key
+    #   TextSubs::Sources::PrivateSubs.entries(/you feel fine/i => 'MINE')
+    #   # => [[[/you feel fine/i, "MINE", "/you feel fine/i"]], []]
+    # @example The same pattern twice
+    #   TextSubs::Sources::PrivateSubs.entries('fine' => 'A', /fine/ => 'B')
+    #   # => [[[/fine/, "A", "\"fine\""]],
+    #   #     ["private_textsubs /fine/ is skipped: it is the same pattern as \"fine\", which is used instead."]]
+    class PrivateSubs
+      # The match timeout of every private key, so one runaway pattern cannot
+      # stall the game thread: the engine drops a key that times out. It is
+      # lich-5's own timeout for user regexes, which every Lich from the
+      # 5.23.0 floor (dependency.lic) defines.
+      #
+      # @return [Float] seconds (1.0 as lich-5 ships it)
+      def self.regex_timeout
+        Lich::Common::UserDefs::REGEX_TIMEOUT_SECONDS
+      end
+
+      # The entries of a private_textsubs value that can be used, in order,
+      # and why each other one cannot. A key whose replacement is not a
+      # String would raise on the first line it matched, and one that is not
+      # valid regex source would end the script at load, so neither is added.
+      #
+      # @param value [Object] the private_textsubs setting: a Hash, or nil
+      #   when it is unset (base.yaml leaves it empty); its keys are regex
+      #   source (String) or Regexp
+      # @return [Array(Array<Array(Regexp, String, String)>, Array<String>)]
+      #   frozen [entries, warnings]: each entry a key compiled with
+      #   regex_timeout (a Regexp key with its own flags), its replacement and
+      #   the key's name (see label: "text" or /text/i), no two entries with
+      #   the same key; each warning one sentence naming a skipped key
+      # @example A setting that is not a mapping
+      #   TextSubs::Sources::PrivateSubs.entries(nil)   # => [[], []]
+      #   TextSubs::Sources::PrivateSubs.entries('Bob') # => [[], ["private_textsubs is a String, not a mapping ..."]]
+      def self.entries(value)
+        entries = []
+        warnings = []
+        if value.is_a?(Hash)
+          value.each do |source, replacement|
+            reason = problem(source, replacement)
+            key, reason = compile(source) unless reason
+            reason ||= duplicate(entries, key)
+            if reason
+              warnings << "private_textsubs #{label(source)} is skipped: #{reason}."
+            else
+              entries << [key, replacement, label(source)].freeze
+            end
+          end
+        elsif !value.nil?
+          warnings << "private_textsubs is #{article(value)}, not a mapping of 'old text': 'new text'; it is ignored."
+        end
+        [entries.freeze, warnings.freeze].freeze
+      end
+
+      # @param source [Object] a private_textsubs key
+      # @param replacement [Object] its value
+      # @return [String, nil] why the pair cannot be used, before compiling
+      def self.problem(source, replacement)
+        return "it is #{article(source)}, not a quoted string; quote it in your YAML" unless source.is_a?(String) || source.is_a?(Regexp)
+        return 'an empty pattern matches between every two characters of every line' if pattern(source).first.empty?
+        return "its replacement is empty (nil); write '' to delete the text it matches" if replacement.nil?
+        unless replacement.is_a?(String)
+          return "its replacement #{replacement.inspect} is #{article(replacement)}, not a quoted string; quote the replacement in your YAML"
+        end
+
+        nil
+      end
+
+      # @param source [String, Regexp] regex source, or a Regexp whose source
+      #   and flags the key takes
+      # @return [Array(Regexp, nil), Array(nil, String)] [key, nil], or
+      #   [nil, why it does not compile]
+      def self.compile(source)
+        [Regexp.new(*pattern(source), timeout: regex_timeout), nil]
+      rescue RegexpError => e
+        [nil, "it is not a valid regex (#{e.message})"]
+      end
+
+      # @param entries [Array<Array(Regexp, String, String)>] the entries
+      #   kept so far
+      # @param key [Regexp] a compiled key
+      # @return [String, nil] why key cannot be used when an earlier entry
+      #   has the same key (Regexp#==, as the catalog Hash compares keys)
+      def self.duplicate(entries, key)
+        earlier = entries.assoc(key)
+        "it is the same pattern as #{earlier.last}, which is used instead" if earlier
+      end
+
+      # A key's name in a message, as the player wrote it: a String key in
+      # double quotes with no escaping, so 'a(\d)' reads "a(\d)" and not
+      # Ruby's "a(\\d)"; a Regexp key as /text/flags (Regexp#inspect, which
+      # does not escape its source either); any other key as Ruby shows it.
+      #
+      # @param source [Object] a private_textsubs key
+      # @return [String]
+      # @example
+      #   TextSubs::Sources::PrivateSubs.send(:label, 'a(\d)') # prints "a(\d)"
+      #   TextSubs::Sources::PrivateSubs.send(:label, /a/i)     # => "/a/i"
+      #   TextSubs::Sources::PrivateSubs.send(:label, 12)       # => "12"
+      def self.label(source)
+        source.is_a?(String) ? "\"#{source}\"" : source.inspect
+      end
+
+      # The regex source and flags a key stands for, the one place a Regexp
+      # key and a String key are told apart: a Regexp gives its own, a String
+      # is the source itself with no flags.
+      #
+      # @param source [String, Regexp] a private_textsubs key
+      # @return [Array(String, Integer)] [regex source, Regexp options]
+      # @example
+      #   TextSubs::Sources::PrivateSubs.send(:pattern, /a b/ix) # => ["a b", 3]
+      #   TextSubs::Sources::PrivateSubs.send(:pattern, 'a b')   # => ["a b", 0]
+      def self.pattern(source)
+        source.is_a?(Regexp) ? [source.source, source.options] : [source, 0]
+      end
+
+      # @param value [Object]
+      # @return [String] its class with an indefinite article
+      def self.article(value)
+        name = value.class.name
+        "#{name.match?(/\A[AEIOU]/) ? 'an' : 'a'} #{name}"
+      end
+      private_class_method :problem, :compile, :duplicate, :label, :pattern, :article
+    end
+  end
+
   # Whether any front end receives game output right now. It mirrors lich-5's
   # Game#client_write_targets: a non-empty detachable client registry, else the
   # legacy single detachable client, else the primary client ($_CLIENT_, nil
@@ -1478,6 +1635,46 @@ class TextSubs
     nil
   end
 
+  # Adds the private_textsubs entries, in order. They go in ahead of the
+  # built-in catalog, so each keeps the first position its key gets; a key the
+  # catalog adds again takes the built-in value until prefer_private gives it
+  # back.
+  #
+  # @param entries [Array<Array(Regexp, String, String)>] the entries of
+  #   Sources::PrivateSubs.entries
+  # @return [Array<Array(Regexp, String, String)>] entries
+  def self.add_private(entries)
+    entries.each { |key, replacement| store_key(key, replacement) }
+  end
+
+  # Gives each private key whose value a later add replaced (a built-in sub
+  # with the same regex source) its private replacement back, in the place
+  # the key already holds. A private sub is the player's own choice, so it
+  # wins over the shipped one. The key keeps the gate the built-in gave it:
+  # a gate is a promise about the pattern (see Registry), and the pattern is
+  # the same, so the private value is spared the regex on lines the gate
+  # rules out just as the built-in one was. It reads and writes the catalog
+  # being built: the staged Registry on a start (see stage).
+  #
+  # @param entries [Array<Array(Regexp, String, String)>] the entries
+  #   add_private added: key, replacement and the key's name (see
+  #   Sources::PrivateSubs.label: "text" unescaped, or /text/flags)
+  # @return [Array<String>] one warning per key given back, naming it by
+  #   that name; empty when no key was replaced, or only by the same text
+  # @example After add_private([[/You feel fine/, 'MINE', '"You feel fine"']]) and a built-in add of 'You feel fine'
+  #   TextSubs.prefer_private([[/You feel fine/, 'MINE', '"You feel fine"']])
+  #   # => ["private_textsubs \"You feel fine\" is also a built-in sub; your replacement is used instead of the built-in one."]
+  def self.prefer_private(entries)
+    entries.filter_map do |key, replacement, name|
+      target = write_target
+      catalog = target.snapshot
+      next if !catalog.key?(key) || catalog[key] == replacement
+
+      store_key(key, replacement, requires_any: target.gates[key])
+      "private_textsubs #{name} is also a built-in sub; your replacement is used instead of the built-in one."
+    end
+  end
+
   # Compiles target unescaped and hands the key to store_key, for add and
   # elanthipedia, whose subs are regex source.
   #
@@ -1493,14 +1690,15 @@ class TextSubs
     store_key(/#{target}/, result)
   end
 
-  # The one writer of the catalog: add and elanthipedia reach it through
-  # store, and add_catalog calls it straight, as its keys are compiled
-  # already. It writes write_target, under the lock, so no stage, unstage or
-  # install of another thread lands between choosing the Registry and
-  # counting the key. A key written to the installed catalog counts one
-  # generation per sub, after it is written, so the generation never runs
-  # ahead of the catalog; a key written to a staged Registry or this thread's
-  # own build is not in subs yet and counts none, as install counts that whole
+  # The one writer of the catalog: add and elanthipedia reach it through store,
+  # and add_catalog, add_private and prefer_private call it straight, as their
+  # keys are compiled already (a private key with its timeout). It writes one
+  # key to write_target, under the lock, so no stage, unstage or install of
+  # another thread lands between choosing the Registry and counting the key. A
+  # key written to the installed catalog then counts one generation, so a call
+  # is one key and one generation per sub and the generation never runs ahead
+  # of the catalog; a key written to a staged Registry or this thread's own
+  # build is not in subs yet and counts none, as install counts that whole
   # catalog once, when it swaps it in.
   #
   # @param key [Regexp] the pattern
@@ -1518,9 +1716,9 @@ class TextSubs
     result
   end
 
-  # The Registry an add writes: this thread's own build while it has one
-  # (see stage), else the staged Registry while there is one, else the
-  # installed one.
+  # The catalog being built, which an add writes: this thread's own build
+  # while it has one (see stage), else the staged Registry while there is
+  # one, else the installed one.
   #
   # @return [TextSubs::Registry]
   def self.write_target
@@ -1559,11 +1757,11 @@ if settings.integrate_shit_list_with_textsubs && File.file?("#{checkname}_shit.l
   end
 end
 
-unless settings.private_textsubs.empty?
-  settings.private_textsubs.each do |k, v|
-    TextSubs.add(k, v)
-  end
-end
+# A private_textsubs entry that cannot be used is skipped, saying why, so one
+# bad line of YAML neither ends the script here nor drops a sub later.
+private_subs, private_warnings = TextSubs::Sources::PrivateSubs.entries(settings.private_textsubs)
+private_warnings.each { |warning| echo warning }
+TextSubs.add_private(private_subs)
 ### SPELLBOOK PROJECT - MikeLC 2/15/2025 ###
 #
 # Creates elanthipedia weblinks for the spells and spellbooks
@@ -1601,6 +1799,7 @@ end
 catalog_problem = TextSubs.add_catalog(get_data('textsubs').textsubs, TextSubs::Context.new(guild: DRStats.guild, settings: settings),
                                        file: catalog_override || File.join(SCRIPT_DIR, 'data', 'base-textsubs.yaml'))
 echo catalog_problem if catalog_problem
+TextSubs.prefer_private(private_subs).each { |warning| echo warning }
 
 # nil when a newer start superseded this one: it installs its catalog and
 # registers its hook, so this run ends here (see TextSubs.install).

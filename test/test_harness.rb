@@ -1717,6 +1717,12 @@ module Harness
       module Inventory
         def self.refresh(*_args); end
       end
+
+      # lich-5's user-regex timeout (lib/common/user_defs.rb), present from
+      # Lich 5.23.0, the dr-scripts floor.
+      module UserDefs
+        REGEX_TIMEOUT_SECONDS = 1.0 unless const_defined?(:REGEX_TIMEOUT_SECONDS)
+      end
     end
 
     module Util

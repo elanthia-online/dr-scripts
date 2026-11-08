@@ -167,13 +167,13 @@ RSpec.describe 'textsubs.lic' do
     TextSubs.subs.map { |pattern, replacement| [pattern.source, pattern.options, replacement] }
   end
 
-  # The textsubs settings as profiles/base.yaml ships them, except
-  # private_textsubs: {} instead of nil because the harness has no nilclass
-  # patch. textsubs_spell_links stays nil, as base.yaml leaves it unset.
+  # The textsubs settings as profiles/base.yaml ships them: private_textsubs
+  # is nil, as base.yaml leaves it empty, and textsubs_spell_links is nil, as
+  # base.yaml does not set it.
   #
   # @return [Hash{String=>Object}] frozen default for every key textsubs.lic reads
   def textsubs_defaults
-    { 'private_textsubs' => {}, 'integrate_shit_list_with_textsubs' => false, 'textsubs_spell_links' => nil,
+    { 'private_textsubs' => nil, 'integrate_shit_list_with_textsubs' => false, 'textsubs_spell_links' => nil,
       'herb_textsubs' => false, 'textsubs_use_plat_grouping' => false }.freeze
   end
 
@@ -708,11 +708,200 @@ RSpec.describe 'textsubs.lic' do
   end
 
   describe 'private_textsubs' do
-    it 'adds each private pair, in order, ahead of the built-in catalog' do
+    include_context 'with a front end attached'
+
+    # A built-in sub every guild gets, some way into the catalog.
+    durability = 'Assessing the (.*) durability, you determine (it is|is|they are|are) extremely weak and easily damaged'
+
+    it 'adds each private pair, in order, ahead of the built-in catalog, saying nothing' do
       private_subs = { 'You feel fine' => 'You feel FINE', 'a (\w+) widget' => 'a \1 gadget' }
       catalog = build_catalog('Commoner', 'private_textsubs' => private_subs)
+      expect(displayed_messages).to be_empty
       expect(catalog.first(2)).to eq([['You feel fine', 0, 'You feel FINE'], ['a (\w+) widget', 0, 'a \1 gadget']])
       expect(catalog.drop(2)).to eq(build_catalog('Commoner'))
+    end
+
+    it 'compiles each private key with a one-second match timeout, and no built-in key' do
+      build_catalog('Commoner', 'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
+      keys = TextSubs.subs.keys
+      expect(keys.first).to eq(/You feel fine/)
+      expect(keys.first.timeout).to eq(1.0)
+      expect(keys.drop(1).map(&:timeout).uniq).to eq([nil])
+    end
+
+    it 'adds nothing and says nothing when private_textsubs is unset, as base.yaml leaves it (nil)' do
+      catalog = build_catalog('Commoner', 'private_textsubs' => nil)
+      said = displayed_messages.dup
+      expect(DownstreamHook.list).to include('textsub')
+      expect(said).to be_empty
+      expect(catalog).to eq(build_catalog('Commoner'))
+    end
+
+    # Each bad entry sits beside a good one, and the line sent through the
+    # hook holds text the bad key matches, so a bad entry that got in would
+    # either corrupt the line or raise in the hook.
+    {
+      'a blank value (Bob:)'           => [{ 'Bob' => nil }, 'Bob waves.',
+                                           "private_textsubs \"Bob\" is skipped: its replacement is empty (nil); write '' to delete the text it matches."],
+      'an Integer value (health: 100)' => [{ 'health' => 100 }, 'Your health is good.',
+                                           'private_textsubs "health" is skipped: its replacement 100 is an Integer, not a quoted string; quote the replacement in your YAML.'],
+      'a key that is not valid regex'  => [{ '(' => 'y' }, 'You smile (warmly).',
+                                           'private_textsubs "(" is skipped: it is not a valid regex (end pattern with unmatched parenthesis: /(/).'],
+      'a key YAML reads as an Integer' => [{ 100 => 'a hundred' }, 'You count 100 coins.',
+                                           'private_textsubs 100 is skipped: it is an Integer, not a quoted string; quote it in your YAML.'],
+      'an empty key'                   => [{ '' => '-' }, 'Bob waves.',
+                                           'private_textsubs "" is skipped: an empty pattern matches between every two characters of every line.']
+    }.each do |label, (bad, line, warning)|
+      it "skips #{label} with one warning, keeps the good entry first, and keeps the hook on a line the key matches" do
+        catalog = build_catalog('Commoner', 'private_textsubs' => bad.merge('You feel fine' => 'You feel FINE'))
+
+        expect(displayed_messages).to eq([warning])
+        expect(DownstreamHook.list).to include('textsub')
+        expect(run_hooks("#{line} You feel fine.\r\n".b)).to eq("#{line} You feel FINE.\r\n")
+        expect(DownstreamHook.list).to include('textsub')
+        expect(displayed_messages).to eq([warning])
+        expect(catalog.first).to eq(['You feel fine', 0, 'You feel FINE'])
+        expect(catalog.drop(1)).to eq(build_catalog('Commoner'))
+      end
+    end
+
+    {
+      'a String'                             => ['Bob', 'private_textsubs is a String'],
+      'a list, which YAML gives for - lines' => [%w[Bob Alice], 'private_textsubs is an Array']
+    }.each do |label, (value, warning)|
+      it "ignores a private_textsubs that is #{label}, not a mapping, with one warning" do
+        catalog = build_catalog('Commoner', 'private_textsubs' => value)
+        expect(displayed_messages).to eq(["#{warning}, not a mapping of 'old text': 'new text'; it is ignored."])
+        expect(DownstreamHook.list).to include('textsub')
+        expect(catalog).to eq(build_catalog('Commoner'))
+      end
+    end
+
+    describe 'a key that is also a built-in sub' do
+      it 'keeps the private slot and the private value, and says so once' do
+        plain = build_catalog('Commoner')
+        expect(plain.index { |source, _, _| source == durability }).to be > 10
+
+        catalog = build_catalog('Commoner', 'private_textsubs' => { durability => 'MINE: \1 (1/18)' })
+
+        expect(catalog.first).to eq([durability, 0, 'MINE: \1 (1/18)'])
+        expect(catalog.drop(1)).to eq(plain.reject { |source, _, _| source == durability })
+        expect(TextSubs.subs.keys.first.timeout).to eq(1.0)
+        expect(displayed_messages).to eq(["private_textsubs #{durability.inspect} is also a built-in sub; " \
+                                          'your replacement is used instead of the built-in one.'])
+        line = "Assessing the sword durability, you determine it is extremely weak and easily damaged.\r\n".b
+        expect(run_hooks(line)).to eq("MINE: sword (1/18).\r\n")
+      end
+
+      it 'says nothing when the private replacement is the built-in one' do
+        builtin = build_catalog('Commoner').find { |source, _, _| source == durability }.last
+        catalog = build_catalog('Commoner', 'private_textsubs' => { durability => builtin })
+        expect(catalog.first).to eq([durability, 0, builtin])
+        expect(displayed_messages).to be_empty
+      end
+    end
+
+    # A YAML key written as !ruby/regexp /.../i arrives as a Regexp, which
+    # YAML.unsafe_load gives with its flags.
+    describe 'a !ruby/regexp key' do
+      it 'is added with its flags and the timeout, saying nothing, and rewrites a line in any case through the hook' do
+        plain = build_catalog('Commoner')
+
+        catalog = build_catalog('Commoner', 'private_textsubs' => { /you feel fine/i => 'MINE' })
+
+        expect(displayed_messages).to be_empty
+        expect(catalog.first).to eq(['you feel fine', Regexp::IGNORECASE, 'MINE'])
+        expect(catalog.drop(1)).to eq(plain)
+        key = TextSubs.subs.keys.first
+        expect(key.timeout).to eq(1.0)
+        line = "YOU Feel FINE.\r\n".b
+        expect(TextSubs::TokenIndex.new(TextSubs.subs.keys).candidates(line)).to include(key)
+        expect(TextSubs.apply(line.dup)).to eq("MINE.\r\n")
+        expect(run_hooks(line)).to eq("MINE.\r\n")
+      end
+
+      # Regexp#== compares the flags, so /source/i is a key of its own beside
+      # the built-in /source/: both stay in the catalog and both run, the
+      # private one first, as they did when a key was interpolated whole.
+      it 'with a flag is not the built-in key of the same source: both run, the private one first, saying nothing' do
+        plain = build_catalog('Commoner')
+        builtin = plain.find { |source, _, _| source == durability }
+
+        catalog = build_catalog('Commoner', 'private_textsubs' => { Regexp.new(durability, Regexp::IGNORECASE) => 'MINE: \1' })
+
+        expect(displayed_messages).to be_empty
+        expect(catalog.first).to eq([durability, Regexp::IGNORECASE, 'MINE: \1'])
+        expect(catalog.drop(1)).to eq(plain)
+        expect(catalog).to include(builtin)
+        line = "ASSESSING the sword durability, you determine it is extremely weak and easily damaged.\r\n".b
+        expect(run_hooks(line)).to eq("MINE: sword.\r\n")
+        line = "Assessing the sword durability, you determine it is extremely weak and easily damaged.\r\n".b
+        expect(run_hooks(line)).to eq("MINE: sword.\r\n")
+      end
+
+      it 'without a flag is the built-in key of the same source: it keeps the private slot and value, and says so once' do
+        plain = build_catalog('Commoner')
+
+        catalog = build_catalog('Commoner', 'private_textsubs' => { Regexp.new(durability) => 'MINE: \1' })
+
+        expect(catalog.first).to eq([durability, 0, 'MINE: \1'])
+        expect(catalog.drop(1)).to eq(plain.reject { |source, _, _| source == durability })
+        expect(displayed_messages).to eq(["private_textsubs #{Regexp.new(durability).inspect} is also a built-in sub; " \
+                                          'your replacement is used instead of the built-in one.'])
+      end
+
+      # YAML gives !ruby/regexp /text/n as Regexp::NOENCODING. On an ASCII-only
+      # source that is the same Regexp as the flagless key (== and #hash
+      # agree), so it is the built-in key, not a key of its own like /i.
+      it 'with only /n on an ASCII source is the built-in key of the same source: it keeps the private slot and value, and says so once' do
+        plain = build_catalog('Commoner')
+        key = Regexp.new(durability, Regexp::NOENCODING)
+
+        catalog = build_catalog('Commoner', 'private_textsubs' => { key => 'MINE: \1' })
+
+        expect(catalog.first).to eq([durability, Regexp::NOENCODING, 'MINE: \1'])
+        expect(catalog.drop(1)).to eq(plain.reject { |source, _, _| source == durability })
+        expect(displayed_messages).to eq(["private_textsubs /#{durability}/n is also a built-in sub; " \
+                                          'your replacement is used instead of the built-in one.'])
+      end
+    end
+
+    # A quoted key compiles with no flags, so it is the same Regexp as a
+    # flagless !ruby/regexp key of the same source: the catalog can hold only
+    # one of them, and the first one written is the one kept.
+    describe 'a quoted key and a flagless !ruby/regexp key of the same source' do
+      it 'keeps the first one, skips the other naming both, and gives nothing else a message' do
+        plain = build_catalog('Commoner')
+
+        catalog = build_catalog('Commoner', 'private_textsubs' => { 'zorvexqq' => 'A', /zorvexqq/ => 'B' })
+
+        expect(catalog.first).to eq(['zorvexqq', 0, 'A'])
+        expect(catalog.drop(1)).to eq(plain)
+        expect(displayed_messages).to eq(['private_textsubs /zorvexqq/ is skipped: it is the same pattern as "zorvexqq", which is used instead.'])
+      end
+
+      it 'keeps the first one written when the !ruby/regexp key comes first' do
+        plain = build_catalog('Commoner')
+
+        catalog = build_catalog('Commoner', 'private_textsubs' => { /zorvexqq/ => 'B', 'zorvexqq' => 'A' })
+
+        expect(catalog.first).to eq(['zorvexqq', 0, 'B'])
+        expect(catalog.drop(1)).to eq(plain)
+        expect(displayed_messages).to eq(['private_textsubs "zorvexqq" is skipped: it is the same pattern as /zorvexqq/, which is used instead.'])
+      end
+
+      it 'says once that the kept one replaces a built-in sub of that source, naming it as written' do
+        plain = build_catalog('Commoner')
+
+        catalog = build_catalog('Commoner', 'private_textsubs' => { Regexp.new(durability) => 'MINE: \1', durability => 'OTHER: \1' })
+
+        expect(catalog.first).to eq([durability, 0, 'MINE: \1'])
+        expect(catalog.drop(1)).to eq(plain.reject { |source, _, _| source == durability })
+        expect(displayed_messages).to eq(["private_textsubs #{durability.inspect} is skipped: it is the same pattern as " \
+                                          "#{Regexp.new(durability).inspect}, which is used instead.",
+                                          "private_textsubs #{Regexp.new(durability).inspect} is also a built-in sub; " \
+                                          'your replacement is used instead of the built-in one.'])
+      end
     end
 
     it 'puts shit-list entries before private ones' do
@@ -1075,16 +1264,6 @@ RSpec.describe 'textsubs.lic' do
         expect(TextSubs.subs.keys).not_to include(/foo/)
       end
 
-      it 'drops a nil private_textsubs value set ahead of the other subs, as a blank YAML value gives' do
-        build_catalog('Commoner', 'private_textsubs' => { 'Bob' => nil, 'You feel fine' => 'You feel FINE' })
-
-        expect(run_hooks("Bob nods. You feel fine.\r\n".b)).to eq("Bob nods. You feel FINE.\r\n")
-        expect(run_hooks("Bob waves.\r\n".b)).to eq("Bob waves.\r\n")
-        expect(DownstreamHook.list).to include('textsub')
-        expect(reports_of('Bob').size).to eq(1)
-        expect(lich_removals).to be_empty
-      end
-
       it 'drops a UTF-8 key on the first binary line with high bytes, keeping the hook and the other subs' do
         key = "Caf#{0xE9.chr(Encoding::UTF_8)}"
         build_catalog('Commoner', 'private_textsubs' => { key => 'Cafe', 'You feel fine' => 'You feel FINE' })
@@ -1172,11 +1351,25 @@ RSpec.describe 'textsubs.lic' do
       # Script.at_exit: another spec replaces the top-level before_dying.
       dying = []
       allow(TOPLEVEL_BINDING.receiver).to(receive(:before_dying)) { |&block| dying << block }
+      # A private_textsubs key that is not regex source is skipped with a
+      # warning now, so the build is made to die on its second write to the
+      # staged Registry instead, as a build stopped (;kill) or broken partway
+      # would. A TracePoint on Registry#add raises before that write lands,
+      # and only while the build runs: a stub giving the staged Registry a
+      # raising add would also reach the Registry the after hook stages for
+      # the next example.
+      build_died = Class.new(StandardError)
+      writes = 0
+      dies = TracePoint.new(:call) { raise build_died, 'the build died partway' if (writes += 1) == 2 }
       installed = TextSubs.subs
       expect(installed).to eq({})
-      private_subs = { 'You feel fine' => 'You feel FINE', '(' => 'not valid regex source' }
 
-      expect { build_catalog('Commoner', 'private_textsubs' => private_subs) }.to raise_error(RegexpError)
+      expect do
+        dies.enable(target: TextSubs::Registry.instance_method(:add)) do
+          build_catalog('Commoner', 'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
+        end
+      end.to raise_error(build_died)
+      expect(writes).to eq(2)
       expect(TextSubs.subs).to equal(installed)
       dying.each(&:call)
 
@@ -3122,6 +3315,157 @@ RSpec.describe 'textsubs.lic' do
     it 'lets an error that is not about the data through' do
       allow(TextSubs::Catalog).to receive(:keyed_entries).and_raise(NoMethodError, 'a bug, not bad data')
       expect { TextSubs.add_catalog(good, context, file: 'f') }.to raise_error(NoMethodError, 'a bug, not bad data')
+    end
+  end
+
+  describe 'TextSubs::Sources::PrivateSubs.entries' do
+    # @param value [Object] a private_textsubs value
+    # @return [Array(Array, Array)] [entries, warnings]
+    def private_entries(value)
+      TextSubs::Sources::PrivateSubs.entries(value)
+    end
+
+    it 'compiles each usable key with the timeout, in order, around the skipped ones' do
+      entries, warnings = private_entries('a(\d)' => 'A\1', 'Bob' => nil, '[' => 'x', 'c' => '')
+      expect(entries).to eq([[/a(\d)/, 'A\1', '"a(\d)"'], [/c/, '', '"c"']])
+      expect(entries.map { |key, _| key.timeout }).to eq([1.0, 1.0])
+      expect(warnings.size).to eq(2)
+      expect(warnings.first).to start_with('private_textsubs "Bob" is skipped:')
+      expect(warnings.last).to start_with('private_textsubs "[" is skipped: it is not a valid regex (')
+    end
+
+    # The name is the key as the player wrote it in their YAML, not Ruby's
+    # String#inspect, which would double each backslash and escape each quote.
+    it 'names a String key as written, backslashes and quotes unescaped, in its entry and in its warning' do
+      entries, warnings = private_entries('say "(\w+)"' => 'A', '[\d' => 'x', 'say "(\w+)" again' => nil)
+      expect(entries.map(&:last)).to eq(['"say "(\w+)""'])
+      expect(warnings.size).to eq(2)
+      expect(warnings.first).to start_with('private_textsubs "[\d" is skipped: it is not a valid regex (')
+      expect(warnings.last).to start_with('private_textsubs "say "(\w+)" again" is skipped: its replacement is empty (nil)')
+    end
+
+    it 'names a !ruby/regexp key as /text/flags, its source unescaped' do
+      entries, warnings = private_entries(/say "(\w+)"/i => 'A', /say "(\w+)" again/ => nil)
+      expect(entries.map(&:last)).to eq(['/say "(\w+)"/i'])
+      expect(warnings).to eq(['private_textsubs /say "(\w+)" again/ is skipped: its replacement is empty (nil); ' \
+                              "write '' to delete the text it matches."])
+    end
+
+    it 'answers nil with nothing to add and nothing to say' do
+      expect(private_entries(nil)).to eq([[], []])
+    end
+
+    it 'answers an empty mapping with nothing to add and nothing to say' do
+      expect(private_entries({})).to eq([[], []])
+    end
+
+    it 'names the class of a value that is not a String, with the right article' do
+      _, warnings = private_entries('one' => 1.5, 'two' => :sym, 'three' => ['x'], 'four' => { 'x' => 'y' })
+      expect(warnings).to eq([
+                               'private_textsubs "one" is skipped: its replacement 1.5 is a Float, not a quoted string; quote the replacement in your YAML.',
+                               'private_textsubs "two" is skipped: its replacement :sym is a Symbol, not a quoted string; quote the replacement in your YAML.',
+                               'private_textsubs "three" is skipped: its replacement ["x"] is an Array, not a quoted string; quote the replacement in your YAML.',
+                               "private_textsubs \"four\" is skipped: its replacement #{{ 'x' => 'y' }.inspect} is a Hash, not a quoted string; " \
+                               'quote the replacement in your YAML.'
+                             ])
+    end
+
+    it 'compiles a Regexp key (!ruby/regexp) from its source and flags, with the timeout' do
+      entries, warnings = private_entries(/a(\d)/i => 'A\1', /x y/mx => 'z', /plain/ => 'p')
+      expect(warnings).to eq([])
+      expect(entries).to eq([[/a(\d)/i, 'A\1', '/a(\d)/i'], [/x y/mx, 'z', '/x y/mx'], [/plain/, 'p', '/plain/']])
+      expect(entries.map { |key, _| key.options }).to eq([Regexp::IGNORECASE, Regexp::MULTILINE | Regexp::EXTENDED, 0])
+      expect(entries.map { |key, _| key.timeout }).to eq([1.0, 1.0, 1.0])
+    end
+
+    it 'skips an empty Regexp key or one with a bad value, saying why and never to quote the key' do
+      _, warnings = private_entries(//i => 'x', /Bob/ => nil, /Ann/i => 7)
+      expect(warnings).to eq([
+                               'private_textsubs //i is skipped: an empty pattern matches between every two characters of every line.',
+                               "private_textsubs /Bob/ is skipped: its replacement is empty (nil); write '' to delete the text it matches.",
+                               'private_textsubs /Ann/i is skipped: its replacement 7 is an Integer, not a quoted string; quote the replacement in your YAML.'
+                             ])
+    end
+
+    it 'skips a later key that is the same pattern as an earlier one, but not one that differs only by a flag' do
+      entries, warnings = private_entries('fine' => 'A', /fine/i => 'B', /fine/ => 'C')
+      expect(entries).to eq([[/fine/, 'A', '"fine"'], [/fine/i, 'B', '/fine/i']])
+      expect(warnings).to eq(['private_textsubs /fine/ is skipped: it is the same pattern as "fine", which is used instead.'])
+    end
+
+    it 'reports a key that is not a String before looking at its value' do
+      expect(private_entries(nil => nil).last).to eq(['private_textsubs nil is skipped: it is a NilClass, not a quoted string; quote it in your YAML.'])
+    end
+
+    it 'returns frozen lists of frozen entries and reads a frozen mapping without changing it' do
+      value = { 'fine' => 'FINE' }.freeze
+      result = private_entries(value)
+      expect(result).to be_frozen
+      expect(result).to all(be_frozen)
+      expect(result.first).to all(be_frozen)
+      expect(value).to eq('fine' => 'FINE')
+    end
+  end
+
+  describe 'TextSubs.prefer_private' do
+    before { TextSubs.clear }
+
+    let(:context) { TextSubs::Context.new(guild: 'Bard', settings: OpenStruct.new) }
+
+    it 'gives a replaced private key its value back in its own place, once, counting one generation' do
+      entries, = TextSubs::Sources::PrivateSubs.entries('fine' => 'MINE', 'cat' => 'kitten')
+      TextSubs.add_private(entries)
+      TextSubs.add('dog', 'hound')
+      TextSubs.add('fine', 'FINE')
+      generation = TextSubs.generation
+
+      expect(TextSubs.prefer_private(entries)).to eq(['private_textsubs "fine" is also a built-in sub; your replacement is used instead of the built-in one.'])
+      expect(TextSubs.subs.to_a).to eq([[/fine/, 'MINE'], [/cat/, 'kitten'], [/dog/, 'hound']])
+      expect(TextSubs.subs.keys.first.timeout).to eq(1.0)
+      expect(TextSubs.generation).to eq(generation + 1)
+
+      expect(TextSubs.prefer_private(entries)).to eq([])
+      expect(TextSubs.generation).to eq(generation + 1)
+    end
+
+    it 'keeps the gate the built-in section gave the key, so the private value still skips lines without a coin' do
+      coin_commas = '(?!.*>)\\d{1,3}(?=(\\d{3})+(?!\\d).*(Kronar|Dokora|Lirum))'
+      entries, = TextSubs::Sources::PrivateSubs.entries(coin_commas => '\\&.')
+      key = entries.first.first
+      TextSubs.add_private(entries)
+      gated = { 'schema' => 1, 'sections' => [{ 'name' => 'coin commas', 'requires_any' => %w[Kronar Dokora Lirum], 'subs' => [[coin_commas, '\\&,']] }] }
+      TextSubs.add_catalog(gated, context, file: 'f')
+      allow(key).to receive(:match?).and_call_original
+
+      TextSubs.prefer_private(entries)
+      expect(TextSubs.apply(+'You count 1234567 coins.')).to eq('You count 1234567 coins.')
+      expect(key).not_to have_received(:match?)
+      expect(TextSubs.apply(+'You have 1234567 Kronars.')).to eq('You have 1.234.567 Kronars.')
+      expect(key).to have_received(:match?).once
+    end
+
+    it 'reads and writes the staged Registry while one is staged, gate included, as on a start' do
+      coin_commas = '(?!.*>)\\d{1,3}(?=(\\d{3})+(?!\\d).*(Kronar|Dokora|Lirum))'
+      entries, = TextSubs::Sources::PrivateSubs.entries(coin_commas => '\\&.')
+      key = entries.first.first
+      staged = TextSubs.stage(TextSubs::Registry.new)
+      TextSubs.add_private(entries)
+      gated = { 'schema' => 1, 'sections' => [{ 'name' => 'coin commas', 'requires_any' => %w[Kronar Dokora Lirum], 'subs' => [[coin_commas, '\\&,']] }] }
+      TextSubs.add_catalog(gated, context, file: 'f')
+
+      expect(TextSubs.prefer_private(entries).size).to eq(1)
+      expect(staged.snapshot).to eq(key => '\\&.')
+      expect(staged.gates[key]).to eq(%w[Kronar Dokora Lirum])
+      expect(TextSubs.subs).to eq({})
+    ensure
+      TextSubs.install(staged)
+    end
+
+    it 'leaves a key alone that is no longer in the catalog' do
+      entries, = TextSubs::Sources::PrivateSubs.entries('fine' => 'MINE')
+      TextSubs.add('cat', 'dog')
+      expect(TextSubs.prefer_private(entries)).to eq([])
+      expect(TextSubs.subs).to eq(/cat/ => 'dog')
     end
   end
 
