@@ -148,6 +148,23 @@ RSpec.describe 'textsubs.lic' do
     allow(TextSubs::TokenIndex).to(receive(:tier).and_wrap_original { |original, key| parsed_tiers[key] ||= original.call(key) })
   end
 
+  # What the real Catalog.check gave for the shipped catalog the first time
+  # any example built from it. check reads nothing but its data, and the
+  # shipped data is one deep-frozen object (shipped_catalog), so every later
+  # build from that very object gets the sections, spells table and keys the
+  # first check gave, all frozen; data that is not that object (a copy, a
+  # change, a synthetic catalog) is checked in full every time. Each catalog
+  # build checks the whole file, ~1,600 patterns compiled in ~4.7 ms, and the
+  # file makes some 450 builds: without the memo it ran in about 10.0 s wall
+  # instead of about 8.0 s, over the 10 s budget for this file.
+  shipped_data = shipped_catalog['textsubs']
+  shipped_check = nil
+  before do
+    allow(TextSubs::Catalog).to(receive(:check).and_wrap_original do |original, data|
+      data.equal?(shipped_data) ? (shipped_check ||= original.call(data)) : original.call(data)
+    end)
+  end
+
   # Runs the real textsubs.lic entry point for one combination and returns the
   # catalog it built.
   #
