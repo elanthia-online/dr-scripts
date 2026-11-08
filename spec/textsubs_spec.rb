@@ -625,38 +625,87 @@ RSpec.describe 'textsubs.lic' do
   # The entry point's reads are found in the parsed source, so a line break,
   # a space or nested parentheses cannot hide one. The settings object is
   # get_settings or a get_settings(<any arguments>) call, a bare settings
-  # call with no arguments, the local settings, or any local assigned one of
-  # these. Off it, a read is a call with no arguments that OpenStruct (what
-  # get_settings returns) does not answer itself, as Ruby core and the ostruct
-  # gem define it, .<key> or &.<key>; an index
-  # or a dig by a single-quoted, double-quoted or symbol key; or a compound
-  # assignment (||=, &&=, +=) to either. An index or dig by anything else is
-  # named '(a computed key)', so the spec fails on it rather than skip it.
-  # A call that takes arguments (fetch, a setter, an operator) reads no key
-  # off an OpenStruct, and Context's @settings is an instance variable, so
-  # the scan passes those by: Context reads only the keys the data file's
-  # gates name, which are checked from the data file. A settings object
-  # handed to a method under another name is out of a static scan's reach.
+  # call with no arguments, a local named settings (a parameter, say) or the
+  # instance variable @settings, any of those in parentheses or after
+  # .freeze, .dup, .clone or .itself, and any name bound to one of these: a
+  # local or an instance variable assigned it by =, ||= or &&=, or by its
+  # place in a list assignment from a literal list, and a parameter that
+  # defaults to it. A local counts in the def, class or module body (or the
+  # file) it is bound in, blocks inside included; an instance variable
+  # counts across the whole file.
+  #
+  # Off the settings object, a read is a call with no arguments that
+  # OpenStruct (what get_settings returns) does not answer itself, as Ruby
+  # core and the ostruct gem define it, .<key> or &.<key>; an index or a dig
+  # by a single-quoted, double-quoted or symbol key; or a compound assignment
+  # (||=, &&=, +=) to either. An index or dig by anything else is named
+  # '(a computed key in <class>#<method>)', or '(a computed key)' outside any
+  # class or def, once for each place it is, so the spec fails on it rather
+  # than skip it. The one this spec allows is Context#setting?, which looks
+  # up the names a section's when: gate gives; those are checked from the
+  # data file. Any other call that takes arguments (fetch, a setter, an
+  # operator) reads no key off an OpenStruct and passes by. A settings object
+  # handed to a method as a parameter not named settings, or turned into a
+  # Hash or walked first (to_h, each_pair), is out of a static scan's reach.
   describe 'the settings textsubs reads' do
-    settings_object = lambda do |node, locals|
+    # Every node in the source, each with the scope its locals live in (the
+    # def, class or module around it, or the whole file) and where that is.
+    nodes_in = lambda do |program|
+      nodes = []
+      pending = [[program, program, nil]]
+      until pending.empty?
+        node, scope, where = pending.shift
+        nodes << [node, scope, where]
+        case node
+        when Prism::ClassNode, Prism::ModuleNode then scope, where = node, [where, node.constant_path.slice].compact.join('::')
+        when Prism::SingletonClassNode then scope = node
+        when Prism::DefNode then scope, where = node, "#{where}##{node.name}"
+        end
+        pending.concat(node.compact_child_nodes.map { |child| [child, scope, where] })
+      end
+      nodes
+    end
+    # holders lists the names bound to the settings: [scope, name] for a
+    # local, the name alone for an instance variable.
+    settings_object = lambda do |node, scope, holders|
       case node
-      when Prism::LocalVariableReadNode then locals.include?(node.name)
+      when Prism::LocalVariableReadNode then node.name == :settings || holders.include?([scope, node.name])
+      when Prism::InstanceVariableReadNode then node.name == :@settings || holders.include?(node.name)
+      when Prism::ParenthesesNode
+        node.body.is_a?(Prism::StatementsNode) && settings_object.call(node.body.body.last, scope, holders)
       when Prism::CallNode
-        node.receiver.nil? && (node.name == :get_settings || (node.name == :settings && node.arguments.nil?))
+        if node.receiver.nil? then node.name == :get_settings || (node.name == :settings && node.arguments.nil?)
+        else node.arguments.nil? && %i[freeze dup clone itself].include?(node.name) && settings_object.call(node.receiver, scope, holders)
+        end
       else false
       end
     end
-    settings_locals = lambda do |nodes|
-      writes = nodes.grep(Prism::LocalVariableWriteNode)
-      locals = [:settings]
-      until (found = writes.select { |write| settings_object.call(write.value, locals) }.map(&:name) - locals).empty?
-        locals += found
+    single_bindings = [Prism::LocalVariableWriteNode, Prism::LocalVariableOrWriteNode, Prism::LocalVariableAndWriteNode,
+                       Prism::InstanceVariableWriteNode, Prism::InstanceVariableOrWriteNode, Prism::InstanceVariableAndWriteNode,
+                       Prism::OptionalParameterNode, Prism::OptionalKeywordParameterNode].freeze
+    list_targets = [Prism::LocalVariableTargetNode, Prism::InstanceVariableTargetNode].freeze
+    # Each [name, value] an assignment or a parameter default binds.
+    bindings = lambda do |node|
+      case node
+      when *single_bindings then [[node.name, node.value]]
+      when Prism::MultiWriteNode
+        values = node.value.is_a?(Prism::ArrayNode) ? node.value.elements : []
+        values = [] if values.any?(Prism::SplatNode)
+        node.lefts.zip(values).select { |target, _| list_targets.include?(target.class) }.map { |target, value| [target.name, value] }
+      else []
       end
-      locals
     end
-    literal_key = lambda do |arguments|
-      key = arguments&.arguments&.first
-      key.is_a?(Prism::StringNode) || key.is_a?(Prism::SymbolNode) ? key.unescaped : '(a computed key)'
+    settings_holders = lambda do |nodes|
+      bound = nodes.flat_map { |node, scope, _| bindings.call(node).map { |name, value| [name, value, scope] } }
+      holders = []
+      loop do
+        found = bound.filter_map do |name, value, scope|
+          (name.start_with?('@') ? name : [scope, name]) if settings_object.call(value, scope, holders)
+        end
+        break holders if (found - holders).empty?
+
+        holders |= found
+      end
     end
     # Only what Ruby core and the ostruct gem define counts as OpenStruct's
     # own: a method the loaded test harness or a library (psych's to_yaml)
@@ -670,37 +719,46 @@ RSpec.describe 'textsubs.lic' do
       [OpenStruct, Object, Kernel, BasicObject].include?(method.owner) &&
         (file.nil? || file.start_with?('<internal:') || file == ostruct_file)
     end
-    key_read = lambda do |node|
+    literal = lambda do |argument|
+      argument.unescaped if argument.is_a?(Prism::StringNode) || argument.is_a?(Prism::SymbolNode)
+    end
+    # The key a call named name with these argument nodes reads off the
+    # settings, a computed-key label, or nil when it reads none.
+    key_read = lambda do |name, arguments, where|
+      computed = where ? "(a computed key in #{where})" : '(a computed key)'
+      if %i[[] dig].include?(name) then literal.call(arguments.first) || computed
+      elsif arguments.empty? && !answered_by_open_struct.call(name) then name.to_s
+      end
+    end
+    reads_of = lambda do |node, where|
       case node
-      when Prism::CallNode
-        if %i[[] dig].include?(node.name) then literal_key.call(node.arguments)
-        elsif node.arguments.nil? && !answered_by_open_struct.call(node.name) then node.name.to_s
-        end
+      when Prism::CallNode then key_read.call(node.name, node.arguments&.arguments || [], where)
       when Prism::CallOperatorWriteNode, Prism::CallOrWriteNode, Prism::CallAndWriteNode then node.read_name.to_s
       when Prism::IndexOperatorWriteNode, Prism::IndexOrWriteNode, Prism::IndexAndWriteNode
-        literal_key.call(node.arguments)
+        key_read.call(:[], node.arguments&.arguments || [], where)
       end
     end
     settings_keys_in = lambda do |source|
       parsed = Prism.parse(source)
       raise ArgumentError, parsed.errors.map(&:message).join('; ') unless parsed.success?
 
-      nodes = []
-      pending = [parsed.value]
-      until pending.empty?
-        nodes << pending.shift
-        pending.concat(nodes.last.compact_child_nodes)
+      nodes = nodes_in.call(parsed.value)
+      holders = settings_holders.call(nodes)
+      keys = nodes.filter_map do |node, scope, where|
+        reads_of.call(node, where) if node.respond_to?(:receiver) && settings_object.call(node.receiver, scope, holders)
       end
-      locals = settings_locals.call(nodes)
-      nodes.filter_map { |node| key_read.call(node) if node.respond_to?(:receiver) && settings_object.call(node.receiver, locals) }
-           .uniq
+      computed, named = keys.partition { |key| key.start_with?('(a computed key') }
+      named.uniq + computed
     end
     base_profile = YAML.unsafe_load_file(File.expand_path('../profiles/base.yaml', __dir__), freeze: true)
     script_source = File.read(File.expand_path('../textsubs.lic', __dir__))
     read_by_entry_point = settings_keys_in.call(script_source)
     gates = shipped_catalog['textsubs']['sections'].filter_map { |section| section['when'] }
     read_by_gates = gates.flat_map { |gate| gate.values_at('setting', 'setting_off') }.compact.uniq
-    read = (read_by_entry_point | read_by_gates).freeze
+    # Context#setting? looks a key up by the name a when: gate gives, and
+    # those names are read_by_gates.
+    gate_lookup = '(a computed key in TextSubs::Context#setting?)'
+    read = ((read_by_entry_point - [gate_lookup]) | read_by_gates).freeze
 
     it 'finds a key read by method, by single-quoted, double-quoted or symbol index, by dig, or straight off get_settings' do
       source = <<~RUBY
@@ -776,13 +834,79 @@ RSpec.describe 'textsubs.lic' do
         b = get_settings.dig(key)
       RUBY
       expect(settings_keys_in.call(source))
-        .to contain_exactly('or_assigned', 'and_assigned', 'added_to', 'index_or_assigned', '(a computed key)')
+        .to contain_exactly('or_assigned', 'and_assigned', 'added_to', 'index_or_assigned', '(a computed key)', '(a computed key)')
+    end
+
+    it 'finds a key read off @settings or an instance variable assigned the settings, and names a computed index by where it is' do
+      source = <<~RUBY
+        a = @settings.instance_variable_key
+        b = @settings&.dig(:dug_off_an_ivar)
+        @config = get_settings
+        c = @config['off_an_assigned_ivar']
+        d = @settings[name]
+        class Gate
+          def setting?(name)
+            @settings[name]
+          end
+        end
+      RUBY
+      expect(settings_keys_in.call(source))
+        .to contain_exactly('instance_variable_key', 'dug_off_an_ivar', 'off_an_assigned_ivar', '(a computed key)',
+                            '(a computed key in Gate#setting?)')
+    end
+
+    it 'finds a key read off a name bound by ||=, &&=, a list assignment, parentheses, freeze or dup, or a parameter default' do
+      source = <<~RUBY
+        a ||= get_settings
+        b = nil
+        b &&= settings
+        c, d = 1, get_settings
+        e = (get_settings)
+        f = get_settings.freeze
+        g = (settings).dup
+        @h ||= get_settings
+        a.off_or_assigned
+        b.off_and_assigned
+        c.not_a_read
+        d.off_a_list_assignment
+        e.off_parentheses
+        f.off_freeze
+        g.off_dup
+        @h.off_an_or_assigned_ivar
+        def default(opt = get_settings)
+          opt.off_a_default
+        end
+        def keyword_default(kw: get_settings)
+          kw.off_a_keyword_default
+        end
+      RUBY
+      expect(settings_keys_in.call(source))
+        .to contain_exactly('off_or_assigned', 'off_and_assigned', 'off_a_list_assignment', 'off_parentheses', 'off_freeze', 'off_dup',
+                            'off_an_or_assigned_ivar', 'off_a_default', 'off_a_keyword_default')
+    end
+
+    it 'counts a local in the def, class or module it is bound in, and in the blocks inside it, not in another def' do
+      source = <<~RUBY
+        def bound_here
+          config = get_settings
+          [1].each { config.in_a_block }
+        end
+        def bound_to_something_else
+          config = Other.new
+          config.not_a_read
+        end
+        module Holder
+          config = get_settings
+          config.in_a_module_body
+        end
+        config = Other.new
+        config.not_a_read_at_the_top
+      RUBY
+      expect(settings_keys_in.call(source)).to contain_exactly('in_a_block', 'in_a_module_body')
     end
 
     it 'passes by calls that read no key: off another receiver, with arguments, or a method OpenStruct answers itself' do
       source = <<~RUBY
-        a = @settings.instance_variable_key
-        b = @settings[name]
         c = my_settings&.not_a_read
         d = profile.settings.not_a_read
         e = settings(x).not_a_read
@@ -799,7 +923,7 @@ RSpec.describe 'textsubs.lic' do
 
     it 'finds the keys textsubs reads in the script and in the data file' do
       expect([read_by_entry_point, read_by_gates])
-        .to match([contain_exactly('integrate_shit_list_with_textsubs', 'private_textsubs'),
+        .to match([contain_exactly('integrate_shit_list_with_textsubs', 'private_textsubs', gate_lookup),
                    contain_exactly('textsubs_spell_links', 'herb_textsubs', 'textsubs_use_plat_grouping')])
     end
 
