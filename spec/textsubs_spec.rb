@@ -124,10 +124,13 @@ RSpec.describe 'textsubs.lic' do
   # Each key's tier, as the real TokenIndex.tier gave it the first time any
   # example asked. A tier depends on nothing but the key's source and options,
   # which Regexp#eql? compares, so a key built again gets the very tier the
-  # parser gave it. The first apply after every catalog build indexes ~1,600
-  # keys, ~70 ms of parsing each time; the examples that build catalogs ran
-  # ~2 s longer for it. Pattern.new(key).tier, which the parser examples call
-  # where they mean the parser itself, is not memoized.
+  # parser gave it. Every TokenIndex.tier call in the file goes through this,
+  # the parser examples' included: the real parser answers the first call for
+  # each key in the run, and later calls for that key get its answer back.
+  # The first apply after every catalog build indexes ~1,600 keys, ~70 ms of
+  # parsing each time. Without the memo the file ran in 12.9-13.3 s wall
+  # (seeds 1-3) instead of 8.2-8.5 s: the 10 s budget for this file holds
+  # only because of it, so it is not a cosmetic speed-up to drop.
   parsed_tiers = {}
   before do
     allow(TextSubs::TokenIndex).to(receive(:tier).and_wrap_original { |original, key| parsed_tiers[key] ||= original.call(key) })
