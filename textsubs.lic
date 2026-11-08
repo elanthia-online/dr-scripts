@@ -1936,14 +1936,15 @@ class TextSubs
   # @param data [Hash, nil] the `textsubs:` value of get_data('textsubs')
   # @param context [TextSubs::Context] the guild and settings to gate on
   # @param file [String] the file the data came from, named in the message
-  # @param registry [TextSubs::Registry] where the subs go; write_target
-  #   unless build passes the Registry it fills
+  # @param registry [TextSubs::Registry, nil] where the subs go: the
+  #   Registry build fills, or nil for write_target, read under the lock for
+  #   each key (see store_key)
   # @return [String, nil] nil once every sub is added, else the one message
   #   that says why none was
   # @example A file left over from an older dr-scripts
   #   TextSubs.add_catalog({ 'schema' => 0 }, context, file: 'data/base-textsubs.yaml')
   #   # => "No built-in subs: data/base-textsubs.yaml cannot be used (schema 0, ...). ..."
-  def self.add_catalog(data, context, file:, registry: write_target)
+  def self.add_catalog(data, context, file:, registry: nil)
     entries = Catalog.keyed_entries(data, context)
   rescue ArgumentError => e
     "No built-in subs: #{file} cannot be used (#{e.message}). This textsubs.lic needs a 'textsubs:' mapping " \
@@ -1992,9 +1993,10 @@ class TextSubs
   #
   # @param entries [Array<Array(Regexp, String, String)>] the entries of
   #   Sources::PrivateSubs.entries
-  # @param registry [TextSubs::Registry] where they go (see add_catalog)
+  # @param registry [TextSubs::Registry, nil] where they go, or nil for
+  #   write_target (see add_catalog)
   # @return [Array<Array(Regexp, String, String)>] entries
-  def self.add_private(entries, registry: write_target)
+  def self.add_private(entries, registry: nil)
     entries.each { |key, replacement| store_key(key, replacement, registry: registry) }
   end
 
@@ -2005,25 +2007,31 @@ class TextSubs
   # a gate is a promise about the pattern (see Registry), and the pattern is
   # the same, so the private value is spared the regex on lines the gate
   # rules out just as the built-in one was. It reads and writes the catalog
-  # being built: the staged Registry on a start (see stage).
+  # being built: the staged Registry on a start (see stage). Each key is
+  # checked and given back in one step under the lock, so no write of
+  # another thread lands in between, and without registry the catalog is
+  # write_target as it stands once the lock is taken (see store_key).
   #
   # @param entries [Array<Array(Regexp, String, String)>] the entries
   #   add_private added: key, replacement and the key's name (see
   #   Sources::PrivateSubs.label: "text" unescaped, or /text/flags)
-  # @param registry [TextSubs::Registry] the catalog they were added to (see
-  #   add_catalog)
+  # @param registry [TextSubs::Registry, nil] the catalog they were added
+  #   to, or nil for write_target (see add_catalog)
   # @return [Array<String>] one warning per key given back, naming it by
   #   that name; empty when no key was replaced, or only by the same text
   # @example After add_private([[/You feel fine/, 'MINE', '"You feel fine"']]) and a built-in add of 'You feel fine'
   #   TextSubs.prefer_private([[/You feel fine/, 'MINE', '"You feel fine"']])
   #   # => ["private_textsubs \"You feel fine\" is also a built-in sub; your replacement is used instead of the built-in one."]
-  def self.prefer_private(entries, registry: write_target)
+  def self.prefer_private(entries, registry: nil)
     entries.filter_map do |key, replacement, name|
-      catalog = registry.snapshot
-      next if !catalog.key?(key) || catalog[key] == replacement
+      given_back = with_write_target(registry) do |target|
+        catalog = target.snapshot
+        next false if !catalog.key?(key) || catalog[key] == replacement
 
-      store_key(key, replacement, requires_any: registry.gates[key], registry: registry)
-      "private_textsubs #{name} is also a built-in sub; your replacement is used instead of the built-in one."
+        write_key(target, key, replacement, requires_any: target.gates[key], change: false)
+        true
+      end
+      "private_textsubs #{name} is also a built-in sub; your replacement is used instead of the built-in one." if given_back
     end
   end
 
@@ -2047,14 +2055,18 @@ class TextSubs
     store_key(/#{target}/, result, registry: registry, change: change)
   end
 
-  # The one writer of a catalog: add and elanthipedia reach it through store,
-  # and add_catalog, add_private and prefer_private call it straight, as their
-  # keys are compiled already (a private key with its timeout). It writes one
-  # key to registry, write_target unless the caller names one, and counts it
-  # under the lock, so no stage, unstage, install or reinstall of another
-  # thread lands between the write and the count. write_target is read under
-  # the lock too, so an add never writes a Registry that a reinstall has
-  # replaced since: it waits for the swap and writes the new catalog. A key
+  # The one way into a catalog: add and elanthipedia reach it through store,
+  # and add_catalog and add_private call it straight, as their keys are
+  # compiled already (a private key with its timeout); prefer_private, which
+  # checks a key before it writes it, takes the same two steps
+  # (with_write_target and write_key) itself. It writes one key to registry,
+  # write_target unless the caller names one, and counts it under the lock,
+  # so no stage, unstage, install, reinstall or drop of another thread lands
+  # between the write and the count. write_target is read under the lock
+  # too, and every public writer leaves registry nil unless build hands it
+  # the Registry it fills, so no write ever goes to a Registry that a
+  # reinstall has replaced since: it waits for the swap and writes the new
+  # catalog. A key
   # written to the installed catalog then counts one generation, so a call is
   # one key and one generation per sub and the generation never runs ahead of
   # the catalog; a key written to a Registry that is not installed (staged,
@@ -2074,16 +2086,40 @@ class TextSubs
   # @raise [ArgumentError] when key is not a Regexp or requires_any is
   #   malformed; the catalog and the generation are left as they were
   def self.store_key(key, result, requires_any: nil, registry: nil, change: false)
-    @@lock.synchronize do
-      registry ||= write_target
-      if change
-        registry.add_change(key, result, requires_any: requires_any)
-      else
-        registry.add(key, result, requires_any: requires_any)
-      end
-      @@generation += 1 if registry.equal?(@@registry)
-    end
+    with_write_target(registry) { |target| write_key(target, key, result, requires_any: requires_any, change: change) }
     result
+  end
+
+  # Runs block under the lock with the catalog to write: registry, or
+  # write_target as it stands once the lock is taken.
+  #
+  # @param registry [TextSubs::Registry, nil] the catalog to write, or nil
+  #   for write_target
+  # @yieldparam target [TextSubs::Registry] the catalog to write
+  # @return [Object] what block returns
+  def self.with_write_target(registry)
+    @@lock.synchronize { yield(registry || write_target) }
+  end
+
+  # Writes one key to registry, for a caller that holds the lock (see
+  # with_write_target), and counts one generation when registry is the
+  # installed catalog (see store_key).
+  #
+  # @param registry [TextSubs::Registry] the catalog to write
+  # @param key [Regexp] the pattern
+  # @param result [String] the gsub replacement
+  # @param requires_any [Array<String>, nil] the key's gate (see Registry)
+  # @param change [Boolean] whether the Registry records it (see store_key)
+  # @return [void]
+  # @raise [ArgumentError] when key is not a Regexp or requires_any is
+  #   malformed; the catalog and the generation are left as they were
+  def self.write_key(registry, key, result, requires_any:, change:)
+    if change
+      registry.add_change(key, result, requires_any: requires_any)
+    else
+      registry.add(key, result, requires_any: requires_any)
+    end
+    @@generation += 1 if registry.equal?(@@registry)
   end
 
   # The catalog being built, which an add writes: this thread's own build
@@ -2094,7 +2130,7 @@ class TextSubs
   def self.write_target
     own_build || @@staged || @@registry
   end
-  private_class_method :store, :store_key, :write_target
+  private_class_method :store, :store_key, :with_write_target, :write_key, :write_target
 end
 
 settings = get_settings

@@ -3683,6 +3683,47 @@ RSpec.describe 'textsubs.lic' do
       expect(TextSubs.generation).to eq(start + 2)
       expect(TextSubs.subs).to eq(/cat/ => 'dog')
     end
+
+    # The public writers that take a registry: called without one, each
+    # writes the catalog being built as it stands once the lock is theirs,
+    # not the one that stood when they were called.
+    it 'keeps private subs another thread adds while reinstall replays the changes, in the catalog built again' do
+      built_again = TextSubs::Registry.new.tap { |registry| registry.add(/fine/, 'FINE') }
+
+      with_interloper_in_replay(built_again, interloper: -> { TextSubs.add_private([[/late/, 'LATE', '"late"']]) }) do
+        expect(TextSubs.reinstall(built_again)).to equal(built_again)
+      end
+
+      expect(TextSubs.subs).to eq(/fine/ => 'FINE', /late/ => 'LATE')
+    end
+
+    it 'keeps built-in subs another thread adds while reinstall replays the changes, in the catalog built again' do
+      built_again = TextSubs::Registry.new.tap { |registry| registry.add(/fine/, 'FINE') }
+      data = { 'schema' => TextSubs::Catalog.schema, 'sections' => [{ 'name' => 'late', 'subs' => [%w[late LATE]] }] }
+      context = TextSubs::Context.new(guild: 'Bard', settings: OpenStruct.new)
+      add_catalog = -> { TextSubs.add_catalog(data, context, file: 'data/base-textsubs.yaml') }
+
+      with_interloper_in_replay(built_again, interloper: add_catalog) do
+        expect(TextSubs.reinstall(built_again)).to equal(built_again)
+      end
+
+      expect(TextSubs.subs).to eq(/fine/ => 'FINE', /late/ => 'LATE')
+    end
+
+    # The installed catalog lacks the key, so a check made before the lock
+    # is taken (on that catalog) would give nothing back.
+    it 'gives a private value back on the catalog built again when another thread prefers it during the replay' do
+      built_again = TextSubs::Registry.new.tap { |registry| registry.add(/fine/, 'FINE') }
+      warnings = nil
+      prefer = -> { warnings = TextSubs.prefer_private([[/fine/, 'MINE', '"fine"']]) }
+
+      with_interloper_in_replay(built_again, interloper: prefer) do
+        expect(TextSubs.reinstall(built_again)).to equal(built_again)
+      end
+
+      expect(TextSubs.subs).to eq(/fine/ => 'MINE')
+      expect(warnings).to eq(['private_textsubs "fine" is also a built-in sub; your replacement is used instead of the built-in one.'])
+    end
   end
 
   describe 'TextSubs.subs' do
