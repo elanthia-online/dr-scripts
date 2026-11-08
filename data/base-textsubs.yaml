@@ -32,9 +32,11 @@
 # prefix: 'text' goes before each phrase, with a space, in both. The phrase
 # is the pattern as written and the replacement is its text with each
 # backslash taken out, so write it as literal text: escape every regex
-# metacharacter but '.', and nothing else. An unescaped '.' matches any
-# character and is written back as '.', so escape it where the game's
-# character may differ. Each n is from -of to of and used once on its scale.
+# metacharacter, and put a backslash before nothing but a punctuation mark.
+# A '.' may stay unescaped, where it matches any character, but escape it
+# (as the Osrel Meraud steps do) when only the game's full stop should
+# match; either way the replacement writes '.'. Each n is from -of to of
+# and used once on its scale.
 # A scale split over ladder sections, around messages that stay pairs, gives
 # each of them scale: 'name' and the same of; a scale is the section's own
 # name otherwise. The load refuses a step whose text another step's

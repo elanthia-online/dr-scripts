@@ -2090,7 +2090,7 @@ class TextSubs
         return if text.match?(/\A(?:[^\\()\[\]{}*+?|^$]|\\[!-\/:-@\[\]^-`{-~])+\z/)
 
         raise ArgumentError, "#{label} #{text.inspect} must be literal text: escape each regex metacharacter " \
-                             'but . with a backslash, and escape nothing else'
+                             '(a . may stay unescaped) with a backslash, and put one before nothing but punctuation'
       end
 
       # @param section [Hash] a checked ladder section
