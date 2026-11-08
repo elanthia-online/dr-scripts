@@ -176,8 +176,9 @@ begin
   # who relied on that how to start it at login instead. Autostart starts
   # scripts one after another without waiting for each, so textsubs may come
   # up just after this script: give it a few seconds before deciding. The
-  # window is already queued, and game lines wait in this script's buffer
-  # (lich keeps the last 200), so the wait delays neither.
+  # window is already queued, so it is not held up; game lines wait in this
+  # script's buffer (lich keeps the last 400), so none are lost, though they
+  # are handled up to five seconds late.
   10.times do
     break if Script.running?('textsubs')
 
