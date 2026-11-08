@@ -846,7 +846,42 @@ RSpec.describe 'textsubs.lic' do
 
         expect(catalog.first).to eq([durability, 0, 'MINE: \1'])
         expect(catalog.drop(1)).to eq(plain.reject { |source, _, _| source == durability })
-        expect(displayed_messages).to eq(["private_textsubs #{durability.inspect} is also a built-in sub; " \
+        expect(displayed_messages).to eq(["private_textsubs #{Regexp.new(durability).inspect} is also a built-in sub; " \
+                                          'your replacement is used instead of the built-in one.'])
+      end
+    end
+
+    # A quoted key compiles with no flags, so it is the same Regexp as a
+    # flagless !ruby/regexp key of the same source: the catalog can hold only
+    # one of them, and the first one written is the one kept.
+    describe 'a quoted key and a flagless !ruby/regexp key of the same source' do
+      it 'keeps the first one, skips the other naming both, and gives nothing else a message' do
+        plain = build_catalog('Commoner')
+
+        catalog = build_catalog('Commoner', 'private_textsubs' => { 'zorvexqq' => 'A', /zorvexqq/ => 'B' })
+
+        expect(catalog.first).to eq(['zorvexqq', 0, 'A'])
+        expect(catalog.drop(1)).to eq(plain)
+        expect(displayed_messages).to eq(['private_textsubs /zorvexqq/ is skipped: it is the same pattern as "zorvexqq", which is used instead.'])
+      end
+
+      it 'keeps the first one written when the !ruby/regexp key comes first' do
+        catalog = build_catalog('Commoner', 'private_textsubs' => { /zorvexqq/ => 'B', 'zorvexqq' => 'A' })
+
+        expect(catalog.first).to eq(['zorvexqq', 0, 'B'])
+        expect(displayed_messages).to eq(['private_textsubs "zorvexqq" is skipped: it is the same pattern as /zorvexqq/, which is used instead.'])
+      end
+
+      it 'says once that the kept one replaces a built-in sub of that source, naming it as written' do
+        plain = build_catalog('Commoner')
+
+        catalog = build_catalog('Commoner', 'private_textsubs' => { Regexp.new(durability) => 'MINE: \1', durability => 'OTHER: \1' })
+
+        expect(catalog.first).to eq([durability, 0, 'MINE: \1'])
+        expect(catalog.drop(1)).to eq(plain.reject { |source, _, _| source == durability })
+        expect(displayed_messages).to eq(["private_textsubs #{durability.inspect} is skipped: it is the same pattern as " \
+                                          "#{Regexp.new(durability).inspect}, which is used instead.",
+                                          "private_textsubs #{Regexp.new(durability).inspect} is also a built-in sub; " \
                                           'your replacement is used instead of the built-in one.'])
       end
     end
@@ -3274,7 +3309,7 @@ RSpec.describe 'textsubs.lic' do
 
     it 'compiles each usable key with the timeout, in order, around the skipped ones' do
       entries, warnings = private_entries('a(\d)' => 'A\1', 'Bob' => nil, '[' => 'x', 'c' => '')
-      expect(entries).to eq([[/a(\d)/, 'A\1'], [/c/, '']])
+      expect(entries).to eq([[/a(\d)/, 'A\1', 'a(\d)'.inspect], [/c/, '', '"c"']])
       expect(entries.map { |key, _| key.timeout }).to eq([1.0, 1.0])
       expect(warnings.size).to eq(2)
       expect(warnings.first).to start_with('private_textsubs "Bob" is skipped:')
@@ -3303,7 +3338,7 @@ RSpec.describe 'textsubs.lic' do
     it 'compiles a Regexp key (!ruby/regexp) from its source and flags, with the timeout' do
       entries, warnings = private_entries(/a(\d)/i => 'A\1', /x y/mx => 'z', /plain/ => 'p')
       expect(warnings).to eq([])
-      expect(entries).to eq([[/a(\d)/i, 'A\1'], [/x y/mx, 'z'], [/plain/, 'p']])
+      expect(entries).to eq([[/a(\d)/i, 'A\1', '/a(\d)/i'], [/x y/mx, 'z', '/x y/mx'], [/plain/, 'p', '/plain/']])
       expect(entries.map { |key, _| key.options }).to eq([Regexp::IGNORECASE, Regexp::MULTILINE | Regexp::EXTENDED, 0])
       expect(entries.map { |key, _| key.timeout }).to eq([1.0, 1.0, 1.0])
     end
@@ -3315,6 +3350,12 @@ RSpec.describe 'textsubs.lic' do
                                "private_textsubs /Bob/ is skipped: its replacement is empty (nil); write '' to delete the text it matches.",
                                'private_textsubs /Ann/i is skipped: its replacement 7 is an Integer, not a quoted string; quote the replacement in your YAML.'
                              ])
+    end
+
+    it 'skips a later key that is the same pattern as an earlier one, but not one that differs only by a flag' do
+      entries, warnings = private_entries('fine' => 'A', /fine/i => 'B', /fine/ => 'C')
+      expect(entries).to eq([[/fine/, 'A', '"fine"'], [/fine/i, 'B', '/fine/i']])
+      expect(warnings).to eq(['private_textsubs /fine/ is skipped: it is the same pattern as "fine", which is used instead.'])
     end
 
     it 'reports a key that is not a String before looking at its value' do
