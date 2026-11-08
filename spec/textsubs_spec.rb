@@ -6576,10 +6576,13 @@ RSpec.describe 'textsubs.lic' do
         expect(hooked("#{image}, fading.", guild: 'Cleric')).to eq("#{image} (1/11), fading.\r\n")
       end
 
-      it 'counts neither the capacity image nor the (16/16) presence for a guild other than Cleric' do
-        image = "#{capacity} a stream in your mind's eye"
+      it 'counts no capacity image for a guild other than Cleric' do
+        image = "#{capacity} a stream in your mind's eye."
+        expect(hooked(image)).to eq("#{image}\r\n")
+      end
+
+      it 'counts no (16/16) presence for a guild other than Cleric' do
         presence = "After a moment, you feel a clear presence like a warm blanket covering you beneath the shade of a giant Sana'ati tree."
-        expect(hooked("#{image}.")).to eq("#{image}.\r\n")
         expect(hooked(presence)).to eq("#{presence}\r\n")
       end
 
