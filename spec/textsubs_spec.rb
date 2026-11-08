@@ -4929,8 +4929,11 @@ RSpec.describe 'textsubs.lic' do
             .to raise_error(ArgumentError, /\Asection 1 \(landed\) steps 1 \(n 1\) phrase "a hit hard" is also matched by section 2 \(loose\) steps 1 \(n 2\),/)
         end
 
-        # Only gates no single guild passes keep two sections out of every
-        # catalog together; a setting key never does, as both may be on.
+        # Only gates that no one guild passes both of keep two sections out
+        # of every catalog together. Setting keys are not read, so sections
+        # told apart only by settings are always checked against each other:
+        # strict on purpose, though a setting and its setting_off are never
+        # both on.
         {
           'two guilds gates that share no guild' => [{ 'guilds' => ['Bard'] }, { 'guilds' => %w[Thief Cleric] }, true],
           'a guilds gate and a not_guilds of it' => [{ 'guilds' => %w[Bard Thief] }, { 'not_guilds' => %w[Thief Bard] }, true],

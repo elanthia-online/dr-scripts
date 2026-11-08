@@ -1433,9 +1433,10 @@ class TextSubs
 
     # The guilds whose characters pass a gate's guild keys: each known guild,
     # and 'a guild not listed' for a guild DRStats reports that guilds does
-    # not hold. Setting keys are not read, as any setting may be on. Two
-    # gates whose lists share no entry are guild-disjoint: no catalog holds
-    # the sections of both. A character whose guild is not known yet needs
+    # not hold. Setting keys are not read, so gates told apart only by
+    # settings are never guild-disjoint: strict on purpose, though a setting
+    # and its setting_off are never both on. Two gates whose lists share no
+    # entry are guild-disjoint: no catalog holds the sections of both. A character whose guild is not known yet needs
     # no entry: only a gate with no guild key passes it, and that gate
     # passes every guild.
     #
@@ -1898,7 +1899,8 @@ class TextSubs
     #   scale   optional name of the scale, the section's own name by
     #           default; the ladder sections that name one scale (a scale
     #           split around rows that stay pairs) give the same of, and
-    #           each n is used once across them
+    #           each n is used once across them, but by two sections
+    #           whose when: gates no one guild passes both of
     #
     # The phrase (with the prefix) is the pattern as it is written, so it is
     # regex source, and the replacement is that text with each backslash
@@ -1908,11 +1910,15 @@ class TextSubs
     # matched, but for an unescaped '.': that matches any character and is
     # written back as '.'. No step's text may be matched by the pattern of
     # another step anywhere in the file, in its own ladder section or any
-    # other, as one of the two would then lose its counter; only two
-    # sections whose when: gates no one guild passes may share a phrase. The
+    # other, as one of the two would then lose its counter. Two sections
+    # may share a phrase, or an n of one scale, only when no one guild
+    # passes both sections' when: gates (Context.guilds_passing), as no
+    # catalog then holds both; setting keys are not read, so sections told
+    # apart only by settings are always checked against each other. The
     # load does not catch two phrases that overlap end to start, as 'a hit'
     # and 'hit hard', which a line holding 'a hit hard' would give both
-    # counters.
+    # counters, nor a row of another kind (a pairs row, say) whose pattern
+    # matches a step's text, which can cost the step its counter.
     #
     # @example
     #   section = { 'name' => 'butchery', 'kind' => 'ladder', 'prefix' => 'manage to extract a', 'of' => 10,
@@ -1967,7 +1973,7 @@ class TextSubs
       # once, as a scale may be split over sections and a phrase in one
       # section may be matched by a step of another. Two steps clash only
       # when one character can get both: in one section, or in two whose
-      # when: gates one guild passes (Context.guilds_passing).
+      # when: gates are both passed by one guild (Context.guilds_passing).
       #
       # @param indexed [Array<Array(Hash, Integer)>] every ladder section of
       #   the file, each checked, with its place among the sections
