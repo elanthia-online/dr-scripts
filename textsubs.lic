@@ -1360,10 +1360,62 @@ class TextSubs
   end
 
   # Parsers for the subs a character's own settings and files give. Each is
-  # pure: it takes what the entry point read and returns the entries it can
-  # use with a warning for each one it cannot, and never reads a file or a
-  # setting itself.
+  # pure: it takes what the entry point read and returns what it can use
+  # (PrivateSubs also returns a warning for each entry it skips), and never
+  # opens a file or reads a setting itself.
   module Sources
+    # The <checkname>_shit.list file integrate_shit_list_with_textsubs reads:
+    # one player a line, the name first, then optionally a comma and a note.
+    # Each name tags the player wherever the game names them, 'Bob' becoming
+    # 'Bob (SL)'.
+    #
+    # @example
+    #   names = TextSubs::Sources::ShitList.names(StringIO.new("bob,stole my kill\n\nqUIMBLE\n"))
+    #   # => ["Bob", "Quimble"]
+    #   TextSubs::Sources::ShitList.sub(names.first) # => ["\\bBob\\b", "Bob (SL)"]
+    class ShitList
+      # The names in a shit-list file, in order. A line with no name (blank,
+      # only spaces, or a note after an empty name) gives none: its name
+      # would compile to a pattern that matches the end of every line or
+      # between every two characters of it.
+      #
+      # Each line is read as bytes (ASCII-8BIT), the way game lines arrive,
+      # so a hand-edited byte that is not UTF-8 cannot raise and end the
+      # script before any sub is installed, and a UTF-8 byte order mark a
+      # Windows editor puts at the start is dropped rather than left in
+      # front of the first name.
+      #
+      # @param io [#each_line] the open file
+      # @return [Array<String>] frozen: each name stripped and capitalized,
+      #   in ASCII-8BIT
+      def self.names(io)
+        io.each_line.filter_map do |line|
+          name = line.b.delete_prefix(byte_order_mark).split(',', 2).first.to_s.strip
+          name.capitalize.freeze unless name.empty?
+        end.freeze
+      end
+
+      # The UTF-8 byte order mark, as bytes.
+      #
+      # @return [String] frozen
+      def self.byte_order_mark
+        [0xEF, 0xBB, 0xBF].pack('C*').freeze
+      end
+      private_class_method :byte_order_mark
+
+      # The sub that tags one name. The name is matched as plain text, so a
+      # regex character in it stands for itself, and as a whole word, so
+      # 'Bob' tags neither 'Bobby' nor 'McBob'. (A name that starts or ends
+      # with a character other than a letter, digit or underscore then only
+      # matches next to one; player names are letters.)
+      #
+      # @param name [String] one of names
+      # @return [Array(String, String)] frozen [regex source, gsub replacement]
+      def self.sub(name)
+        ["\\b#{Regexp.escape(name)}\\b", "#{name} (SL)"].freeze
+      end
+    end
+
     # The private_textsubs setting: a mapping of 'regex source': 'gsub
     # replacement' a player writes in their YAML. A key may also be a
     # !ruby/regexp, which YAML gives as a Regexp: it keeps its flags, so
@@ -1749,12 +1801,8 @@ before_dying { TextSubs.unstage(new_catalog) }
 
 # Put shit list players in textsubs
 if settings.integrate_shit_list_with_textsubs && File.file?("#{checkname}_shit.list")
-  File.open("#{checkname}_shit.list", 'r') do |file|
-    file.each do |line|
-      name = line.split(',').first.capitalize
-      TextSubs.add(name.to_s, "#{name} (SL)")
-    end
-  end
+  shit_list_names = File.open("#{checkname}_shit.list", 'r') { |file| TextSubs::Sources::ShitList.names(file) }
+  shit_list_names.each { |name| TextSubs.add(*TextSubs::Sources::ShitList.sub(name)) }
 end
 
 # A private_textsubs entry that cannot be used is skipped, saying why, so one
