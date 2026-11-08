@@ -627,7 +627,8 @@ RSpec.describe 'textsubs.lic' do
   # get_settings or a get_settings(<any arguments>) call, a bare settings
   # call with no arguments, the local settings, or any local assigned one of
   # these. Off it, a read is a call with no arguments that OpenStruct (what
-  # get_settings returns) does not answer itself, .<key> or &.<key>; an index
+  # get_settings returns) does not answer itself, as Ruby core and the ostruct
+  # gem define it, .<key> or &.<key>; an index
   # or a dig by a single-quoted, double-quoted or symbol key; or a compound
   # assignment (||=, &&=, +=) to either. An index or dig by anything else is
   # named '(a computed key)', so the spec fails on it rather than skip it.
@@ -657,12 +658,23 @@ RSpec.describe 'textsubs.lic' do
       key = arguments&.arguments&.first
       key.is_a?(Prism::StringNode) || key.is_a?(Prism::SymbolNode) ? key.unescaped : '(a computed key)'
     end
-    blank_settings = OpenStruct.new.freeze
+    # Only what Ruby core and the ostruct gem define counts as OpenStruct's
+    # own: a method the loaded test harness or a library (psych's to_yaml)
+    # adds to every object is not on a settings object in Lich, so it reads a key.
+    ostruct_file = OpenStruct.instance_method(:to_h).source_location.first
+    answered_by_open_struct = lambda do |name|
+      next false unless OpenStruct.public_method_defined?(name)
+
+      method = OpenStruct.instance_method(name)
+      file = method.source_location&.first
+      [OpenStruct, Object, Kernel, BasicObject].include?(method.owner) &&
+        (file.nil? || file.start_with?('<internal:') || file == ostruct_file)
+    end
     key_read = lambda do |node|
       case node
       when Prism::CallNode
         if %i[[] dig].include?(node.name) then literal_key.call(node.arguments)
-        elsif node.arguments.nil? && !blank_settings.respond_to?(node.name) then node.name.to_s
+        elsif node.arguments.nil? && !answered_by_open_struct.call(node.name) then node.name.to_s
         end
       when Prism::CallOperatorWriteNode, Prism::CallOrWriteNode, Prism::CallAndWriteNode then node.read_name.to_s
       when Prism::IndexOperatorWriteNode, Prism::IndexOrWriteNode, Prism::IndexAndWriteNode
@@ -703,6 +715,15 @@ RSpec.describe 'textsubs.lic' do
       expect(settings_keys_in.call(source))
         .to contain_exactly('by_method', 'single_quoted', 'double_quoted', 'by_symbol', 'dug_by_string', 'dug_by_symbol',
                             'off_get_settings')
+    end
+
+    it 'finds a key named like a method the test harness or a library gives every object' do
+      source = <<~RUBY
+        a = settings.health
+        b = settings.concentration
+        c = settings.to_yaml
+      RUBY
+      expect(settings_keys_in.call(source)).to contain_exactly('health', 'concentration', 'to_yaml')
     end
 
     it 'finds a key read through safe navigation, or off a get_settings call with any arguments' do
@@ -769,6 +790,7 @@ RSpec.describe 'textsubs.lic' do
         g = settings.fetch('fetch_raises_on_open_struct')
         h = settings.nil?
         i = settings.to_h
+        k = settings.frozen?
         settings.set_not_read = 1
         j = TextSubs::Context.new(guild: nil, settings: settings)
       RUBY
