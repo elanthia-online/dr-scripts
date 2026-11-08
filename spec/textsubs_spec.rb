@@ -69,8 +69,10 @@ require_relative '../test/textsubs_corpus'
 # semantics' pin that rule.
 #
 # The hook proc is the front end guard plus TextSubs.apply(line), which runs
-# TextSubs::Engine over TextSubs.subs. 'TextSubs.apply' calls that engine
-# straight, with hand-made catalogs and no hook.
+# TextSubs::Engine over TextSubs.subs and the installed Registry's
+# requires_any gates. 'TextSubs.apply' calls that engine straight, with
+# hand-made catalogs and no hook; 'the coin-comma gate' holds the one gated
+# section to the oracle and checks that its gate is sound.
 #
 # The hook skips every key when no front end is attached (TextSubs.client_attached?
 # is false), and the harness has none, so the examples that send lines through
@@ -195,7 +197,7 @@ RSpec.describe 'textsubs.lic' do
   #   each Registry#add call, in call order
   def traced_build(combination)
     sources = []
-    catalog = on_registry_write(->(key, _replacement) { sources << key.source.freeze }) { build_combination(combination) }
+    catalog = on_registry_write(->(key, _replacement, _requires_any) { sources << key.source.freeze }) { build_combination(combination) }
     { catalog: catalog.map { |entry| entry.map { |value| frozen_copy(value) }.freeze }.freeze,
       write_sources: sources.freeze }.freeze
   end
@@ -348,21 +350,22 @@ RSpec.describe 'textsubs.lic' do
   # A TracePoint on the return of Registry#add watches the writes, enabled
   # only while the block runs, so nothing outlives it: no stub on TextSubs
   # and no singleton method on any Registry, the one the after hook installs
-  # for the next example included. The key and the replacement are read by
-  # their positions, so renaming Registry#add's parameters does not break it;
-  # their names are looked up once per call of this helper, not once per
-  # write. Registry#add raises only for a key that is not a Regexp, which these
-  # builds never write.
+  # for the next example included. The key, the replacement and the gate are
+  # read by their positions, so renaming Registry#add's parameters does not
+  # break it; their names are looked up once per call of this helper, not
+  # once per write. Registry#add raises only for a key that is not a Regexp
+  # or a malformed gate, which these builds never write.
   #
-  # @param observer [#call] called with the key [Regexp] and the
-  #   replacement [String] of each write, after the write
+  # @param observer [#call] called with the key [Regexp], the replacement
+  #   [String] and the requires_any words [Array<String>, nil] of each write,
+  #   after the write
   # @yieldreturn [Object] the build to watch
   # @return [Object] what the block returns
   def on_registry_write(observer)
     write = TextSubs::Registry.instance_method(:add)
-    key_param, value_param = write.parameters.map(&:last)
+    key_param, value_param, gate_param = write.parameters.map(&:last)
     writes = TracePoint.new(:return) do |trace|
-      observer.call(trace.binding.local_variable_get(key_param), trace.binding.local_variable_get(value_param))
+      observer.call(*[key_param, value_param, gate_param].map { |name| trace.binding.local_variable_get(name) })
     end
     writes.enable(target: write) { yield }
   end
@@ -534,6 +537,13 @@ RSpec.describe 'textsubs.lic' do
       end
       expect(broken).to be_empty
       expect(patterns.size).to be > 1500
+    end
+
+    it 'gates the two coin-comma sections, and only them, on the three currency words' do
+      gated = data['sections'].select { |section| section.key?('requires_any') }
+      expect(gated.to_h { |section| [section['name'], section['requires_any']] })
+        .to eq('coin commas with platinum grouping' => %w[Kronar Dokora Lirum], 'coin commas' => %w[Kronar Dokora Lirum])
+      expect(gated.flat_map { |section| section['subs'].map(&:first) }).to all(end_with('.*(Kronar|Dokora|Lirum))'))
     end
 
     it 'is schema 1, the schema this textsubs.lic reads' do
@@ -837,7 +847,7 @@ RSpec.describe 'textsubs.lic' do
       # class body, is covered under 'a start in Lich, which evaluates the
       # class body before the entry point'). After every write, subs has to be
       # the old catalog itself, and every 250th write sends the lines through it.
-      observer = lambda do |key, _value|
+      observer = lambda do |key, _value, _gate|
         partial << key.source unless TextSubs.subs.equal?(old_catalog)
         seen << lines.map { |line| run_hooks(line.b) } if (writes += 1) % 250 == 1
       end
@@ -863,7 +873,7 @@ RSpec.describe 'textsubs.lic' do
       expect(TextSubs.apply(+"You feel fine.\r\n")).to eq("You feel OLD.\r\n")
       seen = []
       writes = 0
-      observer = lambda do |key, _value|
+      observer = lambda do |key, _value, _gate|
         writes += 1 unless seen.empty? && key.source != 'You feel fine'
         seen << run_hooks("You feel fine.\r\n".b) if writes % 250 == 1
       end
@@ -901,7 +911,7 @@ RSpec.describe 'textsubs.lic' do
       # The old run's 'textsub' hook is still registered, as when Lich has not
       # yet removed the hook of a run that is being stopped. The first write
       # (the private key) and every 250th after it send the lines through it.
-      observer = lambda do |_key, _value|
+      observer = lambda do |_key, _value, _gate|
         seen << lines.map { |line| run_hooks(line.b) } if (writes += 1) % 250 == 1
       end
       expect(DownstreamHook.list).to include('textsub')
@@ -1256,6 +1266,52 @@ RSpec.describe 'textsubs.lic' do
         expect(TextSubs::Engine.apply({ /CAT/i => 'dog' }, +'The Cat.')).to eq('The dog.')
         expect(TextSubs::Engine.apply({ /CAT/ => 'dog' }, +'The Cat.')).to eq('The Cat.')
       end
+
+      # The engine trusts a gate, so a key gated on a word its pattern does not
+      # need shows which lines the gate lets through: it stays silent on a line
+      # it matches when that line holds none of the words.
+      describe 'with gates' do
+        let(:subs) { { /cat/ => 'dog' }.freeze }
+        let(:gates) { { /cat/ => %w[Kronar Dokora].freeze }.freeze }
+
+        it 'leaves out a gated key on a line that holds none of its words' do
+          expect(TextSubs::Engine.apply(subs, +'The cat.', gates: gates)).to eq('The cat.')
+        end
+
+        it 'runs a gated key on a line that holds any one of its words, wherever it is' do
+          expect(TextSubs::Engine.apply(subs, +'The cat, 5 Kronars.', gates: gates)).to eq('The dog, 5 Kronars.')
+          expect(TextSubs::Engine.apply(subs, +'2 Dokoras for the cat.', gates: gates)).to eq('2 Dokoras for the dog.')
+        end
+
+        it 'matches the words case for case, as the coin patterns do' do
+          expect(TextSubs::Engine.apply(subs, +'The cat, 5 kronars.', gates: gates)).to eq('The cat, 5 kronars.')
+        end
+
+        it 'checks the gate against the original line, not the line an earlier key rewrote' do
+          made = { /a/ => 'Kronar', /b/ => 'B' }.freeze
+          expect(TextSubs::Engine.apply(made, +'ab', gates: { /b/ => ['Kronar'] })).to eq('Kronarb')
+
+          removed = { /Kronar/ => 'coin', /\d/ => '#' }.freeze
+          expect(TextSubs::Engine.apply(removed, +'5 Kronar', gates: { /\d/ => ['Kronar'] })).to eq('# coin')
+        end
+
+        it 'keeps the other keys in insertion order around a key it leaves out' do
+          ordered = { /red/ => 'blue', /cat/ => 'dog', /blue/ => 'green' }.freeze
+          expect(TextSubs::Engine.apply(ordered, +'red blue cat', gates: gates)).to eq('green green cat')
+        end
+
+        it 'ignores a gate for a key the catalog does not hold, and changes neither Hash' do
+          expect(TextSubs::Engine.apply(subs, +'The cat.', gates: { /dog/ => ['Kronar'] }.freeze)).to eq('The dog.')
+          expect(subs).to eq(/cat/ => 'dog')
+          expect(gates).to eq(/cat/ => %w[Kronar Dokora])
+        end
+
+        it 'reads a binary line with high bytes, with or without the word, without raising' do
+          high = 0xFE.chr
+          expect(TextSubs::Engine.apply(subs, "#{high}cat#{high}\r\n", gates: gates)).to eq("#{high}cat#{high}\r\n")
+          expect(TextSubs::Engine.apply(subs, "#{high}cat Kronar#{high}\r\n", gates: gates)).to eq("#{high}dog Kronar#{high}\r\n")
+        end
+      end
     end
   end
 
@@ -1301,8 +1357,8 @@ RSpec.describe 'textsubs.lic' do
       # A reader that runs the moment the key is written, as the hook thread
       # can. The singleton lives on this Registry only; the after hook's clear
       # installs another.
-      registry.define_singleton_method(:add) do |key, value|
-        result = super(key, value)
+      registry.define_singleton_method(:add) do |key, value, **options|
+        result = super(key, value, **options)
         seen << [TextSubs.generation, TextSubs.subs.keys.map(&:source)]
         result
       end
@@ -1453,6 +1509,60 @@ RSpec.describe 'textsubs.lic' do
       expect { registry.add('cat', 'lion') }.to raise_error(ArgumentError, /Regexps, not String/)
       expect { registry.add(nil, 'lion') }.to raise_error(ArgumentError, /not NilClass/)
       expect(registry.snapshot).to eq(/cat/ => 'dog')
+    end
+
+    it 'starts with no gate, and gates no key added without requires_any' do
+      expect(registry.gates).to eq({})
+      expect(registry.gates).to be_frozen
+      registry.add(/cat/, 'dog')
+      expect(registry.gates).to eq({})
+    end
+
+    it 'keeps a frozen copy of a gate the caller cannot change, with the same copy as the snapshot' do
+      word = +'Kronar'
+      words = [word]
+      registry.add(/cat/, 'dog')
+      registry.add(/\d+/, '#', requires_any: words)
+      word << 's'
+      words << 'Lirum'
+
+      gates = registry.gates
+      expect(gates).to eq(/\d+/ => ['Kronar'])
+      expect(gates).to be_frozen
+      expect(gates[/\d+/]).to be_frozen
+      expect(gates[/\d+/]).to all(be_frozen)
+      expect(registry.gates).to equal(gates)
+      registry.add(/bird/, 'fish')
+      expect(registry.gates).not_to equal(gates)
+      expect(registry.gates).to eq(gates)
+    end
+
+    it 'takes the gate of the last add of a key, and drops it when that add has none' do
+      registry.add(/\d+/, '#', requires_any: ['Kronar'])
+      registry.add(/\d+/, '%', requires_any: ['Lirum'])
+      expect(registry.gates).to eq(/\d+/ => ['Lirum'])
+
+      registry.add(/\d+/, '&')
+      expect(registry.gates).to eq({})
+      expect(registry.snapshot).to eq(/\d+/ => '&')
+    end
+
+    [[], 'Kronar', [''], [1], [nil], ["Kr#{0xF6.chr(Encoding::UTF_8)}nar"], { 'Kronar' => true }].each do |bad|
+      it "refuses requires_any #{bad.inspect} and keeps what it holds, the same snapshot included" do
+        registry.add(/cat/, 'dog', requires_any: ['Kronar'])
+        snapshot = registry.snapshot
+        gates = registry.gates
+        expect { registry.add(/cat/, 'lion', requires_any: bad) }
+          .to raise_error(ArgumentError, /requires_any must be a non-empty list of non-empty ASCII words/)
+        expect(registry.snapshot).to equal(snapshot)
+        expect(registry.gates).to equal(gates)
+
+        # A refused add leaves the version alone, so the snapshot above is the
+        # cached copy. Another add forces a fresh copy of what is held.
+        registry.add(/bird/, 'fish')
+        expect(registry.snapshot).to eq(/cat/ => 'dog', /bird/ => 'fish')
+        expect(registry.gates).to eq(/cat/ => ['Kronar'])
+      end
     end
   end
 
@@ -1957,6 +2067,25 @@ RSpec.describe 'textsubs.lic' do
       end
     end
 
+    it 'adds the requires_any words of a gated section to the meta of each of its subs' do
+      data = catalog_data(<<~YAML)
+        textsubs:
+          schema: 1
+          sections:
+            - name: 'coins'
+              requires_any: ['Kronar', 'Lirum']
+              subs:
+                - ['\\d+(?=.*Kronar)', '#']
+                - ['\\d+(?=.*Lirum)', '%']
+            - name: 'plain'
+              subs:
+                - ['a', 'A']
+      YAML
+      metas = entries_for('Bard', data).map(&:last)
+      expect(metas).to eq([{ section: 'coins', requires_any: %w[Kronar Lirum] }] * 2 + [{ section: 'plain' }])
+      expect(metas).to all(be_frozen)
+    end
+
     it 'reads backslashes, quotes and colons in single-quoted scalars as they are written' do
       data = catalog_data(<<~'YAML')
         textsubs:
@@ -2080,6 +2209,26 @@ RSpec.describe 'textsubs.lic' do
         "textsubs:\n  schema: 1\n  sections:\n    - name: 'x'\n      subs: [['(open', 'b']]\n", /section 1 \(x\) pattern "\(open" does not compile/
       ],
       [
+        'an empty requires_any',
+        "textsubs:\n  schema: 1\n  sections:\n    - name: 'x'\n      requires_any: []\n      subs: [['a', 'b']]\n",
+        /section 1 \(x\) requires_any must be a non-empty list of non-empty ASCII words, not \[\]/
+      ],
+      [
+        'a requires_any that is one word, not a list',
+        "textsubs:\n  schema: 1\n  sections:\n    - name: 'x'\n      requires_any: 'Kronar'\n      subs: [['a', 'b']]\n",
+        /section 1 \(x\) requires_any must be .* not "Kronar"/
+      ],
+      [
+        'a requires_any holding an empty word, which every line holds',
+        "textsubs:\n  schema: 1\n  sections:\n    - name: 'x'\n      requires_any: ['Kronar', '']\n      subs: [['a', 'b']]\n",
+        /section 1 \(x\) requires_any must be .* not \["Kronar", ""\]/
+      ],
+      [
+        'a requires_any holding an unquoted number',
+        "textsubs:\n  schema: 1\n  sections:\n    - name: 'x'\n      requires_any: [100]\n      subs: [['a', 'b']]\n",
+        /section 1 \(x\) requires_any must be .* not \[100\]/
+      ],
+      [
         'a malformed gate',
         "textsubs:\n  schema: 1\n  sections:\n    - name: 'x'\n      when:\n        guilds: ['Moonmage']\n      subs: [['a', 'b']]\n",
         /section 1 \(x\) 'when' guilds names unknown guild\(s\) "Moonmage"/
@@ -2167,6 +2316,25 @@ RSpec.describe 'textsubs.lic' do
       )
       expect(TextSubs.subs).to eq(/mine/ => 'MINE')
       expect(TextSubs.generation).to eq(generation)
+    end
+
+    # 'fine' does not need 'Kronar', so the gate shows itself: the sub stays
+    # silent on a line that holds the pattern but not the word.
+    it "gives each sub its section's requires_any gate, which TextSubs.apply honours" do
+      gated = { 'schema' => 1, 'sections' => [{ 'name' => 'gated', 'requires_any' => ['Kronar'], 'subs' => [%w[fine FINE]] },
+                                              { 'name' => 'open', 'subs' => [%w[cat dog]] }] }
+      expect(TextSubs.add_catalog(gated, context, file: 'f')).to be_nil
+
+      expect(TextSubs.subs).to eq(/fine/ => 'FINE', /cat/ => 'dog')
+      expect(TextSubs.apply(+'fine cat')).to eq('fine dog')
+      expect(TextSubs.apply(+'fine cat, 3 Kronars')).to eq('FINE dog, 3 Kronars')
+    end
+
+    it 'lets a key added later with TextSubs.add drop the gate the catalog gave it' do
+      gated = { 'schema' => 1, 'sections' => [{ 'name' => 'gated', 'requires_any' => ['Kronar'], 'subs' => [%w[fine FINE]] }] }
+      TextSubs.add_catalog(gated, context, file: 'f')
+      TextSubs.add('fine', 'MINE')
+      expect(TextSubs.apply(+'fine')).to eq('MINE')
     end
 
     it 'lets an error that is not about the data through' do
@@ -2742,8 +2910,9 @@ RSpec.describe 'textsubs.lic' do
     samples = TextsubsCorpus.parse_samples(File.read(samples_path)).map(&:b)
     stream = File.binread(stream_path).lines
     big_line = stream.max_by(&:bytesize)
-    # The 49 KB line spends ~0.5 s in the coin regex per pass, so the per-guild
-    # sweeps leave it to the one whole-stream example below.
+    # reference_apply spends ~0.5 s in the coin regex on the 49 KB line per
+    # pass (the hook skips that regex, as the line holds no currency word), so
+    # the per-guild sweeps leave the line to the one whole-stream example below.
     stream_without_big_line = stream - [big_line]
     every_flag_on = { 'textsubs_spell_links' => true, 'herb_textsubs' => true }.freeze
 
@@ -3063,8 +3232,9 @@ RSpec.describe 'textsubs.lic' do
     end
 
     it "gives reference_apply's output for every sample and stream line with textsubs_use_plat_grouping on" do
-      # The 49 KB line is left out: through the two platinum-aware coin rules it
-      # costs ~3.5 s, and the coin rules see it in the default-rule example above.
+      # The 49 KB line is left out: reference_apply runs the two platinum-aware
+      # coin rules on it for ~3.5 s, and 'the coin-comma gate' below shows the
+      # hook runs neither.
       build_catalog('Trader', every_flag_on.merge('textsubs_use_plat_grouping' => true))
       run = reference_run(TextSubs.subs)
       mismatches = oracle_mismatches(corpus, run[:output])
@@ -3106,6 +3276,78 @@ RSpec.describe 'textsubs.lic' do
     it 'matches every hand-added sample with a key of some catalog' do
       unmatched = hand_added.reject { |line| every_key.any? { |key| key.match?(line.b) } }
       expect(unmatched).to eq([]), "samples_hand_added.jsonl lines no key matches; delete them or fix the key: #{unmatched.inspect}"
+    end
+
+    describe 'the coin-comma gate' do
+      # Every call made on a coin-comma key that runs it on a line in the code
+      # under the block, by any name a Regexp can be run with, so an engine
+      # that ran the key with key =~ line is caught too. Calls that run no
+      # match (hash, source) are not counted. Only calls whose receiver is the
+      # Regexp are seen: line.match?(key) and line =~ key run on the String, so
+      # an engine written that way would slip past the empty-list examples and
+      # is caught instead by the currency-word controls below and the Engine
+      # 'with gates' examples.
+      #
+      # @return [Array<Array(Symbol, String)>] [method, key source] per call
+      def coin_key_calls
+        coin_keys = TextSubs.subs.keys.select { |key| key.source.include?('(Kronar|Dokora|Lirum)') }
+        expect(coin_keys).not_to be_empty
+        runs = %i[=~ !~ === match match?]
+        calls = []
+        trace = TracePoint.new(:c_call) do |point|
+          next unless runs.include?(point.method_id) && coin_keys.any? { |key| key.equal?(point.self) }
+
+          calls << [point.method_id, point.self.source]
+        end
+        trace.enable { yield }
+        calls
+      end
+
+      [false, true].each do |plat|
+        context "with textsubs_use_plat_grouping #{plat}" do
+          before { build_catalog('Trader', every_flag_on.merge('textsubs_use_plat_grouping' => plat)) }
+
+          it 'runs no coin-comma regex on the 49 KB digit-heavy line, which holds no currency word' do
+            output = nil
+            expect(coin_key_calls { output = run_hooks(big_line.dup) }).to eq([])
+            expect(output).to eq(big_line)
+          end
+
+          it 'runs the coin-comma regexes on a line that holds a currency word' do
+            expect(coin_key_calls { run_hooks("You have 1234567 Kronars.\r\n".b) }).not_to be_empty
+          end
+        end
+      end
+
+      {
+        false => { "You have 1234567 Kronars.\r\n"                     => "You have 1,234,567 Kronars.\r\n",
+                   "It costs 15625 Lirums and 9876543210 Dokoras.\r\n" => "It costs 15,625 Lirums and 9,876,543,210 Dokoras.\r\n" },
+        true  => { "You have 1234567 Kronars.\r\n"              => "You have 123,4567 Kronars.\r\n",
+                   "You have 12345678 platinum, 9 Kronars.\r\n" => "You have 12,345,678 platinum, 9 Kronars.\r\n" }
+      }.each do |plat, lines|
+        lines.each do |line, grouped|
+          it "groups #{line.strip.inspect} as reference_apply does with textsubs_use_plat_grouping #{plat}" do
+            build_catalog('Commoner', 'textsubs_use_plat_grouping' => plat)
+            expect(run_hooks(line.b)).to eq(grouped)
+            expect(reference_apply(TextSubs.subs, line.b)).to eq(grouped)
+          end
+        end
+      end
+
+      # A gate is only sound if each pattern of its section needs one of the
+      # section's words: every corpus line a gated pattern matches has to stop
+      # matching once each of those words in it is misspelt.
+      it 'gates only patterns that stop matching a corpus line once its requires_any words are misspelt' do
+        gated = shipped_catalog['textsubs']['sections'].select { |section| section.key?('requires_any') }.flat_map do |section|
+          section['subs'].map { |pattern, _| [Regexp.new(pattern), section['requires_any']] }
+        end
+        lines = samples + stream_without_big_line + ["You have 1234567 Kronars.\r\n".b, "9 Lirums, 1000 Dokoras\r\n".b]
+        matched = gated.flat_map { |key, words| lines.select { |line| key.match?(line) }.map { |line| [key, words, line] } }
+        unsound = matched.select { |key, words, line| key.match?(line.gsub(Regexp.union(words)) { |word| "X#{word[1..]}" }) }
+        expect(gated.size).to eq(3)
+        expect(matched.map(&:first).uniq.size).to eq(gated.size)
+        expect(unsound.map { |key, _words, line| [key.source, line] }).to eq([])
+      end
     end
 
     it 'keeps the \r\n ending on every stream line the Empath catalog rewrites' do
