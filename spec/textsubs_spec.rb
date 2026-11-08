@@ -343,35 +343,46 @@ RSpec.describe 'textsubs.lic' do
     before { allow(TextSubs).to receive(:client_attached?).and_return(true) }
   end
 
-  # Calls the block after every write to each Registry that TextSubs.stage
-  # stages or TextSubs.install installs from here on in the example (the entry
-  # point stages a fresh one on every start, fills it, then installs it).
-  # Every writer, add, elanthipedia and the catalog data alike, ends in
-  # Registry#add, so the block sees each sub as it lands. A Registry staged
-  # and then installed gets the same singleton twice, the second replacing the
-  # first, so each write still calls the block once.
+  # Runs the block, calling observer after every write to a Registry while
+  # it runs (the entry point stages a fresh Registry on every start, fills
+  # it, then installs it). Every writer, add, elanthipedia and the catalog
+  # data alike, ends in Registry#add, so observer sees each sub as it lands.
+  # A TracePoint on the return of Registry#add watches the writes, enabled
+  # only while the block runs, so nothing outlives it: no stub on TextSubs
+  # and no singleton method on any Registry, the one the after hook installs
+  # for the next example included. The key and the replacement are read by
+  # their positions, so renaming Registry#add's parameters does not break it.
+  # Registry#add raises only for a key that is not a Regexp, which these
+  # builds never write.
   #
-  # @yieldparam key [Regexp] the key written
-  # @yieldparam value [String] its replacement
-  # @return [void]
-  def on_registry_write(&block)
-    %i[stage install].each do |step|
-      allow(TextSubs).to(receive(step).and_wrap_original do |original, registry|
-        registry.define_singleton_method(:add) do |key, value|
-          super(key, value).tap { block.call(key, value) }
-        end
-        original.call(registry)
-      end)
+  # @param observer [#call] called with the key [Regexp] and the
+  #   replacement [String] of each write, after the write
+  # @yieldreturn [Object] the build to watch
+  # @return [Object] what the block returns
+  def on_registry_write(observer)
+    write = TextSubs::Registry.instance_method(:add)
+    key_param, value_param = write.parameters.map(&:last)
+    writes = TracePoint.new(:return) do |trace|
+      observer.call(trace.binding.local_variable_get(key_param), trace.binding.local_variable_get(value_param))
     end
+    writes.enable(target: write) { yield }
   end
 
   # Installing a freshly staged Registry empties the catalog and ends any
   # staging an example left behind, and this thread's own build with it
   # (TextSubs.clear alone keeps both), so no example's adds land in a
   # Registry staged by an earlier one.
+  #
+  # RSpec runs this hook before it removes the example's stubs, so a stub on
+  # stage or install still runs here, on the Registry the next example
+  # starts with. That Registry must come out as plain as it went in: an
+  # example's stub that gave it singleton methods (an add that calls back
+  # into the example, say) would carry the example into the next one.
   after do
     DownstreamHook.remove('textsub')
-    TextSubs.install(TextSubs.stage(TextSubs::Registry.new))
+    fresh = TextSubs::Registry.new
+    TextSubs.install(TextSubs.stage(fresh))
+    expect(fresh.singleton_methods).to be_empty, -> { "a stub left #{fresh.singleton_methods.inspect} on the next example's Registry" }
   end
 
   if ENV['TEXTSUBS_GOLDEN_WRITE'] == '1'
@@ -827,12 +838,14 @@ RSpec.describe 'textsubs.lic' do
       # class body, is covered under 'a start in Lich, which evaluates the
       # class body before the entry point'). After every write, subs has to be
       # the old catalog itself, and every 250th write sends the lines through it.
-      on_registry_write do |key, _value|
+      observer = lambda do |key, _value|
         partial << key.source unless TextSubs.subs.equal?(old_catalog)
         seen << lines.map { |line| run_hooks(line.b) } if (writes += 1) % 250 == 1
       end
 
-      build_catalog('Ranger', 'herb_textsubs' => false, 'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
+      on_registry_write(observer) do
+        build_catalog('Ranger', 'herb_textsubs' => false, 'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
+      end
 
       expect(writes).to be > 500
       expect(partial).to be_empty, -> { "the old hook saw a catalog of the new run after writing #{partial.first.inspect}" }
@@ -851,12 +864,12 @@ RSpec.describe 'textsubs.lic' do
       expect(TextSubs.apply(+"You feel fine.\r\n")).to eq("You feel OLD.\r\n")
       seen = []
       writes = 0
-      on_registry_write do |key, _value|
+      observer = lambda do |key, _value|
         writes += 1 unless seen.empty? && key.source != 'You feel fine'
         seen << run_hooks("You feel fine.\r\n".b) if writes % 250 == 1
       end
 
-      build_catalog('Commoner', 'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
+      on_registry_write(observer) { build_catalog('Commoner', 'private_textsubs' => { 'You feel fine' => 'You feel FINE' }) }
 
       expect(seen.size).to be > 3
       expect(seen).to all(eq("You feel fine.\r\n"))
@@ -889,13 +902,15 @@ RSpec.describe 'textsubs.lic' do
       # The old run's 'textsub' hook is still registered, as when Lich has not
       # yet removed the hook of a run that is being stopped. The first write
       # (the private key) and every 250th after it send the lines through it.
-      on_registry_write do |_key, _value|
+      observer = lambda do |_key, _value|
         seen << lines.map { |line| run_hooks(line.b) } if (writes += 1) % 250 == 1
       end
       expect(DownstreamHook.list).to include('textsub')
       expect(TextSubs.subs).to eq({})
 
-      build_catalog('Ranger', 'herb_textsubs' => false, 'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
+      on_registry_write(observer) do
+        build_catalog('Ranger', 'herb_textsubs' => false, 'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
+      end
 
       expect(writes).to be > 500
       expect(seen.size).to be > 3
