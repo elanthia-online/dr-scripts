@@ -4550,6 +4550,15 @@ RSpec.describe 'textsubs.lic' do
         expect(pairs_for(spell_catalog(literal))).to eq([['^\d{3} "Halo."', '\1 "Halo." (it\'s \0)']])
       end
 
+      # Generators.fill turns a template into a format string, so a % in a
+      # template, a name or a label must come out as it went in, and so must
+      # text that reads as a format reference.
+      it 'puts a % in as it is written, in a template, a name or a label, and before a placeholder' do
+        percent = scrolls.merge('pattern' => '^(\d+)% "{name}." %<name>s', 'replacement' => '\1 "{name}." ({label}) %{label}',
+                                'names' => [{ 'name' => 'Halo%', 'label' => '5%s' }])
+        expect(pairs_for(spell_catalog(percent))).to eq([['^(\d+)% "Halo%." %<name>s', '\1 "Halo%." (5%s) %5%s']])
+      end
+
       it 'gives one recognition sub per group, in list order, with the names joined and the label the table computes' do
         expect(pairs_for(spell_catalog(recognition))).to eq(
           [['^(You recognize|You decipher) the (Halo) spell.', '\1 the \2 spell. [signature Cleric (Holy Defense): advanced debilitation/warding]'],
