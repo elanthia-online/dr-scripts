@@ -815,16 +815,16 @@ class TextSubs
   # Compiles target unescaped and hands the key to store_key, for add and
   # elanthipedia, whose subs are regex source.
   #
+  # Neither gives a gate: only the catalog data sets one, through
+  # add_catalog, so add keeps its two arguments.
+  #
   # @param target [String] regex source, compiled unescaped
   # @param result [String] the gsub replacement
-  # @param requires_any [Array<String>, nil] the key's gate (see Registry);
-  #   only the catalog data sets one, so add keeps its two arguments
   # @return [String] result
   # @raise [RegexpError] when target is not valid regex source; the catalog
   #   and the generation are left as they were
-  # @raise [ArgumentError] when requires_any is malformed; likewise
-  def self.store(target, result, requires_any: nil)
-    store_key(/#{target}/, result, requires_any: requires_any)
+  def self.store(target, result)
+    store_key(/#{target}/, result)
   end
 
   # The one writer of the catalog: add and elanthipedia reach it through
