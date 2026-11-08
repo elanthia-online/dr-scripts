@@ -2129,6 +2129,12 @@ RSpec.describe 'textsubs.lic' do
     # Checking the data compiles every pattern, a section the guild does not
     # get included; the selected subs are stored under those same Regexps
     # rather than compiled again (a start compiles ~1,600 patterns).
+    #
+    # This counts compiles through Regexp.new, the compiler check_pattern
+    # uses, so it pins that choice too: a check that compiled with
+    # Regexp.compile or /#{pattern}/ would count none here, and the failure
+    # says so. The object_id comparison is what proves the stored keys are
+    # the check's own Regexps, whatever compiled them.
     it 'compiles each pattern once, and stores the Regexp the check compiled' do
       data = good.merge('sections' => good['sections'] + [{ 'name' => 'Clerics', 'when' => { 'guilds' => ['Cleric'] },
                                                              'subs' => [%w[pray PRAY]] }])
@@ -2137,7 +2143,10 @@ RSpec.describe 'textsubs.lic' do
 
       TextSubs.add_catalog(data, context, file: 'data/base-textsubs.yaml')
 
-      expect(compiled.map(&:source)).to eq(%w[fine cat pray])
+      expect(compiled.map(&:source)).to eq(%w[fine cat pray]), lambda {
+        "Regexp.new compiled #{compiled.map(&:source).inspect}; this example counts only Regexp.new, so if the " \
+          'catalog check now compiles some other way, count that instead'
+      }
       expect(TextSubs.subs.keys.map(&:object_id)).to eq(compiled.first(2).map(&:object_id))
       expect(TextSubs.subs.keys).to all(be_frozen)
     end
