@@ -411,11 +411,15 @@ RSpec.describe 'textsubs.lic' do
       expect(run[:added].map(&:last)).to all(include('<a href="https://elanthipedia.play.net/'))
     end
 
+    # A herb's annotation repeats the herb's name, or writes \0 (the matched
+    # text) where the key takes more than one form ('jadice flowers?').
     it 'herb_textsubs inserts one block of "<herb> (<area>)" annotations and removes nothing' do
       run = toggle('Trader', 'herb_textsubs', others: false)
       expect(run[:removed]).to eq([])
       expect(run[:added]).not_to be_empty
-      expect(run[:added]).to all(satisfy { |source, _options, replacement| replacement.start_with?("#{source} (") })
+      expect(run[:added]).to all(satisfy { |source, _options, replacement|
+        replacement.start_with?("#{source} (", '\0 (')
+      })
     end
 
     it 'textsubs_use_plat_grouping swaps the one coin-comma rule for two platinum-aware ones' do
@@ -905,6 +909,14 @@ RSpec.describe 'textsubs.lic' do
           build_catalog('Commoner', 'herb_textsubs' => true)
           expect(run_hooks("You get some #{herb} from your pouch.\r\n".b)).to eq("You get some #{herb} (#{tag}) from your pouch.\r\n")
         end
+      end
+
+      # The game writes the plural too ("some jadice flowers"); the tag goes
+      # after the whole noun, not between "flower" and its "s".
+      it 'tags the plural jadice flowers after the plural noun' do
+        build_catalog('Commoner', 'herb_textsubs' => true)
+        expect(run_hooks("You get some jadice flowers from your pouch.\r\n".b))
+          .to eq("You get some jadice flowers (limb-EW) from your pouch.\r\n")
       end
 
       it 'leaves a bare jadice, which could be either herb, untagged' do
