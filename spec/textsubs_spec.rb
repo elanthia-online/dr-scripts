@@ -861,10 +861,10 @@ RSpec.describe 'textsubs.lic' do
     end
 
     it 'builds the key from pretext, text and postext only, and reads a backslash in the link arguments as a backreference' do
-      TextSubs.elanthipedia('Fae Arts', '^', ':', '', '_\3', '(', ')')
+      TextSubs.elanthipedia('Fae Arts', '^', ':', '\3', '_\3', '(', ')')
       expect(TextSubs.subs.keys).to eq([/(^)(Fae Arts)(:)/])
       expect(TextSubs.apply(+'Fae Arts:'))
-        .to eq('(<a href="https://elanthipedia.play.net/Fae_Arts_:">Fae Arts</a>)')
+        .to eq('(<a href="https://elanthipedia.play.net/:Fae_Arts_:">Fae Arts</a>)')
     end
   end
 
