@@ -108,6 +108,10 @@ RSpec.describe 'textsubs.lic' do
   hand_added_path = File.join(fixture_dir, 'samples_hand_added.jsonl')
   # @return [Array<Array(String, Integer, String)>] the rows of catalog_entries.jsonl
   read_entries = -> { File.readlines(entries_path).map { |line| JSON.parse(line) } }
+  # Every key of every catalog a player can run: the keys of
+  # catalog_entries.jsonl, once each. The golden examples hold that file to
+  # what the 96 builds write.
+  every_key = read_entries.call.map { |source, options, _replacement| Regexp.new(source, options) }.uniq
   catalog_path = File.expand_path('../data/base-textsubs.yaml', __dir__)
   # Read once, the way lich-5's SetupFiles reads it (YAML.unsafe_load_file),
   # and frozen, so a catalog reader that changed its data would raise.
@@ -1784,12 +1788,9 @@ RSpec.describe 'textsubs.lic' do
       expect { TextSubs::Engine.apply({ key => 'X' }, line.dup) }.to raise_error(Encoding::CompatibilityError)
     end
 
-    # catalog_entries.jsonl holds every key of the 96 catalogs, as the golden
-    # examples check against what the script builds.
     it 'checks only the three gated coin-comma rules of every catalog on every line' do
-      keys = read_entries.call.map { |source, options, _replacement| Regexp.new(source, options) }.uniq
-      always = keys.select { |key| TextSubs::TokenIndex.tier(key) == [:always] }.map(&:source)
-      expect(keys.size).to be > 1_500
+      always = every_key.select { |key| TextSubs::TokenIndex.tier(key) == [:always] }.map(&:source)
+      expect(every_key.size).to be > 1_500
       expect(always).to contain_exactly(
         '(?!.*>)\d{1,3}(?=(\d{3})+(?!\d).*(Kronar|Dokora|Lirum))',
         '(?!.*>)\d{1,3}(?=((\d{3})*(\d{4}))(?!\d)(?! platinum).*(Kronar|Dokora|Lirum))',
@@ -3286,9 +3287,6 @@ RSpec.describe 'textsubs.lic' do
     # later example finds its entry: Regexp#eql? compares source and options.
     corpus_matches = Hash.new { |cache, key| cache[key] = corpus.each_index.select { |at| key.match?(corpus[at]) } }
     entries = read_entries.call
-    # Every key of every catalog a player can run: the golden fixture's
-    # entries, which the golden examples hold to what the script builds.
-    every_key = entries.map { |source, options, _replacement| Regexp.new(source, options) }.uniq
     # What the generator makes of today's catalog, each part worked out the
     # first time an example asks for it:
     # - :expanded, the samples expanded from the catalog's regex sources;
