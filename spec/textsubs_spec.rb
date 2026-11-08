@@ -148,6 +148,25 @@ RSpec.describe 'textsubs.lic' do
     allow(TextSubs::TokenIndex).to(receive(:tier).and_wrap_original { |original, key| parsed_tiers[key] ||= original.call(key) })
   end
 
+  # What the real Catalog.check gave for the shipped catalog the first time
+  # any example built from it. check reads nothing but its data, and the
+  # shipped data is one deep-frozen object (shipped_catalog), so every later
+  # build from that very object gets the same objects the first check gave:
+  # the sections (the frozen shipped data itself), and the spells table and
+  # keys Hash, which are not frozen but which keyed_entries only reads. Data
+  # that is not that object (a copy, a change, a synthetic catalog) is
+  # checked in full every time. Each catalog
+  # build checks the whole file, ~1,600 patterns compiled in ~4.7 ms, and the
+  # file makes some 450 builds: without the memo it ran in about 10.0 s wall
+  # instead of about 8.0 s, over the 10 s budget for this file.
+  shipped_data = shipped_catalog['textsubs']
+  shipped_check = nil
+  before do
+    allow(TextSubs::Catalog).to(receive(:check).and_wrap_original do |original, data|
+      data.equal?(shipped_data) ? (shipped_check ||= original.call(data)) : original.call(data)
+    end)
+  end
+
   # Runs the real textsubs.lic entry point for one combination and returns the
   # catalog it built.
   #
@@ -536,22 +555,39 @@ RSpec.describe 'textsubs.lic' do
     let(:data) { shipped_catalog['textsubs'] }
 
     # Every scalar of a parsed YAML stream that is a value, not a mapping key.
+    # Two scalars with the same text are different nodes, so the keys are
+    # told apart by identity; a Set keeps that lookup flat, where the ~2,000
+    # keys of the spells table made a scan of a list per scalar the slowest
+    # part of this group.
     #
     # @param tree [Psych::Nodes::Node] a parsed stream or document
     # @return [Array<Psych::Nodes::Scalar>]
     def value_scalars(tree)
-      keys = tree.each.grep(Psych::Nodes::Mapping).flat_map { |mapping| mapping.children.each_slice(2).map(&:first) }
-      tree.each.grep(Psych::Nodes::Scalar).reject { |scalar| keys.any? { |key| key.equal?(scalar) } }
+      keys = Set.new.compare_by_identity.merge(tree.each.grep(Psych::Nodes::Mapping).flat_map { |mapping| mapping.children.each_slice(2).map(&:first) })
+      tree.each.grep(Psych::Nodes::Scalar).reject { |scalar| keys.include?(scalar) }
+    end
+
+    # The value scalars written plain on purpose: the number under a schema
+    # key, and a spell's `signature: true`, written exactly so.
+    #
+    # @param tree [Psych::Nodes::Node]
+    # @return [Set<Psych::Nodes::Scalar>] compared by identity, as
+    #   value_scalars compares the keys
+    def plain_by_design(tree)
+      plain = tree.each.grep(Psych::Nodes::Mapping).flat_map do |mapping|
+        mapping.children.each_slice(2).filter_map do |key, value|
+          value if key.value == 'schema' || (key.value == 'signature' && value.is_a?(Psych::Nodes::Scalar) && value.value == 'true')
+        end
+      end
+      Set.new.compare_by_identity.merge(plain)
     end
 
     # @param tree [Psych::Nodes::Node]
     # @return [Array<String>] "line N: value" for each value scalar not in
-    #   single quotes, but the number under a schema key
+    #   single quotes, but those plain_by_design allows
     def unquoted_values(tree)
-      schema_numbers = tree.each.grep(Psych::Nodes::Mapping).flat_map do |mapping|
-        mapping.children.each_slice(2).select { |key, _| key.value == 'schema' }.map(&:last)
-      end
-      value_scalars(tree).reject { |scalar| scalar.style == Psych::Nodes::Scalar::SINGLE_QUOTED || schema_numbers.any? { |number| number.equal?(scalar) } }
+      allowed = plain_by_design(tree)
+      value_scalars(tree).reject { |scalar| scalar.style == Psych::Nodes::Scalar::SINGLE_QUOTED || allowed.include?(scalar) }
                          .map { |scalar| "line #{scalar.start_line + 1}: #{scalar.value}" }
     end
 
@@ -564,12 +600,12 @@ RSpec.describe 'textsubs.lic' do
       end
     end
 
-    it 'writes every pattern, replacement, name, guild and setting in single quotes' do
+    it 'writes every pattern, replacement, name, guild, setting and spell field in single quotes' do
       expect(unquoted_values(document)).to be_empty, -> { "not single-quoted:\n  #{unquoted_values(document).first(10).join("\n  ")}" }
       expect(value_scalars(document).size).to be > 3000
     end
 
-    it 'takes a plain, a double-quoted and a block scalar for unquoted, but not the schema number' do
+    it "takes a plain, a double-quoted and a block scalar for unquoted, but not the schema number or 'signature: true'" do
       tree = Psych.parse(<<~YAML)
         textsubs:
           schema: 1
@@ -581,8 +617,11 @@ RSpec.describe 'textsubs.lic' do
               subs:
                 - ["\\\\1", 'ok']
                 - [1, 'one']
+          spells:
+            - {name: 'Halo', signature: true, tier: basic}
+            - {name: 'Burden', signature: yes}
       YAML
-      expect(unquoted_values(tree)).to eq(['line 4: plain', "line 6: block\n", 'line 9: \\1', 'line 10: 1'])
+      expect(unquoted_values(tree)).to eq(['line 4: plain', "line 6: block\n", 'line 9: \\1', 'line 10: 1', 'line 12: basic', 'line 13: yes'])
     end
 
     it 'repeats no key in any mapping' do
@@ -606,15 +645,29 @@ RSpec.describe 'textsubs.lic' do
       expect(names.tally.select { |_, count| count > 1 }).to be_empty
     end
 
-    it 'holds only patterns that compile' do
-      patterns = data['sections'].flat_map { |section| section.key?('subs') ? section['subs'].map(&:first) : [section['pattern']] }
-      broken = patterns.reject do |pattern|
-        Regexp.new(pattern)
-      rescue RegexpError
-        false
-      end
-      expect(broken).to be_empty
-      expect(patterns.size).to be > 1500
+    # The spell kinds put names into templates, so the patterns to check are
+    # the ones Catalog builds. Catalog.entries compiles every pattern of every
+    # section, those the guild and settings do not select too ('refuses a
+    # problem in a section the guild does not get' pins that), and raises on
+    # the first that does not compile, naming it: one call checks the whole
+    # file, so this makes one rather than one per guild. The example shows
+    # that holds for the shipped file too, by breaking a pattern of a section
+    # Bards do not get, so it does not lean on that other example. The floor
+    # counts the patterns of the Bard catalog alone, not of every guild.
+    it 'holds only patterns that compile, and the Bard build refuses one broken in a section only other guilds get' do
+      settings = OpenStruct.new(textsubs_spell_links: true, herb_textsubs: true, textsubs_use_plat_grouping: true)
+      context = TextSubs::Context.new(guild: 'Bard', settings: settings)
+      entries = []
+      expect { entries = TextSubs::Catalog.entries(data, context) }.not_to raise_error
+      expect(entries.map(&:first).uniq.size).to be > 1200
+
+      other_guilds = data['sections'].find { |section| section.key?('subs') && section.dig('when', 'guilds') && !context.allows?(section['when']) }
+      expect(other_guilds).not_to be_nil, 'the shipped file has no pairs section gated to guilds other than Bard'
+      broken = data.merge('sections' => data['sections'].map do |section|
+        section.equal?(other_guilds) ? section.merge('subs' => [['(broken', 'x']] + section['subs']) : section
+      end)
+      expect { TextSubs::Catalog.entries(broken, context) }
+        .to raise_error(ArgumentError, /\(#{Regexp.escape(other_guilds['name'])}\) pattern "\(broken" does not compile/)
     end
 
     it 'gates the two coin-comma sections, and only them, on the three currency words' do
@@ -626,6 +679,58 @@ RSpec.describe 'textsubs.lic' do
 
     it 'is schema 1, the schema this textsubs.lic reads' do
       expect(data['schema']).to eq(TextSubs::Catalog.schema)
+    end
+
+    # The spells table is the one copy of each spell's name and labels; these
+    # read the shipped file straight, so they do not lean on the checks
+    # Catalog makes when it loads it.
+    describe 'its spells table' do
+      let(:spells) { TextSubs::SpellTable.new(data['spells']) }
+      let(:table_names) { data['spells'].map { |row| row['name'] } }
+      let(:scroll_names) { data['sections'].select { |section| section['kind'] == 'scroll_labels' }.flat_map { |section| section['names'] } }
+      let(:groups) { data['sections'].select { |section| section['kind'] == 'spell_recognition' }.flat_map { |section| section['groups'] } }
+
+      it 'lists every spell a scroll label or recognition sub names, spelt the same way' do
+        named = scroll_names.grep(String) + groups.flatten
+        expect(named - table_names).to be_empty
+        expect(named.size).to be > 500
+      end
+
+      it 'gives the names of each recognition group one label' do
+        mixed = groups.reject { |group| group.map { |name| spells.recognition_label(name) }.uniq.size == 1 }
+        expect(mixed).to be_empty
+        expect(groups.size).to be > 200
+      end
+
+      # An override keeps a sub whose text the table spells otherwise, so the
+      # catalog stays the same; each is a follow-up to settle against the game.
+      # A new one has to be added here, where a review sees it.
+      it "holds only the pinned overrides, each for a name the table spells otherwise" do
+        overrides = (scroll_names + groups.flatten).grep(Hash)
+        expect(overrides).to eq([{ 'name' => "Damaris's Lullaby", 'label' => 'Bard' }])
+        expect(table_names).to include("Damaris' Lullaby")
+        expect(table_names & overrides.map { |override| override['name'] }).to be_empty
+      end
+
+      it 'links each spellbook and spell just as TextSubs.elanthipedia does with the same arguments' do
+        link_sections = data['sections'].select { |section| %w[wiki_links spell_links].include?(section['kind']) }
+        calls = link_sections.flat_map do |section|
+          texts = section['kind'] == 'spell_links' ? table_names : section['texts']
+          arguments = [section.fetch('pretext', ''), section.fetch('postext', ''), section.fetch('prelink', ''), section.fetch('poslink', ''),
+                       section.fetch('preresult', '\1'), section.fetch('posresult', '\3')]
+          texts.map { |text| [text, *arguments] }
+        end
+        TextSubs.clear
+        calls.each { |arguments| TextSubs.elanthipedia(*arguments) }
+        expected = TextSubs.subs.map { |key, value| [key.source, value] }
+
+        context = TextSubs::Context.new(guild: 'Bard', settings: OpenStruct.new(textsubs_spell_links: true))
+        names = link_sections.map { |section| section['name'] }
+        actual = TextSubs::Catalog.entries(data, context).select { |_, _, meta| names.include?(meta[:section]) }
+        expect(actual.map { |source, replacement, _meta| [source, replacement] }).to eq(expected)
+        expect(expected.size).to eq(table_names.size + link_sections.sum { |section| section.fetch('texts', []).size })
+        expect(expected.size).to be > 400
+      end
     end
   end
 
@@ -4291,7 +4396,7 @@ RSpec.describe 'textsubs.lic' do
       [
         'an unknown kind',
         "textsubs:\n  schema: 1\n  sections:\n    - name: 'x'\n      kind: 'ladder'\n      subs: [['a', 'b']]\n",
-        /section 1 \(x\) has unknown kind "ladder"; kinds are pairs, guild_spells_link/
+        /section 1 \(x\) has unknown kind "ladder"; kinds are pairs, guild_spells_link, wiki_links, spell_links, scroll_labels, spell_recognition\z/
       ],
       [
         'a misspelt section key',
@@ -4377,6 +4482,353 @@ RSpec.describe 'textsubs.lic' do
       YAML
       expect { entries_for('Bard', data) }.to raise_error(ArgumentError, /section 2 \(Clerics only\) pattern "\(broken"/)
     end
+
+    # The spell kinds read one spells table, so a spell's name and labels are
+    # written once. The table here is small and made up for the examples,
+    # with each way a row can give its labels: a book alone, a guild and
+    # book, a signature spell, a label of its own, and a guild with no
+    # recognition data.
+    describe 'the spell kinds' do
+      let(:spell_rows) do
+        [{ 'name' => 'Strange Arrow', 'book' => 'Analogous Patterns', 'tier' => 'introductory', 'type' => 'targeted' },
+         { 'name' => 'Lay Ward', 'book' => 'Analogous Patterns', 'tier' => 'basic', 'type' => 'warding' },
+         { 'name' => 'Manifest Force', 'book' => 'Analogous Patterns', 'tier' => 'basic', 'type' => 'warding' },
+         { 'name' => 'Halo', 'guild' => 'Cleric', 'book' => 'Holy Defense', 'signature' => true, 'tier' => 'advanced',
+           'type' => 'debilitation/warding' },
+         { 'name' => "Sidhlot's Flaying", 'label' => 'Lay Necromancy' },
+         { 'name' => 'Bless', 'guild' => 'Cleric' }]
+      end
+      let(:scrolls) do
+        { 'name' => 'scrolls', 'kind' => 'scroll_labels', 'pattern' => '^(It is labeled) "{name}."',
+          'replacement' => '\1 "{name}." ({label})', 'names' => ['Halo', 'Strange Arrow', "Sidhlot's Flaying", 'Bless'] }
+      end
+      let(:recognition) do
+        { 'name' => 'recognition', 'kind' => 'spell_recognition',
+          'pattern' => '^(You recognize|You decipher) the ({names}) spell.', 'replacement' => '\1 the \2 spell. [{label}]',
+          'groups' => [['Halo'], ['Strange Arrow'], ['Lay Ward', 'Manifest Force']] }
+      end
+
+      # @param sections [Array<Hash>] the sections, in order
+      # @param spells [Array<Hash>, nil] the spells table; nil leaves the key out
+      # @return [Hash] the frozen `textsubs:` value, read back from YAML
+      def spell_catalog(*sections, spells: spell_rows)
+        catalog_data({ 'textsubs' => { 'schema' => 1, 'sections' => sections, 'spells' => spells }.compact }.to_yaml)
+      end
+
+      # @return [Array<Array(String, String)>] [source, replacement] of each sub
+      def pairs_for(data)
+        entries_for('Bard', data).map { |source, replacement, _meta| [source, replacement] }
+      end
+
+      # What TextSubs.elanthipedia adds for each call, as [source, replacement].
+      #
+      # @param calls [Array<Array<String>>] the arguments of each call
+      # @return [Array<Array(String, String)>]
+      def elanthipedia_pairs(calls)
+        TextSubs.clear
+        calls.each { |arguments| TextSubs.elanthipedia(*arguments) }
+        TextSubs.subs.map { |key, value| [key.source, value] }
+      ensure
+        TextSubs.clear
+      end
+
+      it 'links every spell of the table once, in table order, just as elanthipedia would' do
+        links = { 'name' => 'spell links', 'kind' => 'spell_links', 'pretext' => '\S|^', 'postext' => '..\(.*\)|\s*Slot' }
+        expected = elanthipedia_pairs(spell_rows.map { |row| [row['name'], '\S|^', '..\(.*\)|\s*Slot'] })
+
+        expect(pairs_for(spell_catalog(links))).to eq(expected)
+        expect(expected.map(&:first).first(2)).to eq(['(\S|^)(Strange Arrow)(..\(.*\)|\s*Slot)', '(\S|^)(Lay Ward)(..\(.*\)|\s*Slot)'])
+        expect(expected.last.last).to eq('\1<a href="https://elanthipedia.play.net/Bless">Bless</a>\3')
+      end
+
+      it 'links each text of a wiki_links section, in list order, with every link field elanthipedia takes' do
+        books = { 'name' => 'books', 'kind' => 'wiki_links', 'texts' => ['Holy Defense', "Fae's Arts"],
+                  'pretext' => '^', 'postext' => ':', 'prelink' => 'Category:', 'poslink' => '_spellbook',
+                  'preresult' => '[', 'posresult' => ']' }
+        expected = elanthipedia_pairs(books['texts'].map { |text| [text, '^', ':', 'Category:', '_spellbook', '[', ']'] })
+
+        expect(pairs_for(spell_catalog(books))).to eq(expected)
+        expect(expected.last).to eq(['(^)(Fae\'s Arts)(:)', '[<a href="https://elanthipedia.play.net/Category:Fae\'s_Arts_spellbook">Fae\'s Arts</a>]'])
+      end
+
+      it "takes elanthipedia's defaults for each link field a wiki_links section leaves out" do
+        bare = { 'name' => 'bare', 'kind' => 'wiki_links', 'texts' => ['Holy Defense'] }
+        expect(pairs_for(spell_catalog(bare))).to eq(elanthipedia_pairs([['Holy Defense']]))
+        expect(pairs_for(spell_catalog(bare))).to eq([['()(Holy Defense)()', '\1<a href="https://elanthipedia.play.net/Holy_Defense">Holy Defense</a>\3']])
+      end
+
+      it "labels each scroll name, in list order, with the spell's label, else its guild, else its book" do
+        expect(pairs_for(spell_catalog(scrolls))).to eq(
+          [['^(It is labeled) "Halo."', '\1 "Halo." (Cleric)'],
+           ['^(It is labeled) "Strange Arrow."', '\1 "Strange Arrow." (Analogous Patterns)'],
+           ['^(It is labeled) "Sidhlot\'s Flaying."', '\1 "Sidhlot\'s Flaying." (Lay Necromancy)'],
+           ['^(It is labeled) "Bless."', '\1 "Bless." (Cleric)']]
+        )
+      end
+
+      it 'uses an override as it is written, for a name the table does not list and for one it does' do
+        overridden = scrolls.merge('names' => [{ 'name' => "Damaris's Lullaby", 'label' => 'Bard' }, { 'label' => 'Paladin', 'name' => 'Halo' }])
+        expect(pairs_for(spell_catalog(overridden))).to eq(
+          [['^(It is labeled) "Damaris\'s Lullaby."', '\1 "Damaris\'s Lullaby." (Bard)'],
+           ['^(It is labeled) "Halo."', '\1 "Halo." (Paladin)']]
+        )
+      end
+
+      it 'puts names and labels in as they are written: a backslash stays, and a brace that names no placeholder stays' do
+        literal = scrolls.merge('pattern' => '^\d{3} "{name}."', 'names' => [{ 'name' => 'Halo', 'label' => 'it\'s \0' }])
+        expect(pairs_for(spell_catalog(literal))).to eq([['^\d{3} "Halo."', '\1 "Halo." (it\'s \0)']])
+      end
+
+      # Generators.fill turns a template into a format string, so a % in a
+      # template, a name or a label must come out as it went in, and so must
+      # text that reads as a format reference.
+      it 'puts a % in as it is written, in a template, a name or a label, and before a placeholder' do
+        percent = scrolls.merge('pattern' => '^(\d+)% "{name}." %<name>s', 'replacement' => '\1 "{name}." ({label}) %{label}',
+                                'names' => [{ 'name' => 'Halo%', 'label' => '5%s' }])
+        expect(pairs_for(spell_catalog(percent))).to eq([['^(\d+)% "Halo%." %<name>s', '\1 "Halo%." (5%s) %5%s']])
+      end
+
+      it 'gives one recognition sub per group, in list order, with the names joined and the label the table computes' do
+        expect(pairs_for(spell_catalog(recognition))).to eq(
+          [['^(You recognize|You decipher) the (Halo) spell.', '\1 the \2 spell. [signature Cleric (Holy Defense): advanced debilitation/warding]'],
+           ['^(You recognize|You decipher) the (Strange Arrow) spell.', '\1 the \2 spell. [Analogous Patterns: introductory targeted]'],
+           ['^(You recognize|You decipher) the (Lay Ward|Manifest Force) spell.', '\1 the \2 spell. [Analogous Patterns: basic warding]']]
+        )
+      end
+
+      # A pattern may hold {label} as well as the names: the check compiles
+      # the pattern filled with the label the table gives, as expand fills it,
+      # so the key Catalog compiled is the one each sub is stored under.
+      it 'fills {label} in a pattern too, with the label the table gives, for a recognition group and a scroll name' do
+        labelled_groups = recognition.merge('pattern' => '^(You recognize) the ({names}) spell, {label}.', 'groups' => [['Lay Ward', 'Manifest Force']])
+        labelled_scrolls = scrolls.merge('pattern' => '^(It is labeled) "{name}" \({label}\).', 'names' => ['Halo'])
+        expect(pairs_for(spell_catalog(labelled_groups, labelled_scrolls)).map(&:first)).to eq(
+          ['^(You recognize) the (Lay Ward|Manifest Force) spell, Analogous Patterns: basic warding.',
+           '^(It is labeled) "Halo" \(Cleric\).']
+        )
+      end
+
+      it 'rewrites a game line with a group sub, whichever name of the group the line holds' do
+        TextSubs.clear
+        expect(TextSubs.add_catalog(spell_catalog(recognition), TextSubs::Context.new(guild: 'Bard', settings: settings), file: 'f')).to be_nil
+        expect(TextSubs.apply(+'You decipher the Manifest Force spell.'))
+          .to eq('You decipher the Manifest Force spell. [Analogous Patterns: basic warding]')
+        expect(TextSubs.apply(+'You recognize the Lay Ward spell.')).to eq('You recognize the Lay Ward spell. [Analogous Patterns: basic warding]')
+      ensure
+        TextSubs.clear
+      end
+
+      it 'refuses a group whose names the table labels differently, naming both labels' do
+        mixed = recognition.merge('groups' => [['Lay Ward'], ['Strange Arrow', 'Manifest Force']])
+        expect { pairs_for(spell_catalog(mixed)) }.to raise_error(
+          ArgumentError,
+          'section 1 (recognition) groups 2 mixes labels: "Strange Arrow" is "Analogous Patterns: introductory targeted" ' \
+          'but "Manifest Force" is "Analogous Patterns: basic warding"'
+        )
+      end
+
+      it 'refuses a group of two spells that differ only in being a signature spell' do
+        twin = spell_rows + [spell_rows[3].merge('name' => 'Halo Twin').except('signature')]
+        mixed = recognition.merge('groups' => [['Halo', 'Halo Twin']])
+        expect { pairs_for(spell_catalog(mixed, spells: twin)) }.to raise_error(ArgumentError, /groups 1 mixes labels: "Halo" is "signature Cleric/)
+      end
+
+      it 'refuses a section that names a spell the table does not list, as a typo would' do
+        expect { pairs_for(spell_catalog(scrolls.merge('names' => ['Strange Arow']))) }
+          .to raise_error(ArgumentError, 'section 1 (scrolls) names "Strange Arow", which is not in spells')
+        expect { pairs_for(spell_catalog(recognition.merge('groups' => [['Halo', 'Hallo']]))) }
+          .to raise_error(ArgumentError, 'section 1 (recognition) names "Hallo", which is not in spells')
+      end
+
+      it 'refuses a spell section in a file with no spells table at all' do
+        expect { pairs_for(spell_catalog(scrolls, spells: nil)) }.to raise_error(ArgumentError, /names "Halo", which is not in spells/)
+        expect { pairs_for(spell_catalog({ 'name' => 'links', 'kind' => 'spell_links' }, spells: nil)) }
+          .to raise_error(ArgumentError, 'section 1 (links) has no spells to link; list them under spells')
+      end
+
+      it 'loads a file of pairs alone with no spells table, as one from before the table would be' do
+        expect(pairs_for(spell_catalog({ 'name' => 'plain', 'subs' => [%w[cat dog]] }, spells: nil))).to eq([%w[cat dog]])
+      end
+
+      it 'refuses a bad spells row even when no section reads the table' do
+        bad = spell_rows + [{ 'name' => 'Halo' }]
+        expect { pairs_for(spell_catalog({ 'name' => 'plain', 'subs' => [%w[cat dog]] }, spells: bad)) }
+          .to raise_error(ArgumentError, 'spell 7 (Halo) is listed more than once')
+      end
+
+      {
+        'a scroll name that is a number'                   => [:scrolls, { 'names' => [5] }, /names entry 1 must be a quoted spell name or an override \{name: '\.\.\.', label: '\.\.\.'\}, not 5/],
+        'an override with no label'                        => [:scrolls, { 'names' => [{ 'name' => 'Halo' }] }, /names entry 1 must be/],
+        'an override with a key besides name and label'    => [:scrolls, { 'names' => ['Bless', { 'name' => 'Halo', 'label' => 'X', 'note' => 'y' }] }, /names entry 2 must be/],
+        'an override with an empty name'                   => [:scrolls, { 'names' => [{ 'name' => '', 'label' => 'X' }] }, /names entry 1 must be/],
+        'a scroll name listed twice, once as an override'  => [:scrolls, { 'names' => ['Halo', { 'name' => 'Halo', 'label' => 'X' }] }, /section 1 \(scrolls\) lists "Halo" more than once/],
+        'no scroll names'                                  => [:scrolls, { 'names' => [] }, /'names' must be a non-empty list/],
+        'a scroll pattern without {name}'                  => [:scrolls, { 'pattern' => '^(It is labeled) "Halo."' }, /'pattern' must hold \{name\}, not/],
+        'a scroll replacement that is not a string'        => [:scrolls, { 'replacement' => 5 }, /'replacement' must be a quoted string, not 5/],
+        'a scroll pattern that does not compile'           => [:scrolls, { 'pattern' => '^(It is labeled "{name}."' }, /pattern "\^\(It is labeled \\"Halo\.\\"" does not compile/],
+        'a recognition group that is one name, not a list' => [:recognition, { 'groups' => ['Halo'] }, /'groups 1' must be a non-empty list of quoted names, not "Halo"/],
+        'an empty recognition group'                       => [:recognition, { 'groups' => [['Halo'], []] }, /'groups 2' must be a non-empty list/],
+        'no recognition groups'                            => [:recognition, { 'groups' => [] }, /'groups' must be a non-empty list/],
+        'a spell in two recognition groups'                => [:recognition, { 'groups' => [['Halo'], ['Lay Ward'], ['Halo']] }, /lists "Halo" more than once/],
+        'a recognition pattern without {names}'            => [:recognition, { 'pattern' => '^the ({name}) spell.' }, /'pattern' must hold \{names\}/],
+        'a recognition name with no recognition data'      => [:recognition, { 'groups' => [['Bless']] }, /needs the book, tier, type of spell "Bless"/]
+      }.each do |label, (section, change, message)|
+        it "refuses #{label}" do
+          expect { pairs_for(spell_catalog(send(section).merge(change))) }.to raise_error(ArgumentError, message)
+        end
+      end
+
+      it 'refuses a scroll name whose row has no label, guild or book' do
+        bare = spell_rows + [{ 'name' => 'Bare' }]
+        expect { pairs_for(spell_catalog(scrolls.merge('names' => ['Bare']), spells: bare)) }
+          .to raise_error(ArgumentError, 'section 1 (scrolls) needs a label, guild or book for spell "Bare"')
+      end
+
+      it 'refuses a spell name that is not valid regex source wherever it would be linked' do
+        broken = spell_rows + [{ 'name' => 'Open (Spell', 'guild' => 'Cleric' }]
+        expect { pairs_for(spell_catalog({ 'name' => 'links', 'kind' => 'spell_links' }, spells: broken)) }
+          .to raise_error(ArgumentError, /section 1 \(links\) pattern "\(\)\(Open \(Spell\)\(\)" does not compile/)
+      end
+
+      {
+        'an empty texts list'         => [{ 'texts' => [] }, /'texts' must be a non-empty list of quoted names, not \[\]/],
+        'a text listed twice'         => [{ 'texts' => %w[Healing Healing] }, /lists "Healing" more than once/],
+        'a link field that is a list' => [{ 'prelink' => ['Category:'] }, /'prelink' must be a quoted string, not \["Category:"\]/],
+        'an unknown link field'       => [{ 'postlink' => '_spellbook' }, /has unknown key\(s\) "postlink"/]
+      }.each do |label, (change, message)|
+        it "refuses a wiki_links section with #{label}" do
+          section = { 'name' => 'books', 'kind' => 'wiki_links', 'texts' => ['Healing'] }.merge(change)
+          expect { pairs_for(spell_catalog(section)) }.to raise_error(ArgumentError, message)
+        end
+      end
+    end
+  end
+
+  # Both spell kinds build uniform value sets, so no data file reaches these
+  # cases; fill is public, and a set that breaks its contract has to fail as
+  # every other data problem does, with an ArgumentError Catalog can name the
+  # section in.
+  describe 'TextSubs::Generators.fill' do
+    it 'refuses a value set that lacks a placeholder the template names, naming the set and the placeholder' do
+      expect { TextSubs::Generators.fill('{name} {label}', [{ name: 'a', label: 'b' }, { name: 'c' }]) }
+        .to raise_error(ArgumentError, 'value set 2 has no {label} for "{name} {label}"')
+    end
+
+    it 'fills a set that holds more than the template names, and leaves a brace that names no placeholder' do
+      expect(TextSubs::Generators.fill('{name} {3}', [{ name: 'a', label: 'b' }, { name: 'c', label: 'd', note: 'e' }]))
+        .to eq(['a {3}', 'c {3}'])
+    end
+
+    it 'fills a later set that lacks a first-set placeholder the template does not name' do
+      expect(TextSubs::Generators.fill('{name}', [{ name: 'a', label: 'b' }, { name: 'c' }])).to eq(%w[a c])
+    end
+  end
+
+  describe 'TextSubs::SpellTable' do
+    let(:rows) do
+      [{ 'name' => 'Halo', 'guild' => 'Cleric', 'book' => 'Holy Defense', 'signature' => true, 'tier' => 'advanced',
+         'type' => 'debilitation/warding' },
+       { 'name' => 'Burden', 'book' => 'Analogous Patterns', 'tier' => 'introductory', 'type' => 'debilitation' },
+       { 'name' => 'Bless', 'guild' => 'Cleric', 'book' => 'Holy Evocations', 'tier' => 'introductory', 'type' => 'utility',
+         'label' => 'Clerical' },
+       { 'name' => 'Abandoned Heart' }]
+    end
+    let(:table) { TextSubs::SpellTable.new(rows) }
+
+    it 'lists the names in table order, frozen' do
+      expect(table.names).to eq(['Halo', 'Burden', 'Bless', 'Abandoned Heart'])
+      expect(table.names).to be_frozen
+    end
+
+    it 'labels a scroll with the label, else the guild, else the book' do
+      expect(%w[Bless Halo Burden].map { |name| table.scroll_label(name) }).to eq(['Clerical', 'Cleric', 'Analogous Patterns'])
+    end
+
+    it "builds a recognition label from the signature flag, the guild and book (or the book alone), the tier and the type" do
+      expect(table.recognition_label('Halo')).to eq('signature Cleric (Holy Defense): advanced debilitation/warding')
+      expect(table.recognition_label('Burden')).to eq('Analogous Patterns: introductory debilitation')
+      expect(table.recognition_label('Bless')).to eq('Cleric (Holy Evocations): introductory utility')
+    end
+
+    it 'refuses a name it does not list, and a label its row has no data for' do
+      expect { table.scroll_label('Hallo') }.to raise_error(ArgumentError, 'names "Hallo", which is not in spells')
+      expect { table.scroll_label('Abandoned Heart') }.to raise_error(ArgumentError, 'needs a label, guild or book for spell "Abandoned Heart"')
+      expect { table.recognition_label('Abandoned Heart') }.to raise_error(ArgumentError, 'needs the book, tier, type of spell "Abandoned Heart"')
+    end
+
+    it 'changes no row it is given' do
+      frozen = YAML.safe_load(rows.to_yaml, freeze: true)
+      expect(TextSubs::SpellTable.new(frozen).recognition_label('Halo')).to start_with('signature')
+    end
+
+    {
+      'spells: with nothing after it' => [nil, /'spells' must be a list, not nil/],
+      'a mapping, not a list'         => [{ 'Halo' => {} }, /'spells' must be a list, not \{"Halo" => \{\}\}/],
+      'a row that is a bare name'     => [['Halo'], /\Aspell 1 is not a mapping\z/],
+      'a row with no name'            => [[{ 'guild' => 'Cleric' }], /\Aspell 1 has no 'name'\z/],
+      'a row with an empty name'      => [[{ 'name' => '' }], /spell 1 has no 'name'/],
+      'a misspelt key'                => [[{ 'name' => 'Halo', 'tierr' => 'basic' }], /\Aspell 1 \(Halo\) has unknown key\(s\) "tierr"\z/],
+      'a name listed twice'           => [[{ 'name' => 'Halo' }, { 'name' => 'Burden' }, { 'name' => 'Halo' }], /\Aspell 3 \(Halo\) is listed more than once\z/],
+      'a misspelt guild'              => [[{ 'name' => 'Halo', 'guild' => 'Moonmage' }], /spell 1 \(Halo\) names unknown guild "Moonmage"/],
+      'signature: false'              => [[{ 'name' => 'Halo', 'signature' => false }], /signature must be true, or left out, not false/],
+      "signature: 'true', a string"   => [[{ 'name' => 'Halo', 'signature' => 'true' }], /signature must be true, or left out, not "true"/],
+      'an unquoted number for a tier' => [[{ 'name' => 'Halo', 'tier' => 5 }], /spell 1 \(Halo\) tier must be a non-empty quoted string, not 5/],
+      'an empty label'                => [[{ 'name' => 'Halo', 'label' => '' }], /label must be a non-empty quoted string, not ""/]
+    }.each do |label, (value, message)|
+      it "refuses #{label}" do
+        expect { TextSubs::SpellTable.new(value) }.to raise_error(ArgumentError, message)
+      end
+    end
+  end
+
+  describe 'TextSubs::LinkBuilder.pair' do
+    it 'gives the key and replacement TextSubs.elanthipedia adds for the same arguments' do
+      TextSubs.clear
+      TextSubs.elanthipedia("Damaris' Lullaby", '\S|^', '\s*Slot', 'Spell:', '_page', '<', '>')
+      expect([TextSubs::LinkBuilder.pair("Damaris' Lullaby", pretext: '\S|^', postext: '\s*Slot', prelink: 'Spell:', poslink: '_page',
+                                                             preresult: '<', posresult: '>')])
+        .to eq(TextSubs.subs.map { |key, value| [key.source, value] })
+    ensure
+      TextSubs.clear
+    end
+
+    it 'puts each link field where it belongs around a multi-word text' do
+      expect(TextSubs::LinkBuilder.pair("Damaris' Lullaby", pretext: '\S|^', postext: '\s*Slot', prelink: 'Spell:', poslink: '_page',
+                                                         preresult: '<', posresult: '>'))
+        .to eq(["(\\S|^)(Damaris' Lullaby)(\\s*Slot)",
+                %(<<a href="https://elanthipedia.play.net/Spell:Damaris'_Lullaby_page">Damaris' Lullaby</a>>)])
+    end
+
+    it 'puts underscores only in the page, keeping the spaces of the text and the regex' do
+      expect(TextSubs::LinkBuilder.pair('Aura of Tongues'))
+        .to eq(['()(Aura of Tongues)()', '\1<a href="https://elanthipedia.play.net/Aura_of_Tongues">Aura of Tongues</a>\3'])
+    end
+
+    it 'passes key a keyword neither of them takes, so a typo raises rather than being dropped' do
+      expect { TextSubs::LinkBuilder.pair('Halo', pretxt: '^') }.to raise_error(ArgumentError, /pretxt/)
+    end
+  end
+
+  # The links check builds keys alone, with the options key_options keeps,
+  # so its key has to be the one pair gives for the full options.
+  describe 'TextSubs::LinkBuilder.key_options' do
+    it 'keeps the options key takes, and the key it gives is the key of pair for every option' do
+      options = { pretext: '\S|^', postext: '\s*Slot', prelink: 'Spell:', poslink: '_page', preresult: '<', posresult: '>' }
+      kept = TextSubs::LinkBuilder.key_options(options)
+      expect(kept).to eq(pretext: '\S|^', postext: '\s*Slot')
+      expect(TextSubs::LinkBuilder.key('Halo', **kept)).to eq(TextSubs::LinkBuilder.pair('Halo', **options).first)
+    end
+
+    it 'keeps what key_keywords names, which is every keyword key takes, optional or required' do
+      key_params = TextSubs::LinkBuilder.method(:key).parameters
+      expect(TextSubs::LinkBuilder.key_keywords)
+        .to match_array(key_params.filter_map { |type, name| name if %i[key keyreq].include?(type) })
+    end
+
+    it 'keeps them even when key is wrapped, so a spy or a prepend cannot empty the check keys' do
+      allow(TextSubs::LinkBuilder).to receive(:key).and_call_original
+      expect(TextSubs::LinkBuilder.key_options(pretext: '^', postext: ':', prelink: 'Category:')).to eq(pretext: '^', postext: ':')
+    end
   end
 
   describe 'TextSubs.add_catalog' do
@@ -4431,7 +4883,8 @@ RSpec.describe 'textsubs.lic' do
       message = TextSubs.add_catalog(bad, context, file: '/lich/scripts/data/custom/base-textsubs.yaml')
       expect(message).to eq(
         'No built-in subs: /lich/scripts/data/custom/base-textsubs.yaml cannot be used (section 2 (two) has unknown kind ' \
-        "\"ladder\"; kinds are pairs, guild_spells_link). This textsubs.lic needs a 'textsubs:' mapping with schema: 1; " \
+        "\"ladder\"; kinds are pairs, guild_spells_link, wiki_links, spell_links, scroll_labels, spell_recognition). " \
+        "This textsubs.lic needs a 'textsubs:' mapping with schema: 1; " \
         'update dr-scripts, or fix or remove a copy in data/custom. Only private_textsubs and shit-list subs are active.'
       )
       expect(TextSubs.subs).to eq(/mine/ => 'MINE')
