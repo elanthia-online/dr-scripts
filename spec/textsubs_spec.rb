@@ -121,6 +121,18 @@ RSpec.describe 'textsubs.lic' do
     $test_data[:textsubs] = OpenStruct.new(shipped_catalog)
   end
 
+  # Each key's tier, as the real TokenIndex.tier gave it the first time any
+  # example asked. A tier depends on nothing but the key's source and options,
+  # which Regexp#eql? compares, so a key built again gets the very tier the
+  # parser gave it. The first apply after every catalog build indexes ~1,600
+  # keys, ~70 ms of parsing each time; the examples that build catalogs ran
+  # ~2 s longer for it. Pattern.new(key).tier, which the parser examples call
+  # where they mean the parser itself, is not memoized.
+  parsed_tiers = {}
+  before do
+    allow(TextSubs::TokenIndex).to(receive(:tier).and_wrap_original { |original, key| parsed_tiers[key] ||= original.call(key) })
+  end
+
   # Runs the real textsubs.lic entry point for one combination and returns the
   # catalog it built.
   #
