@@ -723,9 +723,8 @@ RSpec.describe 'textsubs.lic' do
     # Made once, by whichever example asks first.
     let(:read) { reads ||= record_reads }
 
-    it 'reads the shit-list and private-subs keys in the script and the three flags in the when: gates' do
-      expect(read).to contain_exactly('integrate_shit_list_with_textsubs', 'private_textsubs', 'textsubs_spell_links',
-                                      'herb_textsubs', 'textsubs_use_plat_grouping')
+    it 'reads exactly the keys textsubs_defaults lists' do
+      expect(read).to match_array(textsubs_defaults.keys)
     end
 
     it 'defines every settings key textsubs reads, and reads every textsubs key base.yaml defines' do
