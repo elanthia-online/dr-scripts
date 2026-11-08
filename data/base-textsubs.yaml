@@ -34,9 +34,12 @@
 # backslash taken out, so write it as literal text: escape every regex
 # metacharacter, and put a backslash before nothing but a punctuation mark.
 # A '.' may stay unescaped, where it matches any character, but escape it
-# (as the Osrel Meraud steps do) when only the game's full stop should
-# match; either way the replacement writes '.'. Each n is from -of to of
-# and used once on its scale.
+# (as the Osrel Meraud power steps do) when only the game's full stop
+# should match; either way the replacement writes '.'. Leave the full
+# stop out when the game may not send one (the Osrel Meraud capacity
+# steps): the counter then goes before the game's full stop, or at the
+# end of a line without one. Each n is from -of to of and used once on
+# its scale.
 # A scale split over ladder sections, around messages that stay pairs, gives
 # each of them scale: 'name' and the same of; a scale is the section's own
 # name otherwise. The load refuses a step whose text another step's
@@ -424,7 +427,9 @@ textsubs:
         guilds: ['Cleric']
       subs:
         - ['^After a moment, you see a crystal-clear vision of your god who speaks slowly and deliberately, "Your unwavering faith and devotion pleases me greatly, (\w+)\.\s+Go forth and continue your works, and you shall only attain a greater level of purity\."', 'After a moment, you see a crystal-clear vision of your god who speaks slowly and deliberately, "Your unwavering faith and devotion pleases me greatly, \1.  Go forth, and continue your works and you shall only attain a greater level of purity." (15/16)']
-        - ['^After a moment, you feel a clear presence like a warm blanket covering you beneath the shade of a giant sana''ati tree\.', 'After a moment, you feel a clear presence like a warm blanket covering you beneath the shade of a giant Sana''ati tree. (16/16)']
+        # The game writes sana'ati lowercase in common text and capitalised in a
+        # proper name; which this line uses is not known, so the key takes both.
+        - ['^After a moment, you feel a clear presence like a warm blanket covering you beneath the shade of a giant [Ss]ana''ati tree\.', 'After a moment, you feel a clear presence like a warm blanket covering you beneath the shade of a giant Sana''ati tree. (16/16)']
 
     # Osrel Meraud power / capacity messaging for Clerics (seen when you 'focus orb')
     - name: 'Cleric Osrel Meraud power'
@@ -446,6 +451,9 @@ textsubs:
         - [9, 'flaming magma pouring through a volcanic crevasse\.']
         - [10, 'torrents of fiery rain falling upon Elanthia from the World Dragon''s maw\.']
 
+    # No capacity line has been seen to say whether the game ends it with a
+    # full stop, so the steps leave it out and match either way: the
+    # counter goes before the game's full stop, or at the end of the line.
     - name: 'Cleric Osrel Meraud capacity'
       when:
         guilds: ['Cleric']
@@ -454,17 +462,17 @@ textsubs:
       prefix: 'The pervasiveness of the sensation evokes the image of'
       of: 11
       steps:
-        - [1, 'a stream in your mind''s eye\.']
-        - [2, 'a pond in your mind''s eye\.']
-        - [3, 'a river in your mind''s eye\.']
-        - [4, 'a lake in your mind''s eye\.']
-        - [5, 'a sea in your mind''s eye\.']
-        - [6, 'an ocean in your mind''s eye\.']
-        - [7, 'Drogor''s deeps in your mind''s eye\.']
-        - [8, 'Elanthia''s tides rising toward Katamba in your mind''s eye\.']
-        - [9, 'the sapphirine planet Merewalda in your mind''s eye\.']
-        - [10, 'Alamhif''s Bridge arching from the cold seas of Death in your mind''s eye\.']
-        - [11, 'the fathomless ebon abysms of the Starry Road in your mind''s eye\.']
+        - [1, 'a stream in your mind''s eye']
+        - [2, 'a pond in your mind''s eye']
+        - [3, 'a river in your mind''s eye']
+        - [4, 'a lake in your mind''s eye']
+        - [5, 'a sea in your mind''s eye']
+        - [6, 'an ocean in your mind''s eye']
+        - [7, 'Drogor''s deeps in your mind''s eye']
+        - [8, 'Elanthia''s tides rising toward Katamba in your mind''s eye']
+        - [9, 'the sapphirine planet Merewalda in your mind''s eye']
+        - [10, 'Alamhif''s Bridge arching from the cold seas of Death in your mind''s eye']
+        - [11, 'the fathomless ebon abysms of the Starry Road in your mind''s eye']
 
     # Ranger pace messaging substitutions, these show the wilderness level of the room so you can determine how much the room will raise or decrease your bonus.
     # Neutral messaging is purposefully not reported here because non-rangers would see it.

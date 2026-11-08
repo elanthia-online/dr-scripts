@@ -6191,16 +6191,35 @@ RSpec.describe 'textsubs.lic' do
         combinations.flat_map { |combination| catalog_of(combination) }.to_set { |source, _options, replacement| [source, replacement] }
       end
 
-      # The two end-anchored Ranger howl tiers (parent lines 821 and 824) end
-      # in '(?=\r?$)' where their author wrote '$', as raw lines end in \r\n
-      # ('the end-anchored Ranger howl tiers' above). Every other add is held
-      # as its author wrote it.
+      # Three kinds of add are held otherwise than as written; every other
+      # add is held as its author wrote it.
+      # - The two end-anchored Ranger howl tiers (parent lines 821 and 824)
+      #   end in '(?=\r?$)' where their author wrote '$', as raw lines end in
+      #   \r\n ('the end-anchored Ranger howl tiers' above).
+      # - The 11 Osrel Meraud capacity steps (parent lines 796-806) leave out
+      #   the '\.' their author wrote, and the counter goes before the full
+      #   stop. No capacity line turns up in the October 2026 game logs, so
+      #   whether the game ends it with a full stop is not known; before the
+      #   restore the bare '.' matched the \r of a line without one, so the
+      #   counter showed either way, and it still does, now without eating
+      #   the \r.
+      # - The (16/16) presence (parent line 780) takes "Sana'ati" as well as
+      #   "sana'ati": that line does not turn up in the logs either, and the
+      #   game writes the word lowercase in common text ("a tiny painted
+      #   sana'ati tree pin") but capitalised in the name "Sana'ati Dyaus",
+      #   so which this line uses is not known.
       #
       # @param row [Hash] a row of parent_double_quoted.jsonl for an add
       # @return [Array(String, String)] the [key source, replacement] the catalog holds for it
       def held_as(row)
         pattern, replacement = row['intent']
-        pattern = pattern.delete_suffix('$') + '(?=\r?$)' if [821, 824].include?(row['line'])
+        case row['line']
+        when 821, 824 then pattern = pattern.delete_suffix('$') + '(?=\r?$)'
+        when 796..806
+          pattern = pattern.delete_suffix('\.')
+          replacement = replacement.sub(/\. (\(\d+\/11\))\z/, ' \1')
+        when 780 then pattern = pattern.sub("sana'ati", "[Ss]ana'ati")
+        end
         [pattern, replacement]
       end
 
@@ -6466,7 +6485,9 @@ RSpec.describe 'textsubs.lic' do
     end
 
     # The full stops the parent's double quotes dropped, back in: each of
-    # these keys used to match any character there.
+    # these keys used to match any character there. The Osrel Meraud
+    # capacity steps, which leave the full stop out, are here too, as are
+    # both spellings of the (16/16) presence.
     describe 'the restored full stops' do
       recognition = 'You recognize the familiar mnemonics of the Burden spell'
 
@@ -6484,44 +6505,63 @@ RSpec.describe 'textsubs.lic' do
         expect(hooked("#{recognition}!")).to eq("#{recognition}!\r\n")
       end
 
-      # Every Osrel Meraud step, written out, so a step put back to its
+      # Every Osrel Meraud power step, written out, so a step put back to its
       # dropped form fails here even if its fixture row changed with it.
-      { 'The strength of the sensation evokes the image of' =>
-          [['a pile of cold ashes', '1/10'], ['a pile of smoldering ashes', '2/10'],
-           ['a nearly burnt-out candle wick', '3/10'], ['a half-melted burning candle', '4/10'],
-           ['a tall burning candle', '5/10'], ['a blazing torch', '6/10'], ['a small campfire', '7/10'],
-           ['a roaring bonfire', '8/10'], ['flaming magma pouring through a volcanic crevasse', '9/10'],
-           ["torrents of fiery rain falling upon Elanthia from the World Dragon's maw", '10/10']],
-        'The pervasiveness of the sensation evokes the image of' =>
-          [["a stream in your mind's eye", '1/11'], ["a pond in your mind's eye", '2/11'],
-           ["a river in your mind's eye", '3/11'], ["a lake in your mind's eye", '4/11'],
-           ["a sea in your mind's eye", '5/11'], ["an ocean in your mind's eye", '6/11'],
-           ["Drogor's deeps in your mind's eye", '7/11'],
-           ["Elanthia's tides rising toward Katamba in your mind's eye", '8/11'],
-           ["the sapphirine planet Merewalda in your mind's eye", '9/11'],
-           ["Alamhif's Bridge arching from the cold seas of Death in your mind's eye", '10/11'],
-           ["the fathomless ebon abysms of the Starry Road in your mind's eye", '11/11']] }.each do |prefix, steps|
-        steps.each do |step, tier|
-          image = "#{prefix} #{step}"
+      power = 'The strength of the sensation evokes the image of'
+      [['a pile of cold ashes', '1/10'], ['a pile of smoldering ashes', '2/10'],
+       ['a nearly burnt-out candle wick', '3/10'], ['a half-melted burning candle', '4/10'],
+       ['a tall burning candle', '5/10'], ['a blazing torch', '6/10'], ['a small campfire', '7/10'],
+       ['a roaring bonfire', '8/10'], ['flaming magma pouring through a volcanic crevasse', '9/10'],
+       ["torrents of fiery rain falling upon Elanthia from the World Dragon's maw", '10/10']].each do |step, tier|
+        image = "#{power} #{step}"
 
-          it "counts the Osrel Meraud image '#{step}.' (#{tier})" do
-            expect(hooked("#{image}.", guild: 'Cleric')).to eq("#{image}. (#{tier})\r\n")
-          end
+        it "counts the Osrel Meraud image '#{step}.' (#{tier})" do
+          expect(hooked("#{image}.", guild: 'Cleric')).to eq("#{image}. (#{tier})\r\n")
+        end
 
-          it "leaves the Osrel Meraud image '#{step}' alone without its full stop" do
-            expect(hooked("#{image}, fading.", guild: 'Cleric')).to eq("#{image}, fading.\r\n")
-          end
+        it "leaves the Osrel Meraud image '#{step}' alone without its full stop" do
+          expect(hooked("#{image}, fading.", guild: 'Cleric')).to eq("#{image}, fading.\r\n")
+        end
+      end
+
+      # The capacity steps leave the full stop out, as no game line shows
+      # whether one ends them: the counter goes before the game's full stop,
+      # or at the end of a line without one, and the line ending stays.
+      capacity = 'The pervasiveness of the sensation evokes the image of'
+      [["a stream in your mind's eye", '1/11'], ["a pond in your mind's eye", '2/11'],
+       ["a river in your mind's eye", '3/11'], ["a lake in your mind's eye", '4/11'],
+       ["a sea in your mind's eye", '5/11'], ["an ocean in your mind's eye", '6/11'],
+       ["Drogor's deeps in your mind's eye", '7/11'],
+       ["Elanthia's tides rising toward Katamba in your mind's eye", '8/11'],
+       ["the sapphirine planet Merewalda in your mind's eye", '9/11'],
+       ["Alamhif's Bridge arching from the cold seas of Death in your mind's eye", '10/11'],
+       ["the fathomless ebon abysms of the Starry Road in your mind's eye", '11/11']].each do |step, tier|
+        image = "#{capacity} #{step}"
+
+        it "counts the Osrel Meraud image '#{step}.' (#{tier}) before its full stop" do
+          expect(hooked("#{image}.", guild: 'Cleric')).to eq("#{image} (#{tier}).\r\n")
+        end
+
+        it "counts the Osrel Meraud image '#{step}' (#{tier}) without a full stop, keeping the line ending" do
+          expect(hooked(image, guild: 'Cleric')).to eq("#{image} (#{tier})\r\n")
+          expect(hooked(image, guild: 'Cleric', line_ending: "\n")).to eq("#{image} (#{tier})\n")
         end
       end
 
       sanaati = "After a moment, you feel a clear presence like a warm blanket covering you beneath the shade of a giant sana'ati tree"
+      capital = sanaati.sub('sana', 'Sana')
 
       it "counts the Cleric (16/16) presence and writes Sana'ati with its capital" do
-        expect(hooked("#{sanaati}.", guild: 'Cleric')).to eq("#{sanaati.sub('sana', 'Sana')}. (16/16)\r\n")
+        expect(hooked("#{sanaati}.", guild: 'Cleric')).to eq("#{capital}. (16/16)\r\n")
+      end
+
+      it "counts the Cleric (16/16) presence when the game writes Sana'ati with its capital" do
+        expect(hooked("#{capital}.", guild: 'Cleric')).to eq("#{capital}. (16/16)\r\n")
       end
 
       it 'leaves the (16/16) presence alone without its full stop' do
         expect(hooked("#{sanaati}s.", guild: 'Cleric')).to eq("#{sanaati}s.\r\n")
+        expect(hooked("#{capital}s.", guild: 'Cleric')).to eq("#{capital}s.\r\n")
       end
 
       # Restored by the howl-tier fix; 'the end-anchored Ranger howl tiers'
