@@ -4787,6 +4787,17 @@ RSpec.describe 'textsubs.lic' do
     end
   end
 
+  # The links check builds keys alone, with the options key_options keeps,
+  # so its key has to be the one pair gives for the full options.
+  describe 'TextSubs::LinkBuilder.key_options' do
+    it 'keeps the options key takes, and the key it gives is the key of pair for every option' do
+      options = { pretext: '\S|^', postext: '\s*Slot', prelink: 'Spell:', poslink: '_page', preresult: '<', posresult: '>' }
+      kept = TextSubs::LinkBuilder.key_options(options)
+      expect(kept).to eq(pretext: '\S|^', postext: '\s*Slot')
+      expect(TextSubs::LinkBuilder.key('Halo', **kept)).to eq(TextSubs::LinkBuilder.pair('Halo', **options).first)
+    end
+  end
+
   describe 'TextSubs.add_catalog' do
     before { TextSubs.clear }
 

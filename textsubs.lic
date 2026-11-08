@@ -1902,7 +1902,7 @@ class TextSubs
         # Only the keys: the check compiles them and has no use for the
         # links, which it would build for the 400-odd spells on every catalog
         # build only to drop them.
-        options = section.slice('pretext', 'postext').transform_keys(&:to_sym)
+        options = LinkBuilder.key_options(link_options(section))
         texts.map { |text| Generators.check_pattern(LinkBuilder.key(text, **options)) }
       end
 
@@ -1910,9 +1910,17 @@ class TextSubs
       # @param texts [Array<String>] what to link, in order
       # @return [Array<Array(String, String)>] one LinkBuilder.pair per text
       def self.links(section, texts)
-        options = section.slice(*optional_fields).transform_keys(&:to_sym)
+        options = link_options(section)
         texts.map { |text| LinkBuilder.pair(text, **options) }
       end
+
+      # @param section [Hash] a wiki_links or spell_links section
+      # @return [Hash{Symbol=>String}] the link fields it holds, as the
+      #   keyword arguments LinkBuilder.pair takes
+      def self.link_options(section)
+        section.slice(*optional_fields).transform_keys(&:to_sym)
+      end
+      private_class_method :link_options
     end
 
     # The 'spell_links' kind: a wiki_links section whose texts are the names
@@ -2260,6 +2268,19 @@ class TextSubs
     #   TextSubs::LinkBuilder.key('Fae Arts', pretext: '^', postext: ':') # => "(^)(Fae Arts)(:)"
     def self.key(text, pretext: '', postext: '')
       "(#{pretext})(#{text})(#{postext})"
+    end
+
+    # The options key takes, of those pair takes, read from key's own
+    # parameters, so a check that builds only the key passes it what pair
+    # would, and a keyword key gains reaches both.
+    #
+    # @param options [Hash{Symbol=>String}] keyword arguments for pair
+    # @return [Hash{Symbol=>String}] those of them key takes
+    # @example
+    #   TextSubs::LinkBuilder.key_options(pretext: '^', prelink: 'Category:', postext: ':')
+    #   # => {pretext: "^", postext: ":"}
+    def self.key_options(options)
+      options.slice(*method(:key).parameters.filter_map { |type, name| name if type == :key })
     end
 
     # @param prelink [String] prefix of the page path
