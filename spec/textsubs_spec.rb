@@ -186,6 +186,7 @@ RSpec.describe 'textsubs.lic' do
   # directory, so a build in the block sees exactly this file.
   #
   # @param content [String, nil] the shit-list file body, or nil for no file
+  # @yield with the temporary directory as the current directory
   # @yieldreturn [Object] what the block builds
   # @return [Object] what the block returned
   def with_shit_list(content, &)
@@ -637,12 +638,14 @@ RSpec.describe 'textsubs.lic' do
   # answering a recorder, three ways. The all-on path: once for each of the
   # 96 combinations and once more with no guild known, each with a shit list
   # on disk, integrate_shit_list_with_textsubs on and a private sub. The
-  # shipped-defaults path: once with base.yaml's values (the flags off,
-  # private_textsubs nil) and no shit list file, so the branches that run
-  # when a setting is off or empty read through the recorder too. And one
-  # rebuild for a new guild: in that same run TextSubs.watch yields 'Bard',
-  # so the block the entry point hands watch runs and builds again, reading
-  # what it reads. textsubs reads its settings by name (settings.<key>) and by index
+  # shipped-defaults path: once with textsubs_defaults (which the third
+  # example pins to base.yaml: the flags off, private_textsubs nil) and no
+  # shit list file, so the branches that run when a setting is off or empty
+  # read through the recorder too. And one rebuild for a new guild: in that
+  # same run TextSubs.watch yields 'Bard', so the block the entry point hands
+  # watch runs and builds again, reading what it reads.
+  #
+  # textsubs reads its settings by name (settings.<key>) and by index
   # (settings[key], in Context#setting? for a section's when: gate). The
   # recorder answers those two and dig. Any other call that takes arguments
   # (fetch, a setter, respond_to?) raises, so a new way of reading a key
@@ -652,8 +655,9 @@ RSpec.describe 'textsubs.lic' do
     base_profile = YAML.unsafe_load_file(File.expand_path('../profiles/base.yaml', __dir__), freeze: true)
     # A stand-in for the OpenStruct get_settings returns: it answers values
     # (nil for a key values lacks) and adds the name of each key read to read.
-    # It is a BasicObject, so a call Object would answer (respond_to?, to_h,
-    # each_pair) reaches method_missing instead of passing by unrecorded.
+    # It is a BasicObject, so a call Object would answer (respond_to?, nil?,
+    # inspect, send, public_send) reaches method_missing instead of passing by
+    # unrecorded.
     recorder = Class.new(BasicObject) do
       # @param values [Hash{String=>Object}] the value of each key, by name
       # @param read [Array<String>] where each key read is added, shared by
