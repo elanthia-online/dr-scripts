@@ -1966,7 +1966,7 @@ RSpec.describe 'textsubs.lic' do
       it 'keeps applying the whole old catalog while the new one is built, then swaps it in with one generation' do
         probes = []
         writes = 0
-        probe = lambda do |_key, _value, _gate|
+        probe = lambda do |_key, _value, _gate, _registry|
           next unless DRStats.guild == 'Bard' && (writes += 1) % 400 == 1
 
           probes << [run_hooks(song), run_hooks("You feel fine.\r\n".b), TextSubs.generation]
