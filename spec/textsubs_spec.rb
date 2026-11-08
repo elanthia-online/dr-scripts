@@ -823,13 +823,16 @@ RSpec.describe 'textsubs.lic' do
       seen = []
       # A reader before every line of clear and at its return, as the hook
       # thread can run between any two of them. It records each new state:
-      # the count, and whether subs is still the catalog clear replaces.
+      # the count, and whether subs is still the catalog clear replaces. Only
+      # the order is pinned, not how many lines clear spends on it.
       probe = TracePoint.new(:line, :return) do
         state = [TextSubs.generation, TextSubs.subs.equal?(old_catalog) ? :old : :new]
         seen << state unless seen.last == state
       end
       expect(probe.enable(target: TextSubs.method(:clear)) { TextSubs.clear }).to eq({})
-      expect(seen).to eq([[before_clear, :old], [before_clear, :new], [before_clear + 1, :new]])
+      expect(seen.first).to eq([before_clear, :old])
+      expect(seen).not_to include([before_clear + 1, :old])
+      expect(seen.last).to eq([before_clear + 1, :new])
     end
 
     it 'keeps the return values add, elanthipedia and clear had before the counter' do
