@@ -17,14 +17,18 @@ no_kill_all
 # runs after every default-priority hook) that hands every server line to
 # apply while a front end is attached. Until the install, apply serves the
 # empty catalog the class body installed when the start evaluated it. The
-# script then waits in watch, which ends it once that hook is gone.
+# script then waits in watch, which ends it once that hook is gone or a newer
+# start has superseded it, and which hands it the guild whenever DRStats
+# reports another one, so the catalog is built again, into a Registry of its
+# own, and installed whole by reinstall, which keeps the subs other scripts
+# added since the start and leaves out those apply dropped.
 #
 # Lich evaluates this class body inside Lich::Common on every start, and the
 # class itself persists for the session, so it defines no constants but its
 # nested classes: re-running the body would warn "already initialized
-# constant" for any other. Re-running it installs an empty Registry and drops
-# any staging; the generation count carries over and counts that swap once
-# (see generation).
+# constant" for any other. Re-running it installs an empty Registry, drops
+# any staging and ends every earlier run (see watch); the generation count
+# carries over and counts that swap once (see generation).
 class TextSubs
   # An ordered catalog of substitutions: a Regexp key and the gsub replacement
   # it applies. A key added again keeps its first position and takes the last
@@ -38,8 +42,14 @@ class TextSubs
   # scan from every digit to the end of the line.
   #
   # Readers never see the entries themselves, only a frozen snapshot of them,
-  # as the entries change while others read: through add, from whichever
-  # script calls it, and through drop, from the game thread the hook runs on.
+  # as the entries change while others read: through add and add_change, from
+  # whichever script calls them, and through drop, from the game thread the
+  # hook runs on.
+  #
+  # A Registry also keeps the changes made to it once its catalog was built:
+  # each key given to add_change, and each key drop took out. replay hands
+  # them on to a catalog built again, so a sub another script added stays and
+  # a sub that raised stays off.
   # Two writers at once can lose one @version increment between them. That is
   # still safe: each writer changes the entries before it reads @version, so a
   # reader that sees the bumped number copies both changes, and a copy cached
@@ -77,6 +87,7 @@ class TextSubs
       @version = 0
       @snapshot = nil
       @indexed = nil
+      @changes = {}
     end
 
     # Adds one substitution, or gives a key already present its new value in
@@ -105,10 +116,32 @@ class TextSubs
       result
     end
 
+    # Adds one substitution as add does, and records it as a change made after
+    # the catalog was built, so replay gives it to a catalog built again.
+    # TextSubs.add and TextSubs.elanthipedia write through it; the catalog's
+    # own subs go through add.
+    #
+    # @param key [Regexp] the pattern
+    # @param result [String] the gsub replacement (a frozen copy is kept)
+    # @param requires_any [Array<String>, nil] the key's gate, as for add (the
+    #   change records the frozen copy add keeps, so later edits to the
+    #   caller's list or words do not reach it)
+    # @return [String] result, as given
+    # @raise [ArgumentError] as add does; nothing is added or recorded
+    # @example
+    #   registry.add_change(/cat/, 'dog')
+    #   registry.changes # => {/cat/=>[:add, "dog", nil]} (frozen)
+    def add_change(key, result, requires_any: nil)
+      add(key, result, requires_any: requires_any)
+      record(key, [:add, @entries[key], @gates[key]].freeze)
+      result
+    end
+
     # Removes one entry and its gate, but only while key still holds value:
     # a key given a new value since value was read keeps it. The engine uses
     # it to put away an entry that raised, so another add of the key since is
     # left alone, and so is the next caller once the first one has removed it.
+    # The removal is recorded as a change (see changes).
     #
     # @param key [Regexp] the pattern
     # @param value [Object] the value the caller read for key; compared by
@@ -122,10 +155,40 @@ class TextSubs
     def drop(key, value)
       return false unless @entries.key?(key) && @entries[key].equal?(value)
 
-      @entries.delete(key)
-      @gates.delete(key)
-      @version += 1
+      remove(key)
       true
+    end
+
+    # The changes made through add_change and drop, the last one for each
+    # key, with the added keys in the order they took their places here.
+    #
+    # @return [Hash{Regexp=>Array}] frozen, down to each change, its result
+    #   and its gate words: key => [:add, result, requires_any] or [:drop];
+    #   empty for a catalog nothing has changed since it was built
+    def changes
+      @changes.dup.freeze
+    end
+
+    # Makes the changes another Registry recorded here too, in order: each
+    # added key is added (taking its value over any the catalog gave it, in
+    # the place it holds), each dropped key is removed whether or not this
+    # catalog has it, and all of them are recorded, so a catalog built after
+    # this one keeps them as well.
+    #
+    # A key this catalog built keeps its catalog place even when the
+    # recorded add followed a drop, so a built-in key a script re-added after
+    # apply dropped it runs last until a rebuild and in its catalog place
+    # after one (see record).
+    #
+    # @param changes [Hash{Regexp=>Array}] what #changes returned
+    # @return [Registry] self
+    # @example Carry the changes over to a catalog built again
+    #   rebuilt.replay(installed.changes)
+    def replay(changes)
+      changes.each do |key, (kind, result, requires_any)|
+        kind == :add ? add_change(key, result, requires_any: requires_any) : remove(key)
+      end
+      self
     end
 
     # The entries as they stand, in order, as a frozen Hash. The same Hash
@@ -174,6 +237,31 @@ class TextSubs
 
     private
 
+    # Takes key and its gate out, held or not, and records the drop.
+    #
+    # @param key [Regexp] the pattern
+    # @return [void]
+    def remove(key)
+      @entries.delete(key)
+      @gates.delete(key)
+      @version += 1
+      record(key, [:drop].freeze)
+    end
+
+    # Keeps change as the last one for key. A drop moves the key to the end,
+    # and so does an add after a drop, as the add appends it to the catalog
+    # again; an add after an add keeps the place, as add does. The order is
+    # the order the keys took here: replay gives a key the catalog built
+    # again its catalog place, wherever it stands in the log.
+    #
+    # @param key [Regexp] the pattern
+    # @param change [Array] [:add, result, requires_any] or [:drop]
+    # @return [void]
+    def record(key, change)
+      @changes.delete(key) unless change.first == :add && @changes.dig(key, 0) == :add
+      @changes[key] = change
+    end
+
     # The version is read before the entries are copied: an add that lands in
     # between leaves a copy that holds more than its version says, which is
     # thrown away on the next call, never one that holds less.
@@ -189,13 +277,19 @@ class TextSubs
   end
 
   # One lock, kept across starts like the generation, so a start's class body
-  # and every stage, unstage, install and store_key (every write), of this run
-  # or another, take turns: each checks the staging and changes it in one
-  # step, with no step of another thread in between.
+  # and every write (stage, unstage, install, reinstall, start_run, store_key
+  # and drop), of this run or another, take turns: each checks the staging,
+  # the run or the catalog and changes it in one step, with no step of
+  # another thread in between.
+  #
+  # @@run is the token of the latest start (see start_run and current_run?).
+  # The class body sets it to nil, as a start that re-runs it supersedes
+  # every run before it even before it takes a token of its own.
   @@lock = Mutex.new unless defined?(@@lock)
   @@lock.synchronize do
     @@registry = Registry.new
     @@staged = nil
+    @@run = nil
     @@generation = defined?(@@generation) ? @@generation + 1 : 0
   end
 
@@ -228,10 +322,9 @@ class TextSubs
   # change lands in between, the cache holds a newer catalog under an older
   # number and rebuilds on the next call, never the other way round.
   #
-  # The hook thread counts a drop while a script may count an add, so two
-  # changes at once can count as one. The rule above still holds: both changes
-  # are in subs before either is counted, so the number they share is never
-  # older than the catalog a reader sees with it.
+  # Every change is counted under the lock it is made under (see store_key
+  # and drop), so a drop on the hook thread and an add on a script's thread
+  # at the same moment count once each, never one number for both.
   #
   # @return [Integer] 0 until the catalog first changes in this session
   def self.generation
@@ -251,6 +344,11 @@ class TextSubs
   # just put in, so such a hook passes every line through untouched until
   # install. Installing the staged Registry ends the staging, so every writer
   # writes to it as the installed catalog from then on.
+  # Once the hook runs, a catalog built again (for a guild DRStats learns
+  # later) is filled first and handed to reinstall, which installs it whole.
+  #
+  # install keeps none of the changes the Registry it replaces recorded
+  # (see Registry#changes): the new catalog is exactly registry.
   #
   # A Registry this thread staged is installed only while it is still the one
   # staged. Once a newer start has staged its own (';force textsubs' while
@@ -274,17 +372,26 @@ class TextSubs
   #   exit unless TextSubs.install(new_catalog)
   def self.install(registry)
     check_registry(registry, 'install')
-    @@lock.synchronize do
-      if registry.equal?(own_build)
-        bind_build(nil)
-        return nil unless registry.equal?(@@staged)
-      end
-      @@registry = registry
-      @@staged = nil if registry.equal?(@@staged)
-      @@generation += 1
+    @@lock.synchronize { swap_in(registry) }
+  end
+
+  # The step install and reinstall share, for a caller that holds @@lock:
+  # refuses a Registry this thread staged that is no longer the one staged,
+  # else swaps registry in, ends its staging and counts one generation.
+  #
+  # @param registry [TextSubs::Registry] the catalog to use from now on
+  # @return [TextSubs::Registry, nil] registry, or nil when it was refused
+  def self.swap_in(registry)
+    if registry.equal?(own_build)
+      bind_build(nil)
+      return nil unless registry.equal?(@@staged)
     end
+    @@registry = registry
+    @@staged = nil if registry.equal?(@@staged)
+    @@generation += 1
     registry
   end
+  private_class_method :swap_in
 
   # Makes every writer (add, elanthipedia and add_catalog; see store_key)
   # write to registry, which is not installed, so a catalog can be built while
@@ -303,6 +410,9 @@ class TextSubs
   # neither one's keys reach the other's catalog, and none reaches the
   # installed one; install then refuses the superseded build (see install).
   #
+  # Staging marks no run: a script that stages a Registry for a build of its
+  # own never ends the running textsubs (see start_run).
+  #
   # @param registry [TextSubs::Registry] the catalog to build
   # @return [TextSubs::Registry] registry
   # @raise [ArgumentError] when registry is not a TextSubs::Registry; nothing
@@ -318,6 +428,33 @@ class TextSubs
       @@staged = registry
     end
   end
+
+  # Marks a start of textsubs as the current run, superseding every run
+  # before it, and gives it the token it hands watch and reinstall as run:
+  # (see current_run?). Only the entry point calls it, once per start; the
+  # token is a plain Object, so it keeps no catalog alive.
+  #
+  # @return [Object] the start's token, new on every call
+  # @example How the entry point starts its run
+  #   this_run = TextSubs.start_run
+  #   TextSubs.watch('textsub', guild: guild, run: this_run)
+  def self.start_run
+    @@lock.synchronize { @@run = Object.new }
+  end
+
+  # Whether run still stands for the latest start: the token start_run gave
+  # it, while no newer start has re-run the class body or called start_run
+  # since. A run that is not current must stop, as the newer start owns the
+  # catalog and the 'textsub' hook name: watch returns, and reinstall refuses
+  # its catalog.
+  #
+  # @param run [Object, nil] the token start_run gave a start, or nil for a
+  #   caller that is no start (it is never superseded)
+  # @return [Boolean] true when run is nil or the latest start's token
+  def self.current_run?(run)
+    run.nil? || run.equal?(@@run)
+  end
+  private_class_method :current_run?
 
   # Ends the staging of registry without installing it, for a build that did
   # not finish: every writer (add, elanthipedia and add_catalog; see
@@ -366,10 +503,44 @@ class TextSubs
   end
   private_class_method :own_build, :bind_build
 
+  # Installs registry, a catalog built again (for a guild DRStats learns
+  # later), once the changes made to the installed catalog since it was built
+  # are replayed onto it: a sub another script added with add or elanthipedia
+  # is kept, with its value, and a sub apply dropped for raising stays off
+  # until textsubs restarts. registry is filled before the swap, so the hook
+  # sees the old catalog or the new one, whole.
+  #
+  # The replay and the swap are one step under the lock, which every writer
+  # takes too (see store_key and drop): an add, or a drop by apply, on
+  # another thread lands before the changes are read, and is replayed, or
+  # after the swap, in registry, so none is lost and no dropped sub comes
+  # back.
+  #
+  # Given run, the token of the calling start (see start_run), it installs
+  # registry only while that start is still the current run (see
+  # current_run?), checked in the same step as the swap: a run that a
+  # ';force textsubs' superseded while it built this catalog never puts it
+  # over the newer start's.
+  #
+  # @param registry [TextSubs::Registry] the catalog built again, not installed
+  # @param run [Object, nil] the calling start's token (see start_run), or
+  #   nil to install whatever start is current
+  # @return [TextSubs::Registry, nil] registry, now installed, or nil when a
+  #   newer start superseded run; then the installed catalog and the
+  #   generation are left as they were
+  # @raise [ArgumentError] when registry is not a TextSubs::Registry; nothing
+  #   is replayed or installed
+  # @example The entry point, when the guild changes
+  #   TextSubs.reinstall(fill_catalog.call(TextSubs::Registry.new, new_guild), run: this_run)
+  def self.reinstall(registry, run: nil)
+    check_registry(registry, 'reinstall')
+    @@lock.synchronize { swap_in(registry.replay(@@registry.changes)) if current_run?(run) }
+  end
+
   # Refuses anything but a TextSubs::Registry, naming the public method that
   # was given it.
   #
-  # @param registry [Object] what install, stage or unstage was given
+  # @param registry [Object] what install, stage, unstage or reinstall was given
   # @param caller_name [String] the method's name, for the message
   # @return [nil]
   # @raise [ArgumentError] unless registry is a TextSubs::Registry
@@ -389,7 +560,8 @@ class TextSubs
   end
 
   # Adds one substitution. A target already in the catalog keeps its place and
-  # takes the new result.
+  # takes the new result. The sub is kept when the catalog is built again for
+  # a new guild (see reinstall).
   #
   # @param target [String] regex source; it is compiled as is, not escaped
   # @param result [String] the gsub replacement, so '\1' refers to a capture
@@ -399,7 +571,7 @@ class TextSubs
   # @example
   #   TextSubs.add('You feel fine', 'You feel FINE')
   def self.add(target, result)
-    store(target, result)
+    store(target, result, change: true)
   end
 
   # Rewrites one server line with every key that matches it.
@@ -410,8 +582,9 @@ class TextSubs
   # tried from the next line on.
   #
   # A sub that raises (a nil or Integer value, a UTF-8 key on a line with
-  # high bytes, a regex timeout) is dropped from the catalog for the rest of
-  # the session and reported once, and the line goes on through the other
+  # high bytes, a regex timeout) is dropped from the catalog until textsubs
+  # restarts (a catalog built again for a new guild leaves it out too, see
+  # reinstall) and reported once, and the line goes on through the other
   # keys: an error that left the hook would make Lich remove the hook, and
   # every sub with it.
   #
@@ -432,17 +605,28 @@ class TextSubs
   # was given a new value since the line began, is neither removed nor
   # reported again.
   #
+  # The removal and its count are one step under the lock, like every other
+  # write (see store_key): a drop is a change reinstall replays, so it lands
+  # before reinstall reads the changes, and is replayed, or after the swap,
+  # on the new catalog, never in the Registry being replaced, where the
+  # replay would bring the sub back to raise and be reported again.
+  #
   # It answers to the hook's thread, where Script.current is nil, so it
-  # names textsubs itself instead of echoing.
+  # names textsubs itself instead of echoing, once the lock is released.
   #
   # @param key [Regexp] the key that raised
   # @param value [Object] its value in the snapshot the line ran through
   # @param error [StandardError] what it raised
   # @return [Boolean] whether this call removed it
   def self.drop(key, value, error)
-    return false unless @@registry.drop(key, value)
+    dropped = @@lock.synchronize do
+      next false unless @@registry.drop(key, value)
 
-    @@generation += 1
+      @@generation += 1
+      true
+    end
+    return false unless dropped
+
     respond "[textsubs: the sub #{key.source.inspect} raised #{error.class} (#{error.message}) " \
             'and is off until textsubs restarts; fix or remove it where it was added, usually private_textsubs]'
     true
@@ -463,27 +647,94 @@ class TextSubs
     -100
   end
 
+  # Waits for DRStats to know the guild, as the catalog's guild sections and
+  # its guild spell list link need it: DRStats.guild is nil until DRInfomon's
+  # login commands have had INFO parsed, and textsubs often starts before
+  # that, from autostart.
+  #
+  # It stops waiting as soon as the guild is known, or DRInfomon says its
+  # login commands are done (they skip INFO on a login while dead, so the
+  # guild stays nil until a later INFO), or timeout seconds have gone by.
+  # A guild still not known then is said once, with the likely reason: a
+  # login while dead when DRInfomon is done, else that DRInfomon had not
+  # finished in time. watch rebuilds the catalog when the guild turns up
+  # later.
+  #
+  # @param timeout [Numeric] the most seconds to wait
+  # @param interval [Numeric] seconds between checks
+  # @return [String, nil] the guild, or nil when it is still not known
+  # @example At the start of the entry point
+  #   guild = TextSubs.await_guild # => "Bard"
+  def self.await_guild(timeout: 10, interval: 0.5)
+    waited = 0
+    until DRStats.guild || DRInfomon.startup_complete? || waited >= timeout
+      pause(interval)
+      waited += interval
+    end
+    # Read once more: INFO may land between the guild check and the
+    # startup check above.
+    guild = DRStats.guild
+    unless guild
+      reason = if DRInfomon.startup_complete?
+                 'a login while dead skips INFO'
+               else
+                 "DRInfomon had not finished its login commands after #{timeout} seconds"
+               end
+      echo "DRStats does not know your guild yet (#{reason}), so the guild subs and the " \
+           'guild spell list link are off for now; textsubs adds them by itself once your guild is known.'
+    end
+    guild
+  end
+
   # Keeps the script alive exactly as long as its hook is registered, so
   # ;list and Script.running?('textsubs') tell the truth: Lich removes a
   # hook that raises (and another script may remove it by name), and a
   # script still running without its hook would never be restarted by the
   # helpers that start textsubs only when it is not running.
   #
+  # Given run, it also returns once a newer start has superseded that run
+  # (';force textsubs'; see current_run?): the hook name then belongs to the
+  # newer start, so the name alone would keep the old run waiting, and
+  # rebuilding, for good.
+  #
   # The script reads no game lines itself, so it stops Lich from buffering
   # them for it, then checks the hook list every interval seconds. Lich
   # kills the script during a pause as it would during any wait.
   #
+  # With a block, each check also compares DRStats.guild with the guild the
+  # catalog was built for, and on a change yields the new guild, on the
+  # script's own thread, before it pauses: the block builds the catalog
+  # again. A guild that changes back and forth between two checks is seen as
+  # it is at the second one.
+  #
   # @param hook [String] the DownstreamHook name to watch
   # @param script [#want_downstream=] the running script
   # @param interval [Numeric] seconds between checks
-  # @return [nil] once hook is no longer registered, after saying so
-  # @example The last line of the entry point
-  #   TextSubs.watch('textsub') # returns when the hook goes, ending the script
-  def self.watch(hook, script: Script.current, interval: 5)
+  # @param guild [String, nil] the guild the installed catalog was built for
+  # @param run [Object, nil] the calling start's token (see start_run), or
+  #   nil to watch the hook alone
+  # @yieldparam new_guild [String, nil] what DRStats.guild reports now
+  # @return [nil] once hook is no longer registered, or run is superseded,
+  #   after saying which
+  # @example The last lines of the entry point
+  #   TextSubs.watch('textsub', guild: guild, run: this_run) do |new_guild|
+  #     TextSubs.reinstall(fill_catalog.call(TextSubs::Registry.new, new_guild), run: this_run)
+  #   end # returns when the hook goes or a newer start takes over, ending the script
+  def self.watch(hook, script: Script.current, interval: 5, guild: DRStats.guild, run: nil)
     script.want_downstream = false
-    pause(interval) while DownstreamHook.list.include?(hook)
-    echo "The '#{hook}' hook is gone, so nothing is substituted any more and textsubs stops here " \
-         "(a '--- Lich: DownstreamHook:' line above says why, if it raised). Start it again with ;textsubs."
+    while (registered = DownstreamHook.list.include?(hook)) && current_run?(run)
+      if block_given? && DRStats.guild != guild
+        guild = DRStats.guild
+        yield guild
+      end
+      pause(interval)
+    end
+    if registered
+      echo 'A newer textsubs has started, so this one stops here; if no textsubs is running now, start it again with ;textsubs.'
+    else
+      echo "The '#{hook}' hook is gone, so nothing is substituted any more and textsubs stops here " \
+           "(a '--- Lich: DownstreamHook:' line above says why, if it raised). Start it again with ;textsubs."
+    end
     nil
   end
 
@@ -1068,14 +1319,20 @@ class TextSubs
   # A gate is nil (always holds) or a Hash with one or more of these keys,
   # every one of which must hold:
   # - 'guilds' [Array<String>]: the guild is one of them;
-  # - 'not_guilds' [Array<String>]: the guild is none of them;
+  # - 'not_guilds' [Array<String>]: the guild is known and none of them;
   # - 'setting' [String]: that setting is set (neither nil nor false);
   # - 'setting_off' [String]: that setting is nil or false.
+  #
+  # The guild is nil until DRStats has read INFO, which a login while dead
+  # skips. Neither guild key holds then: a section for some guilds, or for
+  # all but some, is wrong for a character whose guild may be any of them.
   #
   # @example
   #   context = TextSubs::Context.new(guild: 'Bard', settings: OpenStruct.new(herb_textsubs: true))
   #   context.allows?('guilds' => ['Bard'], 'setting' => 'herb_textsubs') # => true
   #   context.allows?('not_guilds' => ['Bard'])                          # => false
+  # @example While DRStats does not know the guild
+  #   TextSubs::Context.new(guild: nil, settings: OpenStruct.new).allows?('not_guilds' => ['Thief']) # => false
   class Context
     # @return [Array<String>] every guild DRStats can report, frozen
     def self.guilds
@@ -1127,7 +1384,8 @@ class TextSubs
     end
     private_class_method :check_guilds, :check_setting
 
-    # @param guild [String, nil] what DRStats.guild reports
+    # @param guild [String, nil] what DRStats.guild reports, nil while it is
+    #   not known
     # @param settings [#[]] the character settings (get_settings), read by name
     # @return [Context]
     def initialize(guild:, settings:)
@@ -1135,11 +1393,13 @@ class TextSubs
       @settings = settings
     end
 
-    # @return [String, nil] the guild the catalog is built for
+    # @return [String, nil] the guild the catalog is built for, nil when it
+    #   is not known
     attr_reader :guild
 
     # @param gate [Hash, nil] a section's `when:` value
-    # @return [Boolean] whether every condition of the gate holds
+    # @return [Boolean] whether every condition of the gate holds; a guild
+    #   condition never does while the guild is nil
     # @raise [ArgumentError] when the gate is malformed (see check_gate)
     def allows?(gate)
       self.class.check_gate(gate)
@@ -1148,7 +1408,7 @@ class TextSubs
       gate.all? do |key, value|
         case key
         when 'guilds' then value.include?(guild)
-        when 'not_guilds' then !value.include?(guild)
+        when 'not_guilds' then !guild.nil? && !value.include?(guild)
         when 'setting' then setting?(value)
         else !setting?(value)
         end
@@ -1186,6 +1446,8 @@ class TextSubs
   # names the character's guild. Its fields are pattern, preresult, prelink,
   # poslink and posresult, and it expands to
   #   [pattern, preresult + TextSubs.wiki_link(prelink + guild page + poslink, guild) + posresult]
+  # or to no sub at all while the guild is not known, as a link to no guild
+  # would only drop the guild's name from the line.
   #
   # Sections run in file order and subs in list order; both orders are kept,
   # because two subs that match the same line apply in that order. Every key
@@ -1347,12 +1609,15 @@ class TextSubs
 
     # @param section [Hash] a checked section
     # @param context [TextSubs::Context]
-    # @return [Array<Array(String, String, Hash)>] its subs
+    # @return [Array<Array(String, String, Hash)>] its subs; none for a
+    #   guild_spells_link section while the guild is nil
     def self.expand(section, context)
       meta = { section: section['name'], requires_any: section['requires_any'] }.compact.freeze
       return section['subs'].map { |pattern, replacement| [pattern, replacement, meta] } unless section['kind'] == 'guild_spells_link'
 
-      guild = context.guild.to_s
+      guild = context.guild
+      return [] if guild.nil?
+
       link = TextSubs.wiki_link(section['prelink'] + guild.tr(' ', '_') + section['poslink'], guild)
       [[section['pattern'], section['preresult'] + link + section['posresult'], meta]]
     end
@@ -1633,7 +1898,7 @@ class TextSubs
     target = "(#{pretext})" + "(#{text})" + "(#{postext})"
     hyperlink = prelink + text.gsub(" ", "_") + poslink
     result = preresult + wiki_link(hyperlink, text) + posresult
-    store(target, result)
+    store(target, result, change: true)
   end
 
   # The anchor tag that links text to an Elanthipedia page, shared by
@@ -1671,20 +1936,54 @@ class TextSubs
   # @param data [Hash, nil] the `textsubs:` value of get_data('textsubs')
   # @param context [TextSubs::Context] the guild and settings to gate on
   # @param file [String] the file the data came from, named in the message
+  # @param registry [TextSubs::Registry, nil] where the subs go: the
+  #   Registry build fills, or nil for write_target, read under the lock for
+  #   each key (see store_key)
   # @return [String, nil] nil once every sub is added, else the one message
   #   that says why none was
   # @example A file left over from an older dr-scripts
   #   TextSubs.add_catalog({ 'schema' => 0 }, context, file: 'data/base-textsubs.yaml')
   #   # => "No built-in subs: data/base-textsubs.yaml cannot be used (schema 0, ...). ..."
-  def self.add_catalog(data, context, file:)
+  def self.add_catalog(data, context, file:, registry: nil)
     entries = Catalog.keyed_entries(data, context)
   rescue ArgumentError => e
     "No built-in subs: #{file} cannot be used (#{e.message}). This textsubs.lic needs a 'textsubs:' mapping " \
       "with schema: #{Catalog.schema}; update dr-scripts, or fix or remove a copy in data/custom. " \
       'Only private_textsubs and shit-list subs are active.'
   else
-    entries.each { |key, replacement, meta| store_key(key, replacement, requires_any: meta[:requires_any]) }
+    entries.each { |key, replacement, meta| store_key(key, replacement, requires_any: meta[:requires_any], registry: registry) }
     nil
+  end
+
+  # Fills registry with a character's whole catalog, in the order the subs
+  # take their places: the shit-list names, the private_textsubs entries, the
+  # built-in subs data gives for context, and then each private value a
+  # built-in sub replaced given back (prefer_private).
+  #
+  # The entry point never fills the installed catalog: on a start registry
+  # is the staged Registry (see stage), and when watch has the catalog built
+  # again for a new guild it is one of its own, while the hook goes on
+  # applying the old one. Its subs count no generation until install swaps it
+  # in.
+  #
+  # @param registry [TextSubs::Registry] the catalog to fill
+  # @param shit_list [Array<String>] names from Sources::ShitList.names
+  # @param private_subs [Array<Array(Regexp, String, String)>] the entries of
+  #   Sources::PrivateSubs.entries
+  # @param data [Hash, nil] the `textsubs:` value of get_data('textsubs')
+  # @param context [TextSubs::Context] the guild and settings to gate on
+  # @param file [String] the file data came from, for add_catalog's message
+  # @return [Array<String>] what to tell the player, in order: why no
+  #   built-in sub was added, if none was, then prefer_private's warnings
+  # @example Build the catalog for a guild DRStats has just learned
+  #   registry = TextSubs::Registry.new
+  #   TextSubs.build(registry, shit_list: [], private_subs: [], data: data, context: context, file: file) # => []
+  #   TextSubs.reinstall(registry)
+  def self.build(registry, shit_list:, private_subs:, data:, context:, file:)
+    shit_list.each { |name| store(*Sources::ShitList.sub(name), registry: registry) }
+    add_private(private_subs, registry: registry)
+    problem = add_catalog(data, context, file: file, registry: registry)
+    [problem, *prefer_private(private_subs, registry: registry)].compact
   end
 
   # Adds the private_textsubs entries, in order. They go in ahead of the
@@ -1694,9 +1993,11 @@ class TextSubs
   #
   # @param entries [Array<Array(Regexp, String, String)>] the entries of
   #   Sources::PrivateSubs.entries
+  # @param registry [TextSubs::Registry, nil] where they go, or nil for
+  #   write_target (see add_catalog)
   # @return [Array<Array(Regexp, String, String)>] entries
-  def self.add_private(entries)
-    entries.each { |key, replacement| store_key(key, replacement) }
+  def self.add_private(entries, registry: nil)
+    entries.each { |key, replacement| store_key(key, replacement, registry: registry) }
   end
 
   # Gives each private key whose value a later add replaced (a built-in sub
@@ -1706,66 +2007,119 @@ class TextSubs
   # a gate is a promise about the pattern (see Registry), and the pattern is
   # the same, so the private value is spared the regex on lines the gate
   # rules out just as the built-in one was. It reads and writes the catalog
-  # being built: the staged Registry on a start (see stage).
+  # being built: the staged Registry on a start (see stage). Each key is
+  # checked and given back in one step under the lock, so no write of
+  # another thread lands in between, and without registry the catalog is
+  # write_target as it stands once the lock is taken (see store_key).
   #
   # @param entries [Array<Array(Regexp, String, String)>] the entries
   #   add_private added: key, replacement and the key's name (see
   #   Sources::PrivateSubs.label: "text" unescaped, or /text/flags)
+  # @param registry [TextSubs::Registry, nil] the catalog they were added
+  #   to, or nil for write_target (see add_catalog)
   # @return [Array<String>] one warning per key given back, naming it by
   #   that name; empty when no key was replaced, or only by the same text
   # @example After add_private([[/You feel fine/, 'MINE', '"You feel fine"']]) and a built-in add of 'You feel fine'
   #   TextSubs.prefer_private([[/You feel fine/, 'MINE', '"You feel fine"']])
   #   # => ["private_textsubs \"You feel fine\" is also a built-in sub; your replacement is used instead of the built-in one."]
-  def self.prefer_private(entries)
+  def self.prefer_private(entries, registry: nil)
     entries.filter_map do |key, replacement, name|
-      target = write_target
-      catalog = target.snapshot
-      next if !catalog.key?(key) || catalog[key] == replacement
+      given_back = with_write_target(registry) do |target|
+        catalog = target.snapshot
+        next false if !catalog.key?(key) || catalog[key] == replacement
 
-      store_key(key, replacement, requires_any: target.gates[key])
-      "private_textsubs #{name} is also a built-in sub; your replacement is used instead of the built-in one."
+        write_key(target, key, replacement, requires_any: target.gates[key], change: false)
+        true
+      end
+      "private_textsubs #{name} is also a built-in sub; your replacement is used instead of the built-in one." if given_back
     end
   end
 
-  # Compiles target unescaped and hands the key to store_key, for add and
-  # elanthipedia, whose subs are regex source.
+  # Compiles target unescaped and hands the key to store_key, for add,
+  # elanthipedia and the shit-list names build adds, whose subs are regex
+  # source.
   #
-  # Neither gives a gate: only the catalog data sets one, through
+  # None of them gives a gate: only the catalog data sets one, through
   # add_catalog, so add keeps its two arguments.
   #
   # @param target [String] regex source, compiled unescaped
   # @param result [String] the gsub replacement
+  # @param registry [TextSubs::Registry, nil] the catalog to write, or nil
+  #   for write_target (see store_key)
+  # @param change [Boolean] whether to record the sub as a change (see
+  #   store_key)
   # @return [String] result
   # @raise [RegexpError] when target is not valid regex source; the catalog
   #   and the generation are left as they were
-  def self.store(target, result)
-    store_key(/#{target}/, result)
+  def self.store(target, result, registry: nil, change: false)
+    store_key(/#{target}/, result, registry: registry, change: change)
   end
 
-  # The one writer of the catalog: add and elanthipedia reach it through store,
-  # and add_catalog, add_private and prefer_private call it straight, as their
-  # keys are compiled already (a private key with its timeout). It writes one
-  # key to write_target, under the lock, so no stage, unstage or install of
-  # another thread lands between choosing the Registry and counting the key. A
-  # key written to the installed catalog then counts one generation, so a call
-  # is one key and one generation per sub and the generation never runs ahead
-  # of the catalog; a key written to a staged Registry or this thread's own
-  # build is not in subs yet and counts none, as install counts that whole
-  # catalog once, when it swaps it in.
+  # The one way into a catalog: add and elanthipedia reach it through store,
+  # and add_catalog and add_private call it straight, as their keys are
+  # compiled already (a private key with its timeout); prefer_private, which
+  # checks a key before it writes it, takes the same two steps
+  # (with_write_target and write_key) itself. It writes one key to registry,
+  # write_target unless the caller names one, and counts it under the lock,
+  # so no stage, unstage, install, reinstall or drop of another thread lands
+  # between the write and the count. write_target is read under the lock
+  # too, and every public writer leaves registry nil unless build hands it
+  # the Registry it fills, so no write ever goes to a Registry that a
+  # reinstall has replaced since: it waits for the swap and writes the new
+  # catalog. A key
+  # written to the installed catalog then counts one generation, so a call is
+  # one key and one generation per sub and the generation never runs ahead of
+  # the catalog; a key written to a Registry that is not installed (staged,
+  # this thread's own build, or built again for a new guild) is not in subs
+  # yet and counts none, as install counts that whole catalog once, when it
+  # swaps it in.
   #
   # @param key [Regexp] the pattern
   # @param result [String] the gsub replacement
   # @param requires_any [Array<String>, nil] the key's gate (see Registry)
+  # @param registry [TextSubs::Registry, nil] the catalog to write, or nil
+  #   for write_target
+  # @param change [Boolean] true for add and elanthipedia, whose subs come
+  #   from other scripts once the catalog is built: the Registry records
+  #   them (Registry#add_change) so reinstall keeps them
   # @return [String] result
   # @raise [ArgumentError] when key is not a Regexp or requires_any is
   #   malformed; the catalog and the generation are left as they were
-  def self.store_key(key, result, requires_any: nil)
-    @@lock.synchronize do
-      registry = write_target
-      registry.add(key, result, requires_any: requires_any)
-      @@generation += 1 if registry.equal?(@@registry)
-    end
+  def self.store_key(key, result, requires_any: nil, registry: nil, change: false)
+    with_write_target(registry) { |target| write_key(target, key, result, requires_any: requires_any, change: change) }
     result
+  end
+
+  # Runs block under the lock with the catalog to write: registry, or
+  # write_target as it stands once the lock is taken.
+  #
+  # @param registry [TextSubs::Registry, nil] the catalog to write, or nil
+  #   for write_target
+  # @yieldparam target [TextSubs::Registry] the catalog to write
+  # @return [Object] what block returns
+  def self.with_write_target(registry)
+    @@lock.synchronize { yield(registry || write_target) }
+  end
+
+  # Writes one key to registry, for a caller that holds the lock (see
+  # with_write_target), and counts one generation when registry is the
+  # installed catalog (see store_key).
+  #
+  # @param registry [TextSubs::Registry] the catalog to write
+  # @param key [Regexp] the pattern
+  # @param result [String] the gsub replacement
+  # @param requires_any [Array<String>, nil] the key's gate (see Registry)
+  # @param change [Boolean] whether the Registry records it (see store_key)
+  # @return [void]
+  # @raise [ArgumentError] when key is not a Regexp or requires_any is
+  #   malformed; the catalog and the generation are left as they were
+  def self.write_key(registry, key, result, requires_any:, change:)
+    if change
+      registry.add_change(key, result, requires_any: requires_any)
+    else
+      registry.add(key, result, requires_any: requires_any)
+    end
+    @@generation += 1 if registry.equal?(@@registry)
   end
 
   # The catalog being built, which an add writes: this thread's own build
@@ -1776,40 +2130,25 @@ class TextSubs
   def self.write_target
     own_build || @@staged || @@registry
   end
-  private_class_method :store, :store_key, :write_target
+  private_class_method :store, :store_key, :with_write_target, :write_key, :write_target
 end
 
 settings = get_settings
 
-# Every start builds its catalog from nothing: a restart with other settings
-# keeps none of the keys the run before it added. The catalog is built in a
-# staged Registry and installed whole once it is complete. Lich has already
-# re-run the class body, which installed an empty catalog, so a hook of the
-# run before that is still registered passes every line through untouched
-# until then, never applying a part of the new catalog. The 'textsub' hook is
-# registered after that, at the end of the script, so with no older hook a
-# line that arrives while the catalog is built passes through untouched too.
-# A build that raises ends the staging when the script dies, so the adds of
-# other scripts reach the installed catalog again; the partial catalog is
-# never installed. Once the catalog is installed, unstage changes nothing.
-# A start that overlaps this one (';force textsubs' while it builds) has a
-# Registry of its own: the adds of each run go only into its own (see
-# TextSubs.stage), and install refuses this run's once the newer start has
-# staged, so this run then ends before it registers a hook.
-new_catalog = TextSubs.stage(TextSubs::Registry.new)
-before_dying { TextSubs.unstage(new_catalog) }
+# Waits a few seconds at most, before the catalog is built, for DRStats to
+# know the guild the guild sections are chosen by.
+guild = TextSubs.await_guild
 
-# Put shit list players in textsubs
+# Shit list players, tagged wherever the game names them.
+shit_list_names = []
 if settings.integrate_shit_list_with_textsubs && File.file?("#{checkname}_shit.list")
   shit_list_names = File.open("#{checkname}_shit.list", 'r') { |file| TextSubs::Sources::ShitList.names(file) }
-  shit_list_names.each { |name| TextSubs.add(*TextSubs::Sources::ShitList.sub(name)) }
 end
 
 # A private_textsubs entry that cannot be used is skipped, saying why, so one
 # bad line of YAML neither ends the script here nor drops a sub later.
 private_subs, private_warnings = TextSubs::Sources::PrivateSubs.entries(settings.private_textsubs)
 private_warnings.each { |warning| echo warning }
-TextSubs.add_private(private_subs)
 ### SPELLBOOK PROJECT - MikeLC 2/15/2025 ###
 #
 # Creates elanthipedia weblinks for the spells and spellbooks
@@ -1844,14 +2183,42 @@ if catalog_override
   echo "Reading the built-in subs from #{catalog_override}, which replaces data/base-textsubs.yaml " \
        "(it must be a 'textsubs:' mapping with schema: #{TextSubs::Catalog.schema})."
 end
-catalog_problem = TextSubs.add_catalog(get_data('textsubs').textsubs, TextSubs::Context.new(guild: DRStats.guild, settings: settings),
-                                       file: catalog_override || File.join(SCRIPT_DIR, 'data', 'base-textsubs.yaml'))
-echo catalog_problem if catalog_problem
-TextSubs.prefer_private(private_subs).each { |warning| echo warning }
+catalog_data = get_data('textsubs').textsubs
+catalog_file = catalog_override || File.join(SCRIPT_DIR, 'data', 'base-textsubs.yaml')
 
-# nil when a newer start superseded this one: it installs its catalog and
-# registers its hook, so this run ends here (see TextSubs.install).
-exit unless TextSubs.install(new_catalog)
+# Fills registry with every sub a character of for_guild gets, from the
+# inputs read above, and shows what TextSubs.build has to say about them that
+# an earlier fill has not said already: a rebuild for a new guild repeats
+# only the warnings that guild brings.
+shown_messages = []
+fill_catalog = lambda do |registry, for_guild|
+  context = TextSubs::Context.new(guild: for_guild, settings: settings)
+  messages = TextSubs.build(registry, shit_list: shit_list_names, private_subs: private_subs, data: catalog_data,
+                                      context: context, file: catalog_file)
+  (messages - shown_messages).each { |message| echo message }
+  shown_messages |= messages
+  registry
+end
+
+# Every start builds its catalog from nothing: a restart with other settings
+# keeps none of the keys the run before it added. The catalog is built in a
+# staged Registry and installed whole once it is complete. Lich has already
+# re-run the class body, which installed an empty catalog, so a hook of the
+# run before that is still registered passes every line through untouched
+# until then, never applying a part of the new catalog. The 'textsub' hook is
+# registered after that, so with no older hook a line that arrives while the
+# catalog is built passes through untouched too. A build that raises ends the
+# staging when the script dies, so the adds of other scripts reach the
+# installed catalog again; the partial catalog is never installed. Once the
+# catalog is installed, unstage changes nothing. A start that overlaps this
+# one (';force textsubs' while it builds) has a Registry of its own, and
+# install refuses this run's once the newer start has staged (it returns
+# nil), so this run then ends here, before it registers a hook. Its token
+# (see TextSubs.start_run) makes it the current run until a newer start.
+this_run = TextSubs.start_run
+new_catalog = TextSubs.stage(TextSubs::Registry.new)
+before_dying { TextSubs.unstage(new_catalog) }
+exit unless TextSubs.install(fill_catalog.call(new_catalog, guild))
 
 action = proc do |client_string|
   # Headless: nobody would see the rewrite, so skip every key.
@@ -1867,5 +2234,21 @@ end
 DownstreamHook.add('textsub', action, persist: false, priority: TextSubs.hook_priority)
 
 # Runs until the hook is gone, then ends the script, so restart helpers see
-# that textsubs is no longer running.
-TextSubs.watch('textsub')
+# that textsubs is no longer running; a newer start (';force textsubs') ends
+# it too, as this_run then no longer stands for the current run. When
+# DRStats reports another guild (INFO after a login while dead), the catalog
+# is built again for it, whole, while the hook goes on applying the old one,
+# and then swapped in with the subs other scripts added since the start, and
+# without those dropped, unless a newer start took over during the build.
+# The line that says why comes before the build, so any warning the build
+# prints follows it, and a line right after the build always concludes it:
+# done once installed, or dropped when a newer start took over meanwhile.
+TextSubs.watch('textsub', guild: guild, run: this_run) do |new_guild|
+  guild_name = new_guild || 'not known'
+  echo "Your guild is now #{guild_name}, so textsubs builds its subs again for it."
+  if TextSubs.reinstall(fill_catalog.call(TextSubs::Registry.new, new_guild), run: this_run)
+    echo "textsubs has built its subs again for #{guild_name} and uses them now."
+  else
+    echo "A newer textsubs has started, so the subs this one built again for #{guild_name} are dropped."
+  end
+end

@@ -16,12 +16,14 @@
 #   not_guilds: ['Thief']        the guild is none of these
 #   setting: 'herb_textsubs'     the setting is on
 #   setting_off: 'herb_textsubs' the setting is off or unset
+# Neither guild key holds while the guild is not known yet (DRStats has not
+# read INFO); textsubs rebuilds its subs once it is.
 # A section may have requires_any: ['Word', ...], words one of which a line
 # must hold before its patterns run at all. It saves time and must never
 # change a result, so list only words every pattern of the section needs.
 # The guild_spells_link kind is the one sub that names the guild in its
 # replacement: preresult, then a link to prelink + guild + poslink, then
-# posresult.
+# posresult. It gives no sub while the guild is not known.
 textsubs:
   schema: 1
   sections:

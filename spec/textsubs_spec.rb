@@ -27,7 +27,8 @@ require_relative '../test/textsubs_corpus'
 # and review the fixture diff: it names every entry the change touched.
 #
 # A nil guild (textsubs started before DRStats knows the guild) is not part of
-# the golden set; it is covered on its own when the guild handling is fixed.
+# the golden set; 'a guild DRStats does not know yet' covers it, holding the
+# catalog built once the guild turns up to the golden one.
 #
 # The golden catalog says WHAT the hook applies; the reference-engine oracle
 # below says HOW. reference_apply keeps today's matching engine verbatim, and
@@ -419,10 +420,23 @@ RSpec.describe 'textsubs.lic' do
     writes.enable(target: write) { yield }
   end
 
+  let(:golden_entries) { File.readlines(entries_path).map { |line| JSON.parse(line) } }
+  let(:golden_combinations) { JSON.parse(File.read(combos_path))['combinations'] }
+
+  # @param combination [Hash{String=>Object}] one element of `combinations`
+  # @return [Array<Array(String, Integer, String)>] its catalog as the golden
+  #   fixture holds it
+  def golden_catalog(combination)
+    golden = golden_combinations.find { |c| c.except('ranges') == combination }
+    expand_ranges(golden_entries, golden.fetch('ranges'))
+  end
+
   # Installing a freshly staged Registry empties the catalog and ends any
   # staging an example left behind, and this thread's own build with it
   # (TextSubs.clear alone keeps both), so no example's adds land in a
-  # Registry staged by an earlier one.
+  # Registry staged by an earlier one. A start_run no example holds the
+  # token of supersedes the run of the last start, so no example's token
+  # stays current in the next one.
   #
   # RSpec runs this hook before it removes the example's stubs, so a stub on
   # stage or install still runs here, on the Registry the next example
@@ -431,6 +445,7 @@ RSpec.describe 'textsubs.lic' do
   # into the example, say) would carry the example into the next one.
   after do
     DownstreamHook.remove('textsub')
+    TextSubs.start_run
     fresh = TextSubs::Registry.new
     TextSubs.install(TextSubs.stage(fresh))
     expect(fresh.singleton_methods).to be_empty, -> { "a stub left #{fresh.singleton_methods.inspect} on the next example's Registry" }
@@ -1250,17 +1265,25 @@ RSpec.describe 'textsubs.lic' do
       end
     end
 
-    it "ends by watching 'textsub', once, after the hook is registered" do
+    it "ends by watching 'textsub', once, after the hook is registered, as the run its start_run token stands for" do
       events = []
+      tokens = []
       allow(DownstreamHook).to(receive(:add).and_wrap_original do |original, name, *args, **options|
         events << [:hook, name]
         original.call(name, *args, **options)
       end)
+      staged = []
+      allow(TextSubs).to(receive(:start_run).and_wrap_original { |original| original.call.tap { |token| tokens << token } })
+      allow(TextSubs).to(receive(:stage).and_wrap_original { |original, registry| original.call(registry).tap { |built| staged << built } })
       allow(TextSubs).to receive(:watch) { |hook, **options| events << [:watch, hook, options] }
 
       build_catalog('Commoner')
 
-      expect(events).to eq([[:hook, 'textsub'], [:watch, 'textsub', {}]])
+      expect(tokens.size).to eq(1)
+      # The token keeps no catalog alive: it is not the Registry the start built.
+      expect(staged.size).to eq(1)
+      expect(tokens.first).not_to equal(staged.first)
+      expect(events).to eq([[:hook, 'textsub'], [:watch, 'textsub', { guild: 'Commoner', run: tokens.first }]])
     end
 
     it 'ends the script, saying so, once Lich removes the hook because it raised' do
@@ -1652,6 +1675,493 @@ RSpec.describe 'textsubs.lic' do
       allow(DownstreamHook).to receive(:list).and_return([])
       TextSubs.watch('textsub')
       expect(script.want_downstream).to be(false)
+    end
+
+    describe 'with a block, as the entry point passes one' do
+      let(:yielded) { [] }
+
+      # @param guild [String, nil] the guild the catalog was built for
+      # @param polls [Integer] how many checks find the hook before it goes
+      # @return [nil] what watch returns
+      def watch_for(guild:, polls:)
+        allow(DownstreamHook).to receive(:list).and_return(*([%w[textsub]] * polls), [])
+        TextSubs.watch('textsub', script: script, interval: 1, guild: guild) { |new_guild| yielded << [new_guild, pauses.size] }
+      end
+
+      it 'yields nothing while DRStats reports the guild the catalog was built for' do
+        DRStats.guild = 'Bard'
+        watch_for(guild: 'Bard', polls: 3)
+        expect(yielded).to be_empty
+        expect(pauses.size).to eq(3)
+      end
+
+      it 'yields the new guild once, before that check pauses, and not again while it stays' do
+        allow(TextSubs).to receive(:pause) do |seconds|
+          pauses << seconds
+          DRStats.guild = 'Bard' if pauses.size == 2
+        end
+        watch_for(guild: nil, polls: 5)
+        expect(yielded).to eq([['Bard', 2]])
+        expect(pauses.size).to eq(5)
+      end
+
+      it 'yields again on each later change, nil included, comparing with the guild it last yielded' do
+        reported = [nil, 'Bard', 'Bard', 'Cleric', nil]
+        allow(TextSubs).to receive(:pause) { |seconds| pauses << seconds }
+        allow(DRStats).to receive(:guild) { reported[pauses.size] }
+        watch_for(guild: nil, polls: 5)
+        expect(yielded).to eq([['Bard', 1], ['Cleric', 3], [nil, 4]])
+      end
+
+      it 'yields at the first check when the guild changed after the catalog was built' do
+        DRStats.guild = 'Ranger'
+        watch_for(guild: nil, polls: 1)
+        expect(yielded).to eq([['Ranger', 0]])
+      end
+
+      it 'yields nothing once the hook is gone, whatever the guild' do
+        DRStats.guild = 'Ranger'
+        watch_for(guild: nil, polls: 0)
+        expect(yielded).to be_empty
+      end
+
+      it 'compares with the guild DRStats reports when it is called, if no guild is given' do
+        DRStats.guild = 'Thief'
+        allow(DownstreamHook).to receive(:list).and_return(%w[textsub], [])
+        TextSubs.watch('textsub', script: script) { |new_guild| yielded << new_guild }
+        expect(yielded).to be_empty
+      end
+    end
+
+    describe 'given the token start_run gave a start, as the entry point passes it' do
+      let(:superseded) { 'A newer textsubs has started, so this one stops here; if no textsubs is running now, start it again with ;textsubs.' }
+
+      it 'keeps waiting while that run is the latest start, and returns when the hook goes' do
+        run = TextSubs.start_run
+        allow(DownstreamHook).to receive(:list).and_return(%w[textsub], %w[textsub], [])
+
+        expect(TextSubs.watch('textsub', script: script, run: run)).to be_nil
+        expect(pauses.size).to eq(2)
+        expect(displayed_messages.last).to start_with("The 'textsub' hook is gone")
+      end
+
+      it 'returns at the check after a newer start takes its token, though the hook name is still registered' do
+        run = TextSubs.start_run
+        allow(DownstreamHook).to receive(:list).and_return(%w[textsub])
+        # The newer start runs on a thread of its own, as a Lich script does.
+        allow(TextSubs).to receive(:pause) do |seconds|
+          pauses << seconds
+          raise 'TextSubs.watch is still waiting after 10 polls' if pauses.size > 10
+
+          Thread.new { TextSubs.start_run }.join if pauses.size == 2
+        end
+
+        expect(TextSubs.watch('textsub', script: script, run: run)).to be_nil
+        expect(pauses.size).to eq(2)
+        expect(displayed_messages.last).to eq(superseded)
+      end
+
+      it 'keeps waiting when another script stages a Registry of its own, as that starts no textsubs' do
+        run = TextSubs.start_run
+        allow(DownstreamHook).to receive(:list).and_return(%w[textsub], %w[textsub], %w[textsub], [])
+        allow(TextSubs).to receive(:pause) do |seconds|
+          pauses << seconds
+          raise 'TextSubs.watch is still waiting after 10 polls' if pauses.size > 10
+
+          Thread.new { TextSubs.stage(TextSubs::Registry.new) }.join if pauses.size == 1
+        end
+
+        expect(TextSubs.watch('textsub', script: script, run: run)).to be_nil
+        expect(pauses.size).to eq(3)
+        expect(displayed_messages.last).to start_with("The 'textsub' hook is gone")
+      end
+
+      it 'returns at its first check once a newer start has re-run the class body, before that start takes its token' do
+        run = TextSubs.start_run
+        # reload_lic_class resets every stub on TextSubs, so they go on after it.
+        reload_lic_class('textsubs.lic', 'TextSubs')
+        allow(TextSubs).to receive(:watch).and_call_original
+        allow(TextSubs).to receive(:pause) do |seconds|
+          pauses << seconds
+          raise 'TextSubs.watch is still waiting after 10 polls' if pauses.size > 10
+        end
+        allow(DownstreamHook).to receive(:list).and_return(%w[textsub])
+
+        expect(TextSubs.watch('textsub', script: script, run: run)).to be_nil
+        expect(pauses).to be_empty
+        expect(displayed_messages.last).to eq(superseded)
+      end
+    end
+
+    it 'never reads the guild without a block' do
+      allow(DRStats).to receive(:guild).and_raise('read the guild')
+      allow(DownstreamHook).to receive(:list).and_return(%w[textsub], %w[textsub], [])
+      expect { TextSubs.watch('textsub', script: script, guild: 'Bard') }.not_to raise_error
+      expect(pauses.size).to eq(2)
+    end
+  end
+
+  # pause is stubbed and counted, so a wait that never ends fails instead of
+  # hanging the run; DRInfomon.startup_complete? is the harness double, true
+  # unless an example says otherwise.
+  describe 'TextSubs.await_guild' do
+    let(:pauses) { [] }
+    let(:warnings) { displayed_messages.grep(/does not know your guild yet/) }
+
+    # @param on_pause [Proc, nil] called with the number of pauses so far
+    #   after each one, to change the world as time goes by
+    # @return [void]
+    def count_pauses(&on_pause)
+      allow(TextSubs).to receive(:pause) do |seconds|
+        pauses << seconds
+        raise 'TextSubs.await_guild is still waiting after 100 pauses' if pauses.size > 100
+
+        on_pause&.call(pauses.size)
+      end
+    end
+
+    before { count_pauses }
+
+    it 'returns the guild DRStats knows at once, without pausing or warning' do
+      DRStats.guild = 'Moon Mage'
+      DRInfomon._set_startup_complete(false)
+      expect(TextSubs.await_guild).to eq('Moon Mage')
+      expect(pauses).to be_empty
+      expect(warnings).to be_empty
+    end
+
+    it 'returns nil at once, warning once, when DRInfomon is done and still has no guild (a login while dead)' do
+      expect(TextSubs.await_guild).to be_nil
+      expect(pauses).to be_empty
+      expect(warnings.size).to eq(1)
+      expect(warnings.first).to include('(a login while dead skips INFO)')
+      expect(warnings.first).to end_with('textsubs adds them by itself once your guild is known.')
+    end
+
+    it 'keeps waiting while DRInfomon is busy, and returns the guild once INFO sets it, without warning' do
+      DRInfomon._set_startup_complete(false)
+      count_pauses { |count| DRStats.guild = 'Empath' if count == 3 }
+      expect(TextSubs.await_guild(interval: 0.25)).to eq('Empath')
+      expect(pauses).to eq([0.25, 0.25, 0.25])
+      expect(warnings).to be_empty
+    end
+
+    it 'stops at the check after DRInfomon finishes without a guild' do
+      DRInfomon._set_startup_complete(false)
+      count_pauses { |count| DRInfomon._set_startup_complete(true) if count == 2 }
+      expect(TextSubs.await_guild).to be_nil
+      expect(pauses.size).to eq(2)
+      expect(warnings.size).to eq(1)
+    end
+
+    it 'gives up after timeout seconds and warns once, blaming the slow DRInfomon rather than a dead login' do
+      DRInfomon._set_startup_complete(false)
+      expect(TextSubs.await_guild(timeout: 2, interval: 0.5)).to be_nil
+      expect(pauses).to eq([0.5] * 4)
+      expect(warnings.size).to eq(1)
+      expect(warnings.first).to include('(DRInfomon had not finished its login commands after 2 seconds)')
+      expect(warnings.first).not_to include('dead')
+    end
+
+    # The reason is read once the wait is over, not when it began.
+    it 'blames a dead login when DRInfomon finishes during the wait without a guild' do
+      DRInfomon._set_startup_complete(false)
+      count_pauses { |count| DRInfomon._set_startup_complete(true) if count == 1 }
+      TextSubs.await_guild(timeout: 2)
+      expect(warnings.first).to include('(a login while dead skips INFO)')
+    end
+
+    it 'waits ten seconds at most by default, checking every half second' do
+      DRInfomon._set_startup_complete(false)
+      TextSubs.await_guild
+      expect(pauses).to eq([0.5] * 20)
+    end
+
+    it 'does not wait at all when the timeout is zero' do
+      DRInfomon._set_startup_complete(false)
+      expect(TextSubs.await_guild(timeout: 0)).to be_nil
+      expect(pauses).to be_empty
+    end
+
+    # DRInfomon marks startup done right after INFO, so the guild may land
+    # between the guild check and the startup check of the same poll.
+    it 'reads the guild again after it stops, so a guild set at the moment DRInfomon finishes is not missed' do
+      allow(DRStats).to receive(:guild).and_return(nil, 'Bard')
+      expect(TextSubs.await_guild).to eq('Bard')
+      expect(warnings).to be_empty
+    end
+  end
+
+  describe 'a guild DRStats does not know yet' do
+    let(:warnings) { displayed_messages.grep(/does not know your guild yet/) }
+    let(:spell_links_on) { { 'textsubs_spell_links' => true, 'herb_textsubs' => false, 'textsubs_use_plat_grouping' => false } }
+    let(:mana_tuner_sources) do
+      shipped_catalog['textsubs']['sections'].find { |section| section['name'] == 'mana tuners' }['subs'].map(&:first)
+    end
+
+    before { allow(TextSubs).to receive(:pause) }
+
+    it 'builds no guild section, no guild spell link and no mana tuner note, and warns once' do
+      catalog = build_catalog(nil, spell_links_on)
+      sources = catalog.map(&:first)
+      commoner = golden_catalog(spell_links_on.merge('guild' => 'Commoner'))
+
+      expect(catalog.map(&:last).grep(/Category:_spells/)).to be_empty
+      expect(sources & mana_tuner_sources).to be_empty
+      expect(sources).not_to include('You recall the spells you have learned from your training.')
+      # A Commoner has no guild section, so it differs only by what needs a
+      # known guild: the link and the mana tuners.
+      expect(catalog).to eq(commoner.reject { |source, _, replacement| mana_tuner_sources.include?(source) || replacement.include?('Category:Commoner_spells') })
+      expect(warnings.size).to eq(1)
+    end
+
+    it 'builds the Empath catalog when INFO sets the guild during the wait' do
+      DRInfomon._set_startup_complete(false)
+      pauses = 0
+      allow(TextSubs).to receive(:pause) do
+        pauses += 1
+        DRStats.guild = 'Empath' if pauses == 2
+      end
+
+      catalog = build_catalog(nil, spell_links_on)
+
+      expect(pauses).to eq(2)
+      expect(catalog == golden_catalog(spell_links_on.merge('guild' => 'Empath'))).to be(true)
+      expect(warnings).to be_empty
+    end
+
+    context 'when DRStats learns the guild after the hook is registered' do
+      include_context 'with a front end attached'
+
+      let(:song) { "You bring the song to a close, bowing your head.\r\n".b }
+      let(:rebuilt) { displayed_messages.grep(/^Your guild is now|^textsubs has built its subs again|built again for .* are dropped/) }
+      let(:bard_rebuild) { 'Your guild is now Bard, so textsubs builds its subs again for it.' }
+      let(:bard_installed) { 'textsubs has built its subs again for Bard and uses them now.' }
+      let(:bard_dropped) { 'A newer textsubs has started, so the subs this one built again for Bard are dropped.' }
+
+      # Runs the real watch: the first pause is where INFO lands and sets the
+      # guild, after the block (what happens before it, on the old catalog);
+      # each pause after it gets a line through the hooks, and the last one
+      # removes the hook so watch returns.
+      #
+      # @param polls [Integer] how many pauses watch makes before the hook goes
+      # @param private_textsubs [Hash{String=>String}] the setting to start with
+      # @param line [String] the binary line sent at each pause after the first
+      # @yield at the first pause, before the guild is set
+      # @return [Array<String>] what the hooks made of line at each pause
+      #   after the first
+      def start_then_learn_bard(polls: 2, private_textsubs: { 'You feel fine' => 'You feel FINE' }, line: song, &before_info)
+        allow(TextSubs).to receive(:watch).and_call_original
+        seen = []
+        pauses = 0
+        allow(TextSubs).to receive(:pause) do
+          pauses += 1
+          raise 'TextSubs.watch kept waiting' if pauses > polls
+
+          if pauses == 1
+            before_info&.call
+            DRStats.guild = 'Bard'
+          end
+          seen << run_hooks(line) if pauses > 1
+          DownstreamHook.remove('textsub') if pauses == polls
+        end
+        build_catalog(nil, spell_links_on.merge('private_textsubs' => private_textsubs))
+        seen
+      end
+
+      # @return [Array<Array(String, Integer, String)>] TextSubs.subs as
+      #   [source, options, replacement] entries, like build_catalog's
+      def installed_entries
+        TextSubs.subs.map { |pattern, replacement| [pattern.source, pattern.options, replacement] }
+      end
+
+      it 'keeps the subs other scripts added since the start, with their values, in the catalog built for the guild' do
+        line = "Zorbix sings.\r\n".b
+        seen = start_then_learn_bard(line: line, polls: 3) do
+          TextSubs.add('Zorbix', 'ZORBIX')
+          TextSubs.elanthipedia('sings', ' ', '\\.', 'Category:', '_songs')
+          # Over a key the catalog builds too: the add wins, in that key's place.
+          TextSubs.add('You feel fine', 'You feel GREAT')
+          expect(run_hooks(line)).to eq(%(ZORBIX <a href="https://elanthipedia.play.net/Category:sings_songs">sings</a>.\r\n))
+        end
+
+        expect(seen).to eq([%(ZORBIX <a href="https://elanthipedia.play.net/Category:sings_songs">sings</a>.\r\n)] * 2)
+        expect(installed_entries).to eq([['You feel fine', 0, 'You feel GREAT'],
+                                         *golden_catalog(spell_links_on.merge('guild' => 'Bard')),
+                                         ['Zorbix', 0, 'ZORBIX'],
+                                         ['( )(sings)(\\.)', 0, '\\1<a href="https://elanthipedia.play.net/Category:sings_songs">sings</a>\\3']])
+        expect(rebuilt).to eq([bard_rebuild, bard_installed])
+      end
+
+      it 'leaves out of the catalog built for the guild a sub apply dropped, and reports the drop only once' do
+        # A UTF-8 key (an e-acute) meets a binary line with a high byte: the
+        # regex raises Encoding::CompatibilityError on it.
+        key = "Zorbix#{0xE9.chr(Encoding::UTF_8)}?"
+        line = "caf#{0xE9.chr} Zorbix\r\n".b
+        reports = -> { displayed_messages.grep(/the sub #{Regexp.escape(key.inspect)} raised Encoding::CompatibilityError/) }
+        seen = start_then_learn_bard(line: line, polls: 3, private_textsubs: { key => 'X' }) do
+          expect(TextSubs.subs.keys.map(&:source)).to include(key)
+          expect(run_hooks(line)).to eq(line)
+          expect(reports.call.size).to eq(1)
+        end
+
+        expect(seen).to eq([line, line])
+        expect(rebuilt).to eq([bard_rebuild, bard_installed])
+        expect(TextSubs.subs.keys.map(&:source)).not_to include(key)
+        expect(installed_entries).to eq(golden_catalog(spell_links_on.merge('guild' => 'Bard')))
+        expect(reports.call.size).to eq(1)
+      end
+
+      it 'says again only the private_textsubs warnings the new guild brings' do
+        teaching = 'class on extremely advanced(.*)compared to'
+        bard_song = 'You bring the song to a close, bowing your head\\.'
+        seen = start_then_learn_bard(private_textsubs: { teaching => 'TAUGHT', bard_song => 'SUNG' })
+
+        expect(seen).to eq(["SUNG\r\n"])
+        teaching_warning = "private_textsubs \"#{teaching}\" is also a built-in sub; your replacement is used instead of the built-in one."
+        song_warning = "private_textsubs \"#{bard_song}\" is also a built-in sub; your replacement is used instead of the built-in one."
+        expect(displayed_messages.grep(/is also a built-in sub/)).to eq([teaching_warning, song_warning])
+        # The song's warning comes with the rebuild, after the line that says
+        # why the subs are built again and before the one that says they are in.
+        expect(displayed_messages.grep(/is also a built-in sub|^Your guild is now|^textsubs has built its subs again/).last(3))
+          .to eq([bard_rebuild, song_warning, bard_installed])
+      end
+
+      it 'builds the Bard catalog in one watch check and installs it, saying so once' do
+        seen = start_then_learn_bard
+        private_key = ['You feel fine', 0, 'You feel FINE']
+
+        expect(seen).to eq(["You bring the song to a close, bowing your head (4/7).\r\n"])
+        expect(TextSubs.subs.map { |pattern, replacement| [pattern.source, pattern.options, replacement] })
+          .to eq([private_key, *golden_catalog(spell_links_on.merge('guild' => 'Bard'))])
+        expect(rebuilt).to eq([bard_rebuild, bard_installed])
+        expect(warnings.size).to eq(1)
+      end
+
+      it 'ends a run a newer start superseded, and never installs its rebuild over the newer catalog' do
+        # Each start's watch is recorded instead of run, so both runs reach
+        # it; reload_lic_class (the class body a ';force textsubs' re-runs)
+        # resets every stub on TextSubs, so the stubs go on again after it.
+        watches = []
+        stub_start = lambda do
+          allow(TextSubs).to receive(:client_attached?).and_return(true)
+          allow(TextSubs).to(receive(:watch)) { |hook, **options, &rebuild| watches << [hook, options, rebuild] }
+        end
+        fine = "You feel fine.\r\n".b
+        stub_start.call
+        build_catalog(nil, spell_links_on.merge('private_textsubs' => { 'You feel fine' => 'OLD RUN' }))
+        expect(run_hooks(fine)).to eq("OLD RUN.\r\n")
+        reload_lic_class('textsubs.lic', 'TextSubs')
+        stub_start.call
+        build_catalog(nil, spell_links_on.merge('private_textsubs' => { 'You feel fine' => 'NEW RUN' }))
+        expect(run_hooks(fine)).to eq("NEW RUN.\r\n")
+        (old_hook, old_options, old_rebuild), (new_hook, new_options, new_rebuild) = watches
+
+        # INFO lands: both runs now see a guild their catalog was not built for.
+        DRStats.guild = 'Bard'
+        allow(TextSubs).to receive(:watch).and_call_original
+        pauses = 0
+        allow(TextSubs).to receive(:pause) do
+          raise 'TextSubs.watch kept waiting' if (pauses += 1) > 1
+
+          DownstreamHook.remove('textsub')
+        end
+
+        # The old run's watch stops at its first check, though the hook name
+        # (the new run's hook now) is still registered, and rebuilds nothing.
+        expect(TextSubs.watch(old_hook, **old_options, &old_rebuild)).to be_nil
+        expect(pauses).to eq(0)
+        expect(displayed_messages.last).to eq('A newer textsubs has started, so this one stops here; if no textsubs is running now, start it again with ;textsubs.')
+        expect(run_hooks(fine)).to eq("NEW RUN.\r\n")
+
+        # Its rebuild, as if its last check had passed just before the newer
+        # start, is refused when it comes to install, and says so at once.
+        generation = TextSubs.generation
+        old_rebuild.call('Bard')
+        expect(TextSubs.generation).to eq(generation)
+        expect(run_hooks(fine)).to eq("NEW RUN.\r\n")
+        expect(displayed_messages.last(2)).to eq([bard_rebuild, bard_dropped])
+
+        # The new run's watch rebuilds for the Bard, and returns once its hook goes.
+        expect(TextSubs.watch(new_hook, **new_options, &new_rebuild)).to be_nil
+        expect(pauses).to eq(1)
+        expect(installed_entries).to eq([['You feel fine', 0, 'NEW RUN'], *golden_catalog(spell_links_on.merge('guild' => 'Bard'))])
+        # The refused rebuild said why it started and that it was dropped,
+        # never that it was done.
+        expect(rebuilt).to eq([bard_rebuild, bard_dropped, bard_rebuild, bard_installed])
+      end
+
+      # The first write once the guild is Bard (the rebuild's) and every
+      # 400th after it send two lines through the hooks: the Bard song, which
+      # only the new catalog labels, and a private sub the old one has.
+      it 'keeps applying the whole old catalog while the new one is built, then swaps it in with one generation' do
+        probes = []
+        writes = 0
+        probe = lambda do |_key, _value, _gate, _registry|
+          next unless DRStats.guild == 'Bard' && (writes += 1) % 400 == 1
+
+          probes << [run_hooks(song), run_hooks("You feel fine.\r\n".b), TextSubs.generation]
+        end
+
+        seen = on_registry_write(probe) { start_then_learn_bard }
+
+        expect(probes.size).to be > 2
+        expect(probes.map { |old_song, fine, _| [old_song, fine] }.uniq).to eq([[song, "You feel FINE.\r\n"]])
+        expect(probes.map(&:last).uniq.size).to eq(1)
+        expect(TextSubs.generation).to eq(probes.first.last + 1)
+        expect(seen).to eq(["You bring the song to a close, bowing your head (4/7).\r\n"])
+      end
+    end
+  end
+
+  describe 'TextSubs.build' do
+    let(:context) { TextSubs::Context.new(guild: 'Bard', settings: OpenStruct.new) }
+    let(:data) do
+      { 'schema' => 1, 'sections' => [{ 'name' => 'one', 'subs' => [%w[fine FINE], %w[cat dog]] }] }
+    end
+    let(:private_subs) { TextSubs::Sources::PrivateSubs.entries('fine' => 'MINE', 'owl' => 'hoot').first }
+
+    def build_into(registry, data: self.data)
+      TextSubs.build(registry, shit_list: %w[Bob Quimble], private_subs: private_subs, data: data, context: context, file: 'f')
+    end
+
+    it 'fills a Registry that is not installed, in place order, leaving the installed catalog and the generation alone' do
+      TextSubs.add('mine', 'MINE')
+      generation = TextSubs.generation
+      registry = TextSubs::Registry.new
+
+      expect(build_into(registry)).to eq(['private_textsubs "fine" is also a built-in sub; your replacement is used instead of the built-in one.'])
+      expect(registry.snapshot.to_a).to eq([[/\bBob\b/, 'Bob (SL)'], [/\bQuimble\b/, 'Quimble (SL)'], [private_subs[0][0], 'MINE'],
+                                            [private_subs[1][0], 'hoot'], [/cat/, 'dog']])
+      expect(TextSubs.subs).to eq(/mine/ => 'MINE')
+      expect(TextSubs.generation).to eq(generation)
+
+      TextSubs.install(registry)
+      expect(TextSubs.generation).to eq(generation + 1)
+      expect(TextSubs.apply(+'Bob: fine cat')).to eq('Bob (SL): MINE dog')
+    end
+
+    it 'counts a generation for each write to the installed Registry, as on a start' do
+      registry = TextSubs.install(TextSubs::Registry.new)
+      generation = TextSubs.generation
+      build_into(registry)
+      # Two names, two private keys, two built-in subs, one private value given back.
+      expect(TextSubs.generation).to eq(generation + 7)
+    end
+
+    it "puts why no built-in sub was added first, and still adds the shit-list and private subs" do
+      registry = TextSubs::Registry.new
+      messages = build_into(registry, data: { 'schema' => 2 })
+      expect(messages.size).to eq(1)
+      expect(messages.first).to start_with('No built-in subs: f cannot be used (schema 2')
+      expect(registry.snapshot.values).to eq(['Bob (SL)', 'Quimble (SL)', 'MINE', 'hoot'])
+    end
+
+    it 'gives each private key the gate of the built-in sub it replaced, in the Registry it fills' do
+      gated = { 'schema' => 1, 'sections' => [{ 'name' => 'gated', 'requires_any' => ['Kronar'], 'subs' => [%w[fine FINE]] }] }
+      registry = TextSubs::Registry.new
+      build_into(registry, data: gated)
+      expect(registry.gates).to eq(private_subs[0][0] => ['Kronar'])
     end
   end
 
@@ -2287,6 +2797,166 @@ RSpec.describe 'textsubs.lic' do
         registry.add(/cat/, 'lion')
         expect(registry.snapshot.to_a).to eq([[/bird/, 'fish'], [/cat/, 'lion']])
       end
+
+      it 'records the drop as a change, and records nothing when it removes nothing' do
+        registry.add(/cat/, 'dog')
+        registry.add(/bird/, 'fish')
+        registry.drop(/bird/, 'another fish')
+        expect(registry.changes).to eq({})
+
+        registry.drop(/cat/, registry.snapshot[/cat/])
+        expect(registry.changes).to eq(/cat/ => [:drop])
+      end
+    end
+
+    # A catalog built again for a new guild gets the changes made to the
+    # installed one since it was built (TextSubs.reinstall).
+    describe 'changes' do
+      it 'records an add_change with a frozen copy of its value and its gate, but not a plain add' do
+        value = +'dog'
+        word = +'cat'
+        gate = [word]
+        registry.add(/built/, 'in')
+        expect(registry.add_change(/cat/, value, requires_any: gate)).to equal(value)
+        value << 'gone'
+        word << 's'
+        gate << ''
+
+        expect(registry.snapshot).to eq(/built/ => 'in', /cat/ => 'dog')
+        expect(registry.gates).to eq(/cat/ => ['cat'])
+        expect(registry.changes).to eq(/cat/ => [:add, 'dog', ['cat']])
+        expect(registry.changes[/cat/][1]).to be_frozen
+        expect(registry.changes[/cat/][2]).to be_frozen
+        expect(registry.changes[/cat/][2]).to all(be_frozen)
+      end
+
+      it 'replays a recorded gate even after the caller edits the list it passed' do
+        gate = ['cat']
+        registry.add_change(/cat/, 'dog', requires_any: gate)
+        gate << ''
+
+        rebuilt = TextSubs::Registry.new
+        expect { rebuilt.replay(registry.changes) }.not_to raise_error
+        expect(rebuilt.gates).to eq(/cat/ => ['cat'])
+      end
+
+      it 'hands out a frozen copy that later changes do not reach' do
+        registry.add_change(/cat/, 'dog')
+        changes = registry.changes
+        registry.add_change(/bird/, 'fish')
+
+        expect(changes).to be_frozen
+        expect(changes.keys).to eq([/cat/])
+        expect { changes[/owl/] = [:drop] }.to raise_error(FrozenError)
+      end
+
+      it 'records nothing for an add_change the registry refuses' do
+        expect { registry.add_change('cat', 'dog') }.to raise_error(ArgumentError)
+        expect { registry.add_change(/cat/, 'dog', requires_any: []) }.to raise_error(ArgumentError)
+        expect(registry.changes).to eq({})
+        expect(registry.snapshot).to eq({})
+      end
+
+      it 'keeps the last change of each key, in the order the keys took their places' do
+        registry.add_change(/cat/, 'dog')
+        registry.add_change(/bird/, 'fish')
+        registry.add_change(/cat/, 'lion')
+        expect(registry.changes.to_a).to eq([[/cat/, [:add, 'lion', nil]], [/bird/, [:add, 'fish', nil]]])
+        expect(registry.snapshot.keys).to eq([/cat/, /bird/])
+
+        registry.drop(/cat/, registry.snapshot[/cat/])
+        registry.add_change(/cat/, 'tiger')
+        expect(registry.changes.to_a).to eq([[/bird/, [:add, 'fish', nil]], [/cat/, [:add, 'tiger', nil]]])
+        expect(registry.snapshot.keys).to eq([/bird/, /cat/])
+      end
+
+      describe '#replay' do
+        subject(:rebuilt) { TextSubs::Registry.new }
+
+        before do
+          rebuilt.add(/fine/, 'FINE', requires_any: ['fine'])
+          rebuilt.add(/raises/, 'built again')
+          rebuilt.add(/owl/, 'hoot')
+        end
+
+        it 'adds each added key, over a value the catalog gave it, in its place, and appends the rest in order' do
+          registry.add_change(/bird/, 'fish')
+          registry.add_change(/owl/, 'HOOT')
+          registry.add_change(/cat/, 'dog', requires_any: ['cat'])
+
+          expect(rebuilt.replay(registry.changes)).to equal(rebuilt)
+          expect(rebuilt.snapshot.to_a).to eq([[/fine/, 'FINE'], [/raises/, 'built again'], [/owl/, 'HOOT'],
+                                               [/bird/, 'fish'], [/cat/, 'dog']])
+          expect(rebuilt.gates).to eq(/fine/ => ['fine'], /cat/ => ['cat'])
+        end
+
+        it 'gives an added key with no gate none, as add would, even where the catalog gave it one' do
+          registry.add_change(/fine/, 'MINE')
+          rebuilt.replay(registry.changes)
+          expect(rebuilt.snapshot[/fine/]).to eq('MINE')
+          expect(rebuilt.gates).to eq({})
+        end
+
+        it 'removes each dropped key the catalog built again, and its gate' do
+          registry.add(/raises/, nil)
+          registry.add(/fine/, 'FINE', requires_any: ['fine'])
+          registry.drop(/raises/, nil)
+          registry.drop(/fine/, registry.snapshot[/fine/])
+
+          rebuilt.replay(registry.changes)
+          expect(rebuilt.snapshot.to_a).to eq([[/owl/, 'hoot']])
+          expect(rebuilt.gates).to eq({})
+          expect(rebuilt.indexed_snapshot.last.candidates('fine raises owl')).to eq([/owl/])
+        end
+
+        # Guild A builds the key and drops it, guild B does not build it,
+        # guild C builds it again: it has to stay off all the way.
+        it 'records a drop of a key the catalog did not build, so the catalog built after it leaves it out too' do
+          registry.add(/gone/, nil)
+          registry.drop(/gone/, nil)
+          registry.add_change(/cat/, 'dog')
+
+          rebuilt.replay(registry.changes)
+          expect(rebuilt.snapshot.keys).to eq([/fine/, /raises/, /owl/, /cat/])
+          expect(rebuilt.changes).to eq(/gone/ => [:drop], /cat/ => [:add, 'dog', nil])
+
+          third = TextSubs::Registry.new
+          third.add(/gone/, 'back')
+          third.replay(rebuilt.changes)
+          expect(third.snapshot).to eq(/cat/ => 'dog')
+        end
+
+        it 'replays an add after a drop as the add, and a drop after an add as the drop' do
+          registry.add(/raises/, nil)
+          registry.drop(/raises/, nil)
+          registry.add_change(/raises/, 'fixed')
+          registry.add_change(/owl/, 'HOOT')
+          registry.drop(/owl/, registry.snapshot[/owl/])
+
+          rebuilt.replay(registry.changes)
+          expect(rebuilt.snapshot.to_a).to eq([[/fine/, 'FINE'], [/raises/, 'fixed']])
+        end
+
+        # Before the rebuild the re-added key runs last; after it, the key
+        # runs where the catalog puts it (documented on record and replay).
+        it 'puts a built-in key a script re-added after a drop back in its catalog place' do
+          registry.add(/fine/, nil)
+          registry.add(/owl/, 'hoot')
+          registry.drop(/fine/, nil)
+          registry.add_change(/fine/, 'MINE')
+          expect(registry.snapshot.keys).to eq([/owl/, /fine/])
+
+          rebuilt.replay(registry.changes)
+          expect(rebuilt.snapshot.to_a).to eq([[/fine/, 'MINE'], [/raises/, 'built again'], [/owl/, 'hoot']])
+        end
+
+        it 'changes nothing for an empty change list' do
+          before = rebuilt.snapshot
+          rebuilt.replay(registry.changes)
+          expect(rebuilt.snapshot).to equal(before)
+          expect(rebuilt.changes).to eq({})
+        end
+      end
     end
 
     it 'gives the index the gates of the same copy, so a gated key stays out of a line without its word' do
@@ -2718,6 +3388,115 @@ RSpec.describe 'textsubs.lic' do
       TextSubs.add('cat', 'dog')
       expect(staged.snapshot).to eq(/cat/ => 'dog')
     end
+
+    it 'records an add made while staged as a change, so a guild rebuild after the install keeps it' do
+      staged = TextSubs.stage(TextSubs::Registry.new)
+      staged.add(/fine/, 'FINE')
+      TextSubs.add('cat', 'dog')
+      TextSubs.install(staged)
+
+      TextSubs.reinstall(TextSubs::Registry.new.tap { |registry| registry.add(/fine/, 'FINE') })
+      expect(TextSubs.subs).to eq(/fine/ => 'FINE', /cat/ => 'dog')
+    end
+  end
+
+  describe 'TextSubs.reinstall' do
+    # @return [TextSubs::Registry] a catalog as if built again, not installed
+    def built_again
+      TextSubs::Registry.new.tap do |registry|
+        registry.add(/fine/, 'FINE')
+        registry.add(/raises/, 'again')
+      end
+    end
+
+    before do
+      registry = TextSubs.install(TextSubs::Registry.new)
+      registry.add(/fine/, 'FINE')
+      registry.add(/raises/, nil)
+    end
+
+    it 'installs the catalog with the subs added since the start and without the subs apply dropped, in one generation' do
+      TextSubs.add('cat', 'dog')
+      TextSubs.elanthipedia('Zephyr', '^')
+      TextSubs.apply(+'raises')
+      start = TextSubs.generation
+      registry = built_again
+
+      expect(TextSubs.reinstall(registry)).to equal(registry)
+      expect(TextSubs.generation).to eq(start + 1)
+      expect(TextSubs.subs.keys).to eq([/fine/, /cat/, /(^)(Zephyr)()/])
+      expect(TextSubs.apply(+'fine cat raises')).to eq('FINE dog raises')
+      expect(displayed_messages.grep(/the sub "raises" raised/).size).to eq(1)
+    end
+
+    it 'keeps them through every rebuild after it' do
+      TextSubs.add('cat', 'dog')
+      TextSubs.apply(+'raises')
+      TextSubs.reinstall(built_again)
+      TextSubs.reinstall(built_again)
+      expect(TextSubs.subs).to eq(/fine/ => 'FINE', /cat/ => 'dog')
+    end
+
+    it 'keeps the changes the catalog it replaces got after the last rebuild, too' do
+      TextSubs.reinstall(built_again)
+      TextSubs.add('cat', 'dog')
+      TextSubs.reinstall(built_again)
+      expect(TextSubs.subs).to eq(/fine/ => 'FINE', /raises/ => 'again', /cat/ => 'dog')
+    end
+
+    it 'carries nothing over for a catalog nothing changed, and nothing from before an install or a clear' do
+      TextSubs.reinstall(built_again)
+      expect(TextSubs.subs).to eq(/fine/ => 'FINE', /raises/ => 'again')
+
+      TextSubs.add('cat', 'dog')
+      TextSubs.clear
+      TextSubs.reinstall(built_again)
+      expect(TextSubs.subs).to eq(/fine/ => 'FINE', /raises/ => 'again')
+
+      TextSubs.add('cat', 'dog')
+      TextSubs.install(TextSubs::Registry.new)
+      TextSubs.reinstall(built_again)
+      expect(TextSubs.subs).to eq(/fine/ => 'FINE', /raises/ => 'again')
+    end
+
+    it 'refuses anything but a Registry, replaying and installing nothing' do
+      TextSubs.add('cat', 'dog')
+      start = TextSubs.generation
+      before = TextSubs.subs
+      [nil, {}, { /cat/ => 'lion' }].each do |not_a_registry|
+        expect { TextSubs.reinstall(not_a_registry) }.to raise_error(ArgumentError, /TextSubs.reinstall needs a TextSubs::Registry/)
+      end
+      expect(TextSubs.generation).to eq(start)
+      expect(TextSubs.subs).to equal(before)
+    end
+
+    describe 'given the token start_run gave a start' do
+      it 'installs the catalog while that run is the latest start, though another script staged a Registry since' do
+        run = TextSubs.start_run
+        TextSubs.install(TextSubs.stage(TextSubs::Registry.new))
+        Thread.new { TextSubs.stage(TextSubs::Registry.new) }.join
+        start = TextSubs.generation
+        registry = built_again
+
+        expect(TextSubs.reinstall(registry, run: run)).to equal(registry)
+        expect(TextSubs.generation).to eq(start + 1)
+        expect(TextSubs.subs).to eq(/fine/ => 'FINE', /raises/ => 'again')
+      end
+
+      it 'installs nothing, and returns nil, once a newer start has taken its token, even before that start installs' do
+        run = TextSubs.start_run
+        TextSubs.install(TextSubs.stage(TextSubs::Registry.new))
+        TextSubs.add('cat', 'dog')
+        Thread.new { TextSubs.start_run }.join
+        start = TextSubs.generation
+        before = TextSubs.subs
+
+        expect(TextSubs.reinstall(built_again, run: run)).to be_nil
+        expect(TextSubs.generation).to eq(start)
+        expect(TextSubs.subs).to equal(before)
+        expect(TextSubs.subs).to eq(/cat/ => 'dog')
+      end
+    end
   end
 
   # Each of these runs one step on this thread and, at the gap inside it
@@ -2802,6 +3581,26 @@ RSpec.describe 'textsubs.lic' do
       result
     end
 
+    # Runs block on this thread with registry's replay starting interloper
+    # before it replays a change: the gap between reinstall reading the
+    # changes of the installed catalog and swapping registry in.
+    #
+    # @param registry [TextSubs::Registry] the catalog built again, which
+    #   block hands to reinstall
+    # @param interloper [Proc] the other thread's step
+    # @return [Object] what block returns
+    def with_interloper_in_replay(registry, interloper:)
+      state = {}
+      start = method(:start_interloper)
+      registry.define_singleton_method(:replay) do |changes|
+        start.call(state, interloper)
+        super(changes)
+      end
+      result = yield
+      finish_interloper(state, 'the replay')
+      result
+    end
+
     it 'lets no stage of another thread land between the check in unstage and the change' do
       first = TextSubs.stage(TextSubs::Registry.new)
       second = TextSubs::Registry.new
@@ -2851,6 +3650,89 @@ RSpec.describe 'textsubs.lic' do
 
       expect(TextSubs.generation).to eq(start + 2)
       expect(TextSubs.subs).to equal(other.snapshot)
+    end
+
+    # The add starts while the catalog built again takes the changes over: it
+    # must land before they are read, or after the swap in the new catalog,
+    # never in the catalog being replaced.
+    it 'keeps an add another thread makes while reinstall replays the changes onto the catalog built again' do
+      TextSubs.add('cat', 'dog')
+      built_again = TextSubs::Registry.new.tap { |registry| registry.add(/fine/, 'FINE') }
+
+      with_interloper_in_replay(built_again, interloper: -> { TextSubs.add('late', 'LATE') }) do
+        expect(TextSubs.reinstall(built_again)).to equal(built_again)
+      end
+
+      expect(TextSubs.subs).to eq(/fine/ => 'FINE', /cat/ => 'dog', /late/ => 'LATE')
+    end
+
+    # A drop is a change too: it must land before the changes are read, and
+    # be replayed, or after the swap, on the new catalog, never in the one
+    # being replaced, where the replay would bring the sub back.
+    it 'keeps a sub apply drops on another thread while reinstall replays the changes off, reporting it once' do
+      TextSubs.add('boom', nil)
+      built_again = TextSubs::Registry.new.tap { |registry| registry.add(/fine/, 'FINE') }
+
+      with_interloper_in_replay(built_again, interloper: -> { TextSubs.apply(+'boom') }) do
+        expect(TextSubs.reinstall(built_again)).to equal(built_again)
+      end
+
+      expect(TextSubs.subs).to eq(/fine/ => 'FINE')
+      expect(TextSubs.apply(+'boom fine')).to eq('boom FINE')
+      expect(displayed_messages.grep(/the sub "boom" raised/).size).to eq(1)
+    end
+
+    it 'counts a drop on the hook thread and an add on another thread once each, never one number for both' do
+      TextSubs.add('boom', nil)
+      start = TextSubs.generation
+
+      with_interloper_in_count(interloper: -> { TextSubs.add('cat', 'dog') }) do
+        TextSubs.apply(+'boom')
+      end
+
+      expect(TextSubs.generation).to eq(start + 2)
+      expect(TextSubs.subs).to eq(/cat/ => 'dog')
+    end
+
+    # The public writers that take a registry: called without one, each
+    # writes the catalog being built as it stands once the lock is theirs,
+    # not the one that stood when they were called.
+    it 'keeps private subs another thread adds while reinstall replays the changes, in the catalog built again' do
+      built_again = TextSubs::Registry.new.tap { |registry| registry.add(/fine/, 'FINE') }
+
+      with_interloper_in_replay(built_again, interloper: -> { TextSubs.add_private([[/late/, 'LATE', '"late"']]) }) do
+        expect(TextSubs.reinstall(built_again)).to equal(built_again)
+      end
+
+      expect(TextSubs.subs).to eq(/fine/ => 'FINE', /late/ => 'LATE')
+    end
+
+    it 'keeps built-in subs another thread adds while reinstall replays the changes, in the catalog built again' do
+      built_again = TextSubs::Registry.new.tap { |registry| registry.add(/fine/, 'FINE') }
+      data = { 'schema' => TextSubs::Catalog.schema, 'sections' => [{ 'name' => 'late', 'subs' => [%w[late LATE]] }] }
+      context = TextSubs::Context.new(guild: 'Bard', settings: OpenStruct.new)
+      add_catalog = -> { TextSubs.add_catalog(data, context, file: 'data/base-textsubs.yaml') }
+
+      with_interloper_in_replay(built_again, interloper: add_catalog) do
+        expect(TextSubs.reinstall(built_again)).to equal(built_again)
+      end
+
+      expect(TextSubs.subs).to eq(/fine/ => 'FINE', /late/ => 'LATE')
+    end
+
+    # The installed catalog lacks the key, so a check made before the lock
+    # is taken (on that catalog) would give nothing back.
+    it 'gives a private value back on the catalog built again when another thread prefers it during the replay' do
+      built_again = TextSubs::Registry.new.tap { |registry| registry.add(/fine/, 'FINE') }
+      warnings = nil
+      prefer = -> { warnings = TextSubs.prefer_private([[/fine/, 'MINE', '"fine"']]) }
+
+      with_interloper_in_replay(built_again, interloper: prefer) do
+        expect(TextSubs.reinstall(built_again)).to equal(built_again)
+      end
+
+      expect(TextSubs.subs).to eq(/fine/ => 'MINE')
+      expect(warnings).to eq(['private_textsubs "fine" is also a built-in sub; your replacement is used instead of the built-in one.'])
     end
   end
 
@@ -2954,10 +3836,20 @@ RSpec.describe 'textsubs.lic' do
       expect(context_for(nil).allows?(gate)).to be(false)
     end
 
-    it 'lets a not_guilds gate through for every guild it does not name, a guild not known yet included' do
+    it 'lets a not_guilds gate through for every guild it does not name, but not for a guild not known yet' do
       gate = { 'not_guilds' => %w[Barbarian Thief] }
       expect(%w[Thief Barbarian Cleric].map { |guild| context_for(guild).allows?(gate) }).to eq([false, false, true])
-      expect(context_for(nil).allows?(gate)).to be(true)
+      expect(context_for(nil).allows?(gate)).to be(false)
+    end
+
+    # The unknown guild may turn out to be one the gate names, so a section
+    # gated on guilds waits for it whichever way the gate is put.
+    it 'lets no guild gate through for a guild not known yet, even beside a setting that holds' do
+      unknown = context_for(nil)
+      expect(unknown.allows?('not_guilds' => ['Commoner'], 'setting' => 'herb_textsubs')).to be(false)
+      expect(unknown.allows?('guilds' => TextSubs::Context.guilds)).to be(false)
+      expect(unknown.allows?('setting' => 'herb_textsubs')).to be(true)
+      expect(unknown.guild).to be_nil
     end
 
     it 'reads setting as set and setting_off as nil or false, by name' do
@@ -3146,9 +4038,28 @@ RSpec.describe 'textsubs.lic' do
                    '<a href="https://elanthipedia.play.net/Category:Moon_Mage_spells">Moon Mage</a> training.']])
       end
 
-      it 'links an empty guild name for a guild not known yet, as the inline catalog did under Lich' do
-        expect(entries_for(nil, data).first[1])
-          .to eq('You recall the spells you have learned from your <a href="https://elanthipedia.play.net/Category:_spells"></a> training.')
+      # A link to Category:_spells would show an empty link where the game
+      # names the guild, losing the name; the line is better left as it is.
+      it 'gives no sub at all for a guild not known yet, keeping the sections around it' do
+        around = catalog_data(<<~YAML)['sections']
+          textsubs:
+            schema: 1
+            sections:
+              - name: 'before'
+                subs: [['cat', 'dog']]
+              - name: 'after'
+                subs: [['bird', 'fish']]
+        YAML
+        data_with_neighbours = data.merge('sections' => [around.first, *data['sections'], around.last])
+
+        expect(entries_for(nil, data)).to eq([])
+        expect(entries_for(nil, data_with_neighbours).map(&:first)).to eq(%w[cat bird])
+        expect(entries_for('Bard', data_with_neighbours).size).to eq(3)
+      end
+
+      it 'still checks the link fields while the guild is not known' do
+        broken = data.merge('sections' => [data['sections'].first.merge('poslink' => 5)])
+        expect { entries_for(nil, broken) }.to raise_error(ArgumentError, /'poslink' must be a quoted string, not 5/)
       end
     end
 

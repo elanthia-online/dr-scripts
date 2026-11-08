@@ -301,6 +301,29 @@ module Harness
     end
   end
 
+  # Lich's DRInfomon, for scripts that wait on its login commands. The double
+  # reports startup as finished, as it is for every script started after
+  # login; an example about a script that starts during login sets it false
+  # with _set_startup_complete.
+  class DRInfomon
+    @@startup_complete = true
+
+    def self._reset
+      @@startup_complete = true
+    end
+
+    # @param val [Boolean] what startup_complete? answers until the next reset
+    def self._set_startup_complete(val)
+      @@startup_complete = val
+    end
+
+    # @return [Boolean] whether the info/played/exp/ability commands DRInfomon
+    #   sends at login have all finished
+    def self.startup_complete?
+      @@startup_complete
+    end
+  end
+
   class DRSkill
     @@_data_store = {}
     @@_xp_store = {}
@@ -1030,6 +1053,7 @@ module Harness
     Flags._reset
     DRSpells._reset
     DRStats._reset
+    DRInfomon._reset
     DRSkill._reset
     DRRoom._reset
     Map._reset
