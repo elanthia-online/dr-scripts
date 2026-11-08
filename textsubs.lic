@@ -1883,7 +1883,7 @@ class TextSubs
         repeated = steps.map(&:first).tally.select { |_, count| count > 1 }.keys
         raise ArgumentError, "uses step number(s) #{repeated.join(', ')} more than once" unless repeated.empty?
 
-        patterns = Generators.check_patterns(expand(section, nil, nil))
+        patterns = expand(section, nil, nil).map { |pattern, _replacement| Generators.check_pattern(pattern) }
         check_distinct(section, patterns)
         patterns
       end
