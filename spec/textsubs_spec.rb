@@ -847,19 +847,32 @@ RSpec.describe 'textsubs.lic' do
       # from it, whether subs is still the catalog clear replaces. The line
       # probe above cannot split two writes on one line; this reader can. A
       # class variable write cannot be hooked, so it watches the step that
-      # feeds the write: + / succ / next on the count, or coerce when clear
-      # puts the count on the right of the +. That is a stronger rule than the
-      # write order alone, and it is the rule here by design: clear must work
-      # out the next count after the swap, so a parallel assignment (its right
-      # side runs before either write) or a count worked out ahead of the swap
-      # is red even when the writes land in the right order.
-      # It forwards everything else to the real count.
+      # feeds the write: + / - / succ / next on the count, coerce when clear
+      # puts the count on the right of the +, and to_i / to_int when clear
+      # turns the count into a plain Integer first (.to_i + 1, Integer() + 1).
+      # That is a stronger rule than the write order alone, and it is the rule
+      # here by design: clear must work out the next count after the swap, so a
+      # parallel assignment (its right side runs before either write) or a
+      # count worked out ahead of the swap is red even when the writes land in
+      # the right order. It forwards everything else to the real count without
+      # recording, so a clear that reaches the next count by any step not
+      # listed here never records and is red by design too.
       counter = SimpleDelegator.new(before_clear)
       note_catalog = -> { seen << (TextSubs.subs.equal?(old_catalog) ? :old : :new) }
       %i[+ succ next].each do |step|
         counter.define_singleton_method(step) do |by = 1|
           note_catalog.call
           before_clear + by
+        end
+      end
+      counter.define_singleton_method(:-) do |by|
+        note_catalog.call
+        before_clear - by
+      end
+      %i[to_i to_int].each do |step|
+        counter.define_singleton_method(step) do
+          note_catalog.call
+          before_clear
         end
       end
       counter.define_singleton_method(:coerce) do |other|
