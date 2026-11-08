@@ -62,6 +62,10 @@ require_relative '../test/textsubs_corpus'
 # the same output on every corpus line. The hand-made catalogs in 'hook engine
 # semantics' pin that rule.
 #
+# The hook skips every key when no front end is attached (TextSubs.client_attached?
+# is false), and the harness has none, so the examples that send lines through
+# the hook stub that predicate to true; 'front end guard' covers both branches.
+#
 # Hooks run through run_hooks, never DownstreamHook.run directly: a `return`
 # in the hook proc (where `next` belongs) is a top-level return in this spec
 # and would end rspec silently with status 0.
@@ -191,7 +195,7 @@ RSpec.describe 'textsubs.lic' do
   # @raise [RuntimeError] when the hooks neither returned nor raised
   # @raise [Exception] whatever a hook raises that DownstreamHook.run does not
   #   rescue (it rescues StandardError), unchanged
-  # @example
+  # @example With a front end attached (TextSubs.client_attached? stubbed to true)
   #   run_hooks("You feel fine.\r\n".b) # => "You feel FINE.\r\n"
   def run_hooks(line)
     exit_by = :unwind
@@ -206,6 +210,13 @@ RSpec.describe 'textsubs.lic' do
       raise "a DownstreamHook left without returning (a `return` in the hook proc where `next` belongs?); " \
             'unchecked, that would end the whole rspec run with status 0'
     end
+  end
+
+  # The harness has no front end, and the hook skips every key without one
+  # (see 'front end guard'), so groups that send lines through the hook
+  # include this.
+  shared_context 'with a front end attached' do
+    before { allow(TextSubs).to receive(:client_attached?).and_return(true) }
   end
 
   after do
@@ -380,6 +391,8 @@ RSpec.describe 'textsubs.lic' do
   end
 
   describe "the 'textsub' hook" do
+    include_context 'with a front end attached'
+
     it "registers 'textsub', and the registered hook applies the catalog" do
       build_catalog('Commoner', 'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
       expect(DownstreamHook.list).to include('textsub')
@@ -478,6 +491,8 @@ RSpec.describe 'textsubs.lic' do
   end
 
   describe 'hook engine semantics' do
+    include_context 'with a front end attached'
+
     # Runs the real entry point, so the real 'textsub' hook is registered, then
     # swaps the built catalog for exactly `pairs` through the public TextSubs
     # API, so the example controls every key the hook can see.
@@ -535,7 +550,135 @@ RSpec.describe 'textsubs.lic' do
     end
   end
 
+  describe 'front end guard' do
+    let(:line) { "You feel fine.\r\n".b }
+    let(:no_clients) { double('DetachableClientRegistry', empty?: true) }
+    let(:some_clients) { double('DetachableClientRegistry', empty?: false) }
+    let(:front_end) { double('front end client') }
+
+    # Where each kind of front end shows up for TextSubs.client_attached?,
+    # with the other two sources empty.
+    attached_sources = {
+      'the detachable client registry' => -> { { registry: some_clients, detachable: nil, client: nil } },
+      'the legacy detachable client'   => -> { { registry: no_clients, detachable: front_end, client: nil } },
+      'the primary client ($_CLIENT_)' => -> { { registry: no_clients, detachable: nil, client: front_end } }
+    }
+
+    # Runs the real entry point with one private key the probe line matches,
+    # so a hook that skipped the catalog shows in its output.
+    #
+    # @return [void]
+    def install_probe_catalog
+      build_catalog('Commoner', 'private_textsubs' => { 'fine' => 'FINE' })
+    end
+
+    # Makes the hook's TextSubs.client_attached? call run the real predicate
+    # with `sources` in place of the Lich globals, which a spec must not set.
+    #
+    # @param sources [Hash{Symbol=>Object}] registry:, detachable:, client:
+    # @return [void]
+    def front_ends(**sources)
+      allow(TextSubs).to(receive(:client_attached?).and_wrap_original { |original| original.call(**sources) })
+    end
+
+    describe 'TextSubs.client_attached?' do
+      it 'is false with an empty registry, no detachable client and no primary client' do
+        expect(TextSubs.client_attached?(registry: no_clients, detachable: nil, client: nil)).to be(false)
+      end
+
+      it 'is false, and does not touch the registry, when there is no registry at all' do
+        # Under Lich's nilclass patch nil.empty? is nil, so an unguarded
+        # !registry.empty? would call a headless character attached.
+        expect(TextSubs.client_attached?(registry: nil, detachable: nil, client: nil)).to be(false)
+      end
+
+      attached_sources.each do |source, sources|
+        it "is true with a front end in #{source} alone" do
+          expect(TextSubs.client_attached?(**instance_exec(&sources))).to be(true)
+        end
+      end
+
+      # The hook calls the predicate bare, so these defaults are its only wiring
+      # to Lich. A spec must not set the globals, and with all three nil a
+      # misspelt, swapped or nil default would still answer false, so the
+      # defaults are read from the parsed source instead.
+      it 'defaults each source to the Lich global that holds it' do
+        require 'prism'
+        tree = Prism.parse_file(lic_path('textsubs.lic')).value
+        definition = tree.breadth_first_search do |node|
+          node.is_a?(Prism::DefNode) && node.receiver.is_a?(Prism::SelfNode) && node.name == :client_attached?
+        end
+        defaults = definition.parameters.keywords.to_h { |keyword| [keyword.name, keyword.value.slice] }
+
+        expect(defaults).to eq(registry: '$_DETACHABLE_CLIENT_REGISTRY_', detachable: '$_DETACHABLE_CLIENT_',
+                               client: '$_CLIENT_')
+        expect(definition.parameters.keywords.map(&:value)).to all(be_a(Prism::GlobalVariableReadNode))
+      end
+
+      it 'is false through those defaults in the harness, which sets none of the globals' do
+        expect([$_DETACHABLE_CLIENT_REGISTRY_, $_DETACHABLE_CLIENT_, $_CLIENT_]).to all(be_nil)
+        expect(TextSubs.client_attached?).to be(false)
+      end
+    end
+
+    it 'passes the line on untouched, without reading the catalog, when no front end is attached' do
+      install_probe_catalog
+      front_ends(registry: no_clients, detachable: nil, client: nil)
+      allow(TextSubs).to receive(:subs).and_call_original
+
+      expect(run_hooks(line)).to eq(line)
+      expect(TextSubs).not_to have_received(:subs)
+      # DownstreamHook.run drops a hook that raises and passes the line on
+      # unchanged, which would look like a skip.
+      expect(DownstreamHook.list).to include('textsub')
+    end
+
+    it 'skips the catalog in the harness, which has no front end, when nothing is stubbed' do
+      install_probe_catalog
+      expect(run_hooks(line)).to eq(line)
+      expect(DownstreamHook.list).to include('textsub')
+    end
+
+    attached_sources.each do |source, sources|
+      it "rewrites the line exactly as reference_apply does with a front end in #{source}" do
+        install_probe_catalog
+        front_ends(**instance_exec(&sources))
+        expected = reference_apply(TextSubs.subs, line)
+
+        expect(expected).not_to eq(line)
+        expect(run_hooks(line)).to eq(expected)
+        # The rewrite came through the attached branch, not around the guard,
+        # and the hook asked bare: front_ends discards the hook's arguments, so
+        # an explicit client: nil would otherwise pass while disabling textsubs.
+        expect(TextSubs).to have_received(:client_attached?).with(no_args).once
+      end
+    end
+
+    it 'asks again on every line, so a front end that attaches or leaves later is honoured' do
+      install_probe_catalog
+      attached = nil
+      # Parenthesized so the block goes to and_wrap_original, not to `to`.
+      allow(TextSubs).to(receive(:client_attached?).and_wrap_original do |original|
+        original.call(registry: no_clients, detachable: attached, client: nil)
+      end)
+
+      expect(run_hooks(line)).to eq(line)
+      attached = front_end
+      expect(run_hooks(line)).to eq("You feel FINE.\r\n")
+      attached = nil
+      expect(run_hooks(line)).to eq(line)
+    end
+
+    it 'still builds the catalog and registers the hook when it starts with no front end' do
+      expect { install_probe_catalog }.not_to raise_error
+      expect(DownstreamHook.list).to include('textsub')
+      expect(TextSubs.subs.size).to be > 100
+    end
+  end
+
   describe 'reference-engine oracle' do
+    include_context 'with a front end attached'
+
     samples = TextsubsCorpus.parse_samples(File.read(samples_path)).map(&:b)
     stream = File.binread(stream_path).lines
     big_line = stream.max_by(&:bytesize)

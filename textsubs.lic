@@ -21,6 +21,30 @@ class TextSubs
     @@subs[/#{target}/] = result
   end
 
+  # Whether any front end receives game output right now. It mirrors lich-5's
+  # Game#client_write_targets: a non-empty detachable client registry, else the
+  # legacy single detachable client, else the primary client ($_CLIENT_, nil
+  # under --without-frontend). Lich runs the downstream hooks before it picks
+  # those targets, so with none of them no client receives a rewritten line;
+  # only the hooks after this one would see it.
+  #
+  # The defaults read the Lich globals on every call: a detachable client can
+  # attach or leave at any time, so the hook asks once per line.
+  #
+  # @param registry [#empty?, nil] the detachable client registry
+  #   (Lich::Common::DetachableClientRegistry)
+  # @param detachable [Object, nil] the legacy primary detachable client
+  # @param client [Object, nil] the primary front end client
+  # @return [Boolean] true when at least one front end is attached
+  # @example On a character started with --without-frontend and no detachable client
+  #   TextSubs.client_attached? # => false
+  def self.client_attached?(registry: $_DETACHABLE_CLIENT_REGISTRY_, detachable: $_DETACHABLE_CLIENT_, client: $_CLIENT_)
+    return true if registry && !registry.empty?
+    return true if detachable
+
+    client ? true : false
+  end
+
   def self.elanthipedia(text, pretext = '', postext = '', prelink = '', poslink = '', preresult = '\1', posresult = '\3')
     target = "(#{pretext})" + "(#{text})" + "(#{postext})"
     hyperlink = prelink + text.gsub(" ", "_") + poslink
@@ -42,6 +66,9 @@ end
 settings = get_settings
 
 action = proc do |client_string|
+  # Headless: nobody would see the rewrite, so skip every key.
+  next client_string unless TextSubs.client_attached?
+
   matches = TextSubs.subs.select { |key, _| key =~ client_string }
   matches.each { |target, result| client_string.gsub!(target, result) }
   client_string
