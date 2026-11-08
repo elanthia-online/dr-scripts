@@ -1131,7 +1131,8 @@ if DRStats.bard?
   TextSubs.add('You feel a bit tired as you finish, but grin despite that for the ease at which you sang\.', 'You feel a bit tired as you finish, but grin despite that for the ease at which you sang (3/7).')
   TextSubs.add('You bring the song to a close, bowing your head\.', 'You bring the song to a close, bowing your head (4/7).')
   # The message names the song's language; the key takes any language name
-  TextSubs.add('(Your voice carries strongly on the air as you effortlessly recite the [\w\' -]+ words so that all may hear, bowing your head as they come to a close)\.', '\1 (5/7).')
+  # spelled with letters, apostrophes and spaces (S'Kra Mur), nothing else
+  TextSubs.add('(Your voice carries strongly on the air as you effortlessly recite the [A-Za-z\' ]+ words so that all may hear, bowing your head as they come to a close)\.', '\1 (5/7).')
   TextSubs.add('Tears fill your eyes as the emotion of your ancient aire grips you, and you raise your chin with pride as it comes to a close\.', 'Tears fill your eyes as the emotion of your ancient aire grips you, and you raise your chin with pride as it comes to a close (6/7).')
   TextSubs.add('When the song finally comes to a close, you bow your head, your ears ringing in the silence\.', 'When the song finally comes to a close, you bow your head, your ears ringing in the silence (7/7).')
 end
