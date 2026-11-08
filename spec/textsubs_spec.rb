@@ -3306,7 +3306,11 @@ RSpec.describe 'textsubs.lic' do
     # The gates production installs, read from the built Registries rather
     # than from the YAML, so the gate-soundness example and the one-index
     # examples check the same gates, and a gate that add_catalog or
-    # Catalog.expand adds, drops or changes is what they check.
+    # Catalog.expand adds, drops or changes is what they check. Reading them
+    # costs the 96 shared builds (catalog_build_of): run on their own, those
+    # examples take about a second longer than a YAML read would, and the
+    # full file nothing, as the golden examples make the same builds. Going
+    # back to the YAML copy would lose exactly that check.
     #
     # @return [Hash{Regexp=>Array<String>}] each key any of the 96 built
     #   Registries gates, and its requires_any words (see catalog_build_of)
@@ -3745,6 +3749,8 @@ RSpec.describe 'textsubs.lic' do
     # the golden examples hold to what the 96 builds write), gated as the
     # built Registries gate them, checks that for all 96 catalogs at once: one
     # candidates call per line instead of 96 index builds and hook sweeps.
+    # Reading the built gates makes these examples depend on the 96 shared
+    # builds (see every_key_gates), on purpose.
     describe 'every catalog, through one index over all their keys' do
       # @return [TextSubs::TokenIndex] over every_key, gated by every_key_gates
       define_method(:every_key_index) do
