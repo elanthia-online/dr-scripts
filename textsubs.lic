@@ -42,7 +42,8 @@ class TextSubs
   end
 
   # Empties the catalog. It swaps in the new, empty Hash first and counts the
-  # change after, as store does, so the generation never runs ahead of subs.
+  # change after, the same order store keeps, so the generation never runs
+  # ahead of subs.
   #
   # @return [Hash] the new, empty catalog
   def self.clear
@@ -128,10 +129,11 @@ class TextSubs
   # The key is three capture groups, (pretext)(text)(postext), so the context
   # around the text can be matched and put back. pretext, text and postext
   # build the key: they are regex source, compiled unescaped. preresult,
-  # posresult, prelink and poslink are never regex source, only gsub
-  # replacement text. text is the one argument that is both, since the link
-  # shows it, so a backslash in any argument but pretext and postext is a
-  # backreference.
+  # posresult, prelink, poslink and text are gsub replacement text, so \0 to
+  # \9, \k<name>, \&, \`, \' and \\ in them are substitutions; any other
+  # backslash stays as written. text is the one argument that is both, so a
+  # regex escape in it (such as \s) matches in the key but shows verbatim in
+  # the link and the page name.
   #
   # @param text [String] the text to link; also the page name, spaces turned
   #   into underscores
