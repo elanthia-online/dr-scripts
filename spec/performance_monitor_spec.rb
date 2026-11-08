@@ -84,6 +84,31 @@ RSpec.describe 'performance-monitor.lic' do
       expect(custom_required).not_to include('textsubs')
       expect($started_scripts.map(&:first)).not_to include('textsubs')
     end
+
+    # The script used to start textsubs, so a player who relied on that is
+    # told once, at launch, how to start it at login instead.
+    describe 'the textsubs hint' do
+      # @return [Array<String>] displayed messages that name ;autostart add textsubs
+      def hints
+        displayed_messages.grep(/;autostart add textsubs/)
+      end
+
+      it 'echoes once that textsubs is no longer started when it is not running' do
+        run_script(with_start_helper: true)
+
+        expect(hints.size).to eq(1)
+        expect(hints.first).to include('performance-monitor no longer starts textsubs')
+      end
+
+      it 'echoes nothing about textsubs when textsubs is already running' do
+        $running_scripts << 'textsubs'
+
+        run_script(with_start_helper: true)
+
+        expect(loop_reached).not_to be_empty
+        expect(displayed_messages.grep(/textsubs/)).to be_empty
+      end
+    end
   end
 
   # PerformanceFilter ranks each hit with its own (n/23) tag, then reads the

@@ -9,6 +9,12 @@ unless HAVE_GTK
   exit
 end
 
+# This script used to start textsubs; it no longer does, so tell a player who
+# relied on that how to start it at login instead.
+unless Script.running?('textsubs')
+  echo 'performance-monitor no longer starts textsubs. To start textsubs at every login: ;autostart add textsubs'
+end
+
 class PerformanceFilter
   def initialize
     @settings = get_settings
