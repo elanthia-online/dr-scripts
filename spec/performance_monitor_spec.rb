@@ -13,12 +13,21 @@ require_relative 'spec_helper'
 # does not yield, so no window is built. The script loops on script.gets?
 # forever, so the reader raises StopRun on its first call. That stop also shows
 # the run got past all the top-level code into the main loop.
+#
+# The runner records each pause instead of sleeping, and can make textsubs
+# show up as running after a given number of them (as autostart starting it
+# just after this script would). It also records respond on its own, apart
+# from echo, so the textsubs hint is pinned to echo.
 RSpec.describe 'performance-monitor.lic' do
   let(:path) { lic_path('performance-monitor.lic') }
   let(:stop_run) { Class.new(StandardError) }
   let(:custom_required) { [] }
   let(:started_if_available) { [] }
   let(:loop_reached) { [] }
+  let(:pauses) { [] }
+  let(:responded) { [] }
+  # the number of pauses after which textsubs shows up as running; nil = never
+  let(:textsubs_starts_after_pauses) { nil }
 
   before do
     $test_settings.performance_monitor_weapons = ['broadsword']
@@ -46,6 +55,15 @@ RSpec.describe 'performance-monitor.lic' do
       raise over
     end
     runner.define_singleton_method(:script) { reader }
+
+    paused = pauses
+    starts_after = textsubs_starts_after_pauses
+    runner.define_singleton_method(:pause) do |seconds = 1|
+      paused << seconds
+      $running_scripts << 'textsubs' if paused.size == starts_after
+    end
+    said = responded
+    runner.define_singleton_method(:respond) { |message = ''| said << message }
 
     required = custom_required
     runner.define_singleton_method(:custom_require) { proc { |names| required.concat(Array(names)) } }
@@ -93,20 +111,35 @@ RSpec.describe 'performance-monitor.lic' do
         displayed_messages.grep(/;autostart add textsubs/)
       end
 
-      it 'echoes once that textsubs is no longer started when it is not running' do
+      it 'echoes once, after waiting five seconds, that textsubs is no longer started when it never runs' do
         run_script(with_start_helper: true)
 
+        expect(pauses).to eq([0.5] * 10)
         expect(hints.size).to eq(1)
         expect(hints.first).to include('performance-monitor no longer starts textsubs')
+        expect(responded).to be_empty
       end
 
-      it 'echoes nothing about textsubs when textsubs is already running' do
+      it 'echoes nothing about textsubs and does not wait when textsubs is already running' do
         $running_scripts << 'textsubs'
 
         run_script(with_start_helper: true)
 
         expect(loop_reached).not_to be_empty
+        expect(pauses).to be_empty
         expect(displayed_messages.grep(/textsubs/)).to be_empty
+      end
+
+      context 'when autostart starts textsubs just after performance-monitor' do
+        let(:textsubs_starts_after_pauses) { 3 }
+
+        it 'stops waiting once textsubs runs and echoes nothing about textsubs' do
+          run_script(with_start_helper: true)
+
+          expect(loop_reached).not_to be_empty
+          expect(pauses).to eq([0.5] * 3)
+          expect(displayed_messages.grep(/textsubs/)).to be_empty
+        end
       end
     end
   end
