@@ -881,9 +881,12 @@ RSpec.describe 'textsubs.lic' do
       end
 
       it 'keeps the first one written when the !ruby/regexp key comes first' do
+        plain = build_catalog('Commoner')
+
         catalog = build_catalog('Commoner', 'private_textsubs' => { /zorvexqq/ => 'B', 'zorvexqq' => 'A' })
 
         expect(catalog.first).to eq(['zorvexqq', 0, 'B'])
+        expect(catalog.drop(1)).to eq(plain)
         expect(displayed_messages).to eq(['private_textsubs "zorvexqq" is skipped: it is the same pattern as /zorvexqq/, which is used instead.'])
       end
 
