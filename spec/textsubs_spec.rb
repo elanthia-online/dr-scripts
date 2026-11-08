@@ -434,7 +434,9 @@ RSpec.describe 'textsubs.lic' do
   # Installing a freshly staged Registry empties the catalog and ends any
   # staging an example left behind, and this thread's own build with it
   # (TextSubs.clear alone keeps both), so no example's adds land in a
-  # Registry staged by an earlier one.
+  # Registry staged by an earlier one. A start_run no example holds the
+  # token of supersedes the run of the last start, so no example's token
+  # stays current in the next one.
   #
   # RSpec runs this hook before it removes the example's stubs, so a stub on
   # stage or install still runs here, on the Registry the next example
@@ -443,6 +445,7 @@ RSpec.describe 'textsubs.lic' do
   # into the example, say) would carry the example into the next one.
   after do
     DownstreamHook.remove('textsub')
+    TextSubs.start_run
     fresh = TextSubs::Registry.new
     TextSubs.install(TextSubs.stage(fresh))
     expect(fresh.singleton_methods).to be_empty, -> { "a stub left #{fresh.singleton_methods.inspect} on the next example's Registry" }
