@@ -6,19 +6,96 @@
 no_pause_all
 no_kill_all
 
+# The text substitution catalog and the engine that applies it to game lines.
+#
+# The script's entry point fills the catalog through add and elanthipedia at
+# start, then registers a 'textsub' DownstreamHook that hands every server line
+# to apply while a front end is attached.
+#
+# Lich evaluates this class body inside Lich::Common on every start, and the
+# class itself persists for the session, so it defines no constants but its
+# nested classes: re-running the body would warn "already initialized
+# constant" for any other.
 class TextSubs
   @@subs = {}
+  @@generation = 0
 
+  # The catalog, in the order its keys were first added.
+  #
+  # @return [Hash{Regexp=>String}] each key and the gsub replacement it applies
   def self.subs
     @@subs
   end
 
-  def self.clear
-    @@subs = {}
+  # How many times the catalog has changed since the class body last ran: add,
+  # elanthipedia and clear each count once.
+  #
+  # The count rises only after the change is visible in subs, so a reader on
+  # another thread that sees a new generation also sees the catalog it counts.
+  # A cache keyed on the generation should read it before it reads subs: if a
+  # change lands in between, the cache holds a newer catalog under an older
+  # number and rebuilds on the next call, never the other way round.
+  #
+  # @return [Integer] 0 for a catalog nothing has touched yet
+  def self.generation
+    @@generation
   end
 
+  # Empties the catalog. It swaps in the new, empty Hash first and counts the
+  # change after, the same order store keeps, so the generation never runs
+  # ahead of subs.
+  #
+  # @return [Hash] the new, empty catalog
+  def self.clear
+    @@subs = {}
+    @@generation += 1
+    @@subs
+  end
+
+  # Adds one substitution. A target already in the catalog keeps its place and
+  # takes the new result.
+  #
+  # @param target [String] regex source; it is compiled as is, not escaped
+  # @param result [String] the gsub replacement, so '\1' refers to a capture
+  #   group of the target
+  # @return [String] result
+  # @raise [RegexpError] when target is not valid regex source
+  # @example
+  #   TextSubs.add('You feel fine', 'You feel FINE')
   def self.add(target, result)
-    @@subs[/#{target}/] = result
+    store(target, result)
+  end
+
+  # Rewrites one server line with every key that matches it.
+  #
+  # @param line [String] a server line, as the DownstreamHook receives it
+  # @return [String] the same String, rewritten in place
+  # @raise [FrozenError] when a key matches a frozen line
+  # @example After TextSubs.add('fine', 'FINE')
+  #   TextSubs.apply(+"You feel fine.\r\n") # => "You feel FINE.\r\n"
+  def self.apply(line)
+    Engine.apply(subs, line)
+  end
+
+  # The matching engine behind TextSubs.apply, kept apart from the catalog so
+  # it can run on any ordered Hash of keys.
+  class Engine
+    # Selects every key that matches the ORIGINAL line, then runs gsub! for each
+    # selected key, in insertion order, on the line as it changes. A key that
+    # only matches after an earlier key rewrote the line does not fire, and a
+    # selected key that no longer matches changes nothing.
+    #
+    # @param subs [Hash{Regexp=>String}] ordered keys and their replacements
+    # @param line [String] the line to rewrite
+    # @return [String] the same String, rewritten in place
+    # @raise [FrozenError] when a key matches a frozen line
+    # @example
+    #   TextSubs::Engine.apply({ /cat/ => 'dog', /dog/ => 'bird' }, +'The cat.') # => "The dog."
+    def self.apply(subs, line)
+      matches = subs.select { |key, _| key =~ line }
+      matches.each { |target, result| line.gsub!(target, result) }
+      line
+    end
   end
 
   # Whether any front end receives game output right now. It mirrors lich-5's
@@ -45,22 +122,63 @@ class TextSubs
     client ? true : false
   end
 
+  # Links text to the Elanthipedia page of the same name, with underscores
+  # between the words (MikeLC 2/15/2025; thanks to Tysong for the "how to
+  # hyperlink" help).
+  #
+  # The key is three capture groups, (pretext)(text)(postext), so the context
+  # around the text can be matched and put back. pretext, text and postext
+  # build the key: they are regex source, compiled unescaped. preresult,
+  # posresult, prelink, poslink and text are gsub replacement text, so \0 to
+  # \9, \&, \`, \', \+ and \\ in them are substitutions; any other
+  # backslash stays as written. \k<name> is one too, but the key's three
+  # groups have no name, so it raises IndexError on the hook thread unless
+  # pretext or postext names that group; a named group also stops the three
+  # plain groups from capturing, so \1 to \3 then count named groups only.
+  # text is the one argument that is both, so a regex escape in it (such as
+  # \s) matches in the key but shows verbatim in the link and the page name,
+  # while a substitution in it (such as \&) is replaced in both.
+  #
+  # @param text [String] the text to link; also the page name, spaces turned
+  #   into underscores
+  # @param pretext [String] context before the text, capture group 1
+  # @param postext [String] context after the text, capture group 3
+  # @param prelink [String] prefix of the page path, for a page outside the
+  #   root namespace (such as 'Category:')
+  # @param poslink [String] suffix of the page path, for a page whose name goes
+  #   on past the text (such as '_spellbook')
+  # @param preresult [String] replacement before the link; the default '\1'
+  #   puts back what pretext matched
+  # @param posresult [String] replacement after the link; the default '\3'
+  #   puts back what postext matched (group 2 is the text itself)
+  # @return [String] the replacement it stored
+  # @example Link a spellbook heading to its category page
+  #   TextSubs.elanthipedia('Fae Arts', '^', ':', 'Category:', '_spellbook')
+  #   # "Fae Arts:" becomes
+  #   # <a href="https://elanthipedia.play.net/Category:Fae_Arts_spellbook">Fae Arts</a>:
   def self.elanthipedia(text, pretext = '', postext = '', prelink = '', poslink = '', preresult = '\1', posresult = '\3')
     target = "(#{pretext})" + "(#{text})" + "(#{postext})"
     hyperlink = prelink + text.gsub(" ", "_") + poslink
     result = preresult + "<a href=\"https://elanthipedia.play.net/#{hyperlink}\">#{text}</a>" + posresult
-    @@subs[/#{target}/] = result
+    store(target, result)
   end
+
+  # The one writer of the catalog, shared by add and elanthipedia so a call to
+  # either is one key and one generation. It writes the key first and counts
+  # it after, so the generation never runs ahead of the catalog.
   #
-  # SELF.ELANTHIPEDIA (MikeLC 2/15/2025) (thx. Tysong for the "how to hyperlink" help.)
-  #
-  # Links text to Elanthipedia page of same text, placing <underscores> between the words.
-  # _Pretext and _postext are used to help isolate text in a specific context.
-  # _Prelink is used to modify the hyperlink in case the page to link to is not in the root directory (such as 'Category:').
-  # _Postlink is used to add on text in case the page has more added to the name (such as '_spellbook').
-  # _Preresult is to change the text before the result. Default is set to the first capture set (pretext).
-  # _Postresult is to change the text after the result. Default is set to the second capture set (posttext).
-  #
+  # @param target [String] regex source, compiled unescaped
+  # @param result [String] the gsub replacement
+  # @return [String] result
+  # @raise [RegexpError] when target is not valid regex source; the catalog
+  #   and the generation are left as they were
+  def self.store(target, result)
+    key = /#{target}/
+    @@subs[key] = result
+    @@generation += 1
+    result
+  end
+  private_class_method :store
 end
 
 settings = get_settings
@@ -69,9 +187,7 @@ action = proc do |client_string|
   # Headless: nobody would see the rewrite, so skip every key.
   next client_string unless TextSubs.client_attached?
 
-  matches = TextSubs.subs.select { |key, _| key =~ client_string }
-  matches.each { |target, result| client_string.gsub!(target, result) }
-  client_string
+  TextSubs.apply(client_string)
 end
 
 DownstreamHook.remove('textsub')
