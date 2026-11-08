@@ -638,7 +638,9 @@ RSpec.describe 'textsubs.lic' do
   # OpenStruct (what get_settings returns) does not answer itself, as Ruby
   # core and the ostruct gem define it, .<key> or &.<key>; an index or a dig
   # by a single-quoted, double-quoted or symbol key; or a compound assignment
-  # (||=, &&=, +=) to either. An index or dig by anything else is named
+  # (||=, &&=, +=) to either. A send, public_send or __send__ that names its
+  # method by a literal is read as that call (send(:key), send(:dig, 'key')).
+  # An index or dig by anything else, or a send by a computed name, is named
   # '(a computed key in <class>#<method>)', or '(a computed key)' outside any
   # class or def, once for each place it is, so the spec fails on it rather
   # than skip it. The one this spec allows is Context#setting?, which looks
@@ -726,7 +728,9 @@ RSpec.describe 'textsubs.lic' do
     # settings, a computed-key label, or nil when it reads none.
     key_read = lambda do |name, arguments, where|
       computed = where ? "(a computed key in #{where})" : '(a computed key)'
+      sent = literal.call(arguments.first)&.to_sym
       if %i[[] dig].include?(name) then literal.call(arguments.first) || computed
+      elsif %i[send public_send __send__].include?(name) then sent ? key_read.call(sent, arguments.drop(1), where) : computed
       elsif arguments.empty? && !answered_by_open_struct.call(name) then name.to_s
       end
     end
@@ -903,6 +907,34 @@ RSpec.describe 'textsubs.lic' do
         config.not_a_read_at_the_top
       RUBY
       expect(settings_keys_in.call(source)).to contain_exactly('in_a_block', 'in_a_module_body')
+    end
+
+    it 'reads a send, public_send or __send__ as the call it names, and names a send by a computed name as a computed key' do
+      source = <<~RUBY
+        a = settings.send(:sent_key)
+        b = settings.public_send('public_sent_key')
+        c = settings.__send__(:underscore_sent_key)
+        d = settings.send(:dig, 'sent_dig')
+        e = settings.send(:to_h)
+        f = settings.send(:fetch, 'not_a_read')
+        g = settings.send(name)
+        h = @settings.send(toolset + '_tools')
+      RUBY
+      expect(settings_keys_in.call(source))
+        .to contain_exactly('sent_key', 'public_sent_key', 'underscore_sent_key', 'sent_dig', '(a computed key)', '(a computed key)')
+    end
+
+    it 'finds a key read off a parameter named settings' do
+      source = <<~RUBY
+        def f(settings)
+          settings.param_key
+        end
+      RUBY
+      expect(settings_keys_in.call(source)).to contain_exactly('param_key')
+    end
+
+    it 'refuses source it cannot parse rather than find no keys in it' do
+      expect { settings_keys_in.call('settings.') }.to raise_error(ArgumentError)
     end
 
     it 'passes by calls that read no key: off another receiver, with arguments, or a method OpenStruct answers itself' do
