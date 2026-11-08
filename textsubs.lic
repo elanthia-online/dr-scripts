@@ -1428,9 +1428,11 @@ class TextSubs
       # @return [String, nil] why the pair cannot be used, before compiling
       def self.problem(source, replacement)
         return "it is #{article(source)}, not a quoted string; quote it in your YAML" unless source.is_a?(String) || source.is_a?(Regexp)
-        return 'an empty pattern matches between every two characters of every line' if (source.is_a?(Regexp) ? source.source : source).empty?
+        return 'an empty pattern matches between every two characters of every line' if pattern(source).first.empty?
         return "its replacement is empty (nil); write '' to delete the text it matches" if replacement.nil?
-        return "its replacement #{replacement.inspect} is #{article(replacement)}, not a quoted string; quote it in your YAML" unless replacement.is_a?(String)
+        unless replacement.is_a?(String)
+          return "its replacement #{replacement.inspect} is #{article(replacement)}, not a quoted string; quote the replacement in your YAML"
+        end
 
         nil
       end
@@ -1439,11 +1441,22 @@ class TextSubs
       #   and flags the key takes
       # @return [Regexp, String] the key, or why it does not compile
       def self.compile(source)
-        return Regexp.new(source.source, source.options, timeout: regex_timeout) if source.is_a?(Regexp)
-
-        Regexp.new(source, timeout: regex_timeout)
+        Regexp.new(*pattern(source), timeout: regex_timeout)
       rescue RegexpError => e
         "it is not a valid regex (#{e.message})"
+      end
+
+      # The regex source and flags a key stands for, the one place a Regexp
+      # key and a String key are told apart: a Regexp gives its own, a String
+      # is the source itself with no flags.
+      #
+      # @param source [String, Regexp] a private_textsubs key
+      # @return [Array(String, Integer)] [regex source, Regexp options]
+      # @example
+      #   TextSubs::Sources::PrivateSubs.send(:pattern, /a b/ix) # => ["a b", 3]
+      #   TextSubs::Sources::PrivateSubs.send(:pattern, 'a b')   # => ["a b", 0]
+      def self.pattern(source)
+        source.is_a?(Regexp) ? [source.source, source.options] : [source, 0]
       end
 
       # @param value [Object]
@@ -1452,7 +1465,7 @@ class TextSubs
         name = value.class.name
         "#{name.match?(/\A[AEIOU]/) ? 'an' : 'a'} #{name}"
       end
-      private_class_method :problem, :compile, :article
+      private_class_method :problem, :compile, :pattern, :article
     end
   end
 

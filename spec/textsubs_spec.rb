@@ -744,7 +744,7 @@ RSpec.describe 'textsubs.lic' do
       'a blank value (Bob:)'           => [{ 'Bob' => nil }, 'Bob waves.',
                                            "private_textsubs \"Bob\" is skipped: its replacement is empty (nil); write '' to delete the text it matches."],
       'an Integer value (health: 100)' => [{ 'health' => 100 }, 'Your health is good.',
-                                           'private_textsubs "health" is skipped: its replacement 100 is an Integer, not a quoted string; quote it in your YAML.'],
+                                           'private_textsubs "health" is skipped: its replacement 100 is an Integer, not a quoted string; quote the replacement in your YAML.'],
       'a key that is not valid regex'  => [{ '(' => 'y' }, 'You smile (warmly).',
                                            'private_textsubs "(" is skipped: it is not a valid regex (end pattern with unmatched parenthesis: /(/).'],
       'a key YAML reads as an Integer' => [{ 100 => 'a hundred' }, 'You count 100 coins.',
@@ -3292,11 +3292,11 @@ RSpec.describe 'textsubs.lic' do
     it 'names the class of a value that is not a String, with the right article' do
       _, warnings = private_entries('one' => 1.5, 'two' => :sym, 'three' => ['x'], 'four' => { 'x' => 'y' })
       expect(warnings).to eq([
-                               'private_textsubs "one" is skipped: its replacement 1.5 is a Float, not a quoted string; quote it in your YAML.',
-                               'private_textsubs "two" is skipped: its replacement :sym is a Symbol, not a quoted string; quote it in your YAML.',
-                               'private_textsubs "three" is skipped: its replacement ["x"] is an Array, not a quoted string; quote it in your YAML.',
+                               'private_textsubs "one" is skipped: its replacement 1.5 is a Float, not a quoted string; quote the replacement in your YAML.',
+                               'private_textsubs "two" is skipped: its replacement :sym is a Symbol, not a quoted string; quote the replacement in your YAML.',
+                               'private_textsubs "three" is skipped: its replacement ["x"] is an Array, not a quoted string; quote the replacement in your YAML.',
                                "private_textsubs \"four\" is skipped: its replacement #{{ 'x' => 'y' }.inspect} is a Hash, not a quoted string; " \
-                               'quote it in your YAML.'
+                               'quote the replacement in your YAML.'
                              ])
     end
 
@@ -3313,7 +3313,7 @@ RSpec.describe 'textsubs.lic' do
       expect(warnings).to eq([
                                'private_textsubs //i is skipped: an empty pattern matches between every two characters of every line.',
                                "private_textsubs /Bob/ is skipped: its replacement is empty (nil); write '' to delete the text it matches.",
-                               'private_textsubs /Ann/i is skipped: its replacement 7 is an Integer, not a quoted string; quote it in your YAML.'
+                               'private_textsubs /Ann/i is skipped: its replacement 7 is an Integer, not a quoted string; quote the replacement in your YAML.'
                              ])
     end
 
