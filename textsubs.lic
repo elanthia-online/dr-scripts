@@ -9,15 +9,17 @@ no_kill_all
 # The text substitution catalog and the engine that applies it to game lines.
 #
 # The script's entry point stages a fresh, empty Registry on every start,
-# fills it through add and elanthipedia while the installed catalog goes on
-# serving apply, installs it whole, and only then registers a 'textsub'
-# DownstreamHook (persist: false, so Lich removes it when the script ends) that
-# hands every server line to apply while a front end is attached.
+# fills it through add and elanthipedia, installs it whole, and only then
+# registers a 'textsub' DownstreamHook (persist: false, so Lich removes it when
+# the script ends) that hands every server line to apply while a front end is
+# attached. Until the install, apply serves the empty catalog the class body
+# installed when the start evaluated it.
 #
 # Lich evaluates this class body inside Lich::Common on every start, and the
 # class itself persists for the session, so it defines no constants but its
 # nested classes: re-running the body would warn "already initialized
-# constant" for any other.
+# constant" for any other. Re-running it installs an empty Registry and drops
+# any staging.
 class TextSubs
   # An ordered catalog of substitutions: a Regexp key and the gsub replacement
   # it applies. A key added again keeps its first position and takes the last
@@ -109,8 +111,10 @@ class TextSubs
   # ahead of subs. The swap is only as complete as registry is, so the entry
   # point fills a staged Registry (see stage) and installs it once every key
   # is in: a hook still registered while it builds, such as the one of a run
-  # that is being stopped, applies the catalog it replaces, whole, and never
-  # a part of the new one. Installing the staged Registry ends the staging,
+  # that is being stopped, applies the installed catalog, never a part of the
+  # new one. On a start in Lich that installed catalog is the empty one the
+  # class body has just put in, so such a hook passes every line through
+  # untouched until install. Installing the staged Registry ends the staging,
   # so add and elanthipedia write to it as the installed catalog from then on.
   #
   # An add that runs on another thread while install swaps the catalog may
@@ -335,11 +339,12 @@ settings = get_settings
 
 # Every start builds its catalog from nothing: a restart with other settings
 # keeps none of the keys the run before it added. The catalog is built in a
-# staged Registry and installed whole once it is complete, so a hook of the
-# run before that is still registered applies the old catalog until then,
-# never a part of the new one. The 'textsub' hook is registered after that,
-# at the end of the script, so with no older hook a line that arrives while
-# the catalog is built passes through untouched.
+# staged Registry and installed whole once it is complete. Lich has already
+# re-run the class body, which installed an empty catalog, so a hook of the
+# run before that is still registered passes every line through untouched
+# until then, never applying a part of the new catalog. The 'textsub' hook is
+# registered after that, at the end of the script, so with no older hook a
+# line that arrives while the catalog is built passes through untouched too.
 # A build that raises ends the staging when the script dies, so the adds of
 # other scripts reach the installed catalog again; the partial catalog is
 # never installed. Once the catalog is installed, unstage changes nothing.

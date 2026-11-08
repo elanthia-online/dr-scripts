@@ -588,7 +588,7 @@ RSpec.describe 'textsubs.lic' do
       expect(catalog.map(&:first)).not_to include('stale')
     end
 
-    it 'leaves a hook of the run before applying its whole catalog while a restart builds the new one' do
+    it 'builds in a staged Registry, so a hook still registered applies the installed catalog whole until install' do
       build_catalog('Ranger', 'herb_textsubs' => true)
       old_catalog = TextSubs.subs
       lines = ["You pick some nilos.\r\n", "You feel fine.\r\n"]
@@ -598,8 +598,11 @@ RSpec.describe 'textsubs.lic' do
       adds = 0
       # The old run's 'textsub' hook stays registered until the new run
       # registers its own, as when Lich has not yet removed the hook of a run
-      # that is being stopped. After every add the hook would see the old
-      # catalog itself, and every 250th add sends the lines through it.
+      # that is being stopped. The class body is not evaluated again here, so
+      # the installed catalog is still the old run's; that isolates what the
+      # staging alone guarantees (the restart Lich runs, which re-runs the
+      # class body, is the next example). After every add, subs has to be the
+      # old catalog itself, and every 250th add sends the lines through it.
       allow(TextSubs).to(receive(:add).and_wrap_original do |original, target, result|
         stored = original.call(target, result)
         partial << target unless TextSubs.subs.equal?(old_catalog)
@@ -616,12 +619,16 @@ RSpec.describe 'textsubs.lic' do
       expect(lines.map { |line| run_hooks(line.b) }).to eq(["You pick some nilos.\r\n", "You feel FINE.\r\n"])
     end
 
-    it 'passes a line through untouched while the catalog is still being built' do
+    it 'registers no hook until the catalog is installed, so a line passes through untouched while it is built' do
+      # No 'textsub' hook is registered, but the installed catalog rewrites
+      # the line, so a hook the new run registered before its build was done
+      # would apply that catalog to it (and, filling the installed catalog,
+      # its private key). Sends the line through the hooks right after the
+      # private key is staged, and after every 250th add from then on.
+      TextSubs.add('You feel fine', 'You feel OLD')
+      expect(TextSubs.apply(+"You feel fine.\r\n")).to eq("You feel OLD.\r\n")
       seen = []
       adds = 0
-      # Sends a line through the hooks right after the private key is in the
-      # catalog, and after every 250th add from then on: a hook registered
-      # before the catalog was done would already rewrite it.
       allow(TextSubs).to(receive(:add).and_wrap_original do |original, target, result|
         stored = original.call(target, result)
         adds += 1 unless seen.empty? && target != 'You feel fine'
@@ -646,7 +653,38 @@ RSpec.describe 'textsubs.lic' do
     end
   end
 
-  describe 'a start that raises while it builds the catalog' do
+  # Lich evaluates the whole of textsubs.lic on every start, so the class body
+  # runs again (reload_lic_class) before the entry point. That redefines every
+  # TextSubs method, and with them any stub of one, so these examples stub
+  # TextSubs only after it.
+  describe 'a start in Lich, which evaluates the class body before the entry point' do
+    it 'leaves a hook of the run before passing every line through untouched until the new catalog is installed' do
+      build_catalog('Ranger', 'herb_textsubs' => true)
+      expect(TextSubs.apply(+"You pick some nilos.\r\n")).to eq("You pick some nilos (abdo-EW).\r\n")
+      reload_lic_class('textsubs.lic', 'TextSubs')
+      allow(TextSubs).to receive(:client_attached?).and_return(true)
+      lines = ["You pick some nilos.\r\n", "You feel fine.\r\n"]
+      seen = []
+      adds = 0
+      # The old run's 'textsub' hook is still registered, as when Lich has not
+      # yet removed the hook of a run that is being stopped. The first add
+      # (the private key) and every 250th after it send the lines through it.
+      allow(TextSubs).to(receive(:add).and_wrap_original do |original, target, result|
+        stored = original.call(target, result)
+        seen << lines.map { |line| run_hooks(line.b) } if (adds += 1) % 250 == 1
+        stored
+      end)
+      expect(DownstreamHook.list).to include('textsub')
+      expect(TextSubs.subs).to eq({})
+
+      build_catalog('Ranger', 'herb_textsubs' => false, 'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
+
+      expect(adds).to be > 500
+      expect(seen.size).to be > 3
+      expect(seen).to all(eq(lines))
+      expect(lines.map { |line| run_hooks(line.b) }).to eq(["You pick some nilos.\r\n", "You feel FINE.\r\n"])
+    end
+
     it 'ends the staging of a build that raises when the script dies, installing none of it' do
       # Stubbed on main (where run_lic_entry evaluates the entry), not on
       # Script.at_exit: another spec replaces the top-level before_dying.
