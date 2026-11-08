@@ -37,6 +37,7 @@ group :development do
   gem "guard-rspec"
   gem "webmock"
   gem "rack"
+  gem "regexp_parser", "2.13.1" # pinned: test/textsubs_corpus.rb expands catalog regexes from its parse trees, so a new release can change the committed textsubs fixtures
 end
 
 group :vscode do

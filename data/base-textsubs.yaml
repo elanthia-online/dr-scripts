@@ -1,0 +1,2107 @@
+# The text substitutions textsubs.lic applies to game lines, read with
+# get_data('textsubs'). A copy in data/custom/base-textsubs.yaml replaces this
+# file wholesale.
+#
+# Sections run in file order and subs in list order, and both orders matter:
+# every sub that matches the original line applies, in this order, each to
+# the output of the one before.
+#
+# Each sub is ['regex source', 'gsub replacement']. Keep every pattern and
+# replacement in single quotes: inside them a backslash is literal (so '\1'
+# stays a backreference and '\.' a literal dot) and a single quote is
+# written twice (''). Double quotes would turn '\1' into a control byte.
+#
+# A section may have a when: gate, every key of which must hold:
+#   guilds: ['Bard', 'Cleric']   the guild is one of these
+#   not_guilds: ['Thief']        the guild is none of these
+#   setting: 'herb_textsubs'     the setting is on
+#   setting_off: 'herb_textsubs' the setting is off or unset
+# Neither guild key holds while the guild is not known yet (DRStats has not
+# read INFO); textsubs rebuilds its subs once it is.
+# A section may have requires_any: ['Word', ...], words one of which a line
+# must hold before its patterns run at all. It saves time and must never
+# change a result, so list only words every pattern of the section needs.
+# The guild_spells_link kind is the one sub that names the guild in its
+# replacement: preresult, then a link to prelink + guild + poslink, then
+# posresult. It gives no sub while the guild is not known.
+#
+# The ladder kind writes a scale of messages once: each step is
+# [n, 'phrase'], and its sub matches the phrase and adds ' (n/of)' after it
+# (style 'append', the default) or before the full stop it ends with (style
+# 'before_period'). Style 'optional_period' is for a message the game may or
+# may not end with a full stop: the phrase leaves the stop out, the pattern
+# takes one if it follows, and the counter goes after it, or straight after
+# the phrase when there is none (so before any other text that follows).
+# anchor: '^' goes before each phrase in the pattern only; prefix: 'text'
+# goes before each phrase, with a space, in both. The phrase is the pattern
+# as written and the replacement is its text with each backslash taken out,
+# so write it as literal text: escape every regex metacharacter, and put a
+# backslash before nothing but a punctuation mark. A '.' may stay
+# unescaped, where it matches any character, but escape it (as the Osrel
+# Meraud power steps do) when only the game's full stop should match;
+# either way the replacement writes '.'. Where the game may not send the
+# full stop (the Osrel Meraud capacity steps), leave it out and use style
+# 'optional_period' rather than an unescaped '.', which would take the line
+# ending in its place. Each n is from -of to of and used once on its scale.
+# A scale split over ladder sections, around messages that stay pairs, gives
+# each of them scale: 'name' and the same of; a scale is the section's own
+# name otherwise. The load refuses a step whose text another step's
+# pattern matches, or a pattern of another kind of section (a subs row,
+# say), in its own section or any other in the file; and a step whose text
+# ends with the start of another's, as 'a hit' and 'hit hard' in
+# 'a hit hard', as one sub would then rewrite the line and the other lose
+# its match. Two sections may share an n of one scale, or a phrase, only
+# when no one guild passes both sections' when: gates; their setting keys
+# are not read, so sections told apart only by settings are always checked
+# against each other. A message that does not fit stays a pair in a subs
+# section.
+#
+# Each spell is written once, in the spells: table at the end of the file:
+#   name       the spell's name (regex source, as in a pattern)
+#   guild      its guild, as DRStats names it
+#   book       its spellbook
+#   signature  true for a signature spell, else left out
+#   tier       its recognition tier, such as 'basic'
+#   type       its recognition type, such as 'augmentation/utility'
+#   label      what its scroll label names, when that is neither the guild
+#              nor the book
+# Four kinds build their subs from texts, the table and templates:
+#   wiki_links         an Elanthipedia link for each of texts, in order, with
+#                      pretext, postext, prelink, poslink, preresult and
+#                      posresult as TextSubs.elanthipedia takes them
+#   spell_links        the same for every spell of the table, in table order
+#   scroll_labels      a sub per name of names, {name} and {label} filled in
+#                      the pattern and replacement; the label is the spell's
+#                      label, else its guild, else its book
+#   spell_recognition  a sub per group of groups, {names} being the names
+#                      joined by '|' and {label} 'signature ' (for a signature
+#                      spell), 'Guild (Book)' (or the book alone), ': ', the
+#                      tier and the type; a group's names must share a label
+# A name these sections list must be in the table, so a typo fails the load.
+# A names entry written {name: '...', label: '...'} is an override, used as it
+# is: it keeps a scroll label whose spelling differs from the table's.
+textsubs:
+  schema: 1
+  sections:
+
+    ### 1. Guild Spells ###
+    - name: 'guild spell list link'
+      when:
+        setting: 'textsubs_spell_links'
+      kind: 'guild_spells_link'
+      pattern: 'You recall the spells you have learned from your training.'
+      preresult: 'You recall the spells you have learned from your '
+      prelink: 'Category:'
+      poslink: '_spells'
+      posresult: ' training.'
+
+    ### 2. Magic Feats ###
+    - name: 'magic feats link'
+      when:
+        setting: 'textsubs_spell_links'
+      subs:
+        - ['You recall proficiency with the magic feats of', 'You recall proficiency with the <a href="https://elanthipedia.play.net/Magical_feats">magic feats</a> of']
+
+    ### 3. SPELLBOOKS ###
+    # Each heading of the spells list links to its spellbook's category page.
+    - name: 'spellbook links'
+      when:
+        setting: 'textsubs_spell_links'
+      kind: 'wiki_links'
+      pretext: '^'
+      postext: ':'
+      prelink: 'Category:'
+      poslink: '_spellbook'
+      texts:
+        # Analagous Patterns
+        - 'Analogous Patterns'
+        # Bard Spellboooks
+        - 'Elemental Invocations'
+        - 'Emotion Control'
+        - 'Fae Arts'
+        - 'Sound Manipulation'
+        # Cleric Spellbooks
+        - 'Antinomic Sorcery'
+        - 'Divine Intervention'
+        - 'Holy Defense'
+        - 'Holy Evocations'
+        - 'Metamagic'
+        - 'Spirit Manipulation'
+        # Empath Spellbooks
+        - 'Body Purification'
+        - 'Healing'
+        - 'Life Force Manipulation'
+        - 'Mental Preparation'
+        - 'Protection'
+        # Moonmage Spellbooks
+        - 'Enlightened Geometry'
+        - 'Moonlight Manipulation'
+        - 'Perception'
+        - 'Psychic Projection'
+        - 'Stellar Magic'
+        - 'Teleologic Sorcery'
+        # Necromanceer Spellbooks
+        - 'Anabasis'
+        - 'Animation'
+        - 'Blood Magic'
+        - 'Corruption'
+        - 'Synthetic Creation'
+        - 'Transcendental Necromancy'
+        # Paladin Spellbooks
+        - 'Inspiration'
+        - 'Justice'
+        - 'Sacrifice'
+        # Ranger Spellbooks
+        - 'Animal Abilities'
+        - 'Nature Manipulation'
+        - 'Wilderness Survival'
+        # Warrior Mage Spellbooks
+        - 'Aether Manipulation'
+        - 'Air Manipulation'
+        - 'Earth Manipulation'
+        - 'Electricity Manipulation'
+        - 'Fire Manipulation'
+        - 'Hylomorphic Sorcery'
+        - 'Water Manipulation'
+
+    ### 4. SPELLS ###
+    # Each spell of the spells table, at the end of this file, links to its page, in table order.
+    - name: 'spell links'
+      when:
+        setting: 'textsubs_spell_links'
+      kind: 'spell_links'
+      pretext: '........\s\s|\S|^'
+      postext: '..\(.*\)|\s*Slot'
+
+    ### TEACHING CLASSES - MikeLC 2/15/2025 ###
+    - name: 'teaching classes'
+      subs:
+        - ['class on extremely advanced(.*)compared to', 'teaching a class on extremely advanced\1more than 130% of']
+        - ['class on advanced(.*)compared to', 'teaching a class on advanced\1around 120-130% of']
+        - ['class on intermediate(.*)compared to', 'teaching a class on intermediate\1around 110-120% of']
+        - ['class on basic(.*)compared to', 'teaching a class on basic\1around 100-110% of']
+        - ['class on simplistic(.*)compared to', 'teaching a class on simplistic\1around 90-100% of']
+        - ['class on extremely simplistic(.*)compared to', 'teaching a class on extremely simplistic\1less than 90% of']
+
+    # Necromancer Butchery
+    - name: 'Necromancer butchery'
+      when:
+        guilds: ['Necromancer']
+      kind: 'ladder'
+      prefix: 'manage to extract a'
+      of: 10
+      steps:
+        - [10, 'perfect']
+        - [9, 'flawless']
+        - [8, 'superior']
+        - [7, 'very good']
+        - [6, 'decent']
+        - [5, 'fair']
+        - [4, 'mediocre']
+        - [3, 'passable']
+        - [2, 'shoddy']
+        - [1, 'poor']
+
+    # Bard play and dance assessment (the song ladder is the later Bard block)
+    - name: 'Bard play assessment'
+      when:
+        guilds: ['Bard']
+      kind: 'ladder'
+      of: 10
+      steps:
+        - [1, 'the simplest musical phrase in your current state of mind.']
+        - [2, 'feel very sure of your ability to perform just now.']
+        - [3, 'you give up in exasperation and stop trying to play altogether.']
+        - [4, 'you realize that you''re not quite up to a true performance.']
+        - [5, 'produced from your efforts is both clear and precise.']
+        - [6, 'displaying the surety you hold in your ability to perform.']
+        - [7, 'adeptness with which you perform your craft is evident in each movement.']
+        - [8, 'skill and confidence of one talented in their craft.']
+        - [9, 'evocative rhythms you send to float gently upon the air.']
+        - [10, 'Leth Deriel during the full throes of Spring.']
+
+    - name: 'Bard dance assessment'
+      when:
+        guilds: ['Bard']
+      kind: 'ladder'
+      of: 10
+      steps:
+        - [1, 'you decide not to attempt that again, and get back to your feet.']
+        - [2, 'but decide that now may not be the best time for dancing.']
+        - [3, 'You can''t seem to recall what to do next, despite your best efforts.']
+        - [4, 'entirety of the dance without too much trouble.']
+        - [5, 'dance flawlessly, wrapping up with a flourish.']
+        - [6, 'leave you breathless, you wrap up with a flourish.']
+        - [7, 'reaches its conclusion, a grin lights up your face.']
+        - [8, 'and when they finally come to rest again, you cannot help but smile.']
+        - [9, 'When you finally come to rest again, you are still smiling.']
+        - [10, 'you wrap up with a flourish and pose, a wide smile upon your face.']
+
+    # Moonmage Shards associated locations
+    - name: 'Moon Mage shard locations'
+      when:
+        guilds: ['Moon Mage']
+      subs:
+        - ['Marendin', 'Marendin (Shard)']
+        - ['Rolagi', 'Rolagi (Crossing)']
+        - ['Asharshpar''i', 'Asharshpar''i (Leth Deri''el)']
+        - ['Dinegavren', 'Dinegavren (Therenborough)']
+        - ['Mintais', 'Mintais (Throne City)']
+        - ['Tamigen', 'Tamigen (Raven''s Point)']
+        - ['Taniendar', 'Taniendar (Riverhaven)']
+        - ['Erekinzil', 'Erekinzil (Taisgath)']
+        - ['Auilusi', 'Auilusi (Aesry Surlaenis''a)']
+        - ['Vellano', 'Vellano (Fang Cove)']
+        - ['Tabelrem', 'Tabelrem (Muspar''i)']
+        - ['Dor''na''torna', 'Dor''na''torna (Arid Steppe)']
+        - ['Besoge', 'Besoge (Mer''kresh)']
+        - ['Aevargwem', 'Aevargwem (Vela''Tohr Overlook)']
+
+    - name: 'herb areas'
+      when:
+        setting: 'herb_textsubs'
+      subs:
+        - ['nilos', 'nilos (abdo-EW)']
+        - ['muljin', 'muljin (abdo-IW)']
+        - ['dioica', 'dioica (gen-ES)']
+        - ['belradi', 'belradi (gen-IS)']
+        - ['hulnik', 'hulnik (back-EW)']
+        - ['junliar', 'junliar (back-IW)']
+        - ['plovik', 'plovik (ch-EW)']
+        - ['ithor', 'ithor (ch-IW)']
+        - ['sufil', 'sufil (eye-EW)']
+        - ['aevaes', 'aevaes (eye-IW)']
+        - ['qun', 'qun (face-ES)']
+        - ['hulij', 'hulij (face-IS)']
+        - ['nemoih', 'nemoih (head-EW)']
+        - ['eghmok', 'eghmok (head-IW)']
+        - ['blocil', 'blocil (limb-ES)']
+        - ['jadice pollen', 'jadice pollen (limb-ES)']
+        - ['nuloe', 'nuloe (limb-IS)']
+        # \0 keeps the noun as written, so the plural reads "jadice flowers (limb-EW)"
+        - ['jadice flowers?', '\0 (limb-EW)']
+        - ['yelith', 'yelith (limb-IW)']
+        - ['georin', 'georin (neck-EW)']
+        - ['riolur', 'riolur (neck-IW)']
+        - ['hisan', 'hisan (skin-IS)']
+        - ['lujeakave', 'lujeakave (skin-IW)']
+        - ['cebi', 'cebi (skin-ES)']
+        - ['aloe', 'aloe (skin-EW)']
+        - ['genich', 'genich (body-ES)']
+        - ['ojhenik', 'ojhenik (body-IS)']
+
+    # Social Outrage and Divine Outrage
+    - name: 'outrage, durability, appraisal and combat'
+      subs:
+        - ['The citizens of (.*) are growing suspicious of you\.', 'The citizens of \1 are growing suspicious of you. (1/4 - Can still use town services.)']
+        - ['it is widely believed that you are some kind of sorcerer\.', 'it is widely believed that you are some kind of sorcerer. (2/4 - Unable to use most town services. WITHDRAW, SELL, PAY, TRAIN and GET SACK are safe.)']
+        - ['is criminal and the government actively seeks to arrest you\.', 'is criminal and the government actively seeks to arrest you. (3/4 - Unable to use most town services and can be auto-arrested at gates. WITHDRAW, SELL, PAY, TRAIN and GET SACK are safe.)']
+        - ['You are regarded as a monster by the good folk of (.*)\.', 'You are regarded as a monster by the good folk of \1. (4/4 - Unable to use most town services, can be auto-arrested at gates, and posse may hunt you down in province. WITHDRAW, SELL, PAY, TRAIN and GET SACK are safe.)']
+        - ['You feel as if many eyes are judging you and still find you... lacking\.', 'You feel as if many eyes are judging you and still find you... lacking. (0/4 - You are still Redeemed.)']
+        - ['As though in response, you are struck by a feeling of insecurity\.', 'As though in response, you are struck by a feeling of insecurity. (1/4 - Low DO)']
+        - ['As though in response, you have a brief, sharp pain in your limbs\.', 'As though in response, you have a brief, sharp pain in your limbs. (2/4 - Medium DO)']
+        - ['As though in response, you feel a deep pain in your chest\.', 'As though in response, you feel a deep pain in your chest. (3/4 - High DO. Slow down on DO generation.)']
+        - ['The experience leaves you feeling naked for all to see\.', 'The experience leaves you feeling naked for all to see. (4/4 - Extreme DO. You are at risk of being smote. Stop generating DO!)']
+        - ['((?:The back of your neck prickles|You feel judged and hated|Muddled thoughts of paranoia nag at you|You are exposed and vulnerable in this place|You have a feeling that you aren''t welcome here|You worry for your safety and well-being)\.)', '\1 (DO gained from being in a Holy area. Move away to avoid this hit.)']
+        - ['(The experience leaves you feeling somehow exposed\.)', '\1 (Detectable by Moon Mages/Clerics - Use RoC/RoG with enough mana to mask it.)']
+        - ['(Joyous corruption seeps into your mind from your own spell, muting your unconscious sense of shame\.)', '\1 (Your RoC/RoG spell is strong enough to mask your aura from Clerics and Moon Mages.)']
+        - ['(You feel a wave of filth wash over you, heralding the renewed health of your internal gauges\.)', '\1 (You gained some Divine Outrage and your RoC/RoG spell is no longer strong enough to mask your aura from Clerics/Moon Mages. Recast with more mana.)']
+        # defaults
+        - ['Assessing the (.*) durability, you determine (it is|is|they are|are) extremely weak and easily damaged', 'Assessing the \1 durability, \2 extremely weak and easily damaged (1/18)']
+        - ['Assessing the (.*) durability, you determine (it is|is|they are|are) very delicate and easily damaged', 'Assessing the \1 durability, \2 very delicate and easily damaged (2/18)']
+        - ['Assessing the (.*) durability, you determine (it is|is|they are|are) quite fragile and easily damaged', 'Assessing the \1 durability, \2 quite fragile and easily damaged (3/18)']
+        - ['Assessing the (.*) durability, you determine (it is|is|they are|are) rather flimsy and easily damaged', 'Assessing the \1 durability, \2 rather flimsy and easily damaged (4/18)']
+        - ['Assessing the (.*) durability, you determine (it is|is|they are|are) particularly weak against damage', 'Assessing the \1 durability, \2 particularly weak (5/18) against damage']
+        - ['Assessing the (.*) durability, you determine (it is|is|they are|are) somewhat unsound against damage', 'Assessing the \1 durability, \2 somewhat unsound against damage (6/18)']
+        - ['Assessing the (.*) durability, you determine (it is|is|they are|are) appreciably susceptible to damage', 'Assessing the \1 durability, \2 appreciably susceptible to damage (7/18)']
+        - ['Assessing the (.*) durability, you determine (it is|is|they are|are) marginally vulnerable to damage', 'Assessing the \1 durability, \2 marginally vulnerable to damage (8/18)']
+        - ['Assessing the (.*) durability, you determine (it is|is|they are|are) of average construction', 'Assessing the \1 durability, \2 of average construction (9/18)']
+        - ['Assessing the (.*) durability, you determine (it is|is|they are|are) a bit safeguarded against damage', 'Assessing the \1 durability, \2 a bit safeguarded against damage (10/18)']
+        - ['Assessing the (.*) durability, you determine (it is|is|they are|are) rather reinforced against damage', 'Assessing the \1 durability, \2 rather reinforced against damage (11/18)']
+        - ['Assessing the (.*) durability, you determine (it is|is|they are|are) quite guarded against damage', 'Assessing the \1 durability, \2 quite guarded against damage (12/18)']
+        - ['Assessing the (.*) durability, you determine (it is|is|they are|are) highly protected against damage', 'Assessing the \1 durability, \2 highly protected against damage (13/18)']
+        - ['Assessing the (.*) durability, you determine (it is|is|they are|are) very strong against damage', 'Assessing the \1 durability, \2 very strong against damage (14/18)']
+        - ['Assessing the (.*) durability, you determine (it is|is|they are|are) extremely resistant to damage', 'Assessing the \1 durability, \2 extremely resistant to damage (15/18)']
+        - ['Assessing the (.*) durability, you determine (it is|is|they are|are) unusually resilient to damage', 'Assessing the \1 durability, \2 unusually resilient to damage (16/18)']
+        - ['Assessing the (.*) durability, you determine (it is|is|they are|are) nearly impervious to damage', 'Assessing the \1 durability, \2 nearly impervious to damage (17/18)']
+        - ['Assessing the (.*) durability, you determine (it is|is|they are|are) practically invulnerable to damage', 'Assessing the \1 durability, \2 practically invulnerable to damage (18/18)']
+        - [' and (it is|is|they are|are|it has|has|have|contains?) battered and practically destroyed\.', ' and \1 battered and practically destroyed (0-19%).']
+        - [' and (it is|is|they are|are|it has|has|have|contains?) badly damaged\.', ' and \1 badly damaged (20-29%).']
+        - [' and (it is|is|they are|are|it has|has|have|contains?) heavily scratched and notched\.', ' and \1 heavily scratched and notched (30-39%).']
+        - [' and (it is|is|they are|are|it has|has|have|contains?) several unsightly notches\.', ' and \1 several unsightly notches (40-49%).']
+        - [' and (it is|is|they are|are|it has|has|have|contains?) a few dents and dings\.', ' and \1 a few dents and dings (50-59%).']
+        - [' and (it is|is|they are|are|it has|has|have|contains?) some minor scratches\.', ' and \1 some minor scratches (60-69%).']
+        - [' and (it is|is|they are|are|it has|has|have|contains?) rather scuffed up\.', ' and \1 rather scuffed up (70-79%).']
+        - [' and (it is|is|they are|are|it has|has|have|contains?) in good condition\.', ' and \1 in good condition (80-89%).']
+        - [' and (it is|is|they are|are|it has|has|have|contains?) practically in mint condition\.', ' and \1 practically in mint condition (90-97%).']
+        - [' and (it is|is|they are|are|it has|has|have|contains?) in pristine condition\.', ' and \1 in pristine condition (98-100%).']
+
+    # Appraise focus progress levels
+    - name: 'appraise focus progress'
+      kind: 'ladder'
+      anchor: '^'
+      prefix: 'You feel like'
+      of: 4
+      steps:
+        - [1, 'it will be awhile before you make progress\.']
+        - [2, 'you have made some progress toward your goal\.']
+        - [3, 'you''ve made good progress toward your goal\.']
+        - [4, 'you are on the verge of learning something useful\.']
+
+    - name: 'hit tiers, harmless and glancing'
+      subs:
+        - ['(a|an) (benign|brushing|gentle|grazing|harmless|ineffective|skimming) (blow|hit|strike)', '\1 \2 (0/23) \3']
+        # correction for bad glancing blow label receiving a glancing (0/23) blow
+        - ['(?<!receiving )(a|an) (glancing) (blow|hit|strike)', '\1 \2 (0/23) \3']
+
+    - name: 'hit tiers'
+      kind: 'ladder'
+      scale: 'hit tiers'
+      of: 23
+      steps:
+        - [1, 'a light hit']
+        - [2, 'a good hit']
+        - [3, 'a good strike']
+        - [4, 'a solid hit']
+        - [5, 'a hard hit']
+        - [6, 'a strong hit']
+        - [7, 'a heavy strike']
+        - [8, 'a very heavy hit']
+        - [9, 'an extremely heavy hit']
+        - [10, 'a powerful strike']
+        - [11, 'a massive strike']
+        - [12, 'an awesome strike']
+        - [13, 'a vicious strike']
+        - [14, 'an earth-shaking strike']
+        - [15, 'a demolishing hit']
+        - [16, 'a spine-rattling strike']
+
+    - name: 'hit tiers, devastating without a mark'
+      subs:
+        - ['a devastating hit(?! \(That''ll leave a mark!\))', 'a devastating hit (17/23)']
+
+    - name: 'hit tiers, leaving a mark and worse'
+      kind: 'ladder'
+      scale: 'hit tiers'
+      of: 23
+      steps:
+        - [18, 'a devastating hit \(That''ll leave a mark!\)']
+        - [19, 'an overwhelming strike']
+        - [20, 'an obliterating hit']
+        - [21, 'an annihilating strike']
+        - [22, 'a cataclysmic strike']
+        - [23, 'an apocalyptic strike']
+
+    # mana tuners
+    - name: 'mana tuners'
+      when:
+        not_guilds: ['Barbarian', 'Thief', 'Moon Mage', 'Trader']
+      subs:
+        - ['streams of cold, white mana chill your core.', 'streams of cold, white mana chill your core. (Lunar)']
+        - ['streams of fiery mana burn through your limbs.', 'streams of fiery mana burn through your limbs. (Elemental)']
+        - ['streams of bluish-white mana flow up your spine.', 'streams of bluish-white mana flow up your spine. (Life)']
+        - ['streams of golden mana echo through your body.', 'streams of golden mana echo through your body. (Holy)']
+        - ['streams of unholy black mana leave you feeling feverish.', 'streams of unholy black mana leave you feeling feverish. (Arcane)']
+
+    - name: 'Cleric devotion'
+      when:
+        guilds: ['Cleric']
+      kind: 'ladder'
+      anchor: '^'
+      of: 16
+      steps:
+        - [1, 'You feel unclean and unworthy\.']
+        - [2, 'You close your eyes and start to concentrate\. In a moment a vision appears of a barren garden, parched and thirsting for nourishment\. You have an intense desire to tend it\.']
+        - [3, 'You call out to your god, but there is no answer\.']
+        - [4, 'After a moment, you sense that your god is barely aware of you\.']
+        - [5, 'After a moment, you sense that your efforts have not gone unnoticed\.']
+        - [6, 'After a moment, you sense a distinct link between you and your god\.']
+        - [7, 'After a moment, you sense that your god is aware of your devotion\.']
+        - [8, 'After a moment, you sense that your god is pleased with your devotion\.']
+        - [9, 'After a moment, you sense that your god knows your name\.']
+        - [10, 'After a moment, you see a vision of your god, though the visage is cloudy and impossible to make out clearly\.']
+        - [11, 'After a moment, you sense a slight pressure on your shoulder, leaving the feeling that your efforts have been acknowledged\.']
+        - [12, 'After a moment, you see a silent vision of your god, radiating forth with a powerful divine brilliance\.']
+        - [13, 'After a moment, you see a vision of your god who calls to you by name, "Come here, my child, and I will show you things of wonder\."']
+        - [14, 'After a moment, you see a vision of your god who calls to you by name, "My child, though you may not always see my face, I am pleased with thee and thy efforts\."']
+
+    - name: 'Cleric devotion, clear vision and presence'
+      when:
+        guilds: ['Cleric']
+      subs:
+        - ['^After a moment, you see a crystal-clear vision of your god who speaks slowly and deliberately, "Your unwavering faith and devotion pleases me greatly, (\w+)\.\s+Go forth and continue your works, and you shall only attain a greater level of purity\."', 'After a moment, you see a crystal-clear vision of your god who speaks slowly and deliberately, "Your unwavering faith and devotion pleases me greatly, \1.  Go forth, and continue your works and you shall only attain a greater level of purity." (15/16)']
+        # The game writes sana'ati lowercase in common text and capitalised in a
+        # proper name; which this line uses is not known, so the key takes both.
+        - ['^After a moment, you feel a clear presence like a warm blanket covering you beneath the shade of a giant [Ss]ana''ati tree\.', 'After a moment, you feel a clear presence like a warm blanket covering you beneath the shade of a giant Sana''ati tree. (16/16)']
+
+    # Osrel Meraud power / capacity messaging for Clerics (seen when you 'focus orb')
+    - name: 'Cleric Osrel Meraud power'
+      when:
+        guilds: ['Cleric']
+      kind: 'ladder'
+      anchor: '^'
+      prefix: 'The strength of the sensation evokes the image of'
+      of: 10
+      steps:
+        - [1, 'a pile of cold ashes\.']
+        - [2, 'a pile of smoldering ashes\.']
+        - [3, 'a nearly burnt-out candle wick\.']
+        - [4, 'a half-melted burning candle\.']
+        - [5, 'a tall burning candle\.']
+        - [6, 'a blazing torch\.']
+        - [7, 'a small campfire\.']
+        - [8, 'a roaring bonfire\.']
+        - [9, 'flaming magma pouring through a volcanic crevasse\.']
+        - [10, 'torrents of fiery rain falling upon Elanthia from the World Dragon''s maw\.']
+
+    # No capacity line has been seen to say whether the game ends it with a
+    # full stop, so the steps take one if it follows and match without it.
+    # The counter goes after the stop when there is one ("... mind's eye.
+    # (1/11)"), as on the power steps above ("... a blazing torch. (6/10)"),
+    # and straight after the phrase when there is none.
+    - name: 'Cleric Osrel Meraud capacity'
+      when:
+        guilds: ['Cleric']
+      kind: 'ladder'
+      style: 'optional_period'
+      anchor: '^'
+      prefix: 'The pervasiveness of the sensation evokes the image of'
+      of: 11
+      steps:
+        - [1, 'a stream in your mind''s eye']
+        - [2, 'a pond in your mind''s eye']
+        - [3, 'a river in your mind''s eye']
+        - [4, 'a lake in your mind''s eye']
+        - [5, 'a sea in your mind''s eye']
+        - [6, 'an ocean in your mind''s eye']
+        - [7, 'Drogor''s deeps in your mind''s eye']
+        - [8, 'Elanthia''s tides rising toward Katamba in your mind''s eye']
+        - [9, 'the sapphirine planet Merewalda in your mind''s eye']
+        - [10, 'Alamhif''s Bridge arching from the cold seas of Death in your mind''s eye']
+        - [11, 'the fathomless ebon abysms of the Starry Road in your mind''s eye']
+
+    # Ranger pace messaging substitutions, these show the wilderness level of the room so you can determine how much the room will raise or decrease your bonus.
+    # Neutral messaging is purposefully not reported here because non-rangers would see it.
+    - name: 'Ranger pace'
+      when:
+        guilds: ['Ranger']
+      subs:
+        - ['You glance about the area while pacing back and forth, like a large, stalking mountain cat\.', 'You glance about the area while pacing back and forth, like a large, stalking mountain cat. (extremely wilderness)']
+        - ['You glide around the area like a crocodile, truly in your element\.', 'You glide around the area like a crocodile, truly in your element. (moderately wilderness)']
+        - ['You pace back and forth, smiling slightly to yourself at the refreshing familiarity of the area\.', 'You pace back and forth, smiling slightly to yourself at the refreshing familiarity of the area. (moderately wilderness)']
+        - ['You pace back and forth, scowling slightly at your surroundings\.', 'You pace back and forth, scowling slightly at your surroundings. (moderately urban)']
+        - ['You pace back and forth like a trapped animal\.', 'You pace back and forth like a trapped animal. (extremely urban)']
+        - ['^You take in a deep breath to howl, and let loose with a mighty\.\.\. Moo\?!  The sounds that erupt from within you sound startlingly like the loud bleating of a young heifer giving birth to her first calf\.', 'You take in a deep breath to howl, and let loose with a mighty... Moo?!  The sounds that erupt from within you sound startlingly like the loud bleating of a young heifer giving birth to her first calf. (1/15)']
+        - ['^You open your mouth to howl, but it sounds more like a dying chicken than anything else\.', 'You open your mouth to howl, but it sounds more like a dying chicken than anything else. (2/15)']
+        - ['^You give forth a mighty\.\.\. yelp, which sounds more like a domesticated puppy than anything else\.', 'You give forth a mighty... yelp, which sounds more like a domesticated puppy than anything else. (3/15)']
+        - ['^You open your mouth and roar with everything you''ve got!  A few soft sounds reminiscent of a baby robin''s first song twitter sweetly from within you\.(?=\r?$)', 'You open your mouth and roar with everything you''ve got!  A few soft sounds reminiscent of a baby robin''s first song twitter sweetly from within you. (4/15)']
+        - ['^You open your mouth to howl, but you merely sigh like the softest wind through the trees\.(\s+)Sadly, not even a leaf flutters with your "mighty" breath\.', 'You open your mouth to howl, but you merely sigh like the softest wind through the trees.\1Sadly, not even a leaf flutters with your "mighty" breath. (5/15)']
+        - ['^You take in a deep breath to howl loudly, but instead cough and choke on the air around you\.', 'You take in a deep breath to howl loudly, but instead cough and choke on the air around you. (6/15)']
+        - ['^You howl quietly to yourself, echoing a soft, desolate sound that doesn''t sound quite right\.(?=\r?$)', 'You howl quietly to yourself, echoing a soft, desolate sound that doesn''t sound quite right. (7/15)']
+
+    - name: 'Ranger howl'
+      when:
+        guilds: ['Ranger']
+      kind: 'ladder'
+      anchor: '^'
+      of: 15
+      steps:
+        - [8, 'You take in a deep breath to howl, but it comes out as a whimper, like a lost wolf looking for his pack\.']
+        - [9, 'You howl meekly, unsure of yourself\.']
+        - [10, 'You take in a deep breath of air and howl softly\.']
+        - [11, 'You open your mouth and throw back your head, howling with a tentative but fairly resonant tone that wavers only slightly\.']
+        - [12, 'You howl like a wolf calling the pack!']
+        - [13, 'You inhale and howl strongly, the cacophonous sounds reverberating around you\.']
+
+    - name: 'Ranger howl, calling the hunt and mastery'
+      when:
+        guilds: ['Ranger']
+      subs:
+        - ['^You howl strongly, like that of a wolf calling its kin to assemble for a hunt\.(\s+)The sound echoes commandingly through the area\.', 'You howl strongly, like that of a wolf calling its kin to assemble for a hunt.\1The sound echoes commandingly through the area. (14/15)']
+        - ['^You inhale deeply, a resounding howl breaking forth from within you, resonating strongly into the distance as if to announce your mastery of the wilds!', 'You inhale deeply, a resounding howl breaking forth from within you, resonating strongly into the distance as if to announce your mastery of the wilds! (15/15)']
+
+    - name: 'Ranger connection to the wilds'
+      when:
+        guilds: ['Ranger']
+      kind: 'ladder'
+      anchor: '^'
+      prefix: 'Taking silent stock of your connection to the natural world, you feel'
+      of: 15
+      steps:
+        - [15, 'like a true master of the wilds!']
+        - [14, 'in command of the wilds.']
+        - [13, 'strongly connected to the wilds.']
+        - [12, 'like a wolf among sheep.']
+        - [11, 'your connection to the wilds wavering slightly.']
+        - [10, 'a strain in your connection to the wilds.']
+        - [9, 'unsure of yourself.']
+        - [8, 'like a lost wolf looking for its pack.']
+        - [7, 'desolate and not quite right.']
+        - [6, 'choked by the clutches of civilization.']
+        - [5, 'aimless and adrift in life.']
+        - [4, 'as vulnerable as a baby robin, dependent upon others for its security.']
+        - [3, 'practically domesticated.']
+        - [2, 'like just another face in the crowd.']
+
+    - name: 'Empath'
+      when:
+        guilds: ['Empath']
+      subs:
+        - ['leaving (.*) slightly healed', 'leaving \1 slightly (1/6) healed']
+        - ['leaving (.*) moderately healed', 'leaving \1 moderately (2/6) healed']
+        - ['leaving (.*) considerably healed', 'leaving \1 considerably (3/6) healed']
+        - ['leaving (.*) greatly healed', 'leaving \1 greatly (4/6) healed']
+        - ['leaving (.*) immensely healed', 'leaving \1 immensely (5/6) healed']
+        - ['leaving (.*) completely healed', 'leaving \1 completely (6/6) healed']
+        - ['An unidentifiable presence\.', 'An unidentifiable presence. (hidden non-Empath)']
+        - ['The presence of (\w+), whose life essence is wavering\.', 'The presence of \1, whose life essence is wavering. (vitality under 50%)']
+        - ['The presence of (\w+), whose life essence is almost extinguished\.', 'The presence of \1, whose life essence is almost extinguished. (vitality under 20%)']
+        - ['The presence of (\w+)\.  You also sense disturbing black streaks about (\w+) life essence\.', 'The presence of \1.  You also sense disturbing black streaks about \2 life essence. (diseased)']
+        - ['The presence of (\w+)\.  You also sense a faint greenish tinge about (\w+) life essence\.', 'The presence of \1.  You also sense a faint greenish tinge about \2 life essence. (poisoned)']
+        - ['The presence of (\w+), a fellow Empath, whose life essence is wavering\.', 'The presence of \1, a fellow Empath, whose life essence is wavering. (vitality under 50%)']
+        - ['The presence of (\w+), a fellow Empath, whose life essence is almost extinguished\.', 'The presence of \1, a fellow Empath, whose life essence is almost extinguished. (vitality under 20%)']
+        - ['The presence of (\w+), a fellow Empath\.  You also sense disturbing black streaks about (\w+) life essence\.', 'The presence of \1, a fellow Empath.  You also sense disturbing black streaks about \2 life essence. (diseased)']
+        - ['The presence of (\w+), a fellow Empath\.  You also sense a faint greenish tinge about (\w+) life essence\.', 'The presence of \1, a fellow Empath.  You also sense a faint greenish tinge about \2 life essence. (poisoned)']
+        - ['The presence of a secondary shadow about yourself\.', 'The presence of a secondary shadow about yourself. (parasite)']
+        - ['A relatively healthy presence nearby\.', 'A relatively healthy presence nearby. (critter)']
+        - ['A wavering life essence nearby\.', 'A wavering life essence nearby. (critter with vitality under 50%)']
+        - ['A malicious presence screeching in the far dark corner of your mind causes you to quickly open your eyes!', 'A malicious presence screeching in the far dark corner of your mind causes you to quickly open your eyes! (undead/cursed critter)']
+
+    - name: 'Empath progress'
+      when:
+        guilds: ['Empath']
+      kind: 'ladder'
+      anchor: '^'
+      prefix: 'You sense you are'
+      of: 7
+      steps:
+        - [1, 'just at the beginning of']
+        - [2, 'only a short way through']
+        - [3, 'a fair portion of the way through with']
+        - [4, 'half-way done with']
+        - [5, 'a good portion of the way through with']
+        - [6, 'almost done with']
+        - [7, 'on the verge of completing']
+
+    - name: 'Empath severity'
+      when:
+        guilds: ['Empath']
+      kind: 'ladder'
+      of: 13
+      steps:
+        - [1, '\-\- insignificant']
+        - [2, '\-\- negligible']
+        - [3, '\-\- minor']
+        - [4, '\-\- more than minor']
+        - [5, '\-\- harmful']
+        - [6, '\-\- very harmful']
+        - [7, '\-\- damaging']
+        - [8, '\-\- very damaging']
+        - [9, '\-\- severe']
+        - [10, '\-\- very severe']
+        - [11, '\-\- devastating']
+        - [12, '\-\- very devastating']
+        - [13, '\-\- useless']
+
+    - name: 'Empath life force'
+      when:
+        guilds: ['Empath']
+      subs:
+        - ['Your (.*)''s life force is brimming with unblemished vigor!', 'Your \1''s life force is brimming with unblemished vigor! (0/9)']
+        - ['Your (.*)''s life force remains unblemished save for a single, tiny deadened speck.', 'Your \1''s life force remains unblemished save for a single, tiny deadened speck. (1/9)']
+        - ['Your (.*)''s life force remains largely robust, though several small deadened areas have formed.', 'Your \1''s life force remains largely robust, though several small deadened areas have formed. (2/9)']
+        - ['Your (.*)''s life force is still mostly strong, though it shows more than the occasional deadened area.', 'Your \1''s life force is still mostly strong, though it shows more than the occasional deadened area. (3/9)']
+        - ['Your (.*)''s life force displays interwoven strands connecting each of the deadened areas within.', 'Your \1''s life force displays interwoven strands connecting each of the deadened areas within. (4/9)']
+        - ['Your (.*)''s life force is pulsing between vigor and numbness.', 'Your \1''s life force is pulsing between vigor and numbness. (5/9)']
+        - ['Your (.*)''s life force is waning, the strands connecting its deadened areas growing more numerous.', 'Your \1''s life force is waning, the strands connecting its deadened areas growing more numerous. (6/9)']
+        - ['Your (.*)''s life force is significantly weakened, with large portions of it numbed and deadened completely.', 'Your \1''s life force is significantly weakened, with large portions of it numbed and deadened completely. (7/9)']
+        - ['Your (.*)''s life force is imperceptible.', 'Your \1''s life force is imperceptible. (8/9)']
+        - ['You thumb your (.*)\.', 'You thumb your \1. (9/9)']
+
+    - name: 'Empath plant condition'
+      when:
+        guilds: ['Empath']
+      kind: 'ladder'
+      anchor: '^'
+      of: 5
+      steps:
+        - [5, 'The plant appears to be in good condition']
+        - [4, 'The plant has some scrapes and discolorations along the leaves and stem']
+        - [3, 'The plant has several torn leaves, and the main stem bears some cuts that are leaking green sap']
+        - [2, 'The plant shivers periodically, torn leaves and broken stems hanging limply as sap drips from its wounds']
+        - [1, 'The plant has pulled into itself under shredded leaves and oozing stems']
+        - [0, 'The plant has coiled itself into a tight ball, the remains of its shredded leaves sticking to sap encrusted stems']
+
+    - name: 'crafting quality, speed and resources'
+      subs:
+        - ['(is|are)( of|) masterfully-crafted( quality|)', '\1\2 masterfully-crafted (12/12)\3']
+        - ['(is|are)( of|) outstanding( quality|)', '\1\2 outstanding (11/12)\3']
+        - ['(is|are)( of|) exceptional( quality|[^l]+)', '\1\2 exceptional (10/12)\3']
+        - ['(is|are)( of|) superior( quality|)', '\1\2 superior (9/12)\3']
+        - ['(is|are)( of|) finely-crafted( quality|)', '\1\2 finely-crafted (8/12)\3']
+        - ['(is|are)( of|) well-crafted( quality|)', '\1\2 well-crafted (7/12)\3']
+        - ['(is|are)( of|) above-average( quality|)', '\1\2 above-average (6/12)\3']
+        - ['(is|are)( of|) about average( quality|)', '\1\2 about average (5/12)\3']
+        - ['(is|are)( of|) mediocre( quality|)', '\1\2 mediocre (4/12)\3']
+        - ['(is|are)( of|) below-average( quality|)', '\1\2 below-average (3/12)\3']
+        - ['(is|are)( of|) poorly-crafted( quality|)', '\1\2 poorly-crafted (2/12)\3']
+        # - ['(is|are)( of|) dismal( quality|)', '\1\2 dismal (1/12)\3']
+        - ['be tremendously effective at increasing crafting speed', 'be tremendously effective (11/11) at increasing crafting speed']
+        - ['be extremely effective at increasing crafting speed', 'be extremely effective (10/11) at increasing crafting speed']
+        - ['be exceptionally effective at increasing crafting speed', 'be exceptionally effective (9/11) at increasing crafting speed']
+        - ['be very effective at increasing crafting speed', 'be very effective (8/11) at increasing crafting speed']
+        - ['be rather effective at increasing crafting speed', 'be rather effective (7/11) at increasing crafting speed']
+        - ['be sort of effective at increasing crafting speed', 'be sort of effective (6/11) at increasing crafting speed']
+        - ['be not very effective at increasing crafting speed', 'be not very effective (5/11) at increasing crafting speed']
+        - ['be very ineffective at increasing crafting speed', 'be very ineffective (4/11) at increasing crafting speed']
+        - ['be extremely ineffective at increasing crafting speed', 'be extremely ineffective (3/11) at increasing crafting speed']
+        - ['be tremendously ineffective at increasing crafting speed', 'be tremendously ineffective (2/11) at increasing crafting speed']
+        - ['be completely ineffective at increasing crafting speed', 'be completely ineffective (1/11) at increasing crafting speed']
+        - ['almost no potency', 'almost no (1/10) potency']
+        - ['terrible potency', 'terrible (2/10) potency']
+        - ['dismal potency', 'dismal (3/10) potency']
+        - ['poor potency', 'poor (4/10) potency']
+        - ['low potency', 'low (5/10) potency']
+        - ['decent potency', 'decent (6/10) potency']
+        - ['moderate potency', 'moderate (7/10) potency']
+        - ['good potency', 'good (8/10) potency']
+        - ['great potency', 'great (9/10) potency']
+        - ['excellent potency', 'excellent (10/10) potency']
+        - ['completely abstract', 'completely (1/11) abstract']
+        - ['potency and is abstract', 'potency and is abstract (2/11)']
+        - ['slightly abstract', 'slightly (3/11) abstract']
+        - ['somewhat precise', 'somewhat (4/11) precise']
+        - ['rather precise', 'rather (5/11) precise']
+        - ['quite precise', 'quite (6/11) precise']
+        - ['very precise', 'very (7/11) precise']
+        - ['exceptionally precise', 'exceptionally (8/11) precise']
+        - ['incredibly precise', 'incredibly (9/11) precise']
+        - ['amazingly precise', 'amazingly (10/11) precise']
+        - ['fantastically precise', 'fantastically (11/11) precise']
+        - ['minor grade', 'minor (1/4) grade']
+        - ['lesser grade', 'lesser (2/4) grade']
+        - ['greater grade', 'greater (3/4) grade']
+        - ['major grade', 'major (4/4) grade']
+        # Mining/Lumberjacking resources
+        - ['enormous (quantity|number) remains to be found', 'enormous \1 (5/5) remains to be found']
+        - ['substantial (quantity|number) remains to be found', 'substantial \1 (4/5) remains to be found']
+        - ['good (quantity|number) remains to be found', 'good \1 (3/5) remains to be found']
+        - ['decent (quantity|number) remains to be found', 'decent \1 (2/5) remains to be found']
+        - ['small (quantity|number) remains to be found', 'small \1 (1/5) remains to be found']
+        - ['scattering of (resources|trees) remains to be found', 'scattering of \1 (0/5) remains to be found']
+
+    - name: 'encumbrance'
+      kind: 'ladder'
+      prefix: 'Encumbrance :'
+      of: 11
+      steps:
+        - [0, 'None']
+        - [1, 'Light Burden']
+        - [2, 'Somewhat Burdened']
+        - [3, 'Burdened']
+        - [4, 'Heavy Burden']
+        - [5, 'Very Heavy Burden']
+        - [6, 'Overburdened']
+        - [7, 'Very Overburdened']
+        - [8, 'Extremely Overburdened']
+        - [9, 'Tottering Under Burden']
+
+    - name: 'encumbrance, barely moving'
+      subs:
+        - ['Encumbrance : Are you even able to move?', 'Encumbrance : Are you even able to move? (10/11)']
+        - ['Encumbrance : It''s amazing you aren''t squashed!', 'Encumbrance : It''s amazing you aren''t squashed! (11/11)']
+
+    - name: 'inspiration'
+      kind: 'ladder'
+      style: 'before_period'
+      of: 3
+      steps:
+        - [0, 'You feel completely empty and unable to grasp inspiration\.']
+        - [1, 'You feel depleted and less than inspired\.']
+        - [2, 'You feel worn but still ready to meet a challenge\.']
+        - [3, 'You feel ready to defeat all challengers\.']
+
+    - name: 'Thief steal difficulty'
+      when:
+        guilds: ['Thief']
+      kind: 'ladder'
+      style: 'before_period'
+      of: 13
+      steps:
+        - [1, 'it would be taking candy from a baby\.']
+        - [2, 'it would be stealable even with your eyes closed\.']
+        - [3, 'it should be trivial for one of your skills\.']
+        - [4, 'it should be an easy target for you\.']
+        - [5, 'it should not prove difficult for you\.']
+        - [6, 'it should be more likely liftable than not\.']
+        - [7, 'it should be about even odds\.']
+        - [8, 'it may give you some difficulty to lift\.']
+        - [9, 'it may be troublesome to lift\.']
+        - [10, 'you don''t think well of your chances to lift it\.']
+        - [11, 'it may be quite the struggle to nab\.']
+        - [12, 'it would likely be futile to bother\.']
+        - [13, 'you can already feel the taste of bitter failure\.']
+
+    - name: 'Thief steal attention'
+      when:
+        guilds: ['Thief']
+      kind: 'ladder'
+      style: 'before_period'
+      of: 13
+      steps:
+        - [1, 'nobody will ever miss it\.']
+        - [2, 'you could just waltz on out with it\.']
+        - [3, 'it should be trivial to avoid attention\.']
+        - [4, 'it should be easy to avoid attention\.']
+        - [5, 'it should not prove too difficult\.']
+        - [6, 'it should be possible\.']
+        - [7, 'it''s about even odds\.']
+        - [8, 'perhaps it''s a little risky\.']
+        - [9, 'it''ll be troublesome to be unnoticed\.']
+        - [10, 'it''s somewhat of a long shot\.']
+        - [11, 'you''re pretty sure you''ll be caught\.']
+        - [12, 'the shopkeep is paying far too much attention to it\.']
+        - [13, 'the heavy \*THUD\* of a judge''s gavel echoes through your mind\.']
+
+    - name: 'Thief shop attention'
+      when:
+        guilds: ['Thief']
+      kind: 'ladder'
+      style: 'before_period'
+      of: 6
+      steps:
+        - [1, 'shouldn''t really affect you\.']
+        - [2, 'hinders your chances slightly\.']
+        - [3, 'has closer eye on you\.']
+        - [4, 'looks your way suspiciously\.']
+        - [5, 'looking for an excuse to call the guards\.']
+        - [6, 'beyond foolish to keep at it\.']
+
+    - name: 'Thief confidence'
+      when:
+        guilds: ['Thief']
+      kind: 'ladder'
+      style: 'before_period'
+      of: 5
+      steps:
+        - [-5, 'don''t see how things could get any worse\.']
+        - [-4, 'but you know you aren''t fooling anyone\.']
+        - [-3, 'but cannot shake the thoughts of your recent screw-ups\.']
+        - [-2, 'but have to force it\.']
+        - [-1, 'but feel slightly uncomfortable\.']
+        - [0, 'but can only muster up average confidence\.']
+        - [1, 'feeling a little above average\.']
+        - [2, 'feeling rather confident about things\.']
+        - [3, 'feeling quite good about how you''re doing\.']
+        - [4, 'the way only a stylish Thief can\.']
+        - [5, 'knowing you are at the absolute top of your game\.']
+
+    - name: 'Warrior Mage'
+      when:
+        guilds: ['Warrior Mage']
+      subs:
+        - ['(conditions|surroundings) are overwhelmingly favorable', '\1 are overwhelmingly favorable (5/5)']
+        - ['(conditions|surroundings) are strongly favorable', '\1 are strongly favorable (4/5)']
+        - ['(conditions|surroundings) are favorable', '\1 are favorable (3/5)']
+        - ['(conditions|surroundings) are moderately favorable', '\1 are moderately favorable (2/5)']
+        - ['(conditions|surroundings) are slightly favorable', '\1 are slightly favorable (1/5)']
+        - ['(conditions|surroundings) are neutral', '\1 are neutral (0/5)']
+        - ['(conditions|surroundings) are overwhelmingly detrimental', '\1 are overwhelmingly detrimental (-5/5)']
+        - ['(conditions|surroundings) are strongly detrimental', '\1 are strongly detrimental (-4/5)']
+        - ['(conditions|surroundings) are detrimental', '\1 are detrimental (-3/5)']
+        - ['(conditions|surroundings) are moderately detrimental', '\1 are moderately detrimental (-2/5)']
+        - ['(conditions|surroundings) are slightly detrimental', '\1 are slightly detrimental (-1/5)']
+
+    - name: 'Warrior Mage cold-based Water'
+      when:
+        guilds: ['Warrior Mage']
+      kind: 'ladder'
+      prefix: 'cold-based Water spells and'
+      of: 5
+      steps:
+        - [5, 'overwhelmingly favorable']
+        - [4, 'strongly favorable']
+        - [3, 'favorable']
+        - [2, 'moderately favorable']
+        - [1, 'slightly favorable']
+        - [0, 'neutral']
+        - [-5, 'overwhelmingly detrimental']
+        - [-4, 'strongly detrimental']
+        - [-3, 'detrimental']
+        - [-2, 'moderately detrimental']
+        - [-1, 'slightly detrimental']
+
+    - name: 'Warrior Mage charge, a useless trace'
+      when:
+        guilds: ['Warrior Mage']
+      subs:
+        - ['You sense nothing out of the ordinary\.  Only magic could detect the useless trace of (.*) still in your system\.', 'You sense nothing out of the ordinary. Only magic could detect the useless trace of \1 still in your system. (1/12)']
+
+    - name: 'Warrior Mage charge'
+      when:
+        guilds: ['Warrior Mage']
+      kind: 'ladder'
+      of: 12
+      steps:
+        - [2, 'A small charge lingers within your body, just above the threshold of perception\.']
+        - [3, 'A small charge lingers within your body\.']
+        - [4, 'A charge dances through your body\.']
+        - [5, 'A charge dances just below the threshold of discomfort\.']
+        - [6, 'A charge circulates through your body, causing a low hum to vibrate through your bones\.']
+        - [7, 'Elemental essence floats freely within your body, leaving little untouched\.']
+        - [8, 'Elemental essence has infused every inch of your body\.  While you could contain more, you''d do so at the risk of your health\.']
+        - [9, 'Extraplanar power crackles within your body, leaving you feeling mildly feverish\.']
+        - [10, 'Extraplanar power crackles within your body, leaving you feeling acutely ill\.']
+        - [11, 'Your body sings and crackles with a barely contained charge, destroying what little cenesthesia you had left\.']
+
+    - name: 'Warrior Mage charge, at the limit'
+      when:
+        guilds: ['Warrior Mage']
+      subs:
+        - ['You have reached the limits of your body''s capacity to store a charge\.  The laws of the Elemental Plane of (.*) scream demands upon your physiology, threatening your life\.', 'You have reached the limits of your body''s capacity to store a charge.  The laws of the Elemental Plane of \1 scream demands upon your physiology, threatening your life. (12/12)']
+
+    # Soul State
+    - name: 'Paladin soul state and pool'
+      when:
+        guilds: ['Paladin']
+      subs:
+        - ['gleams brightly with a pristine luminescence!', 'gleams brightly with a pristine luminescence (7/7)!']
+        - ['emits a pure white light!', 'emits a pure white light (6/7)!']
+        - ['turns a steady white hue!', 'turns a steady white hue (5/7)!']
+        - ['dull, chalky color\.', 'dull, chalky color (4/7).']
+        - ['pallid grey', 'pallid grey (3/7)']
+        - ['sinister black streaks\.', 'sinister black streaks (2/7).']
+
+    # Soul Pool
+    - name: 'Paladin soul pool brightens'
+      when:
+        guilds: ['Paladin']
+      kind: 'ladder'
+      scale: 'Paladin soul pool'
+      style: 'before_period'
+      prefix: 'It brightens with'
+      of: 11
+      steps:
+        - [11, 'a powerful inner light that, somehow, manages to not cast shadows\.']
+        - [10, 'a powerful inner light, which lingers before returning to its normal state\.']
+        - [9, 'an inner light, which lingers for a few moments before returning to its normal state\.']
+        - [8, 'an inner light, which lingers for a moment\.']
+
+    - name: 'Paladin soul pool pulses rapidly'
+      when:
+        guilds: ['Paladin']
+      subs:
+        - ['It pulses rapidly with an inner light\.', 'It pulses rapidly with an inner light. (7/11).']
+
+    - name: 'Paladin soul pool pulses and flickers'
+      when:
+        guilds: ['Paladin']
+      kind: 'ladder'
+      scale: 'Paladin soul pool'
+      style: 'before_period'
+      of: 11
+      steps:
+        - [6, 'It pulses with an inner light\.']
+        - [5, 'It pulses briefly with an inner light\.']
+        - [4, 'It flickers with an inner light\.']
+        - [3, 'It briefly flickers with an inner light\.']
+
+    - name: 'Paladin soul pool faintest flicker'
+      when:
+        guilds: ['Paladin']
+      subs:
+        - ['You catch the faintest flicker of light\.', 'You catch the faintest flicker of light. (2/11).']
+        - ['You believe you catch the faintest flicker of light. You might have imagined it\.', 'You believe you catch the faintest flicker of light. You might have imagined it (1/11).']
+
+    # Bard song assessment: one key per whole message, so each gets one counter
+    - name: 'Bard song assessment, stopped after the first lines'
+      when:
+        guilds: ['Bard']
+      subs:
+        - ['You stop only after those first few lines, however, unable to remember any more\.', 'You stop only after those first few lines, however, unable to remember any more (1/7).']
+
+    - name: 'Bard song assessment'
+      when:
+        guilds: ['Bard']
+      kind: 'ladder'
+      style: 'before_period'
+      of: 7
+      steps:
+        - [1, 'Your voice cracks on the second line, however, and you stop, unable to remember any more of the song anyway\.']
+        - [2, 'At one point you hesitate as you mentally grasp for the next line of the song, and stop in confusion, but pick it up a moment later and bring it to a strong conclusion\.']
+        - [3, 'You feel a bit tired as you finish, but grin despite that for the ease at which you sang\.']
+        - [4, 'You bring the song to a close, bowing your head\.']
+
+    - name: 'Bard song assessment, the top three steps'
+      when:
+        guilds: ['Bard']
+      subs:
+        # The message names the song's language; the key takes any language name
+        # spelled with letters, apostrophes, hyphens and spaces (S'Kra Mur)
+        - ['(Your voice carries strongly on the air as you effortlessly recite the [A-Za-z'' -]+ words so that all may hear, bowing your head as they come to a close)\.', '\1 (5/7).']
+        - ['Tears fill your eyes as the emotion of your ancient aire grips you, and you raise your chin with pride as it comes to a close\.', 'Tears fill your eyes as the emotion of your ancient aire grips you, and you raise your chin with pride as it comes to a close (6/7).']
+        - ['When the song finally comes to a close, you bow your head, your ears ringing in the silence\.', 'When the song finally comes to a close, you bow your head, your ears ringing in the silence (7/7).']
+
+    - name: 'spell recognition'
+      kind: 'spell_recognition'
+      pattern: '^(You recognize the familiar mnemonics|You decipher the telltale signs) of the ({names}) spell\.'
+      replacement: '\1 of the \2 spell. [{label}]'
+      groups:
+        - ['Strange Arrow']
+        - ['Burden']
+        - ['Lay Ward', 'Manifest Force']
+        - ['Ease Burden']
+        - ['Dispel', 'Imbue']
+        - ['Seal Cambrinth', 'Gauge Flow']
+        - ['Glythtide''s Gift']
+        - ['Aesrela Everild']
+        - ['Fire of Ushnish']
+        - ['Resurrection']
+        - ['Murrula''s Flames']
+        - ['Protection from Evil', 'Visage', 'Soul Shield']
+        - ['Ghost Shroud']
+        - ['Starry Waters']
+        - ['Halo']
+        - ['Sanyu Lyba']
+        - ['Benediction']
+        - ['Shield of Light']
+        - ['Harm Evil', 'Horn of the Black Unicorn', 'Fists of Faenella']
+        - ['Hand of Tenemlor']
+        - ['Phelim''s Sanction', 'Curse of Zachriedek', 'Malediction']
+        - ['Bless']
+        - ['Divine Radiance']
+        - ['Harm Horde']
+        - ['Hydra Hex']
+        - ['Huldah''s Pall']
+        - ['Sanctify Pattern']
+        - ['Uncurse']
+        - ['Meraud''s Cry']
+        - ['Spite of Dergati']
+        - ['Idon''s Theft']
+        - ['Persistence of Mana']
+        - ['Osrel Meraud']
+        - ['Chill Spirit']
+        - ['Soul Sickness']
+        - ['Auspice']
+        - ['Centering']
+        - ['Vigil']
+        - ['Revelation']
+        - ['Soul Attrition']
+        - ['Soul Bonding']
+        - ['Rejuvenation']
+        - ['Mass Rejuvenation', 'Eylhaar''s Feast']
+        - ['Bitter Feast']
+        - ['Soldier''s Prayer']
+        - ['Courage', 'Righteous Wrath', 'Divine Guidance', 'Sentinel''s Resolve']
+        - ['Heroic Strength']
+        - ['Anti-Stun']
+        - ['Marshal Order']
+        - ['Truffenyi''s Rally']
+        - ['Divine Armor', 'Bond Armaments']
+        - ['Rebuke']
+        - ['Smite Horde']
+        - ['Footman''s Strike']
+        - ['Halt', 'Shatter']
+        - ['Stun Foe']
+        - ['Clarity']
+        - ['Hands of Justice']
+        - ['Rutilor''s Edge']
+        - ['Holy Warrior']
+        - ['Banner of Truce']
+        - ['Aspirant''s Aegis']
+        - ['Crusader''s Challenge']
+        - ['Alamhif''s Gift']
+        - ['Vessel of Salvation']
+        - ['Blood Staunching']
+        - ['Flush Poisons', 'Cure Disease', 'Heart Link', 'Absolution']
+        - ['Vitality Healing']
+        - ['Heal Wounds', 'Heal Scars']
+        - ['Heal']
+        - ['Regenerate', 'Fountain of Creation']
+        - ['Paralysis']
+        - ['Lethargy']
+        - ['Refresh']
+        - ['Gift of Life']
+        - ['Vigor']
+        - ['Raise Power']
+        - ['Compel']
+        - ['Mental Focus']
+        - ['Awaken']
+        - ['Nissa''s Binding']
+        - ['Circle of Sympathy']
+        - ['Iron Constitution']
+        - ['Aggressive Stance']
+        - ['Aesandry Darlaeth']
+        - ['Innocence']
+        - ['Perseverance of Peri''el']
+        - ['Guardian Spirit']
+        - ['Tranquility']
+        - ['Grizzly Claws']
+        - ['Wolf Scent', 'Instinct', 'Senses of the Tiger']
+        - ['See the Wind']
+        - ['Wisdom of the Pack']
+        - ['Cheetah Swiftness']
+        - ['Claws of the Cougar']
+        - ['Bear Strength']
+        - ['Eagle''s Cry']
+        - ['Devitalize']
+        - ['Stampede', 'Carrion Call']
+        - ['Swarm']
+        - ['Harawep''s Bonds', 'Deadfall']
+        - ['Curse of the Wilds']
+        - ['Compost']
+        - ['Devolve']
+        - ['Awaken Forest']
+        - ['Essence of Yew']
+        - ['Forestwalker''s Boon']
+        - ['Hands of Lirisa', 'Athleticism']
+        - ['Oath of the Firstborn']
+        - ['Earth Meld']
+        - ['Skein of Shadows']
+        - ['Blend']
+        - ['Memory of Nature']
+        - ['Ward Break']
+        - ['Ethereal Shield']
+        - ['Substratum']
+        - ['Aether Cloak']
+        - ['Ethereal Fissure']
+        - ['Paeldryth''s Wrath']
+        - ['Shockwave']
+        - ['Air Lash']
+        - ['Vertigo', 'Thunderclap']
+        - ['Tailwind', 'Swirling Winds']
+        - ['Y''ntrel Sechra']
+        - ['Zephyr', 'Air Bubble']
+        - ['Blufmor Garaen']
+        - ['Stone Strike']
+        - ['Tremor']
+        - ['Anther''s Call']
+        - ['Sure Footing']
+        - ['Magnetic Ballista']
+        - ['Ring of Spears']
+        - ['Aegis of Granite']
+        - ['Lightning Bolt']
+        - ['Gar Zeng']
+        - ['Arc Light']
+        - ['Tingle']
+        - ['Chain Lightning']
+        - ['Electrostatic Eddy']
+        - ['Grounding Field']
+        - ['Fire Shards']
+        - ['Fire Ball']
+        - ['Flame Shockwave']
+        - ['Ignite']
+        - ['Dragon''s Breath']
+        - ['Fire Rain']
+        - ['Mark of Arhat']
+        - ['Mantle of Flame']
+        - ['Geyser']
+        - ['Frost Scythe']
+        - ['Frostbite']
+        - ['Ice Patch']
+        - ['Rising Mists']
+        - ['Rimefang']
+        - ['Veil of Ice']
+        - ['Fortress of Ice']
+        - ['Breath of Storms']
+        - ['Echoes of Aether', 'Will of Winter']
+        - ['Words of the Wind']
+        - ['Soul Ablaze']
+        - ['Phoenix''s Pyre']
+        - ['Desert''s Maelstrom']
+        - ['Caress of the Sun']
+        - ['Misdirection']
+        - ['Redeemer''s Pride']
+        - ['Whispers of the Muse']
+        - ['Rage of the Clans']
+        - ['Abandoned Heart']
+        - ['Damaris'' Lullaby']
+        - ['Albreda''s Balm']
+        - ['Faenella''s Grace']
+        - ['Nexus']
+        - ['Beckon the Naga']
+        - ['Aether Wolves']
+        - ['Glythtide''s Joy']
+        - ['Blessing of the Fae']
+        - ['Eye of Kertigen']
+        - ['Sanctuary']
+        - ['Demrris'' Resolve']
+        - ['Drums of the Snake']
+        - ['Eillie''s Cry']
+        - ['Resonance']
+        - ['Aura of Tongues']
+        - ['Naming of Tears']
+        - ['Harmony']
+        - ['Hodierna''s Lilt']
+        - ['Partial Displacement']
+        - ['Whole Displacement']
+        - ['Shadowling', 'Braun''s Conjecture', 'Contingency']
+        - ['Shadow Servant', 'Moongate']
+        - ['Teleport']
+        - ['Riftal Summons']
+        - ['Burn']
+        - ['Dinazen Olkar']
+        - ['Dazzle']
+        - ['Cage of Light']
+        - ['Shadows']
+        - ['Focus Moonbeam']
+        - ['Refractive Field']
+        - ['Steps of Vuan', 'Moonblade', 'Shift Moonbeam']
+        - ['Clear Vision']
+        - ['Machinist''s Touch']
+        - ['Artificer''s Eye', 'Aura Sight', 'Tenebrous Sense']
+        - ['Piercing Gaze']
+        - ['Unleash']
+        - ['Seer''s Sense']
+        - ['Locate', 'Distant Gaze']
+        - ['Destiny Cipher']
+        - ['Telekinetic Throw']
+        - ['Telekinetic Storm']
+        - ['Calm']
+        - ['Sleep']
+        - ['Rend']
+        - ['Psychic Shield']
+        - ['Shear']
+        - ['Thoughtcast']
+        - ['Mental Blast', 'Mind Shout']
+        - ['Starlight Sphere']
+        - ['Invocation of the Spheres']
+        - ['Shadewatch Mirror', 'Read the Ripples']
+        - ['Sever Thread']
+        - ['Sovereign Destiny']
+        - ['Tangled Fate']
+        - ['Tezirah''s Veil']
+        - ['Reverse Putrefaction']
+        - ['Call from Beyond', 'Necrotic Reconstruction']
+        - ['Quicken the Earth']
+        - ['Blood Burst', 'Siphon Vitality']
+        - ['Heighten Pain']
+        - ['Consume Flesh']
+        - ['Devour']
+        - ['Visions of Darkness']
+        - ['Petrifying Visions']
+        - ['Obfuscation']
+        - ['Rite of Contrition', 'Rite of Grace']
+        - ['Eyes of the Blind']
+        - ['Acid Splash']
+        - ['Viscous Solution']
+        - ['Researcher''s Insight']
+        - ['Vivisection', 'Universal Solvent']
+        - ['Calcified Hide']
+        - ['Worm''s Mist']
+        - ['Butcher''s Eye', 'Philosopher''s Preservation', 'Kura-Silma', 'Ivory Mask']
+
+    - name: 'Trader starlight'
+      when:
+        guilds: ['Trader']
+      kind: 'ladder'
+      style: 'before_period'
+      of: 9
+      steps:
+        - [0, 'The smallest hint of starlight flickers within your aura.']
+        - [1, 'A bare flicker of starlight plays within your aura.']
+        - [2, 'A faint amount of starlight illuminates your aura.']
+        - [3, 'Your aura pulses slowly with starlight.']
+        - [4, 'A steady pulse of starlight runs through your aura.']
+        - [5, 'Starlight dances vividly across the confines of your aura.']
+        - [6, 'Strong pulses of starlight flare within your aura.']
+        - [7, 'Your aura seethes with brilliant starlight.']
+
+    - name: 'Trader starlight, blinding and beyond'
+      when:
+        guilds: ['Trader']
+      subs:
+        - ['Your aura is blinding!', 'Your aura is blinding (8/9)!']
+        - ['The power contained in your aura defies visual metaphor.', 'The power contained in your aura defies visual metaphor (9/9).']
+
+    - name: 'Moon Mage'
+      when:
+        guilds: ['Moon Mage']
+      subs:
+        - ['You have (.*no) understanding of the celestial influences over (.*)\.', 'You have \1 understanding of the celestial influences over \2 (0%).']
+        - ['You have (.*feeble) understanding of the celestial influences over (.*)\.', 'You have \1 understanding of the celestial influences over \2 (1-11%).']
+        - ['You have (.*weak) understanding of the celestial influences over (.*)\.', 'You have \1 understanding of the celestial influences over \2 (12-22%).']
+        - ['You have (.*fledgling) understanding of the celestial influences over (.*)\.', 'You have \1 understanding of the celestial influences over \2 (23-33%).']
+        - ['You have (.*modest) understanding of the celestial influences over (.*)\.', 'You have \1 understanding of the celestial influences over \2 (34-44%).']
+        - ['You have (.*decent) understanding of the celestial influences over (.*)\.', 'You have \1 understanding of the celestial influences over \2 (45-55%).']
+        - ['You have (.*significant) understanding of the celestial influences over (.*)\.', 'You have \1 understanding of the celestial influences over \2 (56-66%).']
+        - ['You have (.*potent) understanding of the celestial influences over (.*)\.', 'You have \1 understanding of the celestial influences over \2 (67-77%).']
+        - ['You have (.*insightful) understanding of the celestial influences over (.*)\.', 'You have \1 understanding of the celestial influences over \2 (78-88%).']
+        - ['You have (.*powerful) understanding of the celestial influences over (.*)\.', 'You have \1 understanding of the celestial influences over \2 (89-99%).']
+        - ['You have (.*complete) understanding of the celestial influences over (.*)\.', 'You have \1 understanding of the celestial influences over \2 (100%).']
+        - ['A (translucent|flickering|quivering|solid|undulating|vivid|luminous) (aquamarine|azure|cerulean|sapphire|sky blue) (moonblade|shield|spellbook|tome|tree|amorphous .*) that', 'A \1 \2 (good polarity) \3 that']
+        - ['A (translucent|flickering|quivering|solid|undulating|vivid|luminous) (grey|pale|white) (moonblade|shield|spellbook|tome|tree|amorphous .*) that', 'A \1 \2 (neutral polarity) \3 that']
+        - ['A (translucent|flickering|quivering|solid|undulating|vivid|luminous) (crimson|fiery|molten|ruby|scarlet) (moonblade|shield|spellbook|tome|tree|amorphous .*) that', 'A \1 \2 (bad polarity) \3 that']
+        - ['Your skill in (.*) has fogged over\.', 'Your skill in \1 has fogged over (-15%).']
+        - ['Your skill in (.*) is at a zenith of enlightenment\.', 'Your skill in \1 is at a zenith of enlightenment (+15%).']
+
+    # Barbarian inner fire levels
+    - name: 'Barbarian inner fire'
+      when:
+        guilds: ['Barbarian']
+      subs:
+        - ['a dim glow as if a flame lurked just out of sight', 'a dim glow as if a flame lurked just out of sight (1/13)']
+        - ['a tiny aura of beautiful flames', 'a tiny aura of beautiful flames (2/13)']
+        - ['a small aura of beautiful flames', 'a small aura of beautiful flames (3/13)']
+        - ['a bright aura of beautiful flames\.', 'a bright aura of beautiful flames (4/13).']
+
+    - name: 'Barbarian inner fire, extending flames'
+      when:
+        guilds: ['Barbarian']
+      kind: 'ladder'
+      of: 13
+      steps:
+        - [5, 'a bright aura of beautiful flames extending a quarter of your height above you']
+        - [6, 'a bright aura of beautiful flames extending out around you just beyond the reach of your arms']
+        - [7, 'a brilliant aura of beautiful flames extending out around you about half again your height']
+        - [8, 'a brilliant aura of beautiful flames extending a little over half your height again above you']
+        - [9, 'a brilliant aura of flames that extends nearly your full height again above you']
+        - [10, 'a brilliant aura of flames that extends over your height again above you']
+        - [11, 'a brilliant aura of beautiful flames extending a little more than one and half times your height above your body']
+        - [12, 'a brilliant aura of beautiful flames extending nearly twice your height above your body']
+        - [13, 'a brilliant aura of pristine quality burning outward at twice your height']
+
+    # Commas when dealing with coins
+    - name: 'coin commas with platinum grouping'
+      when:
+        setting: 'textsubs_use_plat_grouping'
+      requires_any: ['Kronar', 'Dokora', 'Lirum']
+      subs:
+        - ['(?!.*>)\d{1,3}(?=((\d{3})*(\d{4}))(?!\d)(?! platinum).*(Kronar|Dokora|Lirum))', '\&,']
+        - ['(?!.*>)\d{1,3}(?=(\d{3})+(?!\d) platinum.*(Kronar|Dokora|Lirum))', '\&,']
+
+    - name: 'coin commas'
+      when:
+        setting_off: 'textsubs_use_plat_grouping'
+      requires_any: ['Kronar', 'Dokora', 'Lirum']
+      subs:
+        - ['(?!.*>)\d{1,3}(?=(\d{3})+(?!\d).*(Kronar|Dokora|Lirum))', '\&,']
+
+    # Subs to add guild name to scroll spells
+    - name: 'scroll labels'
+      kind: 'scroll_labels'
+      pattern: '^(It is labeled) "{name}."'
+      replacement: '\1 "{name}." ({label})'
+      names:
+        - 'Strange Arrow'
+        - 'Burden'
+        - 'Lay Ward'
+        - 'Manifest Force'
+        - 'Ease Burden'
+        - 'Dispel'
+        - 'Imbue'
+        - 'Seal Cambrinth'
+        - 'Gauge Flow'
+        - 'Aesrela Everild'
+        - 'Fire of Ushnish'
+        - 'Resurrection'
+        - 'Murrula''s Flames'
+        - 'Glythtide''s Gift'
+        - 'Protection from Evil'
+        - 'Visage'
+        - 'Soul Shield'
+        - 'Ghost Shroud'
+        - 'Starry Waters'
+        - 'Halo'
+        - 'Sanyu Lyba'
+        - 'Benediction'
+        - 'Shield of Light'
+        - 'Harm Evil'
+        - 'Horn of the Black Unicorn'
+        - 'Fists of Faenella'
+        - 'Hand of Tenemlor'
+        - 'Phelim''s Sanction'
+        - 'Curse of Zachriedek'
+        - 'Malediction'
+        - 'Bless'
+        - 'Divine Radiance'
+        - 'Harm Horde'
+        - 'Hydra Hex'
+        - 'Huldah''s Pall'
+        - 'Sanctify Pattern'
+        - 'Uncurse'
+        - 'Meraud''s Cry'
+        - 'Spite of Dergati'
+        - 'Idon''s Theft'
+        - 'Persistence of Mana'
+        - 'Osrel Meraud'
+        - 'Chill Spirit'
+        - 'Soul Sickness'
+        - 'Auspice'
+        - 'Centering'
+        - 'Vigil'
+        - 'Revelation'
+        - 'Soul Attrition'
+        - 'Soul Bonding'
+        - 'Rejuvenation'
+        - 'Mass Rejuvenation'
+        - 'Eylhaar''s Feast'
+        - 'Bitter Feast'
+        - 'Heavenly Fires'
+        - 'Aspects of the All-God'
+        - 'Soldier''s Prayer'
+        - 'Courage'
+        - 'Righteous Wrath'
+        - 'Divine Guidance'
+        - 'Sentinel''s Resolve'
+        - 'Heroic Strength'
+        - 'Anti-Stun'
+        - 'Marshal Order'
+        - 'Truffenyi''s Rally'
+        - 'Divine Armor'
+        - 'Bond Armaments'
+        - 'Rebuke'
+        - 'Smite Horde'
+        - 'Footman''s Strike'
+        - 'Halt'
+        - 'Shatter'
+        - 'Stun Foe'
+        - 'Clarity'
+        - 'Hands of Justice'
+        - 'Rutilor''s Edge'
+        - 'Holy Warrior'
+        - 'Banner of Truce'
+        - 'Aspirant''s Aegis'
+        - 'Crusader''s Challenge'
+        - 'Alamhif''s Gift'
+        - 'Vessel of Salvation'
+        - 'Blood Staunching'
+        - 'Flush Poisons'
+        - 'Cure Disease'
+        - 'Heart Link'
+        - 'Absolution'
+        - 'Vitality Healing'
+        - 'Heal Wounds'
+        - 'Heal Scars'
+        - 'Heal'
+        - 'Regenerate'
+        - 'Fountain of Creation'
+        - 'Paralysis'
+        - 'Lethargy'
+        - 'Refresh'
+        - 'Gift of Life'
+        - 'Vigor'
+        - 'Raise Power'
+        - 'Compel'
+        - 'Mental Focus'
+        - 'Awaken'
+        - 'Nissa''s Binding'
+        - 'Circle of Sympathy'
+        - 'Iron Constitution'
+        - 'Aggressive Stance'
+        - 'Aesandry Darlaeth'
+        - 'Innocence'
+        - 'Perseverance of Peri''el'
+        - 'Guardian Spirit'
+        - 'Tranquility'
+        - 'Icutu Zaharenela'
+        - 'Adaptive Curing'
+        - 'Grizzly Claws'
+        - 'Wolf Scent'
+        - 'Instinct'
+        - 'Senses of the Tiger'
+        - 'See the Wind'
+        - 'Wisdom of the Pack'
+        - 'Cheetah Swiftness'
+        - 'Claws of the Cougar'
+        - 'Bear Strength'
+        - 'Eagle''s Cry'
+        - 'Devitalize'
+        - 'Stampede'
+        - 'Carrion Call'
+        - 'Swarm'
+        - 'Harawep''s Bonds'
+        - 'Deadfall'
+        - 'Curse of the Wilds'
+        - 'Compost'
+        - 'Devolve'
+        - 'Awaken Forest'
+        - 'Essence of Yew'
+        - 'Forestwalker''s Boon'
+        - 'Hands of Lirisa'
+        - 'Athleticism'
+        - 'Oath of the Firstborn'
+        - 'Earth Meld'
+        - 'Skein of Shadows'
+        - 'Blend'
+        - 'Memory of Nature'
+        - 'River in the Sky'
+        - 'Ward Break'
+        - 'Ethereal Shield'
+        - 'Substratum'
+        - 'Aether Cloak'
+        - 'Ethereal Fissure'
+        - 'Paeldryth''s Wrath'
+        - 'Shockwave'
+        - 'Air Lash'
+        - 'Vertigo'
+        - 'Thunderclap'
+        - 'Tailwind'
+        - 'Swirling Winds'
+        - 'Y''ntrel Sechra'
+        - 'Zephyr'
+        - 'Air Bubble'
+        - 'Blufmor Garaen'
+        - 'Stone Strike'
+        - 'Tremor'
+        - 'Anther''s Call'
+        - 'Sure Footing'
+        - 'Magnetic Ballista'
+        - 'Ring of Spears'
+        - 'Aegis of Granite'
+        - 'Lightning Bolt'
+        - 'Gar Zeng'
+        - 'Arc Light'
+        - 'Tingle'
+        - 'Chain Lightning'
+        - 'Electrostatic Eddy'
+        - 'Grounding Field'
+        - 'Fire Shards'
+        - 'Fire Ball'
+        - 'Ignite'
+        - 'Dragon''s Breath'
+        - 'Fire Rain'
+        - 'Mark of Arhat'
+        - 'Mantle of Flame'
+        - 'Geyser'
+        - 'Frost Scythe'
+        - 'Frostbite'
+        - 'Ice Patch'
+        - 'Rising Mists'
+        - 'Rimefang'
+        - 'Veil of Ice'
+        - 'Fortress of Ice'
+        - 'Flame Shockwave'
+        - 'Aethrolysis'
+        - 'Gam Irnan'
+        - 'Breath of Storms'
+        - 'Echoes of Aether'
+        - 'Will of Winter'
+        - 'Words of the Wind'
+        - 'Soul Ablaze'
+        - 'Phoenix''s Pyre'
+        - 'Desert''s Maelstrom'
+        - 'Caress of the Sun'
+        - 'Misdirection'
+        - 'Redeemer''s Pride'
+        - 'Rage of the Clans'
+        - 'Abandoned Heart'
+        # Override: the spells table, so its link and recognition sub, spell it
+        # Damaris' Lullaby; which one the game prints is not checked yet.
+        - {name: 'Damaris''s Lullaby', label: 'Bard'}
+        - 'Albreda''s Balm'
+        - 'Faenella''s Grace'
+        - 'Nexus'
+        - 'Beckon the Naga'
+        - 'Aether Wolves'
+        - 'Glythtide''s Joy'
+        - 'Blessing of the Fae'
+        - 'Eye of Kertigen'
+        - 'Sanctuary'
+        - 'Drums of the Snake'
+        - 'Eillie''s Cry'
+        - 'Resonance'
+        - 'Aura of Tongues'
+        - 'Naming of Tears'
+        - 'Harmony'
+        - 'Hodierna''s Lilt'
+        - 'Whispers of the Muse'
+        - 'Demrris'' Resolve'
+        - 'Partial Displacement'
+        - 'Whole Displacement'
+        - 'Shadowling'
+        - 'Braun''s Conjecture'
+        - 'Contingency'
+        - 'Shadow Servant'
+        - 'Moongate'
+        - 'Teleport'
+        - 'Riftal Summons'
+        - 'Burn'
+        - 'Dinazen Olkar'
+        - 'Dazzle'
+        - 'Cage of Light'
+        - 'Shadows'
+        - 'Focus Moonbeam'
+        - 'Refractive Field'
+        - 'Steps of Vuan'
+        - 'Moonblade'
+        - 'Shift Moonbeam'
+        - 'Clear Vision'
+        - 'Machinist''s Touch'
+        - 'Artificer''s Eye'
+        - 'Aura Sight'
+        - 'Tenebrous Sense'
+        - 'Piercing Gaze'
+        - 'Unleash'
+        - 'Seer''s Sense'
+        - 'Locate'
+        - 'Distant Gaze'
+        - 'Destiny Cipher'
+        - 'Telekinetic Throw'
+        - 'Telekinetic Shield'
+        - 'Telekinetic Storm'
+        - 'Calm'
+        - 'Sleep'
+        - 'Rend'
+        - 'Psychic Shield'
+        - 'Shear'
+        - 'Thoughtcast'
+        - 'Mental Blast'
+        - 'Mind Shout'
+        - 'Starlight Sphere'
+        - 'Invocation of the Spheres'
+        - 'Shadewatch Mirror'
+        - 'Read the Ripples'
+        - 'Sever Thread'
+        - 'Sovereign Destiny'
+        - 'Tangled Fate'
+        - 'Tezirah''s Veil'
+        - 'Iyqaromos Fire-Lens'
+        - 'Saesordian Compass'
+        - 'Reverse Putrefaction'
+        - 'Call from Beyond'
+        - 'Necrotic Reconstruction'
+        - 'Quicken the Earth'
+        - 'Blood Burst'
+        - 'Siphon Vitality'
+        - 'Heighten Pain'
+        - 'Consume Flesh'
+        - 'Devour'
+        - 'Visions of Darkness'
+        - 'Petrifying Visions'
+        - 'Obfuscation'
+        - 'Rite of Contrition'
+        - 'Rite of Grace'
+        - 'Eyes of the Blind'
+        - 'Acid Splash'
+        - 'Viscous Solution'
+        - 'Researcher''s Insight'
+        - 'Vivisection'
+        - 'Universal Solvent'
+        - 'Calcified Hide'
+        - 'Worm''s Mist'
+        - 'Butcher''s Eye'
+        - 'Philosopher''s Preservation'
+        - 'Kura-Silma'
+        - 'Ivory Mask'
+        - 'Liturgy'
+        - 'Alkahest Edge'
+        - 'Trabe Chalice'
+        - 'Turmar Illumination'
+        - 'Avren Aevareae'
+        - 'Crystal Dart'
+        - 'Nonchalance'
+        - 'Regalia'
+        - 'Membrach''s Greed'
+        - 'Fluoresce'
+        - 'Sidhlot''s Flaying'
+
+    - name: 'sigils and crafting displays'
+      subs:
+        - ['gath mysanda', 'gath mysanda (harness)']
+        - ['kirm mysanda', 'kirm mysanda (vitality)']
+        - ['lyba mysanda', 'lyba mysanda (spirit)']
+        - ['mishar mysanda', 'mishar mysanda (concentration)']
+        - ['morlam mysanda', 'morlam mysanda (fatigue)']
+        # sigil hunting mini game
+        - [':\s+--------------------', ':  0/20']
+        - [':\s+\*-------------------', ':  1/20']
+        - [':\s+\*\*------------------', ':  2/20']
+        - [':\s+\*\*\*-----------------', ':  3/20']
+        - [':\s+\*\*\*\*----------------', ':  4/20']
+        - [':\s+\*\*\*\*\*---------------', ':  5/20']
+        - [':\s+\*\*\*\*\*\*--------------', ':  6/20']
+        - [':\s+\*\*\*\*\*\*\*-------------', ':  7/20']
+        - [':\s+\*\*\*\*\*\*\*\*------------', ':  8/20']
+        - [':\s+\*\*\*\*\*\*\*\*\*-----------', ':  9/20']
+        - [':\s+\*\*\*\*\*\*\*\*\*\*----------', ':  10/20']
+        - [':\s+\*\*\*\*\*\*\*\*\*\*\*---------', ':  11/20']
+        - [':\s+\*\*\*\*\*\*\*\*\*\*\*\*--------', ':  12/20']
+        - [':\s+\*\*\*\*\*\*\*\*\*\*\*\*\*-------', ':  13/20']
+        - [':\s+\*\*\*\*\*\*\*\*\*\*\*\*\*\*------', ':  14/20']
+        - [':\s+\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*-----', ':  15/20']
+        - [':\s+\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*----', ':  16/20']
+        - [':\s+\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*---', ':  17/20']
+        - [':\s+\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*--', ':  18/20']
+        - [':\s+\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*-', ':  19/20']
+        - [':\s+\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*', ':  20/20']
+
+    - name: 'sigil difficulty'
+      kind: 'ladder'
+      of: 5
+      steps:
+        - [1, '\.\.\.a trivial']
+        - [2, '\.\.\.a straightforward']
+        - [3, '\.\.\.a formidable']
+        - [4, '\.\.\.a challenging']
+        - [5, '\.\.\.a difficult']
+
+    # Runestones in Sierack's Reagents shop in Shard
+    - name: 'runestones, prestige and supply volumes'
+      subs:
+        - ['^ Electrum Runestone', ' Electrum Runestone   (Eagle''s Cry)']
+        - ['^ Topaz Runestone', ' Topaz Runestone      (Protection from Evil)']
+        - ['^ Quartz Runestone', ' Quartz Runestone     (Refresh)']
+        - ['^ Axinite Runestone', ' Axinite Runestone    (Glythtide''s Gift)']
+        - ['^ Azurite Runestone', ' Azurite Runestone    (Shadows)']
+        - ['^ Calavarite Runestone', ' Calavarite Runestone (Arc Light)']
+        - ['^ Celestite Runestone', ' Celestite Runestone  (Geyser)']
+        - ['^ Elbaite Runestone', ' Elbaite Runestone    (Bless)']
+        - ['^ Rhodonite Runestone', ' Rhodonite Runestone  (Fire Shards)']
+        - ['^ Selenite Runestone', ' Selenite Runestone   (Athleticism)']
+        - ['^ Xibaryl Runestone', ' Xibaryl Runestone    (Calm)']
+        - ['^ Imnera Runestone', ' Imnera Runestone     (Zephyr)']
+        - ['^ Asketine Runestone', ' Asketine Runestone   (Compost)']
+        - ['^ Avaes Runestone', ' Avaes Runestone      (Clear Vision)']
+        # Prestige for crafting disciplines
+        - ['ability has made you (a|an) unknown crafter within the Society', 'ability has made you \1 unknown (0/14) crafter within the Society']
+        - ['ability has made you (a|an) familiar crafter within the Society', 'ability has made you \1 familiar (1/14) crafter within the Society']
+        - ['ability has made you (a|an) recognized crafter within the Society', 'ability has made you \1 recognized (2/14) crafter within the Society']
+        - ['ability has made you (a|an) reputable crafter within the Society', 'ability has made you \1 reputable (3/14) crafter within the Society']
+        - ['ability has made you (a|an) professional crafter within the Society', 'ability has made you \1 professional (4/14) crafter within the Society']
+        - ['ability has made you (a|an) well-known crafter within the Society', 'ability has made you \1 well-known (5/14) crafter within the Society']
+        - ['ability has made you (a|an) noteworthy crafter within the Society', 'ability has made you \1 noteworthy (6/14) crafter within the Society']
+        - ['ability has made you (a|an) renowned crafter within the Society', 'ability has made you \1 renowned (7/14) crafter within the Society']
+        - ['ability has made you (a|an) prominent crafter within the Society', 'ability has made you \1 prominent (8/14) crafter within the Society']
+        - ['ability has made you (a|an) honored crafter within the Society', 'ability has made you \1 honored (9/14) crafter within the Society']
+        - ['ability has made you (a|an) acclaimed crafter within the Society', 'ability has made you \1 acclaimed (10/14) crafter within the Society']
+        - ['ability has made you (a|an) famous crafter within the Society', 'ability has made you \1 famous (11/14) crafter within the Society']
+        - ['ability has made you (a|an) peerless crafter within the Society', 'ability has made you \1 peerless (12/14) crafter within the Society']
+        - ['ability has made you (a|an) illustrious crafter within the Society', 'ability has made you \1 illustrious (13/14) crafter within the Society']
+        - ['ability has made you (a|an) legendary crafter within the Society', 'ability has made you \1 legendary (14/14) crafter within the Society']
+        # Display volumes for metal crafting supplies on the order board - need to be in two groups to cover fixed width
+        - ['^(\d)\)\.  a tiny (\w+) (ingot|nugget)(\.+) ([\d,]+) (\w+)', '\1).   a    (1) tiny \2 \3\4 \5 \6']
+        - ['^(\d)\)\.  a small (\w+) (ingot|nugget)(\.+) ([\d,]+) (\w+)', '\1).   a    (2) small \2 \3\4 \5 \6']
+        - ['^(\d)\)\.  a medium (\w+) (ingot|nugget)(\.+) ([\d,]+) (\w+)', '\1).   a    (3) medium \2 \3\4 \5 \6']
+        - ['^(\d)\)\.  a large (\w+) (ingot|nugget)(\.+) ([\d,]+) (\w+)', '\1).   a    (4) large \2 \3\4 \5 \6']
+        - ['^(\d)\)\.  a huge (\w+) (ingot|nugget)(\.+) ([\d,]+) (\w+)', '\1).   a    (5) huge \2 \3\4 \5 \6']
+        - ['^(\d)\)\.  a massive (\w+) (ingot|nugget)(\.+) ([\d,]+) (\w+)', '\1).   a   (10) massive \2 \3\4 \5 \6']
+        - ['^(\d)\)\.  an enormous (\w+) (ingot|nugget)(\.+) ([\d,]+) (\w+)', '\1).   an  (20) enormous \2 \3\4. \5 \6']
+        - ['^(\d)\)\.  an immense (\w+) (ingot|nugget)(\.+) ([\d,]+) (\w+)', '\1).   an  (50) immense \2 \3\4. \5 \6']
+        - ['^(\d)\)\.  a gigantic (\w+) (ingot|nugget)(\.+) ([\d,]+) (\w+)', '\1).   a  (100) gigantic \2 \3\4 \5 \6']
+        - ['^(\d)\)\.  a colossal (\w+) (ingot|nugget)(\.+) ([\d,]+) (\w+)', '\1).   a  (200) colossal \2 \3\4 \5 \6']
+        - ['^(\d\d)\)\.  a tiny (\w+) (ingot|nugget)(\.+) ([\d,]+) (\w+)', '\1).  a    (1) tiny \2 \3\4. \5 \6']
+        - ['^(\d\d)\)\.  a small (\w+) (ingot|nugget)(\.+) ([\d,]+) (\w+)', '\1).  a    (2) small \2 \3\4. \5 \6']
+        - ['^(\d\d)\)\.  a medium (\w+) (ingot|nugget)(\.+) ([\d,]+) (\w+)', '\1).  a    (3) medium \2 \3\4. \5 \6']
+        - ['^(\d\d)\)\.  a large (\w+) (ingot|nugget)(\.+) ([\d,]+) (\w+)', '\1).  a    (4) large \2 \3\4. \5 \6']
+        - ['^(\d\d)\)\.  a huge (\w+) (ingot|nugget)(\.+) ([\d,]+) (\w+)', '\1).  a    (5) huge \2 \3\4. \5 \6']
+        - ['^(\d\d)\)\.  a massive (\w+) (ingot|nugget)(\.+) ([\d,]+) (\w+)', '\1).  a   (10) massive \2 \3\4. \5 \6']
+        - ['^(\d\d)\)\.  an enormous (\w+) (ingot|nugget)(\.+) ([\d,]+) (\w+)', '\1).  an  (20) enormous \2 \3\4.. \5 \6']
+        - ['^(\d\d)\)\.  an immense (\w+) (ingot|nugget)(\.+) ([\d,]+) (\w+)', '\1).  an  (50) immense \2 \3\4.. \5 \6']
+        - ['^(\d\d)\)\.  a gigantic (\w+) (ingot|nugget)(\.+) ([\d,]+) (\w+)', '\1).  a  (100) gigantic \2 \3\4. \5 \6']
+        - ['^(\d\d)\)\.  a colossal (\w+) (ingot|nugget)(\.+) ([\d,]+) (\w+)', '\1).  a  (200) colossal \2 \3\4. \5 \6']
+
+  # Every spell, once. The spell links section links them in this order;
+  # the scroll labels and spell recognition sections name them in orders of
+  # their own. See the spells comment at the top of the file for the keys.
+  spells:
+    - {name: 'Abandoned Heart', guild: 'Bard', book: 'Emotion Control', signature: true, tier: 'advanced', type: 'targeted'}
+    - {name: 'Absolution', guild: 'Empath', book: 'Body Purification', signature: true, tier: 'intermediate', type: 'utility'}
+    - {name: 'Acid Splash', guild: 'Necromancer', book: 'Synthetic Creation', tier: 'introductory', type: 'targeted'}
+    - {name: 'Adaptive Curing', guild: 'Empath'}
+    - {name: 'Aegis of Granite', guild: 'Warrior Mage', book: 'Earth Manipulation', signature: true, tier: 'advanced', type: 'augmentation'}
+    - {name: 'Aesandry Darlaeth', guild: 'Empath', book: 'Protection', tier: 'advanced', type: 'augmentation/utility'}
+    - {name: 'Aesrela Everild', guild: 'Cleric', book: 'Divine Intervention', signature: true, tier: 'intermediate', type: 'targeted'}
+    - {name: 'Aether Cloak', guild: 'Warrior Mage', book: 'Aether Manipulation', signature: true, tier: 'advanced', type: 'warding'}
+    - {name: 'Aether Wolves', guild: 'Bard', book: 'Fae Arts', signature: true, tier: 'introductory', type: 'debilitation'}
+    - {name: 'Aethrolysis', guild: 'Warrior Mage'}
+    - {name: 'Aggressive Stance', guild: 'Empath', book: 'Protection', tier: 'basic', type: 'augmentation'}
+    - {name: 'Air Bubble', guild: 'Warrior Mage', book: 'Air Manipulation', tier: 'basic', type: 'utility'}
+    - {name: 'Air Lash', guild: 'Warrior Mage', book: 'Air Manipulation', tier: 'introductory', type: 'targeted'}
+    - {name: 'Alamhif''s Gift', guild: 'Paladin', book: 'Sacrifice', signature: true, tier: 'advanced', type: 'utility'}
+    - {name: 'Albreda''s Balm', guild: 'Bard', book: 'Emotion Control', signature: true, tier: 'advanced', type: 'debilitation/utility'}
+    - {name: 'Alkahest Edge', guild: 'Necromancer'}
+    - {name: 'All-Presence'}
+    - {name: 'Alloyage of Self'}
+    - {name: 'Ancestral Arts'}
+    - {name: 'Anther''s Call', guild: 'Warrior Mage', book: 'Earth Manipulation', tier: 'basic', type: 'debilitation'}
+    - {name: 'Anti-Stun', guild: 'Paladin', book: 'Inspiration', tier: 'intermediate', type: 'utility'}
+    - {name: 'Arbiter''s Stylus'}
+    - {name: 'Arc Light', guild: 'Warrior Mage', book: 'Electricity Manipulation', tier: 'basic', type: 'debilitation'}
+    - {name: 'Artificer''s Eye', guild: 'Moon Mage', book: 'Perception', tier: 'basic', type: 'augmentation'}
+    - {name: 'Aspect of the Shark'}
+    - {name: 'Aspects of the All-God', guild: 'Cleric'}
+    - {name: 'Aspirant''s Aegis', guild: 'Paladin', book: 'Sacrifice', tier: 'introductory', type: 'warding'}
+    - {name: 'Astral Projection'}
+    - {name: 'Athleticism', guild: 'Ranger', book: 'Wilderness Survival', tier: 'basic', type: 'augmentation'}
+    - {name: 'Aura of Tongues', guild: 'Bard', book: 'Sound Manipulation', tier: 'introductory', type: 'utility'}
+    - {name: 'Aura Sight', guild: 'Moon Mage', book: 'Perception', tier: 'basic', type: 'augmentation'}
+    - {name: 'Auspice', guild: 'Cleric', book: 'Spirit Manipulation', tier: 'basic', type: 'augmentation'}
+    - {name: 'Avren Aevareae', guild: 'Trader'}
+    - {name: 'Avtalia Array'}
+    - {name: 'Awaken', guild: 'Empath', book: 'Mental Preparation', tier: 'intermediate', type: 'utility'}
+    - {name: 'Awaken Forest', guild: 'Ranger', book: 'Nature Manipulation', signature: true, tier: 'advanced', type: 'utility'}
+    - {name: 'Back Alley Tricks'}
+    - {name: 'Banner of Truce', guild: 'Paladin', book: 'Justice', signature: true, tier: 'intermediate', type: 'utility'}
+    - {name: 'Bear Strength', guild: 'Ranger', book: 'Animal Abilities', signature: true, tier: 'advanced', type: 'augmentation/utility'}
+    - {name: 'Beckon the Naga', guild: 'Bard', book: 'Fae Arts', signature: true, tier: 'advanced', type: 'targeted'}
+    - {name: 'Benediction', guild: 'Cleric', book: 'Holy Defense', signature: true, tier: 'intermediate', type: 'augmentation'}
+    - {name: 'Bespoke Regalia'}
+    - {name: 'Bitter Feast', guild: 'Cleric', book: 'Metamagic', signature: true, tier: 'advanced', type: 'utility'}
+    - {name: 'Blend', guild: 'Ranger', book: 'Wilderness Survival', signature: true, tier: 'intermediate', type: 'utility'}
+    - {name: 'Bless', guild: 'Cleric', book: 'Holy Evocations', tier: 'introductory', type: 'utility'}
+    - {name: 'Blessing of the Fae', guild: 'Bard', book: 'Fae Arts', signature: true, tier: 'intermediate', type: 'augmentation'}
+    - {name: 'Blood Burst', guild: 'Necromancer', book: 'Blood Magic', tier: 'intermediate', type: 'targeted'}
+    - {name: 'Blood Staunching', guild: 'Empath', book: 'Body Purification', tier: 'basic', type: 'utility'}
+    - {name: 'Bloodthorns'}
+    - {name: 'Blufmor Garaen', guild: 'Warrior Mage', book: 'Air Manipulation', signature: true, tier: 'advanced', type: 'targeted'}
+    - {name: 'Blur'}
+    - {name: 'Bond Armaments', guild: 'Paladin', book: 'Inspiration', signature: true, tier: 'intermediate', type: 'utility'}
+    - {name: 'Bonegrinder'}
+    - {name: 'Book Burning'}
+    - {name: 'Braun''s Conjecture', guild: 'Moon Mage', book: 'Enlightened Geometry', signature: true, tier: 'intermediate', type: 'utility'}
+    - {name: 'Breath of Storms', guild: 'Bard', book: 'Elemental Invocations', tier: 'basic', type: 'targeted'}
+    - {name: 'Burden', book: 'Analogous Patterns', tier: 'introductory', type: 'debilitation'}
+    - {name: 'Burn', guild: 'Moon Mage', book: 'Moonlight Manipulation', tier: 'intermediate', type: 'targeted'}
+    - {name: 'Butcher''s Eye', guild: 'Necromancer', book: 'Transcendental Necromancy', signature: true, tier: 'basic', type: 'augmentation'}
+    - {name: 'Cage of Light', guild: 'Moon Mage', book: 'Moonlight Manipulation', tier: 'intermediate', type: 'warding'}
+    - {name: 'Calcified Hide', guild: 'Necromancer', book: 'Transcendental Necromancy', signature: true, tier: 'intermediate', type: 'warding'}
+    - {name: 'Calculated Rage'}
+    - {name: 'Call from Beyond', guild: 'Necromancer', book: 'Animation', signature: true, tier: 'intermediate', type: 'utility'}
+    - {name: 'Call from Within'}
+    - {name: 'Calm', guild: 'Moon Mage', book: 'Psychic Projection', tier: 'introductory', type: 'debilitation'}
+    - {name: 'Caltrops'}
+    - {name: 'Caress of the Sun', guild: 'Bard', book: 'Elemental Invocations', signature: true, tier: 'introductory', type: 'utility'}
+    - {name: 'Carrion Call', guild: 'Ranger', book: 'Nature Manipulation', tier: 'basic', type: 'targeted'}
+    - {name: 'Centering', guild: 'Cleric', book: 'Spirit Manipulation', tier: 'introductory', type: 'augmentation'}
+    - {name: 'Chain Lightning', guild: 'Warrior Mage', book: 'Electricity Manipulation', signature: true, tier: 'intermediate', type: 'targeted'}
+    - {name: 'Cheetah Swiftness', guild: 'Ranger', book: 'Animal Abilities', signature: true, tier: 'advanced', type: 'augmentation'}
+    - {name: 'Chill Spirit', guild: 'Cleric', book: 'Spirit Manipulation', tier: 'intermediate', type: 'targeted'}
+    - {name: 'Chirurgia'}
+    - {name: 'Circle of Sympathy', guild: 'Empath', book: 'Mental Preparation', signature: true, tier: 'intermediate', type: 'utility'}
+    - {name: 'Clarity', guild: 'Paladin', book: 'Justice', tier: 'intermediate', type: 'augmentation'}
+    - {name: 'Clarity of Thought'}
+    - {name: 'Claws of the Cougar', guild: 'Ranger', book: 'Animal Abilities', signature: true, tier: 'intermediate', type: 'augmentation'}
+    - {name: 'Clear Vision', guild: 'Moon Mage', book: 'Perception', tier: 'introductory', type: 'augmentation'}
+    - {name: 'Compel', guild: 'Empath', book: 'Mental Preparation', tier: 'intermediate', type: 'debilitation'}
+    - {name: 'Compost', guild: 'Ranger', book: 'Nature Manipulation', tier: 'introductory', type: 'utility'}
+    - {name: 'Conductive Spires'}
+    - {name: 'Confidence of Arms'}
+    - {name: 'Consume Flesh', guild: 'Necromancer', book: 'Blood Magic', signature: true, tier: 'intermediate', type: 'utility'}
+    - {name: 'Contingency', guild: 'Moon Mage', book: 'Enlightened Geometry', signature: true, tier: 'intermediate', type: 'utility'}
+    - {name: 'Convergence'}
+    - {name: 'Courage', guild: 'Paladin', book: 'Inspiration', tier: 'basic', type: 'augmentation'}
+    - {name: 'Covetous Rebirth'}
+    - {name: 'Crusader''s Challenge', guild: 'Paladin', book: 'Sacrifice', signature: true, tier: 'advanced', type: 'augmentation/utility'}
+    - {name: 'Crystal Burst'}
+    - {name: 'Crystal Dart', guild: 'Trader'}
+    - {name: 'Crystal Spike'}
+    - {name: 'Cure Disease', guild: 'Empath', book: 'Body Purification', signature: true, tier: 'intermediate', type: 'utility'}
+    - {name: 'Curse of the Wilds', guild: 'Ranger', book: 'Nature Manipulation', tier: 'advanced', type: 'debilitation'}
+    - {name: 'Curse of Zachriedek', guild: 'Cleric', book: 'Holy Evocations', tier: 'intermediate', type: 'debilitation'}
+    - {name: 'Damaris'' Lullaby', guild: 'Bard', book: 'Emotion Control', signature: true, tier: 'basic', type: 'debilitation'}
+    - {name: 'Dart'}
+    - {name: 'Dazzle', guild: 'Moon Mage', book: 'Moonlight Manipulation', tier: 'basic', type: 'debilitation'}
+    - {name: 'Deadfall', guild: 'Ranger', book: 'Nature Manipulation', tier: 'basic', type: 'debilitation'}
+    - {name: 'Demrris'' Resolve', guild: 'Bard', book: 'Sound Manipulation', tier: 'basic', type: 'debilitation'}
+    - {name: 'Desert''s Maelstrom', guild: 'Bard', book: 'Elemental Invocations', signature: true, tier: 'advanced', type: 'debilitation'}
+    - {name: 'Destiny Cipher', guild: 'Moon Mage', book: 'Perception', signature: true, tier: 'basic', type: 'utility'}
+    - {name: 'Devitalize', guild: 'Ranger', book: 'Nature Manipulation', tier: 'intermediate', type: 'targeted'}
+    - {name: 'Devolve', guild: 'Ranger', book: 'Nature Manipulation', signature: true, tier: 'intermediate', type: 'debilitation'}
+    - {name: 'Devour', guild: 'Necromancer', book: 'Blood Magic', signature: true, tier: 'advanced', type: 'utility'}
+    - {name: 'Dinazen Olkar', guild: 'Moon Mage', book: 'Moonlight Manipulation', tier: 'basic', type: 'targeted'}
+    - {name: 'Disassemble'}
+    - {name: 'Dispel', book: 'Analogous Patterns', tier: 'intermediate', type: 'utility'}
+    - {name: 'Distant Gaze', guild: 'Moon Mage', book: 'Perception', signature: true, tier: 'intermediate', type: 'utility'}
+    - {name: 'Divine Armor', guild: 'Paladin', book: 'Inspiration', signature: true, tier: 'intermediate', type: 'utility'}
+    - {name: 'Divine Guidance', guild: 'Paladin', book: 'Inspiration', tier: 'basic', type: 'augmentation'}
+    - {name: 'Divine Radiance', guild: 'Cleric', book: 'Holy Evocations', tier: 'basic', type: 'utility'}
+    - {name: 'Dragon''s Breath', guild: 'Warrior Mage', book: 'Fire Manipulation', signature: true, tier: 'intermediate', type: 'targeted'}
+    - {name: 'Drums of the Snake', guild: 'Bard', book: 'Sound Manipulation', tier: 'intermediate', type: 'augmentation'}
+    - {name: 'Eagle''s Cry', guild: 'Ranger', book: 'Nature Manipulation', tier: 'introductory', type: 'targeted'}
+    - {name: 'Earth Meld', guild: 'Ranger', book: 'Wilderness Survival', tier: 'basic', type: 'augmentation/utility'}
+    - {name: 'Earth Sense'}
+    - {name: 'Ease Burden', book: 'Analogous Patterns', tier: 'introductory', type: 'augmentation'}
+    - {name: 'Ebon Blood of the Scorpion'}
+    - {name: 'Echoes of Aether', guild: 'Bard', book: 'Elemental Invocations', tier: 'intermediate', type: 'augmentation'}
+    - {name: 'Eclipse'}
+    - {name: 'Eillie''s Cry', guild: 'Bard', book: 'Sound Manipulation', tier: 'introductory', type: 'augmentation'}
+    - {name: 'Electrogenesis'}
+    - {name: 'Electrostatic Eddy', guild: 'Warrior Mage', book: 'Electricity Manipulation', signature: true, tier: 'intermediate', type: 'debilitation'}
+    - {name: 'Elementalism'}
+    - {name: 'Elision'}
+    - {name: 'Embed the Cycle'}
+    - {name: 'Embrace of the Vela''Tohr'}
+    - {name: 'Empower Moonblade'}
+    - {name: 'Emuin''s Candlelight'}
+    - {name: 'Enrichment'}
+    - {name: 'Essence of Yew', guild: 'Ranger', book: 'Wilderness Survival', tier: 'basic', type: 'warding'}
+    - {name: 'Ethereal Fissure', guild: 'Warrior Mage', book: 'Aether Manipulation', signature: true, tier: 'intermediate', type: 'utility'}
+    - {name: 'Ethereal Shield', guild: 'Warrior Mage', book: 'Aether Manipulation', tier: 'introductory', type: 'warding'}
+    - {name: 'Expansive Infusions'}
+    - {name: 'Explosive Dart'}
+    - {name: 'Eye of Kertigen', guild: 'Bard', book: 'Fae Arts', signature: true, tier: 'intermediate', type: 'utility'}
+    - {name: 'Eyes of the Blind', guild: 'Necromancer', book: 'Corruption', signature: true, tier: 'basic', type: 'utility'}
+    - {name: 'Eylhaar''s Feast', guild: 'Cleric', book: 'Spirit Manipulation', signature: true, tier: 'intermediate', type: 'utility'}
+    - {name: 'Faenella''s Grace', guild: 'Bard', book: 'Emotion Control', signature: true, tier: 'introductory', type: 'augmentation'}
+    - {name: 'Failure of the Forge'}
+    - {name: 'Fiery Infusions'}
+    - {name: 'Finesse'}
+    - {name: 'Fire Ball', guild: 'Warrior Mage', book: 'Fire Manipulation', tier: 'intermediate', type: 'targeted'}
+    - {name: 'Fire of Ushnish', guild: 'Cleric', book: 'Divine Intervention', signature: true, tier: 'advanced', type: 'targeted'}
+    - {name: 'Fire Rain', guild: 'Warrior Mage', book: 'Fire Manipulation', signature: true, tier: 'advanced', type: 'targeted'}
+    - {name: 'Fire Shards', guild: 'Warrior Mage', book: 'Fire Manipulation', tier: 'introductory', type: 'targeted'}
+    - {name: 'Fists of Faenella', guild: 'Cleric', book: 'Holy Evocations', tier: 'basic', type: 'targeted'}
+    - {name: 'Flame Shockwave', guild: 'Warrior Mage', book: 'metamagic', tier: 'advanced', type: 'targeted'}
+    - {name: 'Fluoresce', guild: 'Trader'}
+    - {name: 'Flush Poisons', guild: 'Empath', book: 'Body Purification', signature: true, tier: 'intermediate', type: 'utility'}
+    - {name: 'Focus Moonbeam', guild: 'Moon Mage', book: 'Moonlight Manipulation', signature: true, tier: 'introductory', type: 'utility'}
+    - {name: 'Footman''s Strike', guild: 'Paladin', book: 'Justice', tier: 'basic', type: 'targeted'}
+    - {name: 'Forestwalker''s Boon', guild: 'Ranger', book: 'Wilderness Survival', tier: 'intermediate', type: 'warding'}
+    - {name: 'Fortify'}
+    - {name: 'Fortress of Ice', guild: 'Warrior Mage', book: 'Water Manipulation', signature: true, tier: 'advanced', type: 'utility'}
+    - {name: 'Fountain of Creation', guild: 'Empath', book: 'Healing', signature: true, tier: 'advanced', type: 'utility'}
+    - {name: 'Frost Scythe', guild: 'Warrior Mage', book: 'Water Manipulation', tier: 'intermediate', type: 'targeted'}
+    - {name: 'Frostbite', guild: 'Warrior Mage', book: 'Water Manipulation', tier: 'intermediate', type: 'debilitation'}
+    - {name: 'Gam Irnan', guild: 'Warrior Mage'}
+    - {name: 'Gar Zeng', guild: 'Warrior Mage', book: 'Electricity Manipulation', tier: 'introductory', type: 'targeted'}
+    - {name: 'Gauge Flow', book: 'Analogous Patterns', tier: 'basic', type: 'utility'}
+    - {name: 'Geyser', guild: 'Warrior Mage', book: 'Water Manipulation', tier: 'introductory', type: 'targeted'}
+    - {name: 'Ghost Shroud', guild: 'Cleric', book: 'Holy Defense', tier: 'intermediate', type: 'warding'}
+    - {name: 'Ghoulflesh'}
+    - {name: 'Gift of Life', guild: 'Empath', book: 'Life Force Manipulation', tier: 'basic', type: 'augmentation'}
+    - {name: 'Glythtide''s Gift', guild: 'Cleric', book: 'Divine Intervention', tier: 'basic', type: 'augmentation'}
+    - {name: 'Glythtide''s Joy', guild: 'Bard', book: 'Fae Arts', signature: true, tier: 'basic', type: 'warding'}
+    - {name: 'Grizzly Claws', guild: 'Ranger', book: 'Animal Abilities', tier: 'intermediate', type: 'debilitation'}
+    - {name: 'Grounding Field', guild: 'Warrior Mage', book: 'Electricity Manipulation', signature: true, tier: 'advanced', type: 'warding'}
+    - {name: 'Guardian Spirit', guild: 'Empath', book: 'Protection', signature: true, tier: 'advanced', type: 'utility'}
+    - {name: 'Halo', guild: 'Cleric', book: 'Holy Defense', signature: true, tier: 'advanced', type: 'debilitation/warding'}
+    - {name: 'Halt', guild: 'Paladin', book: 'Justice', tier: 'basic', type: 'debilitation'}
+    - {name: 'Hand of Tenemlor', guild: 'Cleric', book: 'Holy Evocations', tier: 'intermediate', type: 'targeted'}
+    - {name: 'Hands of Bone'}
+    - {name: 'Hands of Justice', guild: 'Paladin', book: 'Justice', tier: 'basic', type: 'utility'}
+    - {name: 'Hands of Lirisa', guild: 'Ranger', book: 'Wilderness Survival', tier: 'basic', type: 'augmentation'}
+    - {name: 'Harawep''s Bonds', guild: 'Ranger', book: 'Nature Manipulation', tier: 'basic', type: 'debilitation'}
+    - {name: 'Harm Evil', guild: 'Cleric', book: 'Holy Evocations', tier: 'basic', type: 'targeted'}
+    - {name: 'Harm Horde', guild: 'Cleric', book: 'Holy Evocations', signature: true, tier: 'intermediate', type: 'targeted'}
+    - {name: 'Harmless'}
+    - {name: 'Harmony', guild: 'Bard', book: 'Sound Manipulation', signature: true, tier: 'advanced', type: 'augmentation'}
+    - {name: 'Heal', guild: 'Empath', book: 'Healing', signature: true, tier: 'intermediate', type: 'utility'}
+    - {name: 'Heal Scars', guild: 'Empath', book: 'Healing', signature: true, tier: 'introductory', type: 'utility'}
+    - {name: 'Heal Wounds', guild: 'Empath', book: 'Healing', signature: true, tier: 'introductory', type: 'utility'}
+    - {name: 'Heart Link', guild: 'Empath', book: 'Body Purification', signature: true, tier: 'intermediate', type: 'utility'}
+    - {name: 'Heavenly Fires', guild: 'Cleric'}
+    - {name: 'Heighten Pain', guild: 'Necromancer', book: 'Blood Magic', tier: 'introductory', type: 'debilitation'}
+    - {name: 'Heroic Strength', guild: 'Paladin', book: 'Inspiration', tier: 'introductory', type: 'augmentation'}
+    - {name: 'Highlight Flaws'}
+    - {name: 'Hodierna''s Lilt', guild: 'Bard', book: 'Sound Manipulation', signature: true, tier: 'basic', type: 'utility'}
+    - {name: 'Holy Warrior', guild: 'Paladin', book: 'Justice', signature: true, tier: 'advanced', type: 'warding/utility'}
+    - {name: 'Horn of the Black Unicorn', guild: 'Cleric', book: 'Holy Evocations', tier: 'basic', type: 'targeted'}
+    - {name: 'Huldah''s Pall', guild: 'Cleric', book: 'Metamagic', tier: 'basic', type: 'debilitation'}
+    - {name: 'Hydra Hex', guild: 'Cleric', book: 'Holy Evocations', signature: true, tier: 'advanced', type: 'debilitation'}
+    - {name: 'Hypnotize'}
+    - {name: 'Ice Patch', guild: 'Warrior Mage', book: 'Water Manipulation', tier: 'basic', type: 'debilitation'}
+    - {name: 'Icutu Zaharenela', guild: 'Empath'}
+    - {name: 'Icy Infusions'}
+    - {name: 'Idon''s Theft', guild: 'Cleric', book: 'Metamagic', signature: true, tier: 'advanced', type: 'debilitation/utility'}
+    - {name: 'Ignite', guild: 'Warrior Mage', book: 'Fire Manipulation', tier: 'basic', type: 'utility'}
+    - {name: 'Ignition Point'}
+    - {name: 'Illusions of Grandeur'}
+    - {name: 'Imbue', book: 'Analogous Patterns', tier: 'intermediate', type: 'utility'}
+    - {name: 'Innocence', guild: 'Empath', book: 'Protection', tier: 'basic', type: 'utility'}
+    - {name: 'Instinct', guild: 'Ranger', book: 'Animal Abilities', tier: 'basic', type: 'augmentation'}
+    - {name: 'Integrity'}
+    - {name: 'Invocation of the Spheres', guild: 'Moon Mage', book: 'Stellar Magic', signature: true, tier: 'advanced', type: 'augmentation'}
+    - {name: 'Iridius Rod'}
+    - {name: 'Iron Constitution', guild: 'Empath', book: 'Protection', tier: 'basic', type: 'warding'}
+    - {name: 'Isolation'}
+    - {name: 'Ivory Mask', guild: 'Necromancer', book: 'Transcendental Necromancy', signature: true, tier: 'basic', type: 'augmentation'}
+    - {name: 'Iyqaromos Fire-Lens', guild: 'Moon Mage'}
+    - {name: 'Kertigen''s Will'}
+    - {name: 'Kura-Silma', guild: 'Necromancer', book: 'Transcendental Necromancy', signature: true, tier: 'basic', type: 'augmentation'}
+    - {name: 'Last Gift of Vithwok IV'}
+    - {name: 'Lay Ward', book: 'Analogous Patterns', tier: 'basic', type: 'warding'}
+    - {name: 'Lethargy', guild: 'Empath', book: 'Life Force Manipulation', tier: 'basic', type: 'debilitation'}
+    - {name: 'Lightning Bolt', guild: 'Warrior Mage', book: 'Electricity Manipulation', tier: 'intermediate', type: 'targeted'}
+    - {name: 'Liturgy', guild: 'Necromancer'}
+    - {name: 'Locate', guild: 'Moon Mage', book: 'Perception', signature: true, tier: 'intermediate', type: 'utility'}
+    - {name: 'Machinist''s Touch', guild: 'Moon Mage', book: 'Perception', tier: 'intermediate', type: 'augmentation'}
+    - {name: 'Magnetic Ballista', guild: 'Warrior Mage', book: 'Earth Manipulation', signature: true, tier: 'intermediate', type: 'targeted'}
+    - {name: 'Starry Waters', guild: 'Cleric', book: 'Holy Defense', tier: 'basic', type: 'augmentation'}
+    - {name: 'Malediction', guild: 'Cleric', book: 'Holy Evocations', tier: 'intermediate', type: 'debilitation'}
+    - {name: 'Manifest Force', book: 'Analogous Patterns', tier: 'basic', type: 'warding'}
+    - {name: 'Mantle of Flame', guild: 'Warrior Mage', book: 'Fire Manipulation', signature: true, tier: 'advanced', type: 'augmentation'}
+    - {name: 'Mark of Arhat', guild: 'Warrior Mage', book: 'Fire Manipulation', signature: true, tier: 'basic', type: 'debilitation'}
+    - {name: 'Marshal Order', guild: 'Paladin', book: 'Inspiration', signature: true, tier: 'intermediate', type: 'augmentation'}
+    - {name: 'Mask of the Moons'}
+    - {name: 'Mass Rejuvenation', guild: 'Cleric', book: 'Spirit Manipulation', signature: true, tier: 'intermediate', type: 'utility'}
+    - {name: 'Membrach''s Greed', guild: 'Trader'}
+    - {name: 'Memory of Nature', guild: 'Ranger', book: 'Wilderness Survival', signature: true, tier: 'advanced', type: 'utility'}
+    - {name: 'Mental Blast', guild: 'Moon Mage', book: 'Psychic Projection', signature: true, tier: 'advanced', type: 'debilitation'}
+    - {name: 'Mental Focus', guild: 'Empath', book: 'Mental Preparation', tier: 'basic', type: 'augmentation'}
+    - {name: 'Meraud''s Cry', guild: 'Cleric', book: 'Metamagic', signature: true, tier: 'intermediate', type: 'debilitation'}
+    - {name: 'Mind Shout', guild: 'Moon Mage', book: 'Psychic Projection', signature: true, tier: 'advanced', type: 'debilitation'}
+    - {name: 'Visage', guild: 'Cleric', book: 'Holy Defense', tier: 'basic', type: 'warding'}
+    - {name: 'Mirror Image'}
+    - {name: 'Misdirection', guild: 'Bard', book: 'Emotion Control', tier: 'intermediate', type: 'debilitation/augmentation'}
+    - {name: 'Moonblade', guild: 'Moon Mage', book: 'Moonlight Manipulation', signature: true, tier: 'intermediate', type: 'utility'}
+    - {name: 'Moongate', guild: 'Moon Mage', book: 'Enlightened Geometry', signature: true, tier: 'advanced', type: 'utility'}
+    - {name: 'Murrula''s Flames', guild: 'Cleric', book: 'Divine Intervention', signature: true, tier: 'advanced', type: 'utility'}
+    - {name: 'Naming of Tears', guild: 'Bard', book: 'Sound Manipulation', signature: true, tier: 'advanced', type: 'warding'}
+    - {name: 'Nature Control'}
+    - {name: 'Necrotic Reconstruction', guild: 'Necromancer', book: 'Animation', signature: true, tier: 'intermediate', type: 'utility'}
+    - {name: 'Nexus', guild: 'Bard', book: 'Fae Arts', tier: 'advanced', type: 'utility'}
+    - {name: 'Nissa''s Binding', guild: 'Empath', book: 'Mental Preparation', signature: true, tier: 'intermediate', type: 'debilitation'}
+    - {name: 'Nonchalance', guild: 'Trader'}
+    - {name: 'Noumena'}
+    - {name: 'Oath of the Firstborn', guild: 'Ranger', book: 'Wilderness Survival', tier: 'intermediate', type: 'augmentation'}
+    - {name: 'Obfuscation', guild: 'Necromancer', book: 'Corruption', tier: 'introductory', type: 'augmentation'}
+    - {name: 'Osrel Meraud', guild: 'Cleric', book: 'Metamagic', signature: true, tier: 'advanced', type: 'utility'}
+    - {name: 'Paeldryth''s Wrath', guild: 'Warrior Mage', book: 'Air Manipulation', tier: 'intermediate', type: 'targeted'}
+    - {name: 'Paralysis', guild: 'Empath', book: 'Life Force Manipulation', tier: 'basic', type: 'targeted'}
+    - {name: 'Paranoia'}
+    - {name: 'Partial Displacement', guild: 'Moon Mage', book: 'Enlightened Geometry', tier: 'basic', type: 'targeted'}
+    - {name: 'Perseverance of Peri''el', guild: 'Empath', book: 'Protection', signature: true, tier: 'advanced', type: 'warding'}
+    - {name: 'Persistence of Mana', guild: 'Cleric', book: 'Metamagic', signature: true, tier: 'intermediate', type: 'augmentation'}
+    - {name: 'Petrifying Visions', guild: 'Necromancer', book: 'Corruption', tier: 'basic', type: 'debilitation'}
+    - {name: 'Phelim''s Sanction', guild: 'Cleric', book: 'Holy Evocations', tier: 'intermediate', type: 'debilitation'}
+    - {name: 'Phenomena'}
+    - {name: 'Philosopher''s Preservation', guild: 'Necromancer', book: 'Transcendental Necromancy', signature: true, tier: 'basic', type: 'augmentation'}
+    - {name: 'Phoenix''s Pyre', guild: 'Bard', book: 'Elemental Invocations', signature: true, tier: 'advanced', type: 'targeted'}
+    - {name: 'Piercing Gaze', guild: 'Moon Mage', book: 'Perception', tier: 'basic', type: 'utility'}
+    - {name: 'Piper''s Vengeance'}
+    - {name: 'Plague of Scavengers'}
+    - {name: 'Platinum Hands of Kertigen'}
+    - {name: 'Programmed Illusion'}
+    - {name: 'Protection from Evil', guild: 'Cleric', book: 'Holy Defense', tier: 'basic', type: 'warding'}
+    - {name: 'Psychic Shield', guild: 'Moon Mage', book: 'Psychic Projection', tier: 'basic', type: 'warding'}
+    - {name: 'Quick Infusions'}
+    - {name: 'Quicken the Earth', guild: 'Necromancer', book: 'Animation', signature: true, tier: 'basic', type: 'utility'}
+    - {name: 'Rage of the Clans', guild: 'Bard', book: 'Emotion Control', tier: 'intermediate', type: 'augmentation'}
+    - {name: 'Raise Power', guild: 'Empath', book: 'Life Force Manipulation', tier: 'intermediate', type: 'utility'}
+    - {name: 'Reactive Barriers'}
+    - {name: 'Read the Ripples', guild: 'Moon Mage', book: 'Stellar Magic', signature: true, tier: 'advanced', type: 'utility'}
+    - {name: 'Rebuke', guild: 'Paladin', book: 'Justice', tier: 'intermediate', type: 'targeted'}
+    - {name: 'Recharge'}
+    - {name: 'Redeemer''s Pride', guild: 'Bard', book: 'Emotion Control', tier: 'basic', type: 'warding'}
+    - {name: 'Refractive Field', guild: 'Moon Mage', book: 'Moonlight Manipulation', signature: true, tier: 'basic', type: 'utility'}
+    - {name: 'Refresh', guild: 'Empath', book: 'Life Force Manipulation', tier: 'introductory', type: 'augmentation'}
+    - {name: 'Regalia', guild: 'Trader'}
+    - {name: 'Regenerate', guild: 'Empath', book: 'Healing', signature: true, tier: 'advanced', type: 'utility'}
+    - {name: 'Reinforced Infusions'}
+    - {name: 'Rejuvenation', guild: 'Cleric', book: 'Spirit Manipulation', signature: true, tier: 'basic', type: 'utility'}
+    - {name: 'Relight'}
+    - {name: 'Rend', guild: 'Moon Mage', book: 'Psychic Projection', tier: 'basic', type: 'debilitation/utility'}
+    - {name: 'Researcher''s Insight', guild: 'Necromancer', book: 'Synthetic Creation', tier: 'intermediate', type: 'augmentation'}
+    - {name: 'Resection'}
+    - {name: 'Resonance', guild: 'Bard', book: 'Sound Manipulation', tier: 'intermediate', type: 'utility'}
+    - {name: 'Resumption'}
+    - {name: 'Resurrection', guild: 'Cleric', book: 'Divine Intervention', signature: true, tier: 'intermediate', type: 'utility'}
+    - {name: 'Revelation', guild: 'Cleric', book: 'Spirit Manipulation', tier: 'intermediate', type: 'utility'}
+    - {name: 'Reverse Putrefaction', guild: 'Necromancer', book: 'Animation', signature: true, tier: 'intermediate', type: 'augmentation'}
+    - {name: 'Riftal Summons', guild: 'Moon Mage', book: 'Enlightened Geometry', signature: true, tier: 'esoteric', type: 'utility'}
+    - {name: 'Righteous Wrath', guild: 'Paladin', book: 'Inspiration', tier: 'basic', type: 'augmentation'}
+    - {name: 'Rimefang', guild: 'Warrior Mage', book: 'Water Manipulation', signature: true, tier: 'advanced', type: 'targeted'}
+    - {name: 'Ring of Blessings'}
+    - {name: 'Ring of Spears', guild: 'Warrior Mage', book: 'Earth Manipulation', signature: true, tier: 'advanced', type: 'targeted'}
+    - {name: 'Ripplegate Theory'}
+    - {name: 'Rising Mists', guild: 'Warrior Mage', book: 'Water Manipulation', tier: 'intermediate', type: 'utility'}
+    - {name: 'Rite of Contrition', guild: 'Necromancer', book: 'Corruption', tier: 'intermediate', type: 'utility'}
+    - {name: 'Rite of Defiance'}
+    - {name: 'Rite of Forbearance'}
+    - {name: 'Rite of Grace', guild: 'Necromancer', book: 'Corruption', tier: 'intermediate', type: 'utility'}
+    - {name: 'River in the Sky', guild: 'Ranger'}
+    - {name: 'Rutilor''s Edge', guild: 'Paladin', book: 'Justice', tier: 'intermediate', type: 'utility'}
+    - {name: 'Saesordian Compass', guild: 'Moon Mage'}
+    - {name: 'Sanctify Pattern', guild: 'Cleric', book: 'Metamagic', tier: 'basic', type: 'augmentation'}
+    - {name: 'Sanctuary', guild: 'Bard', book: 'Fae Arts', signature: true, tier: 'advanced', type: 'utility'}
+    - {name: 'Sanyu Lyba', guild: 'Cleric', book: 'Holy Defense', signature: true, tier: 'advanced', type: 'warding'}
+    - {name: 'Seal Cambrinth', book: 'Analogous Patterns', tier: 'basic', type: 'utility'}
+    - {name: 'See the Wind', guild: 'Ranger', book: 'Animal Abilities', tier: 'introductory', type: 'augmentation'}
+    - {name: 'Seer''s Sense', guild: 'Moon Mage', book: 'Perception', signature: true, tier: 'intermediate', type: 'augmentation/utility'}
+    - {name: 'Self Confidence'}
+    - {name: 'Senses of the Tiger', guild: 'Ranger', book: 'Animal Abilities', tier: 'basic', type: 'augmentation'}
+    - {name: 'Sentinel''s Resolve', guild: 'Paladin', book: 'Inspiration', tier: 'basic', type: 'augmentation'}
+    - {name: 'Sever Thread', guild: 'Moon Mage', book: 'Teleologic Sorcery', signature: true, tier: 'basic', type: 'debilitation'}
+    - {name: 'Shadewatch Mirror', guild: 'Moon Mage', book: 'Stellar Magic', signature: true, tier: 'advanced', type: 'utility'}
+    - {name: 'Shadow Court'}
+    - {name: 'Shadow Servant', guild: 'Moon Mage', book: 'Enlightened Geometry', signature: true, tier: 'advanced', type: 'utility'}
+    - {name: 'Shadow Web'}
+    - {name: 'Shadowling', guild: 'Moon Mage', book: 'Enlightened Geometry', signature: true, tier: 'intermediate', type: 'utility'}
+    - {name: 'Shadows', guild: 'Moon Mage', book: 'Moonlight Manipulation', tier: 'introductory', type: 'augmentation'}
+    - {name: 'Shape Moonblade'}
+    - {name: 'Shatter', guild: 'Paladin', book: 'Justice', tier: 'basic', type: 'debilitation'}
+    - {name: 'Shear', guild: 'Moon Mage', book: 'Psychic Projection', tier: 'advanced', type: 'warding'}
+    - {name: 'Shield of Light', guild: 'Cleric', book: 'Holy Defense', signature: true, tier: 'intermediate', type: 'augmentation/utility'}
+    - {name: 'Shift Moonbeam', guild: 'Moon Mage', book: 'Moonlight Manipulation', signature: true, tier: 'intermediate', type: 'utility'}
+    - {name: 'Shocking Infusions'}
+    - {name: 'Shockwave', guild: 'Warrior Mage', book: 'Air Manipulation', tier: 'advanced', type: 'targeted'}
+    - {name: 'Sidasas Sedra'}
+    - {name: 'Sidhlot''s Flaying', label: 'Lay Necromancy'}
+    - {name: 'Siphon Vitality', guild: 'Necromancer', book: 'Blood Magic', tier: 'intermediate', type: 'targeted'}
+    - {name: 'Skein of Shadows', guild: 'Ranger', book: 'Wilderness Survival', signature: true, tier: 'intermediate', type: 'augmentation/utility'}
+    - {name: 'Sleep', guild: 'Moon Mage', book: 'Psychic Projection', tier: 'basic', type: 'debilitation'}
+    - {name: 'Smite Horde', guild: 'Paladin', book: 'Justice', tier: 'advanced', type: 'targeted'}
+    - {name: 'Solace spell'}
+    - {name: 'Soldier''s Prayer', guild: 'Paladin', book: 'Inspiration', tier: 'intermediate', type: 'warding'}
+    - {name: 'Sorden Singec'}
+    - {name: 'Soul Ablaze', guild: 'Bard', book: 'Elemental Invocations', tier: 'advanced', type: 'augmentation'}
+    - {name: 'Soul Attrition', guild: 'Cleric', book: 'Spirit Manipulation', signature: true, tier: 'intermediate', type: 'targeted'}
+    - {name: 'Soul Bonding', guild: 'Cleric', book: 'Spirit Manipulation', signature: true, tier: 'basic', type: 'debilitation'}
+    - {name: 'Soul Shield', guild: 'Cleric', book: 'Holy Defense', tier: 'basic', type: 'warding'}
+    - {name: 'Soul Sickness', guild: 'Cleric', book: 'Spirit Manipulation', tier: 'basic', type: 'debilitation'}
+    - {name: 'Sovereign Destiny', guild: 'Moon Mage', book: 'Teleologic Sorcery', signature: true, tier: 'intermediate', type: 'debilitation'}
+    - {name: 'Spite of Dergati', guild: 'Cleric', book: 'Metamagic', signature: true, tier: 'advanced', type: 'debilitation/warding'}
+    - {name: 'Spiteful Rebirth'}
+    - {name: 'Sprout'}
+    - {name: 'Sprout Undergrowth'}
+    - {name: 'Stampede', guild: 'Ranger', book: 'Nature Manipulation', tier: 'basic', type: 'targeted'}
+    - {name: 'Starcrash'}
+    - {name: 'Starlight Barricade'}
+    - {name: 'Starlight Sphere', guild: 'Moon Mage', book: 'Stellar Magic', signature: true, tier: 'advanced', type: 'targeted'}
+    - {name: 'Steady Hands'}
+    - {name: 'Stellar Collector'}
+    - {name: 'Steps of Vuan', guild: 'Moon Mage', book: 'Moonlight Manipulation', signature: true, tier: 'intermediate', type: 'utility'}
+    - {name: 'Stone Strike', guild: 'Warrior Mage', book: 'Earth Manipulation', tier: 'introductory', type: 'targeted'}
+    - {name: 'Strange Arrow', book: 'Analogous Patterns', tier: 'introductory', type: 'targeted'}
+    - {name: 'Stun Foe', guild: 'Paladin', book: 'Justice', tier: 'introductory', type: 'debilitation'}
+    - {name: 'Substratum', guild: 'Warrior Mage', book: 'Aether Manipulation', tier: 'basic', type: 'augmentation'}
+    - {name: 'Sure Footing', guild: 'Warrior Mage', book: 'Earth Manipulation', tier: 'basic', type: 'augmentation'}
+    - {name: 'Swarm', guild: 'Ranger', book: 'Nature Manipulation', tier: 'intermediate', type: 'debilitation'}
+    - {name: 'Swirling Winds', guild: 'Warrior Mage', book: 'Air Manipulation', tier: 'basic', type: 'augmentation'}
+    - {name: 'Syamelyo Kuniyo'}
+    - {name: 'Sylvan Purity'}
+    - {name: 'Tailwind', guild: 'Warrior Mage', book: 'Air Manipulation', tier: 'basic', type: 'augmentation'}
+    - {name: 'Tamsine''s Kiss'}
+    - {name: 'Tangled Fate', guild: 'Moon Mage', book: 'Teleologic Sorcery', signature: true, tier: 'basic', type: 'debilitation/utility'}
+    - {name: 'Teachings of the Verdant Lily'}
+    - {name: 'Telekinetic Shield', guild: 'Moon Mage'}
+    - {name: 'Telekinetic Storm', guild: 'Moon Mage', book: 'Psychic Projection', tier: 'intermediate', type: 'targeted'}
+    - {name: 'Telekinetic Throw', guild: 'Moon Mage', book: 'Psychic Projection', tier: 'introductory', type: 'targeted'}
+    - {name: 'Teleport', guild: 'Moon Mage', book: 'Enlightened Geometry', signature: true, tier: 'basic', type: 'utility'}
+    - {name: 'Temporal Eddy'}
+    - {name: 'Tenebrous Sense', guild: 'Moon Mage', book: 'Perception', tier: 'basic', type: 'augmentation'}
+    - {name: 'Tezirah''s Veil', guild: 'Moon Mage', book: 'Teleologic Sorcery', signature: true, tier: 'intermediate', type: 'augmentation'}
+    - {name: 'Thoughtcast', guild: 'Moon Mage', book: 'Psychic Projection', tier: 'intermediate', type: 'utility'}
+    - {name: 'Thunderclap', guild: 'Warrior Mage', book: 'Air Manipulation', tier: 'intermediate', type: 'debilitation'}
+    - {name: 'Time of the Red Spiral'}
+    - {name: 'Tingle', guild: 'Warrior Mage', book: 'Electricity Manipulation', tier: 'intermediate', type: 'debilitation'}
+    - {name: 'Trabe Chalice', guild: 'Trader'}
+    - {name: 'Tranquility', guild: 'Empath', book: 'Protection; Mental Preparation', tier: 'intermediate', type: 'warding/augmentation'}
+    - {name: 'Tremor', guild: 'Warrior Mage', book: 'Earth Manipulation', tier: 'intermediate', type: 'debilitation'}
+    - {name: 'Truffenyi''s Rally', guild: 'Paladin', book: 'Inspiration', signature: true, tier: 'advanced', type: 'augmentation/utility'}
+    - {name: 'Turmar Illumination', guild: 'Trader'}
+    - {name: 'Uncurse', guild: 'Cleric', book: 'Metamagic', tier: 'basic', type: 'utility'}
+    - {name: 'Universal Solvent', guild: 'Necromancer', book: 'Synthetic Creation', signature: true, tier: 'advanced', type: 'targeted'}
+    - {name: 'Unleash', guild: 'Moon Mage', book: 'Perception', tier: 'intermediate', type: 'utility'}
+    - {name: 'Veil of Ice', guild: 'Warrior Mage', book: 'Water Manipulation', signature: true, tier: 'intermediate', type: 'warding'}
+    - {name: 'Vertigo', guild: 'Warrior Mage', book: 'Air Manipulation', tier: 'intermediate', type: 'debilitation'}
+    - {name: 'Vessel of Salvation', guild: 'Paladin', book: 'Sacrifice', signature: true, tier: 'basic', type: 'utility'}
+    - {name: 'Veteran Insight'}
+    - {name: 'Vigil', guild: 'Cleric', book: 'Spirit Manipulation', tier: 'basic', type: 'utility'}
+    - {name: 'Vigor', guild: 'Empath', book: 'Life Force Manipulation', tier: 'intermediate', type: 'augmentation'}
+    - {name: 'Viscous Solution', guild: 'Necromancer', book: 'Synthetic Creation', tier: 'intermediate', type: 'debilitation'}
+    - {name: 'Visions of Darkness', guild: 'Necromancer', book: 'Corruption', tier: 'intermediate', type: 'debilitation'}
+    - {name: 'Vitality Healing', guild: 'Empath', book: 'Healing', signature: true, tier: 'basic', type: 'utility'}
+    - {name: 'Vivisection', guild: 'Necromancer', book: 'Synthetic Creation', signature: true, tier: 'advanced', type: 'targeted'}
+    - {name: 'Voidspell'}
+    - {name: 'Ward Break', guild: 'Warrior Mage', book: 'Aether Manipulation', tier: 'basic', type: 'debilitation'}
+    - {name: 'Whispers of the Muse', guild: 'Bard', book: 'Emotion Control', tier: 'basic', type: 'augmentation'}
+    - {name: 'Whole Displacement', guild: 'Moon Mage', book: 'Enlightened Geometry', signature: true, tier: 'basic', type: 'warding'}
+    - {name: 'Will of Winter', guild: 'Bard', book: 'Elemental Invocations', tier: 'intermediate', type: 'augmentation'}
+    - {name: 'Wisdom of the Pack', guild: 'Ranger', book: 'Animal Abilities', tier: 'intermediate', type: 'augmentation'}
+    - {name: 'Wolf Scent', guild: 'Ranger', book: 'Animal Abilities', tier: 'basic', type: 'augmentation'}
+    - {name: 'Words of the Wind', guild: 'Bard', book: 'Elemental Invocations', tier: 'basic', type: 'augmentation'}
+    - {name: 'Worm''s Mist', guild: 'Necromancer', book: 'Transcendental Necromancy', signature: true, tier: 'advanced', type: 'warding'}
+    - {name: 'Y''ntrel Sechra', guild: 'Warrior Mage', book: 'Air Manipulation', tier: 'intermediate', type: 'augmentation'}
+    - {name: 'Zephyr', guild: 'Warrior Mage', book: 'Air Manipulation', tier: 'basic', type: 'utility'}

@@ -24,6 +24,8 @@
 #     with the replay support in test/ (ReplayGame answers DRC.bput and fput
 #     from real log lines, ReplayCommons models the commons helpers,
 #     $parse_args_model = true parses $script_vars like lich-5's ArgParser).
+#     To drive a restart, reload_lic_class evaluates the class body again
+#     before the next run_lic_entry, as Lich does on every start.
 #
 # Shared game doubles -- READ THIS before adding or copying a spec:
 #   The game/commons layer is stubbed ONCE, centrally, so the whole suite can run
@@ -184,13 +186,7 @@ end
 def load_lic_class(filename, class_name)
   return if Object.const_defined?(class_name)
 
-  filepath = lic_path(filename)
-  lines = File.readlines(filepath)
-  prime_lic_coverage(filepath, lines.size)
-
-  range = lic_definition_range(lines, 'class', class_name, filename)
-  LIC_EVAL_RANGES[filepath] << range
-  eval(lines[range].join, TOPLEVEL_BINDING, filepath, range.begin + 1)
+  eval_lic_definition(filename, 'class', class_name)
 end
 
 # Module counterpart to load_lic_class, with the same strategy and guard.
@@ -200,18 +196,56 @@ end
 def load_lic_module(filename, module_name)
   return if Object.const_defined?(module_name)
 
+  eval_lic_definition(filename, 'module', module_name)
+end
+
+# Evaluates a loaded class's body again, as Lich does every time the script
+# starts: Lich evaluates the whole .lic on each start, so the class body runs
+# again before the entry point while the class itself (and anything that
+# still refers to it, such as a hook of the run before) persists. Pair it
+# with run_lic_entry to drive a restart the way Lich runs one.
+#
+# Methods the body defines replace the ones it defined before, and with them
+# any RSpec stub of those methods, which RSpec could then not stub again in
+# the same example. So it first ends every RSpec stub on the class, a stub
+# made by a before hook included, and an example stubs again, after it, what
+# the rest of the example needs stubbed.
+#
+# @param filename [String] the .lic, relative to the repo root
+# @param class_name [String] the class whose body runs again
+# @return [Object] what the class body returns
+# @raise [RuntimeError] when the class is not loaded yet (use load_lic_class
+#   for the first load), or its definition is not found
+def reload_lic_class(filename, class_name)
+  raise "reload_lic_class: load #{class_name} with load_lic_class before reloading it" unless Object.const_defined?(class_name)
+
+  klass = Object.const_get(class_name)
+  RSpec::Mocks.space.proxy_for(klass).reset if RSpec::Mocks.space.registered?(klass)
+  eval_lic_definition(filename, 'class', class_name)
+end
+
+# Evaluates one column-0 class or module definition of a .lic at its real
+# line numbers, recording the range for coverage. Shared by load_lic_class,
+# load_lic_module and reload_lic_class.
+#
+# @param filename [String] the .lic, relative to the repo root
+# @param keyword [String] 'class' or 'module'
+# @param name [String] the class or module name
+# @return [Object] what the definition returns
+# @raise [RuntimeError] when the definition or its `end` is not found
+def eval_lic_definition(filename, keyword, name)
   filepath = lic_path(filename)
   lines = File.readlines(filepath)
   prime_lic_coverage(filepath, lines.size)
 
-  range = lic_definition_range(lines, 'module', module_name, filename)
+  range = lic_definition_range(lines, keyword, name, filename)
   LIC_EVAL_RANGES[filepath] << range
   eval(lines[range].join, TOPLEVEL_BINDING, filepath, range.begin + 1)
 end
 
 # The 0-based, inclusive line range of a column-0 `class Name` / `module Name`
 # body: from its opening line through the first column-0 `end` after it.
-# Shared by load_lic_class, load_lic_module and run_lic_entry.
+# Shared by eval_lic_definition and run_lic_entry.
 #
 # @param lines [Array<String>] the .lic's lines
 # @param keyword [String] 'class' or 'module'

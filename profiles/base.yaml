@@ -2637,13 +2637,18 @@ card_bags:
 
 # TextSubs
 private_textsubs:
-  # old text: new text
+  # 'regex source': 'gsub replacement' (the key is a regex, so escape . ( ) [ and the like)
+  # a key may also be !ruby/regexp /regex source/i, to keep its flags (see textsubs.lic)
 # For use with shitlist and textsubs
 # Will allow textsubs to put an (SL) at the end of the names of people on your list
 integrate_shit_list_with_textsubs: false
 # turn on heal/remedy text subs by ingredient name: yelith (limb-IW) tonic
 herb_textsubs: false
+# split copper amounts at the platinum when adding coin commas: 12,3456 Kronars rather than 123,456
 textsubs_use_plat_grouping: false
+# link spells, spellbooks, magic feats and your guild's spell list to Elanthipedia
+# in spell lists (column-formatted) and the Active Spells window
+textsubs_spell_links: false
 
 # Settings for smoke script
 smoke:
