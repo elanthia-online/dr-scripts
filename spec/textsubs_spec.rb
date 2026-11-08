@@ -3301,6 +3301,23 @@ RSpec.describe 'textsubs.lic' do
       expect(key).to have_received(:match?).once
     end
 
+    it 'reads and writes the staged Registry while one is staged, gate included, as on a start' do
+      coin_commas = '(?!.*>)\\d{1,3}(?=(\\d{3})+(?!\\d).*(Kronar|Dokora|Lirum))'
+      entries, = TextSubs::Sources::PrivateSubs.entries(coin_commas => '\\&.')
+      key = entries.first.first
+      staged = TextSubs.stage(TextSubs::Registry.new)
+      TextSubs.add_private(entries)
+      gated = { 'schema' => 1, 'sections' => [{ 'name' => 'coin commas', 'requires_any' => %w[Kronar Dokora Lirum], 'subs' => [[coin_commas, '\\&,']] }] }
+      TextSubs.add_catalog(gated, context, file: 'f')
+
+      expect(TextSubs.prefer_private(entries).size).to eq(1)
+      expect(staged.snapshot).to eq(key => '\\&.')
+      expect(staged.gates[key]).to eq(%w[Kronar Dokora Lirum])
+      expect(TextSubs.subs).to eq({})
+    ensure
+      TextSubs.install(staged)
+    end
+
     it 'leaves a key alone that is no longer in the catalog' do
       entries, = TextSubs::Sources::PrivateSubs.entries('fine' => 'MINE')
       TextSubs.add('cat', 'dog')
