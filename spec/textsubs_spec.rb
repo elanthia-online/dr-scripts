@@ -2,14 +2,17 @@ require 'delegate'
 require 'fileutils'
 require 'json'
 require 'tmpdir'
+require 'yaml'
 require_relative '../test/textsubs_corpus'
 
-# textsubs.lic builds its whole substitution catalog at top level: the entry
-# point registers the 'textsub' DownstreamHook, adds the shit-list and
-# private_textsubs entries, then runs ~1,600 TextSubs.add / TextSubs.elanthipedia
-# calls gated by the guild and three settings. These specs pin that catalog so a
-# refactor of the script has to reproduce every entry, in order, for every
-# combination a player can run.
+# textsubs.lic builds its whole substitution catalog when it starts: the entry
+# point adds the shit-list and private_textsubs entries, then the ~1,600
+# built-in subs TextSubs::Catalog reads from data/base-textsubs.yaml, gated by
+# the guild and three settings, and then registers the 'textsub'
+# DownstreamHook. These specs pin that catalog so a change to the script or
+# the data file has to reproduce every entry, in order, for every combination
+# a player can run. The golden fixture is JSON, so it does not lean on the YAML
+# reader it checks.
 #
 # The golden fixture lives in spec/fixtures/textsubs/:
 #   - catalog_entries.jsonl holds every distinct [source, options, replacement]
@@ -96,6 +99,18 @@ RSpec.describe 'textsubs.lic' do
   hand_added_path = File.join(fixture_dir, 'samples_hand_added.jsonl')
   # @return [Array<Array(String, Integer, String)>] the rows of catalog_entries.jsonl
   read_entries = -> { File.readlines(entries_path).map { |line| JSON.parse(line) } }
+  catalog_path = File.expand_path('../data/base-textsubs.yaml', __dir__)
+  # Read once, the way lich-5's SetupFiles reads it (YAML.unsafe_load_file),
+  # and frozen, so a catalog reader that changed its data would raise.
+  shipped_catalog = YAML.unsafe_load_file(catalog_path, freeze: true)
+
+  # Every example starts as a fresh install: get_data('textsubs') answers with
+  # the shipped file, as an OpenStruct of its top-level keys like lich-5's, and
+  # SCRIPT_DIR points nowhere, so there is no data/custom copy.
+  before do
+    stub_const('SCRIPT_DIR', '/nonexistent-textsubs-spec')
+    $test_data[:textsubs] = OpenStruct.new(shipped_catalog)
+  end
 
   # Runs the real textsubs.lic entry point for one combination and returns the
   # catalog it built.
@@ -137,7 +152,7 @@ RSpec.describe 'textsubs.lic' do
 
   # Each combination's traced build (see traced_build), made once per run by
   # whichever example asks first. The examples that only read a catalog, or
-  # the calls that made it, share these builds, so the 96 catalogs are not
+  # the writes that made it, share these builds, so the 96 catalogs are not
   # rebuilt once per such example. The examples that need TextSubs.subs to
   # hold the catalog call build_combination instead.
   built_catalogs = {}
@@ -162,49 +177,45 @@ RSpec.describe 'textsubs.lic' do
               .map { |name| "TextSubs.#{name}" }
   end
 
-  # build_combination, recording the calls that wrote the catalog: the source
-  # passed to each TextSubs.add, and how many times TextSubs.elanthipedia ran
-  # (it writes its key itself). TracePoints record them, which leaves both
-  # methods as they are; rspec-mocks wrappers on the ~100,000 calls of the 96
-  # builds doubled the time of the builds. The add source is read by its
-  # position, so renaming TextSubs.add's parameter does not break the trace;
-  # its name is looked up once per build, not once per call.
+  # build_combination, recording the source of every key written to a
+  # Registry while it builds. Every writer, add, elanthipedia and the catalog
+  # data alike, ends in Registry#add, which on_registry_write watches; the
+  # catalog data does not pass through add, as it stores the keys its check
+  # compiled. on_registry_write's TracePoint leaves Registry#add as it is;
+  # rspec-mocks wrappers on the ~100,000 writes of the 96 builds doubled the
+  # time of the builds.
   #
   # @param combination [Hash{String=>Object}] one element of `combinations`
   # @return [Hash{Symbol=>Object}] deep-frozen, because every caller shares it.
-  #   Every string in it is a frozen copy (see frozen_copy), so the record
-  #   never shares a mutable string with TextSubs.subs or with the caller of
-  #   TextSubs.add. :catalog, as build_combination returns it;
-  #   :add_sources [Array<String>], the first argument of each TextSubs.add
-  #   call, in call order; :link_calls [Integer], the number of
-  #   TextSubs.elanthipedia calls
+  #   It shares no mutable string with TextSubs.subs or the script: each
+  #   replacement is the frozen String the Registry keeps, shared as it is,
+  #   and each source is a new String (Regexp#source returns one per call),
+  #   kept as a frozen copy (see frozen_copy). :catalog, as build_combination
+  #   returns it; :write_sources [Array<String>], the source of the key of
+  #   each Registry#add call, in call order
   def traced_build(combination)
     sources = []
-    links = 0
-    source_param = TextSubs.method(:add).parameters.first.last
-    adds = TracePoint.new(:call) { |trace| sources << frozen_copy(trace.binding.local_variable_get(source_param).to_s) }
-    link_calls = TracePoint.new(:call) { links += 1 }
-    catalog = adds.enable(target: TextSubs.method(:add)) do
-      link_calls.enable(target: TextSubs.method(:elanthipedia)) { build_combination(combination) }
-    end
+    catalog = on_registry_write(->(key, _replacement) { sources << key.source.freeze }) { build_combination(combination) }
     { catalog: catalog.map { |entry| entry.map { |value| frozen_copy(value) }.freeze }.freeze,
-      add_sources: sources.freeze, link_calls: links }.freeze
+      write_sources: sources.freeze }.freeze
   end
 
   # A frozen value that shares no mutable object with the one given: a frozen
-  # value as it is, anything else a frozen copy. Freezing the given object
-  # itself would freeze a string the script still holds (String#to_s returns
-  # the receiver), and a later `<<` on it would raise FrozenError in whichever
-  # example built that combination first.
+  # value as it is, anything else a frozen copy. A catalog entry holds a new
+  # source String, an Integer and the frozen replacement the Registry keeps,
+  # so today only the source is copied. The copy, rather than freezing the
+  # given object, keeps the record from freezing a String someone else holds,
+  # should build_catalog ever return one (a later `<<` on it would raise
+  # FrozenError in whichever example built that combination first).
   #
-  # @param value [Object] a catalog value (String or Integer) or an add source
+  # @param value [Object] a catalog value (String or Integer)
   # @return [Object] `value` when frozen, else a frozen dup of it
   def frozen_copy(value)
     value.frozen? ? value : value.dup.freeze
   end
 
   # Memoized traced_build, for examples that only read the returned catalog or
-  # calls. Whether TextSubs.subs holds that catalog afterwards depends on
+  # writes. Whether TextSubs.subs holds that catalog afterwards depends on
   # whether this call built it, so callers must not rely on TextSubs.subs
   # either way; examples that need it call build_combination.
   #
@@ -330,13 +341,47 @@ RSpec.describe 'textsubs.lic' do
     before { allow(TextSubs).to receive(:client_attached?).and_return(true) }
   end
 
+  # Runs the block, calling observer after every write to a Registry while
+  # it runs (the entry point stages a fresh Registry on every start, fills
+  # it, then installs it). Every writer, add, elanthipedia and the catalog
+  # data alike, ends in Registry#add, so observer sees each sub as it lands.
+  # A TracePoint on the return of Registry#add watches the writes, enabled
+  # only while the block runs, so nothing outlives it: no stub on TextSubs
+  # and no singleton method on any Registry, the one the after hook installs
+  # for the next example included. The key and the replacement are read by
+  # their positions, so renaming Registry#add's parameters does not break it;
+  # their names are looked up once per call of this helper, not once per
+  # write. Registry#add raises only for a key that is not a Regexp, which these
+  # builds never write.
+  #
+  # @param observer [#call] called with the key [Regexp] and the
+  #   replacement [String] of each write, after the write
+  # @yieldreturn [Object] the build to watch
+  # @return [Object] what the block returns
+  def on_registry_write(observer)
+    write = TextSubs::Registry.instance_method(:add)
+    key_param, value_param = write.parameters.map(&:last)
+    writes = TracePoint.new(:return) do |trace|
+      observer.call(trace.binding.local_variable_get(key_param), trace.binding.local_variable_get(value_param))
+    end
+    writes.enable(target: write) { yield }
+  end
+
   # Installing a freshly staged Registry empties the catalog and ends any
   # staging an example left behind, and this thread's own build with it
   # (TextSubs.clear alone keeps both), so no example's adds land in a
   # Registry staged by an earlier one.
+  #
+  # RSpec runs this hook before it removes the example's stubs, so a stub on
+  # stage or install still runs here, on the Registry the next example
+  # starts with. That Registry must come out as plain as it went in: an
+  # example's stub that gave it singleton methods (an add that calls back
+  # into the example, say) would carry the example into the next one.
   after do
     DownstreamHook.remove('textsub')
-    TextSubs.install(TextSubs.stage(TextSubs::Registry.new))
+    fresh = TextSubs::Registry.new
+    TextSubs.install(TextSubs.stage(fresh))
+    expect(fresh.singleton_methods).to be_empty, -> { "a stub left #{fresh.singleton_methods.inspect} on the next example's Registry" }
   end
 
   if ENV['TEXTSUBS_GOLDEN_WRITE'] == '1'
@@ -398,6 +443,101 @@ RSpec.describe 'textsubs.lic' do
           expect(actual == expected).to be(true), -> { catalog_difference(combination, expected, actual) }
         end
       end
+    end
+  end
+
+  # The checks yamllint does not make: its key-duplicates rule only warns, and
+  # Psych keeps the last of two equal keys without a word. They read the
+  # file's syntax tree, so they see how each scalar is written, not just what
+  # it loads as.
+  describe 'data/base-textsubs.yaml' do
+    let(:document) { Psych.parse_file(catalog_path) }
+    let(:data) { shipped_catalog['textsubs'] }
+
+    # Every scalar of a parsed YAML stream that is a value, not a mapping key.
+    #
+    # @param tree [Psych::Nodes::Node] a parsed stream or document
+    # @return [Array<Psych::Nodes::Scalar>]
+    def value_scalars(tree)
+      keys = tree.each.grep(Psych::Nodes::Mapping).flat_map { |mapping| mapping.children.each_slice(2).map(&:first) }
+      tree.each.grep(Psych::Nodes::Scalar).reject { |scalar| keys.any? { |key| key.equal?(scalar) } }
+    end
+
+    # @param tree [Psych::Nodes::Node]
+    # @return [Array<String>] "line N: value" for each value scalar not in
+    #   single quotes, but the number under a schema key
+    def unquoted_values(tree)
+      schema_numbers = tree.each.grep(Psych::Nodes::Mapping).flat_map do |mapping|
+        mapping.children.each_slice(2).select { |key, _| key.value == 'schema' }.map(&:last)
+      end
+      value_scalars(tree).reject { |scalar| scalar.style == Psych::Nodes::Scalar::SINGLE_QUOTED || schema_numbers.any? { |number| number.equal?(scalar) } }
+                         .map { |scalar| "line #{scalar.start_line + 1}: #{scalar.value}" }
+    end
+
+    # @param tree [Psych::Nodes::Node]
+    # @return [Array<String>] "line N: key" for each key a mapping repeats
+    def repeated_keys(tree)
+      tree.each.grep(Psych::Nodes::Mapping).flat_map do |mapping|
+        keys = mapping.children.each_slice(2).map(&:first)
+        keys.group_by(&:value).values.select { |same| same.size > 1 }.map { |same| "line #{same.last.start_line + 1}: #{same.last.value}" }
+      end
+    end
+
+    it 'writes every pattern, replacement, name, guild and setting in single quotes' do
+      expect(unquoted_values(document)).to be_empty, -> { "not single-quoted:\n  #{unquoted_values(document).first(10).join("\n  ")}" }
+      expect(value_scalars(document).size).to be > 3000
+    end
+
+    it 'takes a plain, a double-quoted and a block scalar for unquoted, but not the schema number' do
+      tree = Psych.parse(<<~YAML)
+        textsubs:
+          schema: 1
+          sections:
+            - name: plain
+              when:
+                setting: |
+                  block
+              subs:
+                - ["\\\\1", 'ok']
+                - [1, 'one']
+      YAML
+      expect(unquoted_values(tree)).to eq(['line 4: plain', "line 6: block\n", 'line 9: \\1', 'line 10: 1'])
+    end
+
+    it 'repeats no key in any mapping' do
+      expect(repeated_keys(document)).to be_empty, -> { "repeated keys:\n  #{repeated_keys(document).join("\n  ")}" }
+    end
+
+    it 'finds a repeated key, which Psych would load as the last one alone' do
+      tree = Psych.parse("textsubs:\n  schema: 1\n  sections:\n    - name: 'a'\n      subs: []\n      name: 'b'\n")
+      expect(repeated_keys(tree)).to eq(['line 6: name'])
+    end
+
+    it 'uses no anchor, alias or tag, so every sub is written out where it applies' do
+      nodes = document.each.to_a
+      expect(nodes.grep(Psych::Nodes::Alias)).to be_empty
+      expect(nodes.select { |node| node.respond_to?(:anchor) && node.anchor }).to be_empty
+      expect(nodes.select { |node| node.respond_to?(:tag) && node.tag }).to be_empty
+    end
+
+    it 'gives every section its own name' do
+      names = data['sections'].map { |section| section['name'] }
+      expect(names.tally.select { |_, count| count > 1 }).to be_empty
+    end
+
+    it 'holds only patterns that compile' do
+      patterns = data['sections'].flat_map { |section| section.key?('subs') ? section['subs'].map(&:first) : [section['pattern']] }
+      broken = patterns.reject do |pattern|
+        Regexp.new(pattern)
+      rescue RegexpError
+        false
+      end
+      expect(broken).to be_empty
+      expect(patterns.size).to be > 1500
+    end
+
+    it 'is schema 1, the schema this textsubs.lic reads' do
+      expect(data['schema']).to eq(TextSubs::Catalog.schema)
     end
   end
 
@@ -527,6 +667,98 @@ RSpec.describe 'textsubs.lic' do
     end
   end
 
+  # get_data answers a missing data/base-textsubs.yaml and one that did not
+  # parse alike (lich-5 SetupFiles: no cache entry, or {} after printing the
+  # parse error), with an OpenStruct that has no textsubs key.
+  describe 'catalog data it cannot use' do
+    include_context 'with a front end attached'
+
+    shipped = lambda do
+      Marshal.load(Marshal.dump(shipped_catalog))
+    end
+    stale = shipped.call.tap { |copy| copy['textsubs']['schema'] = 2 }
+    unknown_kind = shipped.call.tap { |copy| copy['textsubs']['sections'].last['kind'] = 'ladder' }
+    {
+      'a missing file or one that did not parse' => [OpenStruct.new, /no 'textsubs:' mapping/],
+      'a file from another schema'               => [OpenStruct.new(stale), /schema 2, but this textsubs.lic reads schema 1/],
+      'a section of an unknown kind'             => [OpenStruct.new(unknown_kind), /has unknown kind "ladder"/]
+    }.each do |label, (answer, reason)|
+      context "with #{label}" do
+        # Starts textsubs with one shit-list name and one private sub.
+        #
+        # @return [Array<Array>] the catalog built
+        def start_with_shit_list_and_private_sub
+          Dir.mktmpdir('textsubs-bad-catalog') do |dir|
+            File.write(File.join(dir, "#{checkname}_shit.list"), "zorvex,stole my kill\n")
+            Dir.chdir(dir) do
+              build_catalog('Bard', 'integrate_shit_list_with_textsubs' => true, 'textsubs_spell_links' => true,
+                                    'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
+            end
+          end
+        end
+
+        before { $test_data[:textsubs] = answer }
+
+        it 'says once that it adds no built-in sub, naming the file, why and the schema it needs' do
+          start_with_shit_list_and_private_sub
+          expect($data_called_with).to eq(['textsubs'])
+          said = displayed_messages.grep(/built-in subs/)
+          expect(said.size).to eq(1)
+          expect(said.first).to start_with('No built-in subs: /nonexistent-textsubs-spec/data/base-textsubs.yaml cannot be used (')
+          expect(said.first).to match(reason)
+          expect(said.first).to include("needs a 'textsubs:' mapping with schema: 1")
+          expect(said.first).to end_with('Only private_textsubs and shit-list subs are active.')
+        end
+
+        it 'keeps the shit-list and private subs, adds nothing else, and still registers the hook' do
+          expect(start_with_shit_list_and_private_sub).to eq([['Zorvex', 0, 'Zorvex (SL)'], ['You feel fine', 0, 'You feel FINE']])
+          expect(DownstreamHook.list).to include('textsub')
+          expect(run_hooks("You feel fine, Zorvex.\r\n".b)).to eq("You feel FINE, Zorvex (SL).\r\n")
+        end
+      end
+    end
+
+    it 'says nothing about the catalog when the shipped file is good' do
+      build_catalog('Commoner')
+      expect(displayed_messages).to be_empty
+    end
+
+    describe 'a copy in data/custom' do
+      around do |example|
+        Dir.mktmpdir('textsubs-script-dir') do |dir|
+          @custom = File.join(dir, 'data', 'custom', 'base-textsubs.yaml')
+          FileUtils.mkdir_p(File.dirname(@custom))
+          # A real copy of the shipped file. get_data is stubbed, so the
+          # script only checks that this file exists; what it builds comes
+          # from $test_data, which each example sets.
+          FileUtils.cp(catalog_path, @custom)
+          @script_dir = dir
+          example.run
+        end
+      end
+
+      before { stub_const('SCRIPT_DIR', @script_dir) }
+
+      it 'says once that it reads the copy, and builds the catalog get_data gives' do
+        from_copy = build_catalog('Commoner')
+        expect(displayed_messages).to eq(
+          ["Reading the built-in subs from #{@custom}, which replaces data/base-textsubs.yaml " \
+           "(it must be a 'textsubs:' mapping with schema: 1)."]
+        )
+
+        stub_const('SCRIPT_DIR', '/nonexistent-textsubs-spec')
+        expect(from_copy).to eq(build_catalog('Commoner'))
+        expect(from_copy.size).to be > 700
+      end
+
+      it 'names the copy, not the shipped file, when the copy cannot be used' do
+        $test_data[:textsubs] = OpenStruct.new(textsubs: nil)
+        expect(build_catalog('Commoner')).to eq([])
+        expect(displayed_messages.last).to start_with("No built-in subs: #{@custom} cannot be used (no 'textsubs:' mapping")
+      end
+    end
+  end
+
   describe "the 'textsub' hook" do
     include_context 'with a front end attached'
 
@@ -596,26 +828,26 @@ RSpec.describe 'textsubs.lic' do
       old_output = ["You pick some nilos (abdo-EW).\r\n", "You feel fine.\r\n"]
       partial = []
       seen = []
-      adds = 0
+      writes = 0
       # The old run's 'textsub' hook stays registered until the new run
       # registers its own, as when Lich has not yet removed the hook of a run
       # that is being stopped. The class body is not evaluated again here, so
       # the installed catalog is still the old run's; that isolates what the
       # staging alone guarantees (the restart Lich runs, which re-runs the
       # class body, is covered under 'a start in Lich, which evaluates the
-      # class body before the entry point'). After every add, subs has to be
-      # the old catalog itself, and every 250th add sends the lines through it.
-      allow(TextSubs).to(receive(:add).and_wrap_original do |original, target, result|
-        stored = original.call(target, result)
-        partial << target unless TextSubs.subs.equal?(old_catalog)
-        seen << lines.map { |line| run_hooks(line.b) } if (adds += 1) % 250 == 1
-        stored
-      end)
+      # class body before the entry point'). After every write, subs has to be
+      # the old catalog itself, and every 250th write sends the lines through it.
+      observer = lambda do |key, _value|
+        partial << key.source unless TextSubs.subs.equal?(old_catalog)
+        seen << lines.map { |line| run_hooks(line.b) } if (writes += 1) % 250 == 1
+      end
 
-      build_catalog('Ranger', 'herb_textsubs' => false, 'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
+      on_registry_write(observer) do
+        build_catalog('Ranger', 'herb_textsubs' => false, 'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
+      end
 
-      expect(adds).to be > 500
-      expect(partial).to be_empty, -> { "the old hook saw a catalog of the new run after adding #{partial.first.inspect}" }
+      expect(writes).to be > 500
+      expect(partial).to be_empty, -> { "the old hook saw a catalog of the new run after writing #{partial.first.inspect}" }
       expect(seen.size).to be > 3
       expect(seen).to all(eq(old_output))
       expect(lines.map { |line| run_hooks(line.b) }).to eq(["You pick some nilos.\r\n", "You feel FINE.\r\n"])
@@ -626,19 +858,17 @@ RSpec.describe 'textsubs.lic' do
       # the line, so a hook the new run registered before its build was done
       # would apply that catalog to it (and, filling the installed catalog,
       # its private key). Sends the line through the hooks right after the
-      # private key is staged, and after every 250th add from then on.
+      # private key is staged, and after every 250th write from then on.
       TextSubs.add('You feel fine', 'You feel OLD')
       expect(TextSubs.apply(+"You feel fine.\r\n")).to eq("You feel OLD.\r\n")
       seen = []
-      adds = 0
-      allow(TextSubs).to(receive(:add).and_wrap_original do |original, target, result|
-        stored = original.call(target, result)
-        adds += 1 unless seen.empty? && target != 'You feel fine'
-        seen << run_hooks("You feel fine.\r\n".b) if adds % 250 == 1
-        stored
-      end)
+      writes = 0
+      observer = lambda do |key, _value|
+        writes += 1 unless seen.empty? && key.source != 'You feel fine'
+        seen << run_hooks("You feel fine.\r\n".b) if writes % 250 == 1
+      end
 
-      build_catalog('Commoner', 'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
+      on_registry_write(observer) { build_catalog('Commoner', 'private_textsubs' => { 'You feel fine' => 'You feel FINE' }) }
 
       expect(seen.size).to be > 3
       expect(seen).to all(eq("You feel fine.\r\n"))
@@ -667,21 +897,21 @@ RSpec.describe 'textsubs.lic' do
       allow(TextSubs).to receive(:client_attached?).and_return(true)
       lines = ["You pick some nilos.\r\n", "You feel fine.\r\n"]
       seen = []
-      adds = 0
+      writes = 0
       # The old run's 'textsub' hook is still registered, as when Lich has not
-      # yet removed the hook of a run that is being stopped. The first add
+      # yet removed the hook of a run that is being stopped. The first write
       # (the private key) and every 250th after it send the lines through it.
-      allow(TextSubs).to(receive(:add).and_wrap_original do |original, target, result|
-        stored = original.call(target, result)
-        seen << lines.map { |line| run_hooks(line.b) } if (adds += 1) % 250 == 1
-        stored
-      end)
+      observer = lambda do |_key, _value|
+        seen << lines.map { |line| run_hooks(line.b) } if (writes += 1) % 250 == 1
+      end
       expect(DownstreamHook.list).to include('textsub')
       expect(TextSubs.subs).to eq({})
 
-      build_catalog('Ranger', 'herb_textsubs' => false, 'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
+      on_registry_write(observer) do
+        build_catalog('Ranger', 'herb_textsubs' => false, 'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
+      end
 
-      expect(adds).to be > 500
+      expect(writes).to be > 500
       expect(seen.size).to be > 3
       expect(seen).to all(eq(lines))
       expect(lines.map { |line| run_hooks(line.b) }).to eq(["You pick some nilos.\r\n", "You feel FINE.\r\n"])
@@ -1561,6 +1791,411 @@ RSpec.describe 'textsubs.lic' do
     end
   end
 
+  describe 'TextSubs.wiki_link' do
+    it 'is the anchor elanthipedia puts between preresult and posresult' do
+      TextSubs.clear
+      TextSubs.elanthipedia('Fae Arts', '^', ':', 'Category:', '_spellbook', '[', ']')
+      expect(TextSubs.subs.values)
+        .to eq(["[#{TextSubs.wiki_link('Category:Fae_Arts_spellbook', 'Fae Arts')}]"])
+      expect(TextSubs.wiki_link('Category:Fae_Arts_spellbook', 'Fae Arts'))
+        .to eq('<a href="https://elanthipedia.play.net/Category:Fae_Arts_spellbook">Fae Arts</a>')
+    end
+  end
+
+  describe 'TextSubs::Context' do
+    let(:settings) { OpenStruct.new(herb_textsubs: true, textsubs_spell_links: false, textsubs_use_plat_grouping: nil) }
+
+    def context_for(guild)
+      TextSubs::Context.new(guild: guild, settings: settings)
+    end
+
+    it 'lets a section without a gate through for every guild, and for a guild not known yet' do
+      expect([context_for('Bard'), context_for(nil)].map { |context| context.allows?(nil) }).to eq([true, true])
+    end
+
+    it 'lets a guilds gate through only for a guild it names' do
+      gate = { 'guilds' => ['Moon Mage', 'Trader'] }
+      expect(%w[Trader Bard].map { |guild| context_for(guild).allows?(gate) }).to eq([true, false])
+      expect(context_for('Moon Mage').allows?(gate)).to be(true)
+      expect(context_for(nil).allows?(gate)).to be(false)
+    end
+
+    it 'lets a not_guilds gate through for every guild it does not name, a guild not known yet included' do
+      gate = { 'not_guilds' => %w[Barbarian Thief] }
+      expect(%w[Thief Barbarian Cleric].map { |guild| context_for(guild).allows?(gate) }).to eq([false, false, true])
+      expect(context_for(nil).allows?(gate)).to be(true)
+    end
+
+    it 'reads setting as set and setting_off as nil or false, by name' do
+      bard = context_for('Bard')
+      expect(bard.allows?('setting' => 'herb_textsubs')).to be(true)
+      expect(%w[textsubs_spell_links textsubs_use_plat_grouping not_a_key].map { |name| bard.allows?('setting' => name) })
+        .to eq([false, false, false])
+      expect(%w[textsubs_spell_links textsubs_use_plat_grouping not_a_key].map { |name| bard.allows?('setting_off' => name) })
+        .to eq([true, true, true])
+      expect(bard.allows?('setting_off' => 'herb_textsubs')).to be(false)
+    end
+
+    it 'counts any value but nil and false as set, 0 and an empty string included' do
+      context = TextSubs::Context.new(guild: 'Bard', settings: OpenStruct.new(zero: 0, blank: ''))
+      expect(%w[zero blank].map { |name| context.allows?('setting' => name) }).to eq([true, true])
+    end
+
+    it 'needs every key of a gate to hold, not just one' do
+      gate = { 'guilds' => ['Bard'], 'setting' => 'textsubs_spell_links' }
+      expect(context_for('Bard').allows?(gate)).to be(false)
+      expect(context_for('Bard').allows?(gate.merge('setting' => 'herb_textsubs'))).to be(true)
+      expect(context_for('Cleric').allows?(gate.merge('setting' => 'herb_textsubs'))).to be(false)
+    end
+
+    {
+      'a misspelt key'               => [{ 'guild' => ['Bard'] }, /unknown 'when' key\(s\) "guild"/],
+      'an empty mapping'             => [{}, /'when' is empty/],
+      'a bare guild name'            => ['Bard', /'when' must be a mapping, not String/],
+      'guilds as a string'           => [{ 'guilds' => 'Bard' }, /'when' guilds must be a non-empty list/],
+      'an empty guild list'          => [{ 'not_guilds' => [] }, /'when' not_guilds must be a non-empty list/],
+      'a misspelt guild'             => [{ 'guilds' => %w[Bard Moonmage] }, /unknown guild\(s\) "Moonmage"/],
+      'a guild in lower case'        => [{ 'guilds' => ['bard'] }, /unknown guild\(s\) "bard"/],
+      'a setting that is not a name' => [{ 'setting' => true }, /'when' setting must be a setting name/],
+      'an empty setting_off'         => [{ 'setting_off' => '' }, /'when' setting_off must be a setting name/]
+    }.each do |label, (gate, message)|
+      it "refuses #{label}, in check_gate and in allows? alike" do
+        expect { TextSubs::Context.check_gate(gate) }.to raise_error(ArgumentError, message)
+        expect { context_for('Bard').allows?(gate) }.to raise_error(ArgumentError, message)
+      end
+    end
+
+    it 'knows the twelve guilds the golden catalog is built for' do
+      expect(TextSubs::Context.guilds).to eq(guilds)
+      expect(TextSubs::Context.guilds).to be_frozen
+    end
+  end
+
+  describe 'TextSubs::Catalog.entries' do
+    let(:settings) { OpenStruct.new(herb_textsubs: true, textsubs_spell_links: false) }
+
+    # Parses a small catalog, as data/base-textsubs.yaml would hold it, and
+    # freezes it throughout, so an example also proves the catalog changes
+    # nothing.
+    #
+    # @param yaml [String] the file text, top-level `textsubs:` key included
+    # @return [Hash, nil] the `textsubs:` value
+    def catalog_data(yaml)
+      YAML.safe_load(yaml, freeze: true)['textsubs']
+    end
+
+    def entries_for(guild, data)
+      TextSubs::Catalog.entries(data, TextSubs::Context.new(guild: guild, settings: settings))
+    end
+
+    let(:three_sections) do
+      catalog_data(<<~YAML)
+        textsubs:
+          schema: 1
+          sections:
+            - name: 'everyone, first'
+              subs:
+                - ['b', 'B']
+                - ['a', 'A']
+            - name: 'Bards only'
+              when:
+                guilds: ['Bard']
+              kind: 'pairs'
+              subs:
+                - ['song', 'SONG']
+            - name: 'herb setting on'
+              when:
+                setting: 'herb_textsubs'
+              subs:
+                - ['c', 'C']
+      YAML
+    end
+
+    it 'gives the subs of every selected section, sections in file order and subs in list order' do
+      expect(entries_for('Bard', three_sections).map { |source, replacement, _meta| [source, replacement] })
+        .to eq([%w[b B], %w[a A], %w[song SONG], %w[c C]])
+    end
+
+    it 'leaves out a section whose gate does not hold, and nothing else' do
+      expect(entries_for('Cleric', three_sections).map(&:first)).to eq(%w[b a c])
+    end
+
+    it 'names the section each sub came from in a frozen meta' do
+      metas = entries_for('Bard', three_sections).map(&:last)
+      expect(metas).to eq([{ section: 'everyone, first' }, { section: 'everyone, first' },
+                           { section: 'Bards only' }, { section: 'herb setting on' }])
+      expect(metas).to all(be_frozen)
+    end
+
+    # add_catalog stores these keys, so each has to be the key TextSubs.add
+    # would store for the source the YAML gives (eql? and the same hash, as a
+    # Hash key needs, and frozen, as the /#{source}/ add compiles is). The
+    # sources are written out here rather than read back from the keys, so a
+    # key compiled from the wrong sub's pattern fails too.
+    it 'gives the same subs through keyed_entries, each key the one add would store for its source' do
+      data = catalog_data(<<~'YAML')
+        textsubs:
+          schema: 1
+          sections:
+            - name: 'keys'
+              subs:
+                - ['^(It is labeled) "Burden\."', 'x']
+                - ['a/b', 'y']
+                - ['(?<n>\d+) coins?', 'z']
+      YAML
+      context = TextSubs::Context.new(guild: 'Bard', settings: settings)
+      sources = ['^(It is labeled) "Burden\\."', 'a/b', '(?<n>\\d+) coins?']
+      keyed = TextSubs::Catalog.keyed_entries(data, context)
+
+      expect(keyed.map { |_key, replacement, meta| [replacement, meta] })
+        .to eq([['x', { section: 'keys' }], ['y', { section: 'keys' }], ['z', { section: 'keys' }]])
+      keyed.map(&:first).zip(sources).each do |key, source|
+        expect(key.source).to eq(source)
+        expect(key).to eql(/#{source}/)
+        expect(key.hash).to eq(/#{source}/.hash)
+        expect(key).to be_frozen
+      end
+    end
+
+    it 'reads backslashes, quotes and colons in single-quoted scalars as they are written' do
+      data = catalog_data(<<~'YAML')
+        textsubs:
+          schema: 1
+          sections:
+            - name: 'escapes'
+              subs:
+                - ['^(It is labeled) "Burden\."', '\1 "Burden." (it''s: Analogous Patterns)']
+      YAML
+      expect(entries_for('Bard', data).map { |source, replacement, _meta| [source, replacement] })
+        .to eq([['^(It is labeled) "Burden\\."', '\\1 "Burden." (it\'s: Analogous Patterns)']])
+    end
+
+    describe 'the guild spell list link' do
+      let(:data) do
+        catalog_data(<<~YAML)
+          textsubs:
+            schema: 1
+            sections:
+              - name: 'guild spells'
+                kind: 'guild_spells_link'
+                pattern: 'You recall the spells you have learned from your training.'
+                preresult: 'You recall the spells you have learned from your '
+                prelink: 'Category:'
+                poslink: '_spells'
+                posresult: ' training.'
+        YAML
+      end
+
+      it "links the guild's category page, underscores in the page and spaces in the text" do
+        expect(entries_for('Moon Mage', data).map { |source, replacement, _meta| [source, replacement] })
+          .to eq([['You recall the spells you have learned from your training.',
+                   'You recall the spells you have learned from your ' \
+                   '<a href="https://elanthipedia.play.net/Category:Moon_Mage_spells">Moon Mage</a> training.']])
+      end
+
+      it 'links an empty guild name for a guild not known yet, as the inline catalog did under Lich' do
+        expect(entries_for(nil, data).first[1])
+          .to eq('You recall the spells you have learned from your <a href="https://elanthipedia.play.net/Category:_spells"></a> training.')
+      end
+    end
+
+    # Each problem is a whole small file, so the example shows what a player
+    # with a broken or stale data file would have on disk.
+    [
+      [
+        'no textsubs mapping at all (a missing file or a parse error)',
+        "other: 1\n", /no 'textsubs:' mapping/
+      ],
+      [
+        'schema 2',
+        "textsubs:\n  schema: 2\n  sections: []\n", /schema 2, but this textsubs.lic reads schema 1/
+      ],
+      [
+        'a quoted schema',
+        "textsubs:\n  schema: '1'\n  sections: []\n", /schema "1", but this textsubs.lic reads schema 1/
+      ],
+      [
+        'no schema',
+        "textsubs:\n  sections: []\n", /schema nil, but/
+      ],
+      [
+        'an unknown top-level key',
+        "textsubs:\n  schema: 1\n  spels: []\n  sections: []\n", /unknown top-level key\(s\) "spels"/
+      ],
+      [
+        'an empty section list',
+        "textsubs:\n  schema: 1\n  sections: []\n", /'sections' must be a non-empty list/
+      ],
+      [
+        'a section that is not a mapping',
+        "textsubs:\n  schema: 1\n  sections:\n    - 'loose'\n", /section 1 is not a mapping/
+      ],
+      [
+        'a section with no name',
+        "textsubs:\n  schema: 1\n  sections:\n    - subs:\n        - ['a', 'b']\n", /section 1 has no 'name'/
+      ],
+      [
+        'two sections with one name',
+        "textsubs:\n  schema: 1\n  sections:\n    - name: 'x'\n      subs: [['a', 'b']]\n    - name: 'x'\n      subs: [['c', 'd']]\n",
+        /section name\(s\) used more than once: "x"/
+      ],
+      [
+        'an unknown kind',
+        "textsubs:\n  schema: 1\n  sections:\n    - name: 'x'\n      kind: 'ladder'\n      subs: [['a', 'b']]\n",
+        /section 1 \(x\) has unknown kind "ladder"; kinds are pairs, guild_spells_link/
+      ],
+      [
+        'a misspelt section key',
+        "textsubs:\n  schema: 1\n  sections:\n    - name: 'x'\n      sub: [['a', 'b']]\n", /section 1 \(x\) has unknown key\(s\) "sub"/
+      ],
+      [
+        'a guild_spells_link field left out',
+        "textsubs:\n  schema: 1\n  sections:\n    - name: 'x'\n      kind: 'guild_spells_link'\n      pattern: 'p'\n" \
+        "      preresult: ''\n      prelink: ''\n      poslink: ''\n", /section 1 \(x\) has no posresult/
+      ],
+      [
+        'a guild_spells_link field that is not a string',
+        "textsubs:\n  schema: 1\n  sections:\n    - name: 'x'\n      kind: 'guild_spells_link'\n      pattern: 'p'\n" \
+        "      preresult: ''\n      prelink: ''\n      poslink: ''\n      posresult: 7\n", /'posresult' must be a quoted string, not 7/
+      ],
+      [
+        'an empty sub list',
+        "textsubs:\n  schema: 1\n  sections:\n    - name: 'x'\n      subs: []\n", /section 1 \(x\) 'subs' must be a non-empty list/
+      ],
+      [
+        'a sub with three strings',
+        "textsubs:\n  schema: 1\n  sections:\n    - name: 'x'\n      subs: [['a', 'b', 'c']]\n", /sub 1 must be a \['pattern', 'replacement'\] pair/
+      ],
+      [
+        'an unquoted yes, which YAML reads as true',
+        "textsubs:\n  schema: 1\n  sections:\n    - name: 'x'\n      subs:\n        - ['a', 'b']\n        - ['ok', yes]\n",
+        /section 1 \(x\) sub 2 must be .* not \["ok", true\]/
+      ],
+      [
+        'an unquoted number',
+        "textsubs:\n  schema: 1\n  sections:\n    - name: 'x'\n      subs: [[100, 'b']]\n", /not \[100, "b"\]/
+      ],
+      [
+        'a pattern that does not compile',
+        "textsubs:\n  schema: 1\n  sections:\n    - name: 'x'\n      subs: [['(open', 'b']]\n", /section 1 \(x\) pattern "\(open" does not compile/
+      ],
+      [
+        'a malformed gate',
+        "textsubs:\n  schema: 1\n  sections:\n    - name: 'x'\n      when:\n        guilds: ['Moonmage']\n      subs: [['a', 'b']]\n",
+        /section 1 \(x\) 'when' guilds names unknown guild\(s\) "Moonmage"/
+      ]
+    ].each do |label, yaml, message|
+      it "refuses #{label}" do
+        expect { entries_for('Bard', catalog_data(yaml)) }.to raise_error(ArgumentError, message)
+      end
+    end
+
+    it 'refuses a nil textsubs value, which is what get_data gives for a missing file' do
+      expect { entries_for('Bard', nil) }.to raise_error(ArgumentError, /no 'textsubs:' mapping/)
+    end
+
+    it 'refuses a problem in a section the guild does not get, so every guild sees it' do
+      data = catalog_data(<<~YAML)
+        textsubs:
+          schema: 1
+          sections:
+            - name: 'everyone'
+              subs: [['a', 'A']]
+            - name: 'Clerics only'
+              when:
+                guilds: ['Cleric']
+              subs: [['(broken', 'B']]
+      YAML
+      expect { entries_for('Bard', data) }.to raise_error(ArgumentError, /section 2 \(Clerics only\) pattern "\(broken"/)
+    end
+  end
+
+  describe 'TextSubs.add_catalog' do
+    before { TextSubs.clear }
+
+    let(:context) { TextSubs::Context.new(guild: 'Bard', settings: OpenStruct.new) }
+    let(:good) do
+      { 'schema' => 1, 'sections' => [{ 'name' => 'one', 'subs' => [%w[fine FINE], %w[cat dog]] }] }
+    end
+
+    it 'adds every sub after what is there, in order, under the key add would store, one generation each, and returns nil' do
+      TextSubs.add('mine', 'MINE')
+      generation = TextSubs.generation
+
+      expect(TextSubs.add_catalog(good, context, file: 'data/base-textsubs.yaml')).to be_nil
+      expect(TextSubs.subs.to_a).to eq([[/mine/, 'MINE'], [/fine/, 'FINE'], [/cat/, 'dog']])
+      expect(TextSubs.generation).to eq(generation + 2)
+    end
+
+    # Checking the data compiles every pattern, a section the guild does not
+    # get included; the selected subs are stored under those same Regexps
+    # rather than compiled again (a start compiles ~1,600 patterns).
+    #
+    # This counts compiles through Regexp.new, the compiler check_pattern
+    # uses, so it pins that choice too: a check that compiled with
+    # Regexp.compile or /#{pattern}/ would count none here, and the failure
+    # says so. The object_id comparison is what proves the stored keys are
+    # the check's own Regexps, whatever compiled them.
+    it 'compiles each pattern once, and stores the Regexp the check compiled' do
+      data = good.merge('sections' => good['sections'] + [{ 'name' => 'Clerics', 'when' => { 'guilds' => ['Cleric'] },
+                                                             'subs' => [%w[pray PRAY]] }])
+      compiled = []
+      allow(Regexp).to(receive(:new).and_wrap_original do |original, *args, **kwargs, &block|
+        original.call(*args, **kwargs, &block).tap { |key| compiled << key }
+      end)
+
+      TextSubs.add_catalog(data, context, file: 'data/base-textsubs.yaml')
+
+      expect(compiled.map(&:source)).to eq(%w[fine cat pray]), lambda {
+        "Regexp.new compiled #{compiled.map(&:source).inspect}; this example counts only Regexp.new, so if the " \
+          'catalog check now compiles some other way, count that instead'
+      }
+      expect(TextSubs.subs.keys.map(&:object_id)).to eq(compiled.first(2).map(&:object_id))
+      expect(TextSubs.subs.keys).to all(be_frozen)
+    end
+
+    it 'adds nothing, not even the good sections before the bad one, and says why, naming the file and the schema' do
+      bad = good.merge('sections' => good['sections'] + [{ 'name' => 'two', 'kind' => 'ladder' }])
+      TextSubs.add('mine', 'MINE')
+      generation = TextSubs.generation
+
+      message = TextSubs.add_catalog(bad, context, file: '/lich/scripts/data/custom/base-textsubs.yaml')
+      expect(message).to eq(
+        'No built-in subs: /lich/scripts/data/custom/base-textsubs.yaml cannot be used (section 2 (two) has unknown kind ' \
+        "\"ladder\"; kinds are pairs, guild_spells_link). This textsubs.lic needs a 'textsubs:' mapping with schema: 1; " \
+        'update dr-scripts, or fix or remove a copy in data/custom. Only private_textsubs and shit-list subs are active.'
+      )
+      expect(TextSubs.subs).to eq(/mine/ => 'MINE')
+      expect(TextSubs.generation).to eq(generation)
+    end
+
+    it 'lets an error that is not about the data through' do
+      allow(TextSubs::Catalog).to receive(:keyed_entries).and_raise(NoMethodError, 'a bug, not bad data')
+      expect { TextSubs.add_catalog(good, context, file: 'f') }.to raise_error(NoMethodError, 'a bug, not bad data')
+    end
+  end
+
+  describe 'TextSubs.catalog_override' do
+    it 'names data/custom/base-textsubs.yaml only when that file exists' do
+      Dir.mktmpdir('textsubs-override') do |dir|
+        expect(TextSubs.catalog_override(dir)).to be_nil
+        FileUtils.mkdir_p(File.join(dir, 'data', 'custom'))
+        File.write(File.join(dir, 'data', 'base-textsubs.yaml'), "textsubs: {}\n")
+        expect(TextSubs.catalog_override(dir)).to be_nil
+
+        File.write(File.join(dir, 'data', 'custom', 'base-textsubs.yaml'), "textsubs: {}\n")
+        expect(TextSubs.catalog_override(dir)).to eq(File.join(dir, 'data', 'custom', 'base-textsubs.yaml'))
+      end
+    end
+
+    it 'ignores a directory of that name' do
+      Dir.mktmpdir('textsubs-override') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'data', 'custom', 'base-textsubs.yaml'))
+        expect(TextSubs.catalog_override(dir)).to be_nil
+      end
+    end
+  end
+
   describe 'front end guard' do
     let(:line) { "You feel fine.\r\n".b }
     let(:no_clients) { double('DetachableClientRegistry', empty?: true) }
@@ -1806,26 +2441,24 @@ RSpec.describe 'textsubs.lic' do
       }
     end
 
-    # TextSubs.add stores /#{target}/ as the Hash key, so a second add of the
-    # same source keeps the first slot with the last value and the first
-    # value is lost without a word ('jadice' was added as limb-ES and then
-    # as limb-EW). TextSubs.elanthipedia writes its own keys, so every call
-    # to either method has to leave one more key behind.
+    # The Registry keys on /#{target}/, so a second write of the same source
+    # keeps the first slot with the last value and the first value is lost
+    # without a word ('jadice' was added as limb-ES and then as limb-EW).
+    # Every write has to leave one more key behind.
     #
-    # catalog_build_of records both methods' calls in the one build the
-    # catalog examples share, so this example does not build the 96 catalogs
-    # a second time.
+    # catalog_build_of records the writes in the one build the catalog
+    # examples share, so this example does not build the 96 catalogs a
+    # second time.
     it 'adds every key source once in every combination' do
       offenders = combinations.filter_map do |combination|
         build = catalog_build_of(combination)
-        sources = build[:add_sources]
-        calls = sources.size + build[:link_calls]
+        sources = build[:write_sources]
         size = build[:catalog].size
         repeated = sources.tally.select { |_, count| count > 1 }.keys
-        [combination, repeated, calls, size] unless repeated.empty? && calls == size
+        [combination, repeated, sources.size, size] unless repeated.empty? && sources.size == size
       end
       expect(offenders).to be_empty, lambda {
-        "#{offenders.size} combination(s) add a key twice ([combination, repeated sources, calls, keys]):\n" \
+        "#{offenders.size} combination(s) add a key twice ([combination, repeated sources, writes, keys]):\n" \
           "#{offenders.first(5).map { |entry| "  #{entry.inspect}" }.join("\n")}"
       }
     end
