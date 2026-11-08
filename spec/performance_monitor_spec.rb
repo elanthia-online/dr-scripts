@@ -181,16 +181,27 @@ RSpec.describe 'performance-monitor.lic' do
     let(:runner) { run_script(with_start_helper: true) }
     let(:filter) { runner.singleton_class.const_get(:PerformanceFilter).new }
 
-    # Feeds one broadsword hit line, then a roundtime line, to the filter.
+    # Feeds one hit line, with no roundtime, to the filter.
     #
     # @param damage [String] the damage phrase the hit line carries
+    # @param weapon [String] the weapon the hit line names
+    # @return [Array(String, Boolean)] the hit line as the filter left it, and
+    #   whether it completed a hit
+    def hit(damage, weapon: 'broadsword')
+      line = "< You slash your #{weapon} at a goblin.  The blade lands #{damage} to the goblin's chest.".b
+      [line, filter.process_line(line)]
+    end
+
+    # Feeds one hit line, then a roundtime line, to the filter.
+    #
+    # @param damage [String] the damage phrase the hit line carries
+    # @param weapon [String] the weapon the hit line names
     # @param seconds [Integer] the roundtime the roundtime line reports
     # @return [Array(String, Boolean)] the hit line as the filter left it, and
     #   whether the roundtime line completed a hit
-    def hit_then_roundtime(damage, seconds: 3)
-      hit = "< You slash your broadsword at a goblin.  The blade lands #{damage} to the goblin's chest.".b
-      filter.process_line(hit)
-      [hit, filter.process_line("Roundtime: #{seconds} sec.".b)]
+    def hit_then_roundtime(damage, weapon: 'broadsword', seconds: 3)
+      line, = hit(damage, weapon: weapon)
+      [line, filter.process_line("Roundtime: #{seconds} sec.".b)]
     end
 
     describe 'devastating hit ranks' do
@@ -235,11 +246,54 @@ RSpec.describe 'performance-monitor.lic' do
 
       it 'leaves out a weapon whose hit was followed by another weapon before any roundtime' do
         $test_settings.performance_monitor_weapons = %w[broadsword scimitar]
-        filter.process_line('< You slash your scimitar at a goblin.  The blade lands a good hit to the goblin.'.b)
+        _line, orphan_completed = hit('a good hit', weapon: 'scimitar')
 
+        _line, completed = hit_then_roundtime('a light hit')
+
+        expect(orphan_completed).to be(false)
+        expect(completed).to be(true)
+        expect(filter.weapon_stats).to eq([{ weapon: 'broadsword', avgrt: 3.0, avgdps: 1 / 3.0 }])
+      end
+
+      # The orphaned scimitar hit got no roundtime of its own (the next one
+      # went to the broadsword), so it must not count once the scimitar gets
+      # a roundtime: it would halve its average roundtime and double its DPS.
+      it 'drops a hit whose roundtime went to another weapon once its own weapon gets a roundtime' do
+        $test_settings.performance_monitor_weapons = %w[broadsword scimitar]
+        hit('a good hit', weapon: 'scimitar')
         hit_then_roundtime('a light hit')
 
-        expect(filter.weapon_stats).to eq([{ weapon: 'broadsword', avgrt: 3.0, avgdps: 1 / 3.0 }])
+        _line, completed = hit_then_roundtime('a good hit', weapon: 'scimitar')
+
+        expect(completed).to be(true)
+        expect(filter.weapon_stats).to eq(
+          [
+            { weapon: 'broadsword', avgrt: 3.0, avgdps: 1 / 3.0 },
+            { weapon: 'scimitar', avgrt: 3.0, avgdps: 2 / 3.0 }
+          ]
+        )
+      end
+
+      # A roundtime from something else (searching, looting) after a hit's
+      # roundtime belongs to no hit.
+      it 'ignores a roundtime line with no hit since the last roundtime' do
+        hit_then_roundtime('a good hit')
+
+        completed = filter.process_line('Roundtime: 5 sec.'.b)
+
+        expect(completed).to be(false)
+        expect(filter.weapon_stats).to eq([{ weapon: 'broadsword', avgrt: 3.0, avgdps: 2 / 3.0 }])
+      end
+
+      # Two hits of one weapon under one roundtime (a double strike) both
+      # count: the roundtime is spread over them.
+      it 'counts several hits of the same weapon before one roundtime' do
+        hit('a good hit')
+
+        _line, completed = hit_then_roundtime('a light hit', seconds: 4)
+
+        expect(completed).to be(true)
+        expect(filter.weapon_stats).to eq([{ weapon: 'broadsword', avgrt: 2.0, avgdps: 3 / 4.0 }])
       end
     end
   end

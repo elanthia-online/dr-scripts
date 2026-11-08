@@ -27,8 +27,8 @@ class PerformanceFilter
       @weapon_rts[x] = []
     end
     @weapon_stats = []
-    @last_weapon = nil
-    @new_hit = false
+    @pending_weapon = nil
+    @pending_ranks = []
     @damage_subs = [
       ['a light hit', 'a light hit (1/23)'],
       ['a good hit', 'a good hit (2/23)'],
@@ -62,9 +62,11 @@ class PerformanceFilter
     @settings.performance_monitor_weapons
   end
 
-  # Tags the damage phrase in a game line with its (n/23) rank, records the
-  # rank when the line is a hit with a monitored weapon, and records the
-  # roundtime of the next roundtime line after a hit, then updates the stats.
+  # Tags the damage phrase in a game line with its (n/23) rank and holds the
+  # rank of a hit with a monitored weapon until the next roundtime line, which
+  # records the held ranks and that roundtime together, then updates the stats.
+  # Several hits of one weapon before a roundtime are held together; a hit
+  # with a different weapon drops the held ones, whose roundtime is unknown.
   #
   # @param line [String] a game line; changed in place, with each damage
   #   phrase followed by its (n/23) tag
@@ -73,24 +75,42 @@ class PerformanceFilter
   def process_line(line)
     @damage_subs.each { |x| line.gsub!(x.first, x.last) }
     weapon_name = @settings.performance_monitor_weapons.find { |name| %r{^<.*\b#{name}\b.*\((\d+)/23\)} =~ line }
-    if weapon_name
-      @weapon_hits[weapon_name].push(Regexp.last_match(1).to_i)
-      @last_weapon = weapon_name
-      @new_hit = true
-    end
+    hold_hit(weapon_name, Regexp.last_match(1).to_i) if weapon_name
 
-    if @new_hit && /roundtime\D*(\d+)/i =~ line
-      @new_hit = false
-      @weapon_rts[@last_weapon].push(Regexp.last_match(1).to_i)
-      update_stats
-      true
-    else
-      false
-    end
+    return false unless @pending_weapon && /roundtime\D*(\d+)/i =~ line
+
+    record_roundtime(Regexp.last_match(1).to_i)
+    true
   end
 
-  # Rebuilds {#weapon_stats} from the recorded hits and roundtimes. A weapon
-  # with no roundtime recorded yet is left out.
+  # Holds one hit's rank until its roundtime arrives. A hit with a different
+  # weapon than the held hits drops them first.
+  #
+  # @param weapon [String] the monitored weapon the hit names
+  # @param rank [Integer] the hit's damage rank, 1 to 23
+  # @return [void]
+  def hold_hit(weapon, rank)
+    @pending_ranks = [] unless weapon == @pending_weapon
+    @pending_weapon = weapon
+    @pending_ranks.push(rank)
+  end
+
+  # Records the held hits and their roundtime under the held weapon, clears
+  # the held hits and updates the stats.
+  #
+  # @param seconds [Integer] the roundtime that followed the held hits
+  # @return [void]
+  def record_roundtime(seconds)
+    @weapon_hits[@pending_weapon].concat(@pending_ranks)
+    @weapon_rts[@pending_weapon].push(seconds)
+    @pending_weapon = nil
+    @pending_ranks = []
+    update_stats
+  end
+
+  # Rebuilds {#weapon_stats} from the recorded hits and roundtimes. Hits are
+  # only recorded with their roundtime, so a weapon with no roundtime recorded
+  # yet has no hits either and is left out.
   #
   # @return [void]
   def update_stats
@@ -105,9 +125,11 @@ class PerformanceFilter
   end
 
   # @return [Array<Hash{Symbol => Object}>] one entry per weapon with a
-  #   roundtime recorded: :weapon (String), :avgrt (Float, total roundtime
-  #   over the number of hits) and :avgdps (Float, total rank over total
-  #   roundtime); empty until the first hit's roundtime
+  #   roundtime recorded: :weapon (String), :avgrt (Float, the weapon's total
+  #   roundtime over its hits that had a roundtime; a roundtime after several
+  #   hits of the weapon is spread over them) and :avgdps (Float, total rank
+  #   over total roundtime); empty until the first hit's roundtime. A hit
+  #   followed by another weapon's hit before any roundtime is not counted.
   attr_reader :weapon_stats
 end
 
