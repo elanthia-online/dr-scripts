@@ -648,12 +648,23 @@ RSpec.describe 'textsubs.lic' do
     # section, those the guild and settings do not select too ('refuses a
     # problem in a section the guild does not get' pins that), and raises on
     # the first that does not compile, naming it: one call checks the whole
-    # file, so this makes one rather than one per guild.
+    # file, so this makes one rather than one per guild. The example shows
+    # that holds for the shipped file too, by breaking a pattern of a section
+    # Bards do not get, so it does not lean on that other example. The floor
+    # counts the patterns of the Bard catalog alone, not of every guild.
     it 'holds only patterns that compile' do
       settings = OpenStruct.new(textsubs_spell_links: true, herb_textsubs: true, textsubs_use_plat_grouping: true)
+      context = TextSubs::Context.new(guild: 'Bard', settings: settings)
       entries = []
-      expect { entries = TextSubs::Catalog.entries(data, TextSubs::Context.new(guild: 'Bard', settings: settings)) }.not_to raise_error
+      expect { entries = TextSubs::Catalog.entries(data, context) }.not_to raise_error
       expect(entries.map(&:first).uniq.size).to be > 1200
+
+      other_guilds = data['sections'].find { |section| section.key?('subs') && section.dig('when', 'guilds') && !context.allows?(section['when']) }
+      broken = data.merge('sections' => data['sections'].map do |section|
+        section.equal?(other_guilds) ? section.merge('subs' => [['(broken', 'x']] + section['subs']) : section
+      end)
+      expect { TextSubs::Catalog.entries(broken, context) }
+        .to raise_error(ArgumentError, /\(#{Regexp.escape(other_guilds['name'])}\) pattern "\(broken" does not compile/)
     end
 
     it 'gates the two coin-comma sections, and only them, on the three currency words' do
