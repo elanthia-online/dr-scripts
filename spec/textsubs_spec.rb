@@ -211,21 +211,31 @@ RSpec.describe 'textsubs.lic' do
   # catalog data does not pass through add, as it stores the keys its check
   # compiled. on_registry_write's TracePoint leaves Registry#add as it is;
   # rspec-mocks wrappers on the ~100,000 writes of the 96 builds doubled the
-  # time of the builds.
+  # time of the builds. The observer also keeps the Registry written last,
+  # the fresh one the entry point fills and installs, to read its gates from.
   #
   # @param combination [Hash{String=>Object}] one element of `combinations`
   # @return [Hash{Symbol=>Object}] deep-frozen, because every caller shares it.
   #   It shares no mutable string with TextSubs.subs or the script: each
-  #   replacement is the frozen String the Registry keeps, shared as it is,
-  #   and each source is a new String (Regexp#source returns one per call),
-  #   kept as a frozen copy (see frozen_copy). :catalog, as build_combination
-  #   returns it; :write_sources [Array<String>], the source of the key of
-  #   each Registry#add call, in call order
+  #   replacement, and each list of gate words, is the frozen one the
+  #   Registry keeps, shared as it is, and each source is a new String
+  #   (Regexp#source returns one per call), kept frozen (see frozen_copy).
+  #   :catalog, as build_combination returns it; :write_sources
+  #   [Array<String>], the source of the key of each Registry#add call, in
+  #   call order; :gates [Hash{Array(String, Integer)=>Array<String>}], the
+  #   [source, options] of each key the built Registry gates and its
+  #   requires_any words, as Registry#gates holds them once the build is done
   def traced_build(combination)
     sources = []
-    catalog = on_registry_write(->(key, _replacement, _requires_any) { sources << key.source.freeze }) { build_combination(combination) }
+    registry = nil
+    record = lambda do |key, _replacement, _requires_any, written|
+      registry = written
+      sources << key.source.freeze
+    end
+    catalog = on_registry_write(record) { build_combination(combination) }
     { catalog: catalog.map { |entry| entry.map { |value| frozen_copy(value) }.freeze }.freeze,
-      write_sources: sources.freeze }.freeze
+      write_sources: sources.freeze,
+      gates: registry.gates.to_h { |key, words| [[key.source.freeze, key.options].freeze, words] }.freeze }.freeze
   end
 
   # A frozen value that shares no mutable object with the one given: a frozen
@@ -384,14 +394,14 @@ RSpec.describe 'textsubs.lic' do
   #
   # @param observer [#call] called with the key [Regexp], the replacement
   #   [String] and the requires_any words [Array<String>, nil] of each write,
-  #   after the write
+  #   and the TextSubs::Registry written to, after the write
   # @yieldreturn [Object] the build to watch
   # @return [Object] what the block returns
   def on_registry_write(observer)
     write = TextSubs::Registry.instance_method(:add)
     key_param, value_param, gate_param = write.parameters.map(&:last)
     writes = TracePoint.new(:return) do |trace|
-      observer.call(*[key_param, value_param, gate_param].map { |name| trace.binding.local_variable_get(name) })
+      observer.call(*[key_param, value_param, gate_param].map { |name| trace.binding.local_variable_get(name) }, trace.self)
     end
     writes.enable(target: write) { yield }
   end
@@ -873,7 +883,7 @@ RSpec.describe 'textsubs.lic' do
       # class body, is covered under 'a start in Lich, which evaluates the
       # class body before the entry point'). After every write, subs has to be
       # the old catalog itself, and every 250th write sends the lines through it.
-      observer = lambda do |key, _value, _gate|
+      observer = lambda do |key, _value, _gate, _registry|
         partial << key.source unless TextSubs.subs.equal?(old_catalog)
         seen << lines.map { |line| run_hooks(line.b) } if (writes += 1) % 250 == 1
       end
@@ -899,7 +909,7 @@ RSpec.describe 'textsubs.lic' do
       expect(TextSubs.apply(+"You feel fine.\r\n")).to eq("You feel OLD.\r\n")
       seen = []
       writes = 0
-      observer = lambda do |key, _value, _gate|
+      observer = lambda do |key, _value, _gate, _registry|
         writes += 1 unless seen.empty? && key.source != 'You feel fine'
         seen << run_hooks("You feel fine.\r\n".b) if writes % 250 == 1
       end
@@ -937,7 +947,7 @@ RSpec.describe 'textsubs.lic' do
       # The old run's 'textsub' hook is still registered, as when Lich has not
       # yet removed the hook of a run that is being stopped. The first write
       # (the private key) and every 250th after it send the lines through it.
-      observer = lambda do |_key, _value, _gate|
+      observer = lambda do |_key, _value, _gate, _registry|
         seen << lines.map { |line| run_hooks(line.b) } if (writes += 1) % 250 == 1
       end
       expect(DownstreamHook.list).to include('textsub')
@@ -3711,20 +3721,36 @@ RSpec.describe 'textsubs.lic' do
     # Registry and index included. The engine runs exactly the candidates that
     # match the line, in catalog order, so any catalog gives reference_apply's
     # output on a line as long as every key of it that matches the line is a
-    # candidate. A key's tier depends on the key alone and its gate on its
-    # section, so one index over every key of every catalog (every_key, which
+    # candidate. A key's tier depends on the key alone, and its gate is the
+    # same in every catalog that holds it (the first example below checks
+    # that), so one index over every key of every catalog (every_key, which
     # the golden examples hold to what the 96 builds write), gated as the
-    # shipped catalog gates it, checks that for all 96 catalogs at once: one
+    # built Registries gate them, checks that for all 96 catalogs at once: one
     # candidates call per line instead of 96 index builds and hook sweeps.
     describe 'every catalog, through one index over all their keys' do
-      # @return [TextSubs::TokenIndex] over every_key, each key of a
-      #   requires_any section gated on its section's words
+      # @return [Hash{Regexp=>Array<String>}] each key any of the 96 built
+      #   Registries gates, and its requires_any words (see catalog_build_of)
+      define_method(:every_key_gates) do
+        combinations.map { |combination| catalog_build_of(combination)[:gates] }.reduce(:merge)
+                    .transform_keys { |source, options| Regexp.new(source, options) }
+      end
+
+      # @return [TextSubs::TokenIndex] over every_key, gated by every_key_gates
       define_method(:every_key_index) do
-        gates = shipped_catalog['textsubs']['sections'].select { |section| section.key?('requires_any') }.flat_map do |section|
-          section['subs'].map { |pattern, _| [Regexp.new(pattern), section['requires_any']] }
+        TextSubs::TokenIndex.new(every_key, every_key_gates)
+      end
+
+      it 'finds each key gated alike in every catalog that holds it, and gates only keys of every_key' do
+        gates_seen = Hash.new { |seen, entry| seen[entry] = Set.new }
+        combinations.each do |combination|
+          build = catalog_build_of(combination)
+          build[:catalog].each { |source, options, _replacement| gates_seen[[source, options]] << build[:gates][[source, options]] }
         end
-        expect(gates.map(&:first) - every_key).to eq([])
-        TextSubs::TokenIndex.new(every_key, gates.to_h)
+        gates = every_key_gates
+        expect(gates_seen.reject { |_entry, seen| seen.size == 1 }).to eq({})
+        expect(gates.keys - every_key).to eq([])
+        expect(gates.size).to eq(3)
+        expect(gates.values.uniq).to eq([%w[Kronar Dokora Lirum]])
       end
 
       # @param lines [Array<String>]
