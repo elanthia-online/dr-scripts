@@ -179,13 +179,11 @@ RSpec.describe 'textsubs.lic' do
 
   # build_combination, recording the source of every key written to a
   # Registry while it builds. Every writer, add, elanthipedia and the catalog
-  # data alike, ends in Registry#add (see on_registry_write); the catalog data
-  # does not pass through add, as it stores the keys its check compiled. A
-  # TracePoint records the writes, which leaves Registry#add as it is;
+  # data alike, ends in Registry#add, which on_registry_write watches; the
+  # catalog data does not pass through add, as it stores the keys its check
+  # compiled. on_registry_write's TracePoint leaves Registry#add as it is;
   # rspec-mocks wrappers on the ~100,000 writes of the 96 builds doubled the
-  # time of the builds. The key is read by its position, so renaming
-  # Registry#add's parameter does not break the trace; its name is looked up
-  # once per build, not once per call.
+  # time of the builds.
   #
   # @param combination [Hash{String=>Object}] one element of `combinations`
   # @return [Hash{Symbol=>Object}] deep-frozen, because every caller shares it.
@@ -197,10 +195,7 @@ RSpec.describe 'textsubs.lic' do
   #   each Registry#add call, in call order
   def traced_build(combination)
     sources = []
-    write = TextSubs::Registry.instance_method(:add)
-    key_param = write.parameters.first.last
-    writes = TracePoint.new(:call) { |trace| sources << trace.binding.local_variable_get(key_param).source.freeze }
-    catalog = writes.enable(target: write) { build_combination(combination) }
+    catalog = on_registry_write(->(key, _replacement) { sources << key.source.freeze }) { build_combination(combination) }
     { catalog: catalog.map { |entry| entry.map { |value| frozen_copy(value) }.freeze }.freeze,
       write_sources: sources.freeze }.freeze
   end
@@ -354,8 +349,9 @@ RSpec.describe 'textsubs.lic' do
   # only while the block runs, so nothing outlives it: no stub on TextSubs
   # and no singleton method on any Registry, the one the after hook installs
   # for the next example included. The key and the replacement are read by
-  # their positions, so renaming Registry#add's parameters does not break it.
-  # Registry#add raises only for a key that is not a Regexp, which these
+  # their positions, so renaming Registry#add's parameters does not break it;
+  # their names are looked up once per call of this helper, not once per
+  # write. Registry#add raises only for a key that is not a Regexp, which these
   # builds never write.
   #
   # @param observer [#call] called with the key [Regexp] and the
