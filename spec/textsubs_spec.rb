@@ -4193,6 +4193,34 @@ RSpec.describe 'textsubs.lic' do
       expect(context_for('Cleric').allows?(gate.merge('setting' => 'herb_textsubs'))).to be(false)
     end
 
+    # guilds_passing is what the ladder check reads to tell whether two
+    # sections can reach one character, so each guild key is held to it,
+    # and a setting key must not narrow it.
+    {
+      'no gate'                        => [nil, guilds + ['a guild not listed']],
+      'a setting gate alone'           => [{ 'setting' => 'herb_textsubs' }, guilds + ['a guild not listed']],
+      'a guilds gate'                  => [{ 'guilds' => %w[Bard Thief], 'setting_off' => 'herb_textsubs' }, %w[Bard Thief]],
+      'a not_guilds gate'              => [{ 'not_guilds' => guilds - ['Bard'] }, ['Bard', 'a guild not listed']],
+      'guilds and not_guilds together' => [{ 'guilds' => %w[Bard Thief], 'not_guilds' => ['Thief'] }, ['Bard']],
+      'a gate no guild passes'         => [{ 'guilds' => ['Bard'], 'not_guilds' => ['Bard'] }, []]
+    }.each do |label, (gate, passing)|
+      it "lists the guilds that pass the guild keys of #{label}, and a guild not listed when one would" do
+        expect(TextSubs::Context.guilds_passing(gate)).to eq(passing)
+        expect(TextSubs::Context.guilds_passing(gate)).to be_frozen
+        guilds.each do |guild|
+          expect(TextSubs::Context.guild_holds?(gate, guild)).to eq(passing.include?(guild)), guild
+        end
+      end
+    end
+
+    it "holds a not_guilds gate for a guild DRStats reports that guilds does not list, as allows? does" do
+      gate = { 'not_guilds' => guilds }
+      expect(TextSubs::Context.guild_holds?(gate, 'Necromage')).to be(true)
+      expect(context_for('Necromage').allows?(gate)).to be(true)
+      expect(TextSubs::Context.guild_holds?(gate, nil)).to be(false)
+      expect(TextSubs::Context.guild_holds?({ 'guilds' => ['Bard'] }, 'Necromage')).to be(false)
+    end
+
     {
       'a misspelt key'               => [{ 'guild' => ['Bard'] }, /unknown 'when' key\(s\) "guild"/],
       'an empty mapping'             => [{}, /'when' is empty/],

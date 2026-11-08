@@ -1414,6 +1414,40 @@ class TextSubs
     end
     private_class_method :check_guilds, :check_setting
 
+    # Whether a gate's guild keys hold for a guild; its setting keys are not
+    # read. A gate with no guild key holds for every guild, an unknown one
+    # included.
+    #
+    # @param gate [Hash, nil] a checked `when:` value
+    # @param guild [String, nil] a guild name, nil while it is not known
+    # @return [Boolean]
+    # @example
+    #   TextSubs::Context.guild_holds?({ 'not_guilds' => ['Thief'] }, 'Bard') # => true
+    #   TextSubs::Context.guild_holds?({ 'not_guilds' => ['Thief'] }, nil)    # => false
+    def self.guild_holds?(gate, guild)
+      return true if gate.nil?
+      return false if gate.key?('guilds') && !gate['guilds'].include?(guild)
+
+      !gate.key?('not_guilds') || (!guild.nil? && !gate['not_guilds'].include?(guild))
+    end
+
+    # The guilds whose characters pass a gate's guild keys: each known guild,
+    # and 'a guild not listed' for a guild DRStats reports that guilds does
+    # not hold. Setting keys are not read, as any setting may be on. Two
+    # gates whose lists share no entry are guild-disjoint: no catalog holds
+    # the sections of both. A character whose guild is not known yet needs
+    # no entry: only a gate with no guild key passes it, and that gate
+    # passes every guild.
+    #
+    # @param gate [Hash, nil] a checked `when:` value
+    # @return [Array<String>] frozen
+    # @example
+    #   TextSubs::Context.guilds_passing('guilds' => ['Bard'])  # => ["Bard"]
+    #   TextSubs::Context.guilds_passing('not_guilds' => TextSubs::Context.guilds) # => ["a guild not listed"]
+    def self.guilds_passing(gate)
+      (guilds + ['a guild not listed']).select { |guild| guild_holds?(gate, guild) }.freeze
+    end
+
     # @param guild [String, nil] what DRStats.guild reports, nil while it is
     #   not known
     # @param settings [#[]] the character settings (get_settings), read by name
@@ -1433,14 +1467,13 @@ class TextSubs
     # @raise [ArgumentError] when the gate is malformed (see check_gate)
     def allows?(gate)
       self.class.check_gate(gate)
-      return true if gate.nil?
+      return false unless self.class.guild_holds?(gate, guild)
 
-      gate.all? do |key, value|
+      (gate || {}).all? do |key, value|
         case key
-        when 'guilds' then value.include?(guild)
-        when 'not_guilds' then !guild.nil? && !value.include?(guild)
         when 'setting' then setting?(value)
-        else !setting?(value)
+        when 'setting_off' then !setting?(value)
+        else true
         end
       end
     end
