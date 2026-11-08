@@ -3296,6 +3296,17 @@ RSpec.describe 'textsubs.lic' do
     # over the corpus once instead of once per catalog. A key built again by a
     # later example finds its entry: Regexp#eql? compares source and options.
     corpus_matches = Hash.new { |cache, key| cache[key] = corpus.each_index.select { |at| key.match?(corpus[at]) } }
+    # The gates production installs, read from the built Registries rather
+    # than from the YAML, so the gate-soundness example and the one-index
+    # examples check the same gates, and a gate that add_catalog or
+    # Catalog.expand adds, drops or changes is what they check.
+    #
+    # @return [Hash{Regexp=>Array<String>}] each key any of the 96 built
+    #   Registries gates, and its requires_any words (see catalog_build_of)
+    define_method(:every_key_gates) do
+      combinations.map { |combination| catalog_build_of(combination)[:gates] }.reduce(:merge)
+                  .transform_keys { |source, options| Regexp.new(source, options) }
+    end
     entries = read_entries.call
     # What the generator makes of today's catalog, each part worked out the
     # first time an example asks for it:
@@ -3701,19 +3712,19 @@ RSpec.describe 'textsubs.lic' do
         end
       end
 
-      # A gate is only sound if each pattern of its section needs one of the
-      # section's words: every corpus line a gated pattern matches has to stop
-      # matching once each of those words in it is misspelt.
+      # A gate is only sound if each key it gates needs one of its words: every
+      # corpus line a gated key matches has to stop matching once each of
+      # those words in it is misspelt. The gates are the ones the 96 built
+      # Registries hold (every_key_gates), so a gate the catalog build puts on
+      # the wrong section is caught here, not only by the sweeps.
       it 'gates only patterns that stop matching a corpus line once its requires_any words are misspelt' do
-        gated = shipped_catalog['textsubs']['sections'].select { |section| section.key?('requires_any') }.flat_map do |section|
-          section['subs'].map { |pattern, _| [Regexp.new(pattern), section['requires_any']] }
-        end
-        lines = samples + stream_without_big_line + ["You have 1234567 Kronars.\r\n".b, "9 Lirums, 1000 Dokoras\r\n".b]
+        gated = every_key_gates
+        lines = corpus + ["You have 1234567 Kronars.\r\n".b, "9 Lirums, 1000 Dokoras\r\n".b]
         matched = gated.flat_map { |key, words| lines.select { |line| key.match?(line) }.map { |line| [key, words, line] } }
         unsound = matched.select { |key, words, line| key.match?(line.gsub(Regexp.union(words)) { |word| "X#{word[1..]}" }) }
+        expect(unsound.map { |key, _words, line| [key.source, line] }).to eq([])
         expect(gated.size).to eq(3)
         expect(matched.map(&:first).uniq.size).to eq(gated.size)
-        expect(unsound.map { |key, _words, line| [key.source, line] }).to eq([])
       end
     end
 
@@ -3728,13 +3739,6 @@ RSpec.describe 'textsubs.lic' do
     # built Registries gate them, checks that for all 96 catalogs at once: one
     # candidates call per line instead of 96 index builds and hook sweeps.
     describe 'every catalog, through one index over all their keys' do
-      # @return [Hash{Regexp=>Array<String>}] each key any of the 96 built
-      #   Registries gates, and its requires_any words (see catalog_build_of)
-      define_method(:every_key_gates) do
-        combinations.map { |combination| catalog_build_of(combination)[:gates] }.reduce(:merge)
-                    .transform_keys { |source, options| Regexp.new(source, options) }
-      end
-
       # @return [TextSubs::TokenIndex] over every_key, gated by every_key_gates
       define_method(:every_key_index) do
         TextSubs::TokenIndex.new(every_key, every_key_gates)
