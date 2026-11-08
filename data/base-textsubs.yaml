@@ -37,14 +37,16 @@
 # character may differ. Each n is from -of to of and used once on its scale.
 # A scale split over ladder sections, around messages that stay pairs, gives
 # each of them scale: 'name' and the same of; a scale is the section's own
-# name otherwise. No step's text may be matched by another step's pattern,
-# in its own ladder section or any other in the file. Two sections may
-# share an n of one scale, or a phrase, only when no one guild passes both
-# sections' when: gates; their setting keys are not read, so sections told
-# apart only by settings are always checked against each other. Steps are
-# not checked against the rows of other kinds, so a subs row's pattern must
-# not match a step's text. A message that does not fit stays a pair in a
-# subs section.
+# name otherwise. The load refuses a step whose text another step's
+# pattern matches, or a pattern of another kind of section (a subs row,
+# say), in its own section or any other in the file; and a step whose text
+# ends with the start of another's, as 'a hit' and 'hit hard' in
+# 'a hit hard', as one sub would then rewrite the line and the other lose
+# its match. Two sections may share an n of one scale, or a phrase, only
+# when no one guild passes both sections' when: gates; their setting keys
+# are not read, so sections told apart only by settings are always checked
+# against each other. A message that does not fit stays a pair in a subs
+# section.
 #
 # Each spell is written once, in the spells: table at the end of the file:
 #   name       the spell's name (regex source, as in a pattern)

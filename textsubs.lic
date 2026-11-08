@@ -1601,10 +1601,12 @@ class TextSubs
     #   has none), and every pattern the sections give compiled, by its source
     # @raise [ArgumentError] naming the first problem found, in this order:
     #   the top-level keys, schema, spells and sections list; each section's
-    #   own problems, in file order; a section name used more than once;
-    #   then the problems between the sections of one kind (check_across),
-    #   so a ladder's repeated n or matched phrase is named only when every
-    #   section is otherwise sound
+    #   own problems, in file order (a ladder's steps against each other
+    #   among them); a section name used more than once; then the problems
+    #   between sections (check_across), in the order the generator's
+    #   check_across gives (Generators::Ladder.check_across), so a clash
+    #   between two ladders is named only when every section is otherwise
+    #   sound
     def self.check(data)
       raise ArgumentError, "no 'textsubs:' mapping (the file is missing or did not parse)" unless data.is_a?(Hash)
 
@@ -1616,28 +1618,28 @@ class TextSubs
       sections = data['sections']
       raise ArgumentError, "'sections' must be a non-empty list" unless sections.is_a?(Array) && !sections.empty?
 
-      keys = sections.each_with_index.flat_map { |section, index| check_section(section, index, spells) }
+      checked = sections.each_with_index.map { |section, index| [section, check_section(section, index, spells)] }
       names = sections.map { |section| section['name'] }
       repeated = names.tally.select { |_, count| count > 1 }.keys
       raise ArgumentError, "section name(s) used more than once: #{repeated.map(&:inspect).join(', ')}" unless repeated.empty?
 
-      keys = keys.to_h { |key| [key.source, key] }
-      check_across(sections, keys)
-      [sections, spells, keys]
+      check_across(checked)
+      [sections, spells, checked.flat_map(&:last).to_h { |key| [key.source, key] }]
     end
 
     # Runs the check_across of each generator that has one, on every section
     # of its kind, once each section has passed its own check.
     #
-    # @param sections [Array<Hash>] every section, each checked
-    # @param keys [Hash{String=>Regexp}] every pattern they give, by source
+    # @param checked [Array<Array(Hash, Array<Regexp>)>] every section, in
+    #   file order, each checked, with the patterns its check returned
     # @return [nil]
     # @raise [ArgumentError] as a generator's check_across does
-    def self.check_across(sections, keys)
+    def self.check_across(checked)
       kinds.each do |kind, generator|
         next unless generator.respond_to?(:check_across)
 
-        generator.check_across(sections.each_with_index.select { |section, _| section.fetch('kind', 'pairs') == kind }, keys)
+        indexed = checked.each_with_index.filter_map { |(section, _), index| [section, index] if section.fetch('kind', 'pairs') == kind }
+        generator.check_across(indexed, checked)
       end
       nil
     end
@@ -1705,15 +1707,17 @@ class TextSubs
   #                              the pairs, in order, of a checked section
   # spells is the data's TextSubs::SpellTable, which only the spell kinds
   # read. A generator may also answer
-  #   check_across(indexed, keys)
+  #   check_across(indexed, checked)
   #                              raises ArgumentError, naming each section
   #                              itself (Catalog.section_label), for a
-  #                              problem between sections of its kind;
-  #                              called once per load with every section of
-  #                              the kind, each checked, as [section, index],
-  #                              and every pattern compiled, by source
+  #                              problem between a section of its kind and
+  #                              another section; called once per load with
+  #                              every section of the kind, each checked, as
+  #                              [section, index], and every section of the
+  #                              file as [section, the patterns its check
+  #                              returned], in file order
   # which Catalog calls when it is there; Ladder's checks a scale split over
-  # sections, and steps that two sections share.
+  # sections, and steps that clash with another section's steps or rows.
   module Generators
     # @param pattern [String] regex source
     # @return [Regexp] the pattern, compiled and frozen, as a Regexp literal is
@@ -1913,17 +1917,21 @@ class TextSubs
     # metacharacter but '.' must be escaped, and a backslash may only escape
     # a punctuation mark, so the replacement writes back the text the pattern
     # matched, but for an unescaped '.': that matches any character and is
-    # written back as '.'. No step's text may be matched by the pattern of
-    # another step anywhere in the file, in its own ladder section or any
-    # other, as one of the two would then lose its counter. Two sections
-    # may share a phrase, or an n of one scale, only when no one guild
-    # passes both sections' when: gates (Context.guilds_passing), as no
-    # catalog then holds both; setting keys are not read, so sections told
-    # apart only by settings are always checked against each other. The
-    # load does not catch two phrases that overlap end to start, as 'a hit'
-    # and 'hit hard', which a line holding 'a hit hard' would give both
-    # counters, nor a row of another kind (a pairs row, say) whose pattern
-    # matches a step's text, which can cost the step its counter.
+    # written back as '.'.
+    #
+    # The load refuses a step that one character's catalog cannot give its
+    # own counter in every line that holds its text. That is a step whose
+    # text another step's pattern matches; a step whose text ends with the
+    # start of another's, as 'a hit' and 'hit hard' in 'a hit hard', when
+    # both patterns match the two texts run together (the shared words
+    # neither starting nor ending inside a word); and a step whose text a
+    # pattern of another kind of section (a pairs row, say) matches. In
+    # each case the subs that run first rewrite the line and the other
+    # loses its match. Two sections are checked against each other only
+    # when one guild passes both their when: gates (Context.guilds_passing),
+    # as no catalog holds both otherwise; setting keys are not read, so
+    # sections told apart only by settings are always checked against each
+    # other.
     #
     # @example
     #   section = { 'name' => 'butchery', 'kind' => 'ladder', 'prefix' => 'manage to extract a', 'of' => 10,
@@ -1952,18 +1960,22 @@ class TextSubs
         %w[append before_period].freeze
       end
 
-      # Checks one section on its own; check_across checks the step numbers
-      # and phrases between steps.
+      # Checks one section on its own, its steps against each other
+      # included; check_across checks it against the other sections.
       #
       # @param section [Hash] a ladder section
       # @param _spells [TextSubs::SpellTable] unused
       # @return [Array<Regexp>] the step patterns, compiled, in list order
-      # @raise [ArgumentError] when style, anchor, prefix or scale is not a
-      #   quoted string, style is unknown, anchor is not '^', of is not a
-      #   positive whole number, steps is not a non-empty list of
-      #   [n, 'phrase'] pairs, an n is out of range, a phrase or the prefix is
-      #   not literal text, a before_period phrase does not end in a full
-      #   stop, scale is empty, or a pattern does not compile
+      # @raise [ArgumentError] naming the first problem, in this order: style,
+      #   anchor, prefix or scale is not a quoted string, style is unknown,
+      #   anchor is not '^', of is not a positive whole number, the prefix is
+      #   not literal text or scale is empty; steps is not a non-empty list;
+      #   a step (in list order) is not an [n, 'phrase'] pair, its n is out of
+      #   range, its phrase is not literal text, or its before_period phrase
+      #   does not end in a full stop; a pattern does not compile; an n is
+      #   used more than once; a step's text is matched by another step's
+      #   pattern (check_matches); a step's text ends with the start of
+      #   another's (check_overlaps)
       def self.check(section, _spells)
         Generators.check_strings(section, optional_fields)
         check_options(section)
@@ -1971,27 +1983,46 @@ class TextSubs
         raise ArgumentError, "'steps' must be a non-empty list" unless steps.is_a?(Array) && !steps.empty?
 
         steps.each_with_index { |step, index| check_step(section, step, index) }
-        expand(section, nil, nil).map { |pattern, _replacement| Generators.check_pattern(pattern) }
+        patterns = expand(section, nil, nil).map { |pattern, _replacement| Generators.check_pattern(pattern) }
+        repeated = steps.map(&:first).tally.select { |_, count| count > 1 }.keys
+        raise ArgumentError, "uses step number(s) #{repeated.join(', ')} more than once" unless repeated.empty?
+
+        records = step_records(section, nil, patterns)
+        check_matches(records, records)
+        check_overlaps(records, starts(records), [nil])
+        patterns
       end
 
-      # The checks between steps, run on every ladder section of the file at
-      # once, as a scale may be split over sections and a phrase in one
-      # section may be matched by a step of another. Two steps clash only
-      # when one character can get both: in one section, or in two whose
-      # when: gates are both passed by one guild (Context.guilds_passing).
+      # The checks between sections, run on every ladder section of the file
+      # at once, as a scale may be split over sections and a step of one
+      # section may clash with a step of another, or with a row of another
+      # kind. Two sections are checked against each other only when one
+      # character can get both: when one guild passes both their when: gates
+      # (Context.guilds_passing).
       #
       # @param indexed [Array<Array(Hash, Integer)>] every ladder section of
       #   the file, each checked, with its place among the sections
-      # @param keys [Hash{String=>Regexp}] every pattern of the file,
-      #   compiled, by source
+      # @param checked [Array<Array(Hash, Array<Regexp>)>] every section of
+      #   the file, in file order, with the patterns its check returned
       # @return [nil]
-      # @raise [ArgumentError] naming the section and steps, when the
-      #   sections of one scale give different ofs, an n is used twice on a
-      #   scale, or a step's text is matched by another step's pattern
-      def self.check_across(indexed, keys)
-        passing = indexed.to_h { |section, index| [index, Context.guilds_passing(section['when'])] }
+      # @raise [ArgumentError] naming the sections and steps of the first
+      #   problem, in this order: every scale, in the order the file first
+      #   names it, whose sections give different ofs or share an n
+      #   (check_scale); then, each in file order, a step whose text a step of
+      #   another section matches (check_matches), a step whose text ends
+      #   with the start of another section's step (check_overlaps), and a
+      #   row of another kind whose pattern matches a step's text
+      #   (check_rows). So an n a later section shares on its scale is named
+      #   before a phrase two earlier sections share.
+      def self.check_across(indexed, checked)
+        passing = checked.map { |section, _| Context.guilds_passing(section['when']) }
         indexed.group_by { |section, _| scale(section) }.each { |name, members| check_scale(name, members, passing) }
-        check_distinct(indexed, keys, passing)
+        records = indexed.to_h { |section, index| [index, step_records(section, index, checked[index].last)] }
+        meeting = records.keys.to_h { |index| [index, records.keys.select { |other| other != index && meet?(index, other, passing) }] }
+        records.each { |index, steps| check_matches(steps, meeting[index].flat_map { |other| records[other] }) }
+        all_starts = starts(records.values.flatten(1))
+        records.each { |index, steps| check_overlaps(steps, all_starts, meeting[index]) }
+        check_rows(records, checked, passing)
       end
 
       # @param section [Hash] a checked ladder section
@@ -2068,20 +2099,20 @@ class TextSubs
         section.fetch('scale', section['name'])
       end
 
-      # Two messages cannot hold one place on a scale, whether one section or
-      # two of the scale list them. Each section is checked against itself
-      # and the sections of the scale before it in the file that one guild
-      # can get with it.
+      # Two messages cannot hold one place on a scale, though two sections of
+      # the scale list them. Each section is checked against the sections of
+      # the scale before it in the file that one guild can get with it; check
+      # has refused an n repeated within one section.
       #
       # @param name [String] the scale
       # @param members [Array<Array(Hash, Integer)>] its sections, in file
       #   order, each with its place among the sections
-      # @param passing [Hash{Integer=>Array}] Context.guilds_passing for the
-      #   gate of each ladder section, by its place among the sections
+      # @param passing [Array<Array<String>>] Context.guilds_passing for the
+      #   gate of each section, by its place among the sections
       # @return [nil]
       # @raise [ArgumentError] naming the first section that gives the scale
-      #   another of than the first did, or uses an n more than once on it,
-      #   and, for an n the scale's sections share, those sections
+      #   another of than the first did, or uses an n an earlier section of
+      #   it uses, and each such earlier section with the n it uses
       def self.check_scale(name, members, passing)
         first, first_index = members.first
         members.each_with_index do |(section, index), place|
@@ -2101,63 +2132,149 @@ class TextSubs
       # @param earlier [Array<Array(Hash, Integer)>] the scale's sections
       #   before it that one guild can get with it
       # @return [nil]
-      # @raise [ArgumentError] as check_scale describes
+      # @raise [ArgumentError] as check_scale describes, naming each earlier
+      #   section with the numbers it shares, as in 'section 3 (c) uses step
+      #   number(s) 2, 1 more than once on scale "s": section 1 (a) uses 1;
+      #   section 2 (b) uses 2, 1'
       def self.check_numbers(name, section, index, earlier)
         numbers = section['steps'].map(&:first)
-        counts = numbers.tally
-        taken = earlier.flat_map { |other, _| other['steps'].map(&:first) }
-        repeated = numbers.uniq.select { |n| counts[n] > 1 || taken.include?(n) }
-        return if repeated.empty?
+        shared = earlier.filter_map do |other, other_index|
+          common = numbers & other['steps'].map(&:first)
+          "#{Catalog.section_label(other, other_index)} uses #{common.join(', ')}" unless common.empty?
+        end
+        return if shared.empty?
 
-        also = earlier.select { |other, _| other['steps'].any? { |n, _| repeated.include?(n) } }
-                      .map { |other, other_index| Catalog.section_label(other, other_index) }
-        where = also.empty? ? '' : " on scale #{name.inspect}, as #{also.join(' and ')} does"
-        raise ArgumentError, "#{Catalog.section_label(section, index)} uses step number(s) #{repeated.join(', ')} more than once#{where}"
+        repeated = numbers & earlier.flat_map { |other, _| other['steps'].map(&:first) }
+        raise ArgumentError, "#{Catalog.section_label(section, index)} uses step number(s) #{repeated.join(', ')} more than once " \
+                             "on scale #{name.inspect}: #{shared.join('; ')}"
       end
 
       # Two steps whose patterns match one text would put both counters on
       # that line, or, with one pattern, share one key so that only the later
       # step survives. Each step's text is its pattern's match, so trying the
-      # pattern of every other step one character can get on it covers a line
-      # that carries one step's message. It does not cover a line where one
-      # phrase ends inside another, as 'a hit' and 'hit hard' in 'a hit hard':
-      # neither text matches the other's pattern, yet that line gets both
-      # counters.
+      # pattern of every rival on it covers a line that carries one step's
+      # message.
       #
-      # @param indexed [Array<Array(Hash, Integer)>] every ladder section, as
-      #   check_across takes them
-      # @param keys [Hash{String=>Regexp}] as check_across takes them
-      # @param passing [Hash{Integer=>Array}] as check_scale takes it
+      # @param records [Array<Hash>] the steps to check, as step_records
+      #   gives them, in list order
+      # @param rivals [Array<Hash>] the steps one character can get with
+      #   them; a record among them is not tried on itself
       # @return [nil]
-      # @raise [ArgumentError] naming the first step, in file order, whose
-      #   text another step's pattern matches, and those steps, each by its
-      #   place in its section's list and its n, and by its section when that
-      #   is another
-      def self.check_distinct(indexed, keys, passing)
-        steps = indexed.map { |section, index| step_records(section, index, keys) }
-        steps.each_with_index do |records, at|
-          rivals = steps.each_index.select { |other| meet?(indexed[at].last, indexed[other].last, passing) }.flat_map { |other| steps[other] }
-          records.each do |record|
-            others = rivals.select { |rival| !rival.equal?(record) && rival[:pattern].match?(record[:text]) }
-            next if others.empty?
+      # @raise [ArgumentError] naming the first record whose text a rival's
+      #   pattern matches, and every such rival, each by its place in its
+      #   section's list and its n, and by its section when check_across
+      #   gave one and it is another
+      def self.check_matches(records, rivals)
+        records.each do |record|
+          others = rivals.select { |rival| !rival.equal?(record) && rival[:pattern].match?(record[:text]) }
+          next if others.empty?
 
-            raise ArgumentError, "#{step_label(record, nil)} phrase #{record[:phrase].inspect} is also matched by " \
-                                 "#{others.map { |other| step_label(other, record) }.join(', ')}, so one of them would lose its counter"
+          raise ArgumentError, "#{step_label(record, nil)} phrase #{record[:phrase].inspect} is also matched by " \
+                               "#{others.map { |other| step_label(other, record) }.join(', ')}, so one of them would lose its counter"
+        end
+        nil
+      end
+
+      # A line may carry two messages run together, one's last words being
+      # the other's first, as 'a hit' and 'hit hard' in 'a hit hard'.
+      # Neither text then matches the other's pattern, yet both patterns
+      # match the line, and the sub that runs first rewrites it so that the
+      # other loses its match. The shared part must neither start nor end
+      # inside a word (cuts), and must hold a word, so that two texts which
+      # only share a letter or a full stop do not count.
+      #
+      # @param records [Array<Hash>] the steps to check, as step_records
+      #   gives them, in list order
+      # @param starts [Hash{String=>Array<Hash>}] the rivals by every start
+      #   of their texts, as starts gives them; it may hold more steps
+      # @param sections [Array<Integer, nil>] the :index of every step of
+      #   starts that is a rival of records
+      # @return [nil]
+      # @raise [ArgumentError] naming the first record whose text ends with
+      #   the start of a rival's text, the rival, and the line both match
+      def self.check_overlaps(records, starts, sections)
+        records.each do |record|
+          text = record[:text]
+          record[:cuts].each do |at|
+            tail = text[at..]
+            rival = starts.fetch(tail, []).find do |other|
+              next false if other.equal?(record) || !sections.include?(other[:index])
+
+              joined = text + other[:text][tail.size..]
+              record[:pattern].match?(joined) && other[:pattern].match?(joined)
+            end
+            next unless rival
+
+            raise ArgumentError, "#{step_label(record, nil)} phrase #{record[:phrase].inspect} ends with the start of " \
+                                 "#{step_label(rival, record)} phrase #{rival[:phrase].inspect}, so in the line " \
+                                 "#{(text + rival[:text][tail.size..]).inspect} one of them would lose its counter"
           end
         end
         nil
       end
 
+      # A pattern of a section of another kind, a pairs row say, that
+      # matches a step's text rewrites the line that carries that step's
+      # message before or after the step's own sub, as both run on it.
+      #
+      # @param records [Hash{Integer=>Array<Hash>}] the steps of every ladder
+      #   section, by its place among the sections
+      # @param checked [Array<Array(Hash, Array<Regexp>)>] as check_across
+      #   takes it
+      # @param passing [Array<Array<String>>] as check_scale takes it
+      # @return [nil]
+      # @raise [ArgumentError] naming the first pattern, in file order, of a
+      #   section that is not a ladder, which matches the text of a step one
+      #   character can get with it, and every such step, in file order
+      def self.check_rows(records, checked, passing)
+        checked.each_with_index do |(section, patterns), index|
+          next if records.key?(index)
+
+          steps = records.select { |other, _| meet?(index, other, passing) }.values.flatten(1)
+          patterns.each do |pattern|
+            hit = steps.select { |step| pattern.match?(step[:text]) }
+            next if hit.empty?
+
+            raise ArgumentError, "#{Catalog.section_label(section, index)} pattern #{pattern.source.inspect} matches the text of " \
+                                 "#{hit.map { |step| step_label(step, nil) }.join(', ')}, so a line that carries that text could lose its counter"
+          end
+        end
+        nil
+      end
+
+      # @param text [String] a step's text
+      # @return [Array<Integer>] every place inside text, but the two ends,
+      #   that is not inside a word: a word character is not on both sides
+      # @example
+      #   cuts('a hit.') # => [1, 2, 5]
+      def self.cuts(text)
+        cuts = []
+        text.scan(/\b|(?<=\W)(?=\W)/) { cuts << Regexp.last_match.begin(0) }
+        cuts.select { |at| at.positive? && at < text.size }
+      end
+
+      # @param records [Array<Hash>] steps, as step_records gives them
+      # @return [Hash{String=>Array<Hash>}] each step under every start of
+      #   its text that ends at a cut and holds a word, the whole text left out
+      def self.starts(records)
+        records.flat_map { |record| record[:cuts].map { |at| [record[:text][0, at], record] } }
+               .select { |start, _| start.match?(/\w/) }
+               .group_by(&:first).transform_values { |pairs| pairs.map(&:last) }
+      end
+
       # @param section [Hash] a checked ladder section
-      # @param index [Integer] its place among the sections
-      # @param keys [Hash{String=>Regexp}] as check_across takes them
+      # @param index [Integer, nil] its place among the sections, nil when
+      #   check, which does not know it, makes the records
+      # @param patterns [Array<Regexp>] its step patterns, compiled, in list
+      #   order, as check returns them
       # @return [Array<Hash>] per step: its section and index, place in the
-      #   list, n, phrase, text (prefix and phrase, escapes taken out) and
-      #   compiled pattern
-      def self.step_records(section, index, keys)
+      #   list, n, phrase, text (prefix and phrase, escapes taken out), the
+      #   cuts of that text and compiled pattern
+      def self.step_records(section, index, patterns)
         section['steps'].each_with_index.map do |(n, phrase), place|
-          { section: section, index: index, place: place, n: n, phrase: phrase,
-            text: literal(phrase_source(section, phrase)), pattern: keys.fetch(pattern_source(section, phrase)) }
+          text = literal(phrase_source(section, phrase))
+          { section: section, index: index, place: place, n: n, phrase: phrase, text: text, cuts: cuts(text),
+            pattern: patterns.fetch(place) }
         end
       end
 
@@ -2165,17 +2282,18 @@ class TextSubs
       # @param beside [Hash, nil] the step the message is about, nil when it
       #   is record itself
       # @return [String] 'steps 2 (n 3)', after its section's label unless
+      #   the record has no index (check names the section itself) or
       #   beside is a step of the same section
       def self.step_label(record, beside)
         label = "steps #{record[:place] + 1} (n #{record[:n]})"
-        return label if beside && beside[:section].equal?(record[:section])
+        return label if record[:index].nil? || (beside && beside[:section].equal?(record[:section]))
 
         "#{Catalog.section_label(record[:section], record[:index])} #{label}"
       end
 
-      # @param index [Integer] a ladder section's place among the sections
+      # @param index [Integer] a section's place among the sections
       # @param other [Integer] another's, or the same
-      # @param passing [Hash{Integer=>Array}] as check_scale takes it
+      # @param passing [Array<Array<String>>] as check_scale takes it
       # @return [Boolean] whether one character can get both: true for one
       #   section, else whether one guild passes both when: gates
       def self.meet?(index, other, passing)
@@ -2207,8 +2325,9 @@ class TextSubs
         replacement = section['style'] == 'before_period' ? "#{text.delete_suffix('.')} #{counter}." : "#{text} #{counter}"
         [pattern_source(section, phrase), replacement]
       end
-      private_class_method :check_options, :check_step, :check_literal, :scale, :check_scale, :check_numbers, :check_distinct,
-                           :step_records, :step_label, :meet?, :phrase_source, :pattern_source, :step_sub
+      private_class_method :check_options, :check_step, :check_literal, :scale, :check_scale, :check_numbers, :check_matches,
+                           :check_overlaps, :check_rows, :cuts, :starts, :step_records, :step_label, :meet?, :phrase_source,
+                           :pattern_source, :step_sub
     end
 
     # The 'guild_spells_link' kind, the one sub whose replacement names the

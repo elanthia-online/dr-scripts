@@ -4871,6 +4871,48 @@ RSpec.describe 'textsubs.lic' do
           .to raise_error(ArgumentError, /steps 2 \(n 2\) phrase "a hit!" is also matched by steps 1 \(n 1\)/)
       end
 
+      # Neither 'a hit' nor 'hit hard' matches the other's pattern, yet both
+      # match the line 'a hit hard', where the sub that runs first rewrites
+      # the line so that the other no longer matches: one counter is lost.
+      it "refuses a step whose text ends with the start of another's, whichever is listed first" do
+        subs = TextSubs::Generators::Ladder.expand({ 'of' => 5, 'steps' => [[1, 'a hit'], [2, 'hit hard']] }, nil, nil)
+        expect(TextSubs::Engine.apply(subs.to_h { |source, replacement| [Regexp.new(source), replacement] }, +'a hit hard'))
+          .to eq('a hit (1/5) hard')
+        expect { ladder_pairs('of' => 5, 'steps' => [[1, 'a hit'], [2, 'hit hard']]) }
+          .to raise_error(ArgumentError, 'section 1 (scale) steps 1 (n 1) phrase "a hit" ends with the start of steps 2 (n 2) ' \
+                                         'phrase "hit hard", so in the line "a hit hard" one of them would lose its counter')
+        expect { ladder_pairs('of' => 5, 'steps' => [[2, 'hit hard'], [1, 'a hit']]) }
+          .to raise_error(ArgumentError, /\Asection 1 \(scale\) steps 2 \(n 1\) phrase "a hit" ends with the start of steps 1 \(n 2\)/)
+      end
+
+      {
+        'a shared one-letter word'           => [[1, 'you see a'], [2, 'a hit lands'], 'you see a hit lands'],
+        'shared words led by punctuation'    => [[1, 'you stop... and'], [2, '... and fall'], 'you stop... and fall'],
+        'shared words ending in punctuation' => [[1, 'you take a hit.'], [2, 'a hit. Then you fall'], 'you take a hit. Then you fall'],
+        'two shared words'                   => [[1, 'you land a'], [2, 'land a blow'], 'you land a blow']
+      }.each do |label, (first, second, line)|
+        it "refuses two steps that overlap end to start on #{label}" do
+          expect { ladder_pairs('of' => 5, 'steps' => [first, second]) }
+            .to raise_error(ArgumentError, /, so in the line #{Regexp.escape(line.inspect)} one of them would lose its counter\z/)
+        end
+      end
+
+      # The shared part must neither start nor end inside a word and must
+      # hold a word, so two texts that share only part of a word, or only a
+      # full stop, are not two messages run together; nor are two whose
+      # anchor keeps the later one to the start of a line.
+      {
+        'part of a word'        => [{}, [[1, 'a hit'], [2, 'it lands']]],
+        'only a full stop'      => [{}, [[1, 'you stop.'], [2, '...and fall']]],
+        'only a word unended'   => [{}, [[1, 'you take a'], [2, 'about face']]],
+        'an anchored later one' => [{ 'anchor' => '^' }, [[1, 'you take a'], [2, 'a beating']]]
+      }.each do |label, (fields, steps)|
+        it "lets two steps share #{label}" do
+          pairs = ladder_pairs({ 'of' => 5, 'steps' => steps }.merge(fields))
+          expect(pairs.map(&:last)).to eq(steps.map { |n, phrase| "#{phrase} (#{n}/5)" })
+        end
+      end
+
       # A scale may be split over ladder sections, around rows that stay
       # pairs, and a phrase in one section may be matched by a step of
       # another, so the step checks run across every ladder section of the
@@ -4911,7 +4953,7 @@ RSpec.describe 'textsubs.lic' do
           data, tiers, worse = shipped_with_step.call('hit tiers', 'hit tiers, leaving a mark and worse', [2, 'a light hit'])
           expect { entries_for('Bard', data) }
             .to raise_error(ArgumentError, "section #{worse + 1} (hit tiers, leaving a mark and worse) uses step number(s) 2 " \
-                                           "more than once on scale \"hit tiers\", as section #{tiers + 1} (hit tiers) does")
+                                           "more than once on scale \"hit tiers\": section #{tiers + 1} (hit tiers) uses 2")
         end
 
         it 'refuses an n of the first Paladin soul pool ladder appended to the second, as both count on one scale' do
@@ -4919,8 +4961,8 @@ RSpec.describe 'textsubs.lic' do
                                                              [8, 'It glows with an inner light\.'])
           expect { entries_for('Paladin', data) }
             .to raise_error(ArgumentError, "section #{flickers + 1} (Paladin soul pool pulses and flickers) uses step number(s) 8 " \
-                                           "more than once on scale \"Paladin soul pool\", as section #{brightens + 1} " \
-                                           '(Paladin soul pool brightens) does')
+                                           "more than once on scale \"Paladin soul pool\": section #{brightens + 1} " \
+                                           '(Paladin soul pool brightens) uses 8')
         end
 
         it 'refuses the same phrase added to the second hit-tier ladder under an n the scale has free, naming both sections' do
@@ -4978,11 +5020,47 @@ RSpec.describe 'textsubs.lic' do
           end
         end
 
+        it "refuses a step whose text ends with the start of another section's step, unless no one guild gets both" do
+          hit = ladder('one', [[1, 'a hit']])
+          hard = ladder('two', [[2, 'hit hard']])
+          expect { entries_for('Bard', ladder_catalog(hard, hit)) }
+            .to raise_error(ArgumentError, 'section 2 (one) steps 1 (n 1) phrase "a hit" ends with the start of section 1 (two) ' \
+                                           'steps 1 (n 2) phrase "hit hard", so in the line "a hit hard" one of them would lose its counter')
+          apart = ladder_catalog(hit.merge('when' => { 'guilds' => ['Bard'] }), hard.merge('when' => { 'not_guilds' => ['Bard'] }))
+          expect([replacements_for(apart, 'Bard'), replacements_for(apart, 'Thief')]).to eq([['a hit (1/5)'], ['hit hard (2/5)']])
+        end
+
+        # A row of another kind that matches a step's text rewrites that
+        # step's line too, before or after the step's own sub, so the step
+        # can lose its counter; a pairs row is tried wherever it stands.
+        it "refuses a pairs row whose pattern matches a ladder step's text, before or after the ladder, unless no one guild gets both" do
+          hit = ladder('one', [[1, 'a hit'], [2, 'a miss']])
+          rows = { 'name' => 'rows', 'subs' => [['you fall', 'you FALL'], ['mis+', 'MISS']] }
+          expect { entries_for('Bard', ladder_catalog(hit, rows)) }
+            .to raise_error(ArgumentError, 'section 2 (rows) pattern "mis+" matches the text of section 1 (one) steps 2 (n 2), ' \
+                                           'so a line that carries that text could lose its counter')
+          expect { entries_for('Bard', ladder_catalog(rows.merge('subs' => [['a (hit|miss)', 'X']]), hit)) }
+            .to raise_error(ArgumentError, /\Asection 1 \(rows\) pattern "a \(hit\|miss\)" matches the text of section 2 \(one\) steps 1 \(n 1\), section 2 \(one\) steps 2 \(n 2\),/)
+          apart = ladder_catalog(hit.merge('when' => { 'guilds' => ['Bard'] }), rows.merge('when' => { 'guilds' => ['Thief'] }))
+          expect(replacements_for(apart, 'Bard')).to eq(['a hit (1/5)', 'a miss (2/5)'])
+          expect(replacements_for(ladder_catalog(hit, rows.merge('subs' => [['you fall', 'you FALL']])))).to eq(['a hit (1/5)', 'a miss (2/5)', 'you FALL'])
+        end
+
+        it 'names a phrase two sections share, then an overlap, before a row that matches a step' do
+          row = { 'name' => 'row', 'subs' => [['a cut', 'X']] }
+          cut = ladder('cut', [[1, 'a cut']])
+          expect { entries_for('Bard', ladder_catalog(row, cut, ladder('two', [[2, 'take a']]), ladder('three', [[3, 'take a']]))) }
+            .to raise_error(ArgumentError, /\Asection 3 \(two\) steps 1 \(n 2\) phrase "take a" is also matched by section 4 \(three\)/)
+          expect { entries_for('Bard', ladder_catalog(row, cut, ladder('two', [[2, 'you take a']]))) }
+            .to raise_error(ArgumentError, /\Asection 3 \(two\) steps 1 \(n 2\) phrase "you take a" ends with the start of section 2 \(cut\)/)
+          expect { entries_for('Bard', ladder_catalog(row, cut)) }.to raise_error(ArgumentError, /\Asection 1 \(row\) pattern "a cut"/)
+        end
+
         it 'refuses an n two sections of one scale both use, naming both, and lets two scales each use it' do
           first = ladder('first', [[1, 'a nick'], [2, 'a cut']], 'scale' => 'wounds')
           second = ladder('second', [[3, 'a gash'], [2, 'a slash']], 'scale' => 'wounds')
           expect { entries_for('Bard', ladder_catalog(first, second)) }
-            .to raise_error(ArgumentError, 'section 2 (second) uses step number(s) 2 more than once on scale "wounds", as section 1 (first) does')
+            .to raise_error(ArgumentError, 'section 2 (second) uses step number(s) 2 more than once on scale "wounds": section 1 (first) uses 2')
           own_scales = ladder_catalog(first.except('scale'), second.except('scale'))
           expect(replacements_for(own_scales)).to eq(['a nick (1/5)', 'a cut (2/5)', 'a gash (3/5)', 'a slash (2/5)'])
         end
@@ -4990,14 +5068,30 @@ RSpec.describe 'textsubs.lic' do
         it "takes a section's own name as its scale, so a later section joins it by naming it" do
           catalog = ladder_catalog(ladder('wounds', [[1, 'a nick']]), ladder('more wounds', [[1, 'a gash']], 'scale' => 'wounds'))
           expect { entries_for('Bard', catalog) }
-            .to raise_error(ArgumentError, 'section 2 (more wounds) uses step number(s) 1 more than once on scale "wounds", as section 1 (wounds) does')
+            .to raise_error(ArgumentError, 'section 2 (more wounds) uses step number(s) 1 more than once on scale "wounds": section 1 (wounds) uses 1')
         end
 
-        it 'names only the earlier sections that share a repeated n, after an n repeated within the section itself' do
+        # Each earlier section is named with the numbers it shares, so a
+        # reader is never told a section uses a number it does not; a and b
+        # are guild-disjoint, so both may use 1, and c, with no gate, meets
+        # both.
+        it 'names each earlier section of the scale that shares an n with the numbers it shares, and no other' do
+          catalog = ladder_catalog(ladder('a', [[1, 'a nick']], 'scale' => 's', 'when' => { 'guilds' => ['Bard'] }),
+                                   ladder('b', [[1, 'a cut'], [2, 'a slash']], 'scale' => 's', 'when' => { 'guilds' => ['Thief'] }),
+                                   ladder('m', [[4, 'a scrape']], 'scale' => 's'),
+                                   ladder('c', [[2, 'a gash'], [1, 'a rip'], [3, 'a tear']], 'scale' => 's'))
+          expect { entries_for('Bard', catalog) }
+            .to raise_error(ArgumentError, 'section 4 (c) uses step number(s) 2, 1 more than once on scale "s": ' \
+                                           'section 1 (a) uses 1; section 2 (b) uses 2, 1')
+        end
+
+        # An n repeated within one section is that section's own problem,
+        # named by its own check in file order, apart from the numbers it
+        # shares with other sections of its scale.
+        it 'names an n repeated within a section on its own, before one it shares with an earlier section' do
           catalog = ladder_catalog(ladder('a', [[1, 'a nick']], 'scale' => 's'), ladder('b', [[2, 'a cut']], 'scale' => 's'),
                                    ladder('c', [[3, 'a gash'], [3, 'a rip'], [2, 'a slash']], 'scale' => 's'))
-          expect { entries_for('Bard', catalog) }
-            .to raise_error(ArgumentError, 'section 3 (c) uses step number(s) 3, 2 more than once on scale "s", as section 2 (b) does')
+          expect { entries_for('Bard', catalog) }.to raise_error(ArgumentError, 'section 3 (c) uses step number(s) 3 more than once')
         end
 
         it 'lets guild-disjoint sections of one scale use one n, as no character gets both' do
@@ -5012,15 +5106,27 @@ RSpec.describe 'textsubs.lic' do
             .to raise_error(ArgumentError, 'section 2 (b) gives scale "s" of 6, but section 1 (a) gives it of 5')
         end
 
-        it "names a later section's own problem, then a repeated section name, before an earlier ladder's repeated n" do
+        # A section's own problems, its steps against each other among
+        # them, are named in file order; then a repeated section name; then
+        # the problems between sections, every scale's of and n first, then
+        # the phrases.
+        it "names a ladder's own repeated n in file order, and a clash between sections after every section's own problem" do
           repeats = ladder('repeats', [[1, 'a nick'], [1, 'a gash']])
           bad_gate = ladder('bad gate', [[2, 'a cut']], 'when' => { 'guilds' => ['Nope'] })
           expect { entries_for('Bard', ladder_catalog(repeats, bad_gate)) }
-            .to raise_error(ArgumentError, %(section 2 (bad gate) 'when' guilds names unknown guild(s) "Nope"))
-          expect { entries_for('Bard', ladder_catalog(repeats, ladder('repeats', [[2, 'a cut']]))) }
-            .to raise_error(ArgumentError, 'section name(s) used more than once: "repeats"')
-          expect { entries_for('Bard', ladder_catalog(repeats, bad_gate.except('when'))) }
             .to raise_error(ArgumentError, 'section 1 (repeats) uses step number(s) 1 more than once')
+          shared = ladder('shared', [[1, 'a nick']])
+          expect { entries_for('Bard', ladder_catalog(shared, ladder('nick', [[2, 'a nick']]), bad_gate)) }
+            .to raise_error(ArgumentError, %(section 3 (bad gate) 'when' guilds names unknown guild(s) "Nope"))
+          expect { entries_for('Bard', ladder_catalog(shared, ladder('nick', [[2, 'a nick']]), ladder('shared', [[2, 'a cut']]))) }
+            .to raise_error(ArgumentError, 'section name(s) used more than once: "shared"')
+        end
+
+        it "names a later section's n shared on its scale before an earlier pair of sections' shared phrase" do
+          catalog = ladder_catalog(ladder('one', [[1, 'a hit']]), ladder('two', [[2, 'a hit']]),
+                                   ladder('three', [[1, 'a cut']], 'scale' => 'one'))
+          expect { entries_for('Bard', catalog) }
+            .to raise_error(ArgumentError, 'section 3 (three) uses step number(s) 1 more than once on scale "one": section 1 (one) uses 1')
         end
 
         {
