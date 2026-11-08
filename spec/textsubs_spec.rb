@@ -3599,6 +3599,25 @@ RSpec.describe 'textsubs.lic' do
       expect(TextSubs.generation).to eq(start + 2)
       expect(TextSubs.subs).to equal(other.snapshot)
     end
+
+    # The add starts while the catalog built again takes the changes over: it
+    # must land before they are read, or after the swap in the new catalog,
+    # never in the catalog being replaced.
+    it 'keeps an add another thread makes while reinstall replays the changes onto the catalog built again' do
+      TextSubs.add('cat', 'dog')
+      built_again = TextSubs::Registry.new.tap { |registry| registry.add(/fine/, 'FINE') }
+      state = {}
+      start = method(:start_interloper)
+      built_again.define_singleton_method(:replay) do |changes|
+        start.call(state, -> { TextSubs.add('late', 'LATE') })
+        super(changes)
+      end
+
+      expect(TextSubs.reinstall(built_again)).to equal(built_again)
+      finish_interloper(state, 'the replay')
+
+      expect(TextSubs.subs).to eq(/fine/ => 'FINE', /cat/ => 'dog', /late/ => 'LATE')
+    end
   end
 
   describe 'TextSubs.subs' do

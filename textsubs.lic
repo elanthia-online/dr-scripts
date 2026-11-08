@@ -499,8 +499,10 @@ class TextSubs
   # until textsubs restarts. registry is filled before the swap, so the hook
   # sees the old catalog or the new one, whole.
   #
-  # The changes are read once, before the swap: an add that runs on another
-  # thread in between lands in the Registry being replaced, and is lost.
+  # The replay and the swap are one step under the lock, which every writer
+  # takes too (see store_key): an add on another thread lands before the
+  # changes are read, and is replayed, or after the swap, in registry, so
+  # none is lost.
   #
   # Given run, the Registry the calling start staged (see stage), it installs
   # registry only while that start is still the current run (see
@@ -520,8 +522,7 @@ class TextSubs
   #   TextSubs.reinstall(fill_catalog.call(TextSubs::Registry.new, new_guild), run: new_catalog)
   def self.reinstall(registry, run: nil)
     check_registry(registry, 'reinstall')
-    rebuilt = registry.replay(@@registry.changes)
-    @@lock.synchronize { swap_in(rebuilt) if current_run?(run) }
+    @@lock.synchronize { swap_in(registry.replay(@@registry.changes)) if current_run?(run) }
   end
 
   # Refuses anything but a TextSubs::Registry, naming the public method that
@@ -2012,13 +2013,14 @@ class TextSubs
   #
   # @param target [String] regex source, compiled unescaped
   # @param result [String] the gsub replacement
-  # @param registry [TextSubs::Registry] the catalog to write (see store_key)
+  # @param registry [TextSubs::Registry, nil] the catalog to write, or nil
+  #   for write_target (see store_key)
   # @param change [Boolean] whether to record the sub as a change (see
   #   store_key)
   # @return [String] result
   # @raise [RegexpError] when target is not valid regex source; the catalog
   #   and the generation are left as they were
-  def self.store(target, result, registry: write_target, change: false)
+  def self.store(target, result, registry: nil, change: false)
     store_key(/#{target}/, result, registry: registry, change: change)
   end
 
@@ -2026,27 +2028,31 @@ class TextSubs
   # and add_catalog, add_private and prefer_private call it straight, as their
   # keys are compiled already (a private key with its timeout). It writes one
   # key to registry, write_target unless the caller names one, and counts it
-  # under the lock, so no stage, unstage or install of another thread lands
-  # between the write and the count. A key written to the installed catalog
-  # then counts one generation, so a call is one key and one generation per sub
-  # and the generation never runs ahead of the catalog; a key written to a
-  # Registry that is not installed (staged, this thread's own build, or built
-  # again for a new guild) is not in subs yet and counts none, as install
-  # counts that whole catalog once, when it swaps it in.
+  # under the lock, so no stage, unstage, install or reinstall of another
+  # thread lands between the write and the count. write_target is read under
+  # the lock too, so an add never writes a Registry that a reinstall has
+  # replaced since: it waits for the swap and writes the new catalog. A key
+  # written to the installed catalog then counts one generation, so a call is
+  # one key and one generation per sub and the generation never runs ahead of
+  # the catalog; a key written to a Registry that is not installed (staged,
+  # this thread's own build, or built again for a new guild) is not in subs
+  # yet and counts none, as install counts that whole catalog once, when it
+  # swaps it in.
   #
   # @param key [Regexp] the pattern
   # @param result [String] the gsub replacement
   # @param requires_any [Array<String>, nil] the key's gate (see Registry)
-  # @param registry [TextSubs::Registry] the catalog to write; write_target
-  #   by default
+  # @param registry [TextSubs::Registry, nil] the catalog to write, or nil
+  #   for write_target
   # @param change [Boolean] true for add and elanthipedia, whose subs come
   #   from other scripts once the catalog is built: the Registry records
   #   them (Registry#add_change) so reinstall keeps them
   # @return [String] result
   # @raise [ArgumentError] when key is not a Regexp or requires_any is
   #   malformed; the catalog and the generation are left as they were
-  def self.store_key(key, result, requires_any: nil, registry: write_target, change: false)
+  def self.store_key(key, result, requires_any: nil, registry: nil, change: false)
     @@lock.synchronize do
+      registry ||= write_target
       if change
         registry.add_change(key, result, requires_any: requires_any)
       else
