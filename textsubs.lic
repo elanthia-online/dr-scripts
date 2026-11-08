@@ -277,9 +277,10 @@ class TextSubs
   end
 
   # One lock, kept across starts like the generation, so a start's class body
-  # and every stage, unstage, install, reinstall and store_key (every write),
-  # of this run or another, take turns: each checks the staging (or the run)
-  # and changes it in one step, with no step of another thread in between.
+  # and every write (stage, unstage, install, reinstall, start_run, store_key
+  # and drop), of this run or another, take turns: each checks the staging,
+  # the run or the catalog and changes it in one step, with no step of
+  # another thread in between.
   #
   # @@run is the token of the latest start (see start_run and current_run?).
   # The class body sets it to nil, as a start that re-runs it supersedes
@@ -321,10 +322,9 @@ class TextSubs
   # change lands in between, the cache holds a newer catalog under an older
   # number and rebuilds on the next call, never the other way round.
   #
-  # The hook thread counts a drop while a script may count an add, so two
-  # changes at once can count as one. The rule above still holds: both changes
-  # are in subs before either is counted, so the number they share is never
-  # older than the catalog a reader sees with it.
+  # Every change is counted under the lock it is made under (see store_key
+  # and drop), so a drop on the hook thread and an add on a script's thread
+  # at the same moment count once each, never one number for both.
   #
   # @return [Integer] 0 until the catalog first changes in this session
   def self.generation
@@ -511,9 +511,10 @@ class TextSubs
   # sees the old catalog or the new one, whole.
   #
   # The replay and the swap are one step under the lock, which every writer
-  # takes too (see store_key): an add on another thread lands before the
-  # changes are read, and is replayed, or after the swap, in registry, so
-  # none is lost.
+  # takes too (see store_key and drop): an add, or a drop by apply, on
+  # another thread lands before the changes are read, and is replayed, or
+  # after the swap, in registry, so none is lost and no dropped sub comes
+  # back.
   #
   # Given run, the token of the calling start (see start_run), it installs
   # registry only while that start is still the current run (see
@@ -604,17 +605,28 @@ class TextSubs
   # was given a new value since the line began, is neither removed nor
   # reported again.
   #
+  # The removal and its count are one step under the lock, like every other
+  # write (see store_key): a drop is a change reinstall replays, so it lands
+  # before reinstall reads the changes, and is replayed, or after the swap,
+  # on the new catalog, never in the Registry being replaced, where the
+  # replay would bring the sub back to raise and be reported again.
+  #
   # It answers to the hook's thread, where Script.current is nil, so it
-  # names textsubs itself instead of echoing.
+  # names textsubs itself instead of echoing, once the lock is released.
   #
   # @param key [Regexp] the key that raised
   # @param value [Object] its value in the snapshot the line ran through
   # @param error [StandardError] what it raised
   # @return [Boolean] whether this call removed it
   def self.drop(key, value, error)
-    return false unless @@registry.drop(key, value)
+    dropped = @@lock.synchronize do
+      next false unless @@registry.drop(key, value)
 
-    @@generation += 1
+      @@generation += 1
+      true
+    end
+    return false unless dropped
+
     respond "[textsubs: the sub #{key.source.inspect} raised #{error.class} (#{error.message}) " \
             'and is off until textsubs restarts; fix or remove it where it was added, usually private_textsubs]'
     true

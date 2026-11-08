@@ -3655,6 +3655,34 @@ RSpec.describe 'textsubs.lic' do
 
       expect(TextSubs.subs).to eq(/fine/ => 'FINE', /cat/ => 'dog', /late/ => 'LATE')
     end
+
+    # A drop is a change too: it must land before the changes are read, and
+    # be replayed, or after the swap, on the new catalog, never in the one
+    # being replaced, where the replay would bring the sub back.
+    it 'keeps a sub apply drops on another thread while reinstall replays the changes off, reporting it once' do
+      TextSubs.add('boom', nil)
+      built_again = TextSubs::Registry.new.tap { |registry| registry.add(/fine/, 'FINE') }
+
+      with_interloper_in_replay(built_again, interloper: -> { TextSubs.apply(+'boom') }) do
+        expect(TextSubs.reinstall(built_again)).to equal(built_again)
+      end
+
+      expect(TextSubs.subs).to eq(/fine/ => 'FINE')
+      expect(TextSubs.apply(+'boom fine')).to eq('boom FINE')
+      expect(displayed_messages.grep(/the sub "boom" raised/).size).to eq(1)
+    end
+
+    it 'counts a drop on the hook thread and an add on another thread once each, never one number for both' do
+      TextSubs.add('boom', nil)
+      start = TextSubs.generation
+
+      with_interloper_in_count(interloper: -> { TextSubs.add('cat', 'dog') }) do
+        TextSubs.apply(+'boom')
+      end
+
+      expect(TextSubs.generation).to eq(start + 2)
+      expect(TextSubs.subs).to eq(/cat/ => 'dog')
+    end
   end
 
   describe 'TextSubs.subs' do
