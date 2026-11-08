@@ -3753,6 +3753,9 @@ RSpec.describe 'textsubs.lic' do
           build[:catalog].each { |source, options, _replacement| gates_seen[[source, options]] << build[:gates][[source, options]] }
         end
         gates = every_key_gates
+        # The lookup has to find the gates, or every entry would see only nil
+        # and the consistency check below would hold whatever was built.
+        expect(gates_seen.count { |_entry, seen| seen.any? }).to eq(3)
         expect(gates_seen.reject { |_entry, seen| seen.size == 1 }).to eq({})
         expect(gates.keys - every_key).to eq([])
         expect(gates.size).to eq(3)
