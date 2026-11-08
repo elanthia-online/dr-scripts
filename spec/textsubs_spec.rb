@@ -6260,7 +6260,7 @@ RSpec.describe 'textsubs.lic' do
             TextSubs.add("it\'s \"so\"", 'kept')
             TextSubs.add('single\. \"kept\"', 'kept')
             TextSubs.add("(\w+) waves", "\1 waves")
-            Other.add("other\.", 'kept')
+            words = %w[a\ b] << 'c\.' << "d"
             TextSubs.elanthipedia("Fire\-Lens", '^', ':')
             TextSubs.add("one\.", "one \\ backslash")
             TextSubs.add(%q(percent q\. \"kept\"), 'kept')
@@ -6269,13 +6269,24 @@ RSpec.describe 'textsubs.lic' do
             HEREDOC
             dq = "^The sky\."
             TextSubs.add("#{dq} hums", 'x')
+            TextSubs.add("one" 'it\'s \"so\"', /#{words}\/\./)
+            if Gate.open?
+              gated = "The rain"
+              TextSubs.add("#{gated} falls\.", 'x')
+            end
+            air = 'The air'
+            [1].each { TextSubs.add("#{air} hums\.", 'x') }
+            unread = "never \. read"
+            nil
           PARENT
           expect(described_class.rows(source)).to eq(
             [{ 'line' => 2, 'method' => 'add', 'intent' => ['^The air hums\.', 'The air hums. (1/2)'], 'dropped' => [0] },
              { 'line' => 5, 'method' => 'add', 'intent' => ['(\w+) waves', '\1 waves'], 'dropped' => [0, 1] },
              { 'line' => 7, 'method' => 'elanthipedia', 'intent' => ['Fire\-Lens', '^', ':'], 'dropped' => [0] },
              { 'line' => 8, 'method' => 'add', 'intent' => ['one\.', 'one \ backslash'], 'dropped' => [0] },
-             { 'line' => 14, 'method' => 'add', 'intent' => ['^The sky\. hums', 'x'], 'dropped' => [0] }]
+             { 'line' => 14, 'method' => 'add', 'intent' => ['^The sky\. hums', 'x'], 'dropped' => [0] },
+             { 'line' => 18, 'method' => 'add', 'intent' => ['The rain falls\.', 'x'], 'dropped' => [0] },
+             { 'line' => 21, 'method' => 'add', 'intent' => ['The air hums\.', 'x'], 'dropped' => [0] }]
           )
         end
 
@@ -6289,14 +6300,145 @@ RSpec.describe 'textsubs.lic' do
             .to raise_error(ArgumentError, /cannot read #\{pre; x\} at line 2/)
         end
 
-        it 'forgets a string local once it is set to anything else' do
-          source = <<~'PARENT'
+        # Any second write, of any kind, leaves the value at the call to
+        # the order Ruby runs them in, which the reader does not follow.
+        { 'a plain write' => 'pre = pre.upcase', 'a second string literal' => "pre = 'The sea'", 'an operator write' => "pre += 'x'",
+          'an or-write' => "pre ||= 'x'", 'an and-write' => "pre &&= 'x'",
+          'a multiple assignment' => "pre, other = 'x', 'y'", 'a rescue target' => "begin\nrescue => pre\nend",
+          'a for loop' => "for pre in ['x']\nend", 'a named capture' => "/(?<pre>x)/ =~ 'x'" }.each do |kind, write|
+          it "takes a local set again by #{kind} for no string local" do
+            source = "pre = 'The air'\n#{write}\nTextSubs.add(\"\#{pre} hums\\.\", 'x')\n"
+            expect { described_class.rows(source) }
+              .to raise_error(ArgumentError, /cannot read #\{pre\} at line #{source.lines.size}\z/)
+          end
+        end
+
+        # Each source sets pre once, to a string, but the read does not
+        # see that write: a def's or a block's parameter is a variable of
+        # its own, and a write in a branch the read is outside of may not
+        # have run.
+        {
+          "a def's parameter"                          => <<~'PARENT',
             pre = 'The air'
-            pre = pre.upcase
-            TextSubs.add("#{pre} hums\.", "x")
+            def hum(pre)
+              TextSubs.add("#{pre} hums\.", 'x')
+            end
           PARENT
-          expect { described_class.rows(source) }
-            .to raise_error(ArgumentError, /cannot read #\{pre\} at line 3/)
+          "a block's parameter"                        => <<~'PARENT',
+            pre = 'The air'
+            [1].each do |pre|
+              TextSubs.add("#{pre} hums\.", 'x')
+            end
+          PARENT
+          'a local of another def'                     => <<~'PARENT',
+            def a
+              pre = 'The air'
+              nil
+            end
+
+            def b(pre)
+              TextSubs.add("#{pre} hums\.", 'x')
+            end
+          PARENT
+          'a write in a branch the read is outside of' => <<~'PARENT'
+            if Gate.open?
+              pre = 'The air'
+            end
+            TextSubs.add("#{pre} hums\.", 'x')
+          PARENT
+        }.each do |kind, source|
+          it "fills in no string local from #{kind}" do
+            line = source.lines.index { |text| text.include?('TextSubs') } + 1
+            expect { described_class.rows(source) }
+              .to raise_error(ArgumentError, /cannot read #\{pre\} at line #{line}\z/)
+          end
+        end
+
+        # The text of a literal whose escape Ruby dropped could reach a
+        # catalog call by any of these ways, so the reader refuses it rather
+        # than list fewer calls than it should.
+        {
+          'an operator write'                     => <<~'PARENT',
+            pre = 'a'
+            pre += "b\."
+            TextSubs.add("#{pre} c", 'x')
+          PARENT
+          'a copy into another local'             => <<~'PARENT',
+            dq = "b\."
+            copy = dq
+            TextSubs.add("#{copy} c", 'x')
+          PARENT
+          "an operator write's value"             => <<~'PARENT',
+            dq = "b\."
+            copy = (dq += 'c')
+            TextSubs.add("#{copy} c", 'x')
+          PARENT
+          'a constant'                            => <<~'PARENT',
+            PRE = "b\."
+            TextSubs.add("#{PRE} c", 'x')
+          PARENT
+          "a write that is its def's value"       => <<~'PARENT',
+            def pre
+              dq = "b\."
+            end
+            TextSubs.add("#{pre} c", 'x')
+          PARENT
+          'a symbol'                              => <<~'PARENT',
+            TextSubs.add(:"b\.".to_s, 'x')
+          PARENT
+          'a call other than add or elanthipedia' => <<~'PARENT'
+            Other.add("b\.", 'x')
+            TextSubs.other("b\.")
+          PARENT
+        }.each do |way, source|
+          it "refuses a dropped escape that could reach a catalog call by #{way}" do
+            line = source.lines.index { |text| text.include?('b\.') } + 1
+            expect { described_class.rows(source) }
+              .to raise_error(ArgumentError, /\Acannot follow \S*b\\\.\S* at line #{line}, whose escape Ruby dropped/)
+          end
+        end
+
+        # Ruby takes a <<- or << heredoc's text as written, so its escapes
+        # are read as a double-quoted literal's are; a <<~ heredoc has its
+        # indentation taken out as well, which the reader does not rebuild.
+        it 'reads the escapes of a <<- or << heredoc' do
+          source = <<~'PARENT'
+            TextSubs.add(<<-END, 'x')
+              dash\.
+              END
+            TextSubs.add(<<END, 'x')
+            plain\.
+            END
+          PARENT
+          expect(described_class.rows(source)).to eq(
+            [{ 'line' => 1, 'method' => 'add', 'intent' => ["  dash\\.\n", 'x'], 'dropped' => [0] },
+             { 'line' => 4, 'method' => 'add', 'intent' => ["plain\\.\n", 'x'], 'dropped' => [0] }]
+          )
+        end
+
+        {
+          'an argument with no escape'          => ['<<~END', <<~'PARENT'],
+            TextSubs.add(<<~END, 'x')
+              no escapes here
+            END
+          PARENT
+          'an argument of lines indented apart' => ['<<~"END"', <<~'PARENT'],
+            TextSubs.add(<<~"END", 'x')
+              one
+                two\.
+            END
+          PARENT
+          'a local no call reads'               => ['<<~END', <<~'PARENT']
+            pre = <<~END
+              The air
+            END
+            nil
+          PARENT
+        }.each do |kind, (opening, source)|
+          it "refuses an interpolating <<~ heredoc, as #{kind}" do
+            expect { described_class.rows(source) }
+              .to raise_error(ArgumentError, /\Acannot read #{Regexp.escape(opening)} at line 1: an interpolating <<~ heredoc/)
+          end
         end
 
         # double_quoted of a dropped argument's intent has to give what Ruby
