@@ -1037,10 +1037,11 @@ RSpec.describe 'textsubs.lic' do
       end
 
       # The (5/7) message names the language the song is sung in. The key
-      # takes any language name spelled with letters (A-Z, a-z), apostrophes
-      # and spaces, as in race names such as S'Kra Mur and Gor'Tog, not just
-      # the Common the ladder above pins.
-      ['Elothean', "S'Kra Mur", "Gor'Tog"].each do |language|
+      # takes any language name spelled with letters (A-Z, a-z), apostrophes,
+      # hyphens and spaces, as in race names such as S'Kra Mur and Gor'Tog,
+      # not just the Common the ladder above pins. 'Old-Common' is synthetic:
+      # it pins the hyphen.
+      ['Elothean', "S'Kra Mur", "Gor'Tog", 'Old-Common'].each do |language|
         it "labels the (5/7) message once when the words are #{language}" do
           message = "Your voice carries strongly on the air as you effortlessly recite the #{language} words so that " \
                     'all may hear, bowing your head as they come to a close'
@@ -1048,12 +1049,13 @@ RSpec.describe 'textsubs.lic' do
         end
       end
 
-      # Anything else in the language slot is not a language name: markup an
-      # earlier key wrote into the line, a digit or underscore (which \w would
-      # take), or a hyphen. Such a line gets no (5/7) counter. The three slot
-      # values are synthetic.
-      ['<b>Common</b>', 'C0mmon_2', 'Old-Common'].each do |slot|
-        it "leaves the (5/7) message alone when the language slot holds #{slot}" do
+      # The slot takes nothing else, and is never empty, so each of these
+      # synthetic lines gets no (5/7) counter: markup sent in the server line
+      # (which a class loosened to .+ would take), a digit, an underscore
+      # (each of which \w would take) and an empty slot (which * in place of
+      # + would take).
+      ['<b>Common</b>', 'C0mmon', 'Old_Common', ''].each do |slot|
+        it "leaves the (5/7) message alone when the language slot holds #{slot.inspect}" do
           line = "Your voice carries strongly on the air as you effortlessly recite the #{slot} words so that " \
                  'all may hear, bowing your head as they come to a close.'
           expect(hooked(line, guild: 'Bard')).to eq("#{line}\r\n")
