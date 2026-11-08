@@ -486,9 +486,12 @@ class TextSubs
     # The subs data gives a character, in order, each with its key compiled.
     # Checking the data compiles every pattern, those of the sections context
     # does not select too, and each selected sub reuses the Regexp that check
-    # compiled, so no pattern is compiled twice on a start. Regexp.new keeps
-    # the source it is given, and a key compiled from source with
-    # Regexp.new is eql? to /#{source}/, the key TextSubs.add stores. check
+    # compiled, so storing a sub compiles nothing: each pattern the data
+    # lists is compiled once, in the check. A source the data lists more than
+    # once is compiled once per listing, and every sub with that source gets
+    # the last of those Regexps (all eql?, so the key is the same).
+    # Regexp.new keeps the source it is given, and a key compiled from source
+    # with Regexp.new is eql? to /#{source}/, the key TextSubs.add stores. check
     # freezes each key, as /#{source}/ is frozen, so a key in TextSubs.subs
     # cannot be changed whichever writer stored it.
     #
