@@ -1556,13 +1556,17 @@ RSpec.describe 'textsubs.lic' do
         end
 
         it 'hands on_error a regex timeout, and goes on' do
-          # Three repeats in a row, not nested, so the work is polynomial
-          # (about a second untimed on 200 a's) rather than exponential;
-          # the back-reference keeps Onigmo from memoizing it away, so
-          # the match runs far past the 10 ms timeout.
+          # Three repeats in a row, not nested, so the work grows as roughly
+          # n**4 or worse (nearer n**5 at these sizes) rather than
+          # exponentially; the back-reference keeps Onigmo from memoizing it
+          # away. Untimed, 250 a's run a few hundred times past the 10 ms
+          # timeout, yet only for seconds: the timeout caps the run only
+          # while the key keeps it, so a key that lost it fails here in
+          # seconds rather than in minutes.
           slow = Regexp.new('(a*)a*a*\\1$', timeout: 0.01)
           subs = { slow => 'x', /fine/ => 'FINE' }.freeze
-          expect(TextSubs::Engine.apply(subs, +"#{'a' * 200}! fine", on_error: on_error)).to eq("#{'a' * 200}! FINE")
+          run = 'a' * 250
+          expect(TextSubs::Engine.apply(subs, +"#{run}! fine", on_error: on_error)).to eq("#{run}! FINE")
           expect(errors).to eq([[slow, Regexp::TimeoutError]])
         end
 
