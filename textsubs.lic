@@ -81,9 +81,9 @@ class TextSubs
   end
 
   # One lock, kept across starts like the generation, so a start's class body
-  # and every stage, unstage, install and store, of this run or another, take
-  # turns: each checks the staging and changes it in one step, with no step of
-  # another thread in between.
+  # and every stage, unstage, install and store_key (every write), of this run
+  # or another, take turns: each checks the staging and changes it in one
+  # step, with no step of another thread in between.
   @@lock = Mutex.new unless defined?(@@lock)
   @@lock.synchronize do
     @@registry = Registry.new
@@ -100,9 +100,10 @@ class TextSubs
   end
 
   # How many times the catalog has changed this session. install and clear
-  # count once each. add and elanthipedia count once when they write the
-  # installed catalog, and not at all while a Registry is staged (see stage):
-  # install counts that whole catalog once, when it swaps it in.
+  # count once each. Every writer (add, elanthipedia and add_catalog; see
+  # store_key) counts once per key it writes to the installed catalog, and
+  # not at all while a Registry is staged (see stage): install counts that
+  # whole catalog once, when it swaps it in.
   #
   # The class body sets the count to 0 the first time it runs in a session.
   # Every later start runs it again, which installs an empty catalog, and
@@ -123,18 +124,19 @@ class TextSubs
     @@generation
   end
 
-  # Makes registry the catalog that add, elanthipedia, subs and apply use, in
-  # one assignment, so a reader sees either the old Registry or the new one,
-  # never a mix of the two. It swaps the catalog in first and counts the
-  # change after, the same order store keeps, so the generation never runs
-  # ahead of subs. The swap is only as complete as registry is, so the entry
-  # point fills a staged Registry (see stage) and installs it once every key
-  # is in: a hook still registered while it builds, such as the one of a run
-  # that is being stopped, applies the installed catalog, never a part of the
-  # new one. On a start in Lich that installed catalog is the empty one the
-  # class body has just put in, so such a hook passes every line through
-  # untouched until install. Installing the staged Registry ends the staging,
-  # so add and elanthipedia write to it as the installed catalog from then on.
+  # Makes registry the catalog that every writer (add, elanthipedia and
+  # add_catalog; see store_key), subs and apply use, in one assignment, so a
+  # reader sees either the old Registry or the new one, never a mix of the
+  # two. It swaps the catalog in first and counts the change after, the same
+  # order store_key keeps, so the generation never runs ahead of subs. The
+  # swap is only as complete as registry is, so the entry point fills a staged
+  # Registry (see stage) and installs it once every key is in: a hook still
+  # registered while it builds, such as the one of a run that is being
+  # stopped, applies the installed catalog, never a part of the new one. On a
+  # start in Lich that installed catalog is the empty one the class body has
+  # just put in, so such a hook passes every line through untouched until
+  # install. Installing the staged Registry ends the staging, so every writer
+  # writes to it as the installed catalog from then on.
   #
   # A Registry this thread staged is installed only while it is still the one
   # staged. Once a newer start has staged its own (';force textsubs' while
@@ -170,10 +172,11 @@ class TextSubs
     registry
   end
 
-  # Makes add and elanthipedia write to registry, which is not installed, so a
-  # catalog can be built while subs and apply go on using the installed one.
-  # install(registry) swaps it in whole and ends the staging. A sub another
-  # script adds meanwhile goes into registry too, so the swap keeps it.
+  # Makes every writer (add, elanthipedia and add_catalog; see store_key)
+  # write to registry, which is not installed, so a catalog can be built while
+  # subs and apply go on using the installed one. install(registry) swaps it
+  # in whole and ends the staging. A sub another script adds meanwhile goes
+  # into registry too, so the swap keeps it.
   #
   # Staging another Registry replaces the first one. A start that dies before
   # it installs its staged Registry ends the staging with unstage, so the adds
@@ -203,13 +206,14 @@ class TextSubs
   end
 
   # Ends the staging of registry without installing it, for a build that did
-  # not finish: add and elanthipedia write to the installed catalog again, and
-  # the keys registry holds, a sub another script added meanwhile among them,
-  # are dropped with it. A partial catalog is never installed. When registry
-  # is not the one staged (it was installed, or another Registry was staged
-  # since), the staging is left as it is, so a run that ends late cannot end
-  # the staging of a newer start: the check and the change are one step under
-  # the lock. Either way registry stops being this thread's own build.
+  # not finish: every writer (add, elanthipedia and add_catalog; see
+  # store_key) writes to the installed catalog again, and the keys registry
+  # holds, a sub another script added meanwhile among them, are dropped with
+  # it. A partial catalog is never installed. When registry is not the one
+  # staged (it was installed, or another Registry was staged since), the
+  # staging is left as it is, so a run that ends late cannot end the staging
+  # of a newer start: the check and the change are one step under the lock.
+  # Either way registry stops being this thread's own build.
   #
   # @param registry [TextSubs::Registry] the Registry the caller staged
   # @return [Boolean] true when it ended the staging, false when registry was
