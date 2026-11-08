@@ -1262,17 +1262,21 @@ RSpec.describe 'textsubs.lic' do
       end
     end
 
-    it "ends by watching 'textsub', once, after the hook is registered" do
+    it "ends by watching 'textsub', once, after the hook is registered, as the run its staged Registry stands for" do
       events = []
+      staged = []
       allow(DownstreamHook).to(receive(:add).and_wrap_original do |original, name, *args, **options|
         events << [:hook, name]
         original.call(name, *args, **options)
       end)
+      allow(TextSubs).to(receive(:stage).and_wrap_original { |original, registry| original.call(registry).tap { |run| staged << run } })
       allow(TextSubs).to receive(:watch) { |hook, **options| events << [:watch, hook, options] }
 
       build_catalog('Commoner')
 
-      expect(events).to eq([[:hook, 'textsub'], [:watch, 'textsub', { guild: 'Commoner' }]])
+      expect(staged.size).to eq(1)
+      expect(events).to eq([[:hook, 'textsub'], [:watch, 'textsub', { guild: 'Commoner', run: staged.first }]])
+      expect(events.last.last[:run]).to equal(staged.first)
     end
 
     it 'ends the script, saying so, once Lich removes the hook because it raised' do
@@ -1722,6 +1726,51 @@ RSpec.describe 'textsubs.lic' do
       end
     end
 
+    describe 'given the run a start staged, as the entry point passes it' do
+      let(:superseded) { 'A newer textsubs has started, so this one stops here and leaves the subs to it.' }
+
+      it 'keeps waiting while that run is the latest start, and returns when the hook goes' do
+        run = TextSubs.stage(TextSubs::Registry.new)
+        allow(DownstreamHook).to receive(:list).and_return(%w[textsub], %w[textsub], [])
+
+        expect(TextSubs.watch('textsub', script: script, run: run)).to be_nil
+        expect(pauses.size).to eq(2)
+        expect(displayed_messages.last).to start_with("The 'textsub' hook is gone")
+      end
+
+      it 'returns at the check after a newer start stages, though the hook name is still registered' do
+        run = TextSubs.stage(TextSubs::Registry.new)
+        allow(DownstreamHook).to receive(:list).and_return(%w[textsub])
+        # The newer start stages on a thread of its own, as a Lich script does.
+        allow(TextSubs).to receive(:pause) do |seconds|
+          pauses << seconds
+          raise 'TextSubs.watch is still waiting after 10 polls' if pauses.size > 10
+
+          Thread.new { TextSubs.stage(TextSubs::Registry.new) }.join if pauses.size == 2
+        end
+
+        expect(TextSubs.watch('textsub', script: script, run: run)).to be_nil
+        expect(pauses.size).to eq(2)
+        expect(displayed_messages.last).to eq(superseded)
+      end
+
+      it 'returns at its first check once a newer start has re-run the class body, before that start stages' do
+        run = TextSubs.stage(TextSubs::Registry.new)
+        # reload_lic_class resets every stub on TextSubs, so they go on after it.
+        reload_lic_class('textsubs.lic', 'TextSubs')
+        allow(TextSubs).to receive(:watch).and_call_original
+        allow(TextSubs).to receive(:pause) do |seconds|
+          pauses << seconds
+          raise 'TextSubs.watch is still waiting after 10 polls' if pauses.size > 10
+        end
+        allow(DownstreamHook).to receive(:list).and_return(%w[textsub])
+
+        expect(TextSubs.watch('textsub', script: script, run: run)).to be_nil
+        expect(pauses).to be_empty
+        expect(displayed_messages.last).to eq(superseded)
+      end
+    end
+
     it 'never reads the guild without a block' do
       allow(DRStats).to receive(:guild).and_raise('read the guild')
       allow(DownstreamHook).to receive(:list).and_return(%w[textsub], %w[textsub], [])
@@ -1958,6 +2007,56 @@ RSpec.describe 'textsubs.lic' do
           .to eq([private_key, *golden_catalog(spell_links_on.merge('guild' => 'Bard'))])
         expect(rebuilt).to eq(['Your guild is now Bard, so textsubs has built its subs again for it.'])
         expect(warnings.size).to eq(1)
+      end
+
+      it 'ends a run a newer start superseded, and never installs its rebuild over the newer catalog' do
+        # Each start's watch is recorded instead of run, so both runs reach
+        # it; reload_lic_class (the class body a ';force textsubs' re-runs)
+        # resets every stub on TextSubs, so the stubs go on again after it.
+        watches = []
+        stub_start = lambda do
+          allow(TextSubs).to receive(:client_attached?).and_return(true)
+          allow(TextSubs).to(receive(:watch)) { |hook, **options, &rebuild| watches << [hook, options, rebuild] }
+        end
+        fine = "You feel fine.\r\n".b
+        stub_start.call
+        build_catalog(nil, spell_links_on.merge('private_textsubs' => { 'You feel fine' => 'OLD RUN' }))
+        expect(run_hooks(fine)).to eq("OLD RUN.\r\n")
+        reload_lic_class('textsubs.lic', 'TextSubs')
+        stub_start.call
+        build_catalog(nil, spell_links_on.merge('private_textsubs' => { 'You feel fine' => 'NEW RUN' }))
+        expect(run_hooks(fine)).to eq("NEW RUN.\r\n")
+        (old_hook, old_options, old_rebuild), (new_hook, new_options, new_rebuild) = watches
+
+        # INFO lands: both runs now see a guild their catalog was not built for.
+        DRStats.guild = 'Bard'
+        allow(TextSubs).to receive(:watch).and_call_original
+        pauses = 0
+        allow(TextSubs).to receive(:pause) do
+          raise 'TextSubs.watch kept waiting' if (pauses += 1) > 1
+
+          DownstreamHook.remove('textsub')
+        end
+
+        # The old run's watch stops at its first check, though the hook name
+        # (the new run's hook now) is still registered, and rebuilds nothing.
+        expect(TextSubs.watch(old_hook, **old_options, &old_rebuild)).to be_nil
+        expect(pauses).to eq(0)
+        expect(displayed_messages.last).to eq('A newer textsubs has started, so this one stops here and leaves the subs to it.')
+        expect(run_hooks(fine)).to eq("NEW RUN.\r\n")
+
+        # Its rebuild, as if its last check had passed just before the newer
+        # start, is refused when it comes to install.
+        generation = TextSubs.generation
+        old_rebuild.call('Bard')
+        expect(TextSubs.generation).to eq(generation)
+        expect(run_hooks(fine)).to eq("NEW RUN.\r\n")
+
+        # The new run's watch rebuilds for the Bard, and returns once its hook goes.
+        expect(TextSubs.watch(new_hook, **new_options, &new_rebuild)).to be_nil
+        expect(pauses).to eq(1)
+        expect(installed_entries).to eq([['You feel fine', 0, 'NEW RUN'], *golden_catalog(spell_links_on.merge('guild' => 'Bard'))])
+        expect(rebuilt).to eq(['Your guild is now Bard, so textsubs has built its subs again for it.'])
       end
 
       # The first write once the guild is Bard (the rebuild's) and every
@@ -3337,6 +3436,34 @@ RSpec.describe 'textsubs.lic' do
       end
       expect(TextSubs.generation).to eq(start)
       expect(TextSubs.subs).to equal(before)
+    end
+
+    describe 'given the run a start staged' do
+      it 'installs the catalog while that run is the latest start' do
+        run = TextSubs.stage(TextSubs::Registry.new)
+        TextSubs.install(run)
+        start = TextSubs.generation
+        registry = built_again
+
+        expect(TextSubs.reinstall(registry, run: run)).to equal(registry)
+        expect(TextSubs.generation).to eq(start + 1)
+        expect(TextSubs.subs).to eq(/fine/ => 'FINE', /raises/ => 'again')
+      end
+
+      it 'installs nothing, and returns nil, once a newer start has staged, even before that start installs' do
+        run = TextSubs.install(TextSubs.stage(TextSubs::Registry.new))
+        TextSubs.add('cat', 'dog')
+        newer = Thread.new { TextSubs.stage(TextSubs::Registry.new) }.value
+        start = TextSubs.generation
+        before = TextSubs.subs
+
+        expect(TextSubs.reinstall(built_again, run: run)).to be_nil
+        expect(TextSubs.generation).to eq(start)
+        expect(TextSubs.subs).to equal(before)
+        expect(TextSubs.subs).to eq(/cat/ => 'dog')
+
+        TextSubs.unstage(newer)
+      end
     end
   end
 

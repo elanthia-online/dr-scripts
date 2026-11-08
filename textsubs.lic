@@ -17,18 +17,18 @@ no_kill_all
 # runs after every default-priority hook) that hands every server line to
 # apply while a front end is attached. Until the install, apply serves the
 # empty catalog the class body installed when the start evaluated it. The
-# script then waits in watch, which ends it once that hook is gone, and which
-# hands it the guild whenever DRStats reports another one, so the catalog is
-# built again, into a Registry of its own, and installed whole by reinstall,
-# which keeps the subs other scripts added since the start and leaves out
-# those apply dropped.
+# script then waits in watch, which ends it once that hook is gone or a newer
+# start has superseded it, and which hands it the guild whenever DRStats
+# reports another one, so the catalog is built again, into a Registry of its
+# own, and installed whole by reinstall, which keeps the subs other scripts
+# added since the start and leaves out those apply dropped.
 #
 # Lich evaluates this class body inside Lich::Common on every start, and the
 # class itself persists for the session, so it defines no constants but its
 # nested classes: re-running the body would warn "already initialized
-# constant" for any other. Re-running it installs an empty Registry and drops
-# any staging; the generation count carries over and counts that swap once
-# (see generation).
+# constant" for any other. Re-running it installs an empty Registry, drops
+# any staging and ends every earlier run (see watch); the generation count
+# carries over and counts that swap once (see generation).
 class TextSubs
   # An ordered catalog of substitutions: a Regexp key and the gsub replacement
   # it applies. A key added again keeps its first position and takes the last
@@ -277,13 +277,18 @@ class TextSubs
   end
 
   # One lock, kept across starts like the generation, so a start's class body
-  # and every stage, unstage, install and store_key (every write), of this run
-  # or another, take turns: each checks the staging and changes it in one
-  # step, with no step of another thread in between.
+  # and every stage, unstage, install, reinstall and store_key (every write),
+  # of this run or another, take turns: each checks the staging (or the run)
+  # and changes it in one step, with no step of another thread in between.
+  #
+  # @@run is the Registry the latest start staged, which stands for that
+  # start (see current_run?). The class body sets it to nil, as a start that
+  # re-runs it supersedes every run before it even before it stages.
   @@lock = Mutex.new unless defined?(@@lock)
   @@lock.synchronize do
     @@registry = Registry.new
     @@staged = nil
+    @@run = nil
     @@generation = defined?(@@generation) ? @@generation + 1 : 0
   end
 
@@ -367,17 +372,26 @@ class TextSubs
   #   exit unless TextSubs.install(new_catalog)
   def self.install(registry)
     check_registry(registry, 'install')
-    @@lock.synchronize do
-      if registry.equal?(own_build)
-        bind_build(nil)
-        return nil unless registry.equal?(@@staged)
-      end
-      @@registry = registry
-      @@staged = nil if registry.equal?(@@staged)
-      @@generation += 1
+    @@lock.synchronize { swap_in(registry) }
+  end
+
+  # The step install and reinstall share, for a caller that holds @@lock:
+  # refuses a Registry this thread staged that is no longer the one staged,
+  # else swaps registry in, ends its staging and counts one generation.
+  #
+  # @param registry [TextSubs::Registry] the catalog to use from now on
+  # @return [TextSubs::Registry, nil] registry, or nil when it was refused
+  def self.swap_in(registry)
+    if registry.equal?(own_build)
+      bind_build(nil)
+      return nil unless registry.equal?(@@staged)
     end
+    @@registry = registry
+    @@staged = nil if registry.equal?(@@staged)
+    @@generation += 1
     registry
   end
+  private_class_method :swap_in
 
   # Makes every writer (add, elanthipedia and add_catalog; see store_key)
   # write to registry, which is not installed, so a catalog can be built while
@@ -396,6 +410,10 @@ class TextSubs
   # neither one's keys reach the other's catalog, and none reaches the
   # installed one; install then refuses the superseded build (see install).
   #
+  # registry also stands for the start that staged it from then on: that
+  # start is the current run (see current_run?) until a newer start re-runs
+  # the class body or stages a Registry of its own.
+  #
   # @param registry [TextSubs::Registry] the catalog to build
   # @return [TextSubs::Registry] registry
   # @raise [ArgumentError] when registry is not a TextSubs::Registry; nothing
@@ -408,9 +426,24 @@ class TextSubs
     check_registry(registry, 'stage')
     @@lock.synchronize do
       bind_build(registry)
+      @@run = registry
       @@staged = registry
     end
   end
+
+  # Whether run still stands for the latest start: the Registry that start
+  # staged (see stage), while no newer start has re-run the class body or
+  # staged a Registry of its own since. A run that is not current must stop,
+  # as the newer start owns the catalog and the 'textsub' hook name: watch
+  # returns, and reinstall refuses its catalog.
+  #
+  # @param run [TextSubs::Registry, nil] the Registry a start staged, or nil
+  #   for a caller that is no start (it is never superseded)
+  # @return [Boolean] true when run is nil or the latest start's Registry
+  def self.current_run?(run)
+    run.nil? || run.equal?(@@run)
+  end
+  private_class_method :current_run?
 
   # Ends the staging of registry without installing it, for a build that did
   # not finish: every writer (add, elanthipedia and add_catalog; see
@@ -469,15 +502,26 @@ class TextSubs
   # The changes are read once, before the swap: an add that runs on another
   # thread in between lands in the Registry being replaced, and is lost.
   #
+  # Given run, the Registry the calling start staged (see stage), it installs
+  # registry only while that start is still the current run (see
+  # current_run?), checked in the same step as the swap: a run that a
+  # ';force textsubs' superseded while it built this catalog never puts it
+  # over the newer start's.
+  #
   # @param registry [TextSubs::Registry] the catalog built again, not installed
-  # @return [TextSubs::Registry] registry, now installed
+  # @param run [TextSubs::Registry, nil] the calling start's staged Registry,
+  #   or nil to install whatever start is current
+  # @return [TextSubs::Registry, nil] registry, now installed, or nil when a
+  #   newer start superseded run; then the installed catalog and the
+  #   generation are left as they were
   # @raise [ArgumentError] when registry is not a TextSubs::Registry; nothing
   #   is replayed or installed
   # @example The entry point, when the guild changes
-  #   TextSubs.reinstall(fill_catalog.call(TextSubs::Registry.new, new_guild))
-  def self.reinstall(registry)
+  #   TextSubs.reinstall(fill_catalog.call(TextSubs::Registry.new, new_guild), run: new_catalog)
+  def self.reinstall(registry, run: nil)
     check_registry(registry, 'reinstall')
-    install(registry.replay(@@registry.changes))
+    rebuilt = registry.replay(@@registry.changes)
+    @@lock.synchronize { swap_in(rebuilt) if current_run?(run) }
   end
 
   # Refuses anything but a TextSubs::Registry, naming the public method that
@@ -624,6 +668,11 @@ class TextSubs
   # script still running without its hook would never be restarted by the
   # helpers that start textsubs only when it is not running.
   #
+  # Given run, it also returns once a newer start has superseded that run
+  # (';force textsubs'; see current_run?): the hook name then belongs to the
+  # newer start, so the name alone would keep the old run waiting, and
+  # rebuilding, for good.
+  #
   # The script reads no game lines itself, so it stops Lich from buffering
   # them for it, then checks the hook list every interval seconds. Lich
   # kills the script during a pause as it would during any wait.
@@ -638,23 +687,30 @@ class TextSubs
   # @param script [#want_downstream=] the running script
   # @param interval [Numeric] seconds between checks
   # @param guild [String, nil] the guild the installed catalog was built for
+  # @param run [TextSubs::Registry, nil] the Registry the calling start
+  #   staged (see stage), or nil to watch the hook alone
   # @yieldparam new_guild [String, nil] what DRStats.guild reports now
-  # @return [nil] once hook is no longer registered, after saying so
+  # @return [nil] once hook is no longer registered, or run is superseded,
+  #   after saying which
   # @example The last lines of the entry point
-  #   TextSubs.watch('textsub', guild: guild) do |new_guild|
-  #     TextSubs.reinstall(fill_catalog.call(TextSubs::Registry.new, new_guild))
-  #   end # returns when the hook goes, ending the script
-  def self.watch(hook, script: Script.current, interval: 5, guild: DRStats.guild)
+  #   TextSubs.watch('textsub', guild: guild, run: new_catalog) do |new_guild|
+  #     TextSubs.reinstall(fill_catalog.call(TextSubs::Registry.new, new_guild), run: new_catalog)
+  #   end # returns when the hook goes or a newer start takes over, ending the script
+  def self.watch(hook, script: Script.current, interval: 5, guild: DRStats.guild, run: nil)
     script.want_downstream = false
-    while DownstreamHook.list.include?(hook)
+    while (registered = DownstreamHook.list.include?(hook)) && current_run?(run)
       if block_given? && DRStats.guild != guild
         guild = DRStats.guild
         yield guild
       end
       pause(interval)
     end
-    echo "The '#{hook}' hook is gone, so nothing is substituted any more and textsubs stops here " \
-         "(a '--- Lich: DownstreamHook:' line above says why, if it raised). Start it again with ;textsubs."
+    if registered
+      echo 'A newer textsubs has started, so this one stops here and leaves the subs to it.'
+    else
+      echo "The '#{hook}' hook is gone, so nothing is substituted any more and textsubs stops here " \
+           "(a '--- Lich: DownstreamHook:' line above says why, if it raised). Start it again with ;textsubs."
+    end
     nil
   end
 
@@ -2111,11 +2167,14 @@ end
 DownstreamHook.add('textsub', action, persist: false, priority: TextSubs.hook_priority)
 
 # Runs until the hook is gone, then ends the script, so restart helpers see
-# that textsubs is no longer running. When DRStats reports another guild
-# (INFO after a login while dead), the catalog is built again for it, whole,
-# while the hook goes on applying the old one, and then swapped in with the
-# subs other scripts added since the start, and without those dropped.
-TextSubs.watch('textsub', guild: guild) do |new_guild|
-  echo "Your guild is now #{new_guild || 'not known'}, so textsubs has built its subs again for it."
-  TextSubs.reinstall(fill_catalog.call(TextSubs::Registry.new, new_guild))
+# that textsubs is no longer running; a newer start (';force textsubs') ends
+# it too, as new_catalog then no longer stands for the current run. When
+# DRStats reports another guild (INFO after a login while dead), the catalog
+# is built again for it, whole, while the hook goes on applying the old one,
+# and then swapped in with the subs other scripts added since the start, and
+# without those dropped, unless a newer start took over during the build.
+TextSubs.watch('textsub', guild: guild, run: new_catalog) do |new_guild|
+  if TextSubs.reinstall(fill_catalog.call(TextSubs::Registry.new, new_guild), run: new_catalog)
+    echo "Your guild is now #{new_guild || 'not known'}, so textsubs has built its subs again for it."
+  end
 end
