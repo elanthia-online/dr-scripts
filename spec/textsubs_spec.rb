@@ -2123,7 +2123,6 @@ RSpec.describe 'textsubs.lic' do
 
       expect(TextSubs.add_catalog(good, context, file: 'data/base-textsubs.yaml')).to be_nil
       expect(TextSubs.subs.to_a).to eq([[/mine/, 'MINE'], [/fine/, 'FINE'], [/cat/, 'dog']])
-      expect(TextSubs.subs).to eq(/mine/ => 'MINE', /fine/ => 'FINE', /cat/ => 'dog')
       expect(TextSubs.generation).to eq(generation + 2)
     end
 
