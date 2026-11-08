@@ -3571,6 +3571,26 @@ RSpec.describe 'textsubs.lic' do
       result
     end
 
+    # Runs block on this thread with registry's replay starting interloper
+    # before it replays a change: the gap between reinstall reading the
+    # changes of the installed catalog and swapping registry in.
+    #
+    # @param registry [TextSubs::Registry] the catalog built again, which
+    #   block hands to reinstall
+    # @param interloper [Proc] the other thread's step
+    # @return [Object] what block returns
+    def with_interloper_in_replay(registry, interloper:)
+      state = {}
+      start = method(:start_interloper)
+      registry.define_singleton_method(:replay) do |changes|
+        start.call(state, interloper)
+        super(changes)
+      end
+      result = yield
+      finish_interloper(state, 'the replay')
+      result
+    end
+
     it 'lets no stage of another thread land between the check in unstage and the change' do
       first = TextSubs.stage(TextSubs::Registry.new)
       second = TextSubs::Registry.new
@@ -3628,15 +3648,10 @@ RSpec.describe 'textsubs.lic' do
     it 'keeps an add another thread makes while reinstall replays the changes onto the catalog built again' do
       TextSubs.add('cat', 'dog')
       built_again = TextSubs::Registry.new.tap { |registry| registry.add(/fine/, 'FINE') }
-      state = {}
-      start = method(:start_interloper)
-      built_again.define_singleton_method(:replay) do |changes|
-        start.call(state, -> { TextSubs.add('late', 'LATE') })
-        super(changes)
-      end
 
-      expect(TextSubs.reinstall(built_again)).to equal(built_again)
-      finish_interloper(state, 'the replay')
+      with_interloper_in_replay(built_again, interloper: -> { TextSubs.add('late', 'LATE') }) do
+        expect(TextSubs.reinstall(built_again)).to equal(built_again)
+      end
 
       expect(TextSubs.subs).to eq(/fine/ => 'FINE', /cat/ => 'dog', /late/ => 'LATE')
     end
