@@ -46,6 +46,30 @@ class Smith
   # Copper to carry for parts and oil when not buying an ingot.
   PARTS_COPPER = 3000
 
+  # Each part smith buys, as lich-5's inventory feed names it. The feed sends
+  # an item's name as "article,adjective,noun" (Kurtus' and Saelia's feed:
+  # "a,short,pole" for a short oak pole, "some,large cloth,padding",
+  # "a,shield,handle" for an iron shield handle), so a part is told by the
+  # game's own noun, never by the words of its description. A part sold in
+  # more than one kind also needs its kind word before the noun: a short
+  # pole and a long pole are both poles. A part missing from this list never
+  # counts as carried, so it is always bought.
+  PART_NOUNS = {
+    'hilt'          => { nouns: %w[hilt].freeze },
+    'haft'          => { nouns: %w[haft].freeze },
+    'long pole'     => { nouns: %w[pole].freeze, kind: 'long' },
+    'short pole'    => { nouns: %w[pole].freeze, kind: 'short' },
+    'long cord'     => { nouns: %w[cord].freeze, kind: 'long' },
+    'short cord'    => { nouns: %w[cord].freeze, kind: 'short' },
+    'small padding' => { nouns: %w[padding].freeze, kind: 'small' },
+    'large padding' => { nouns: %w[padding].freeze, kind: 'large' },
+    'small backing' => { nouns: %w[backing].freeze, kind: 'small' },
+    'large backing' => { nouns: %w[backing].freeze, kind: 'large' },
+    'shield handle' => { nouns: %w[handle].freeze, kind: 'shield' },
+    # forge.lic asks for "some leather strips"; no feed capture of one yet.
+    'leather strip' => { nouns: %w[strip strips].freeze, kind: 'leather' }
+  }.freeze
+
   # Ingots this size and larger are sold at the town's bulk materials shop
   # (bingots-room), not the stock shop. Shard's Supply Stand lists only the
   # small sizes (tiny, huge, massive); its Bulk Materials lists immense (50),
@@ -93,17 +117,20 @@ class Smith
       return unless ingot
       return if ingot_already_carried?(args.material)
     end
-    # Away from 'here', buy_parts works out and buys what the bag lacks.
-    to_buy = args.here ? parts_to_buy_here(parts) : nil
-    buying_parts = !args.here || !to_buy.empty?
+    # forge.lic needs a free hand, and a stowed part is still counted.
+    DRCI.stow_hands
+    to_buy = parts_to_buy(parts)
+    buying_parts = !to_buy.empty?
     if args.here && (ingot || buying_parts)
       return_room = Room.current.id
       return unless return_room_known?(return_room)
     end
-    fund_run(recipe, parts, ingot, buying_parts)
+    # Away from 'here' the parts budget is carried even with every part in
+    # hand: it pays for the oil too.
+    fund_run(recipe, parts, ingot, buying_parts || !args.here)
 
     # Come back after a failed purchase too: 'here' means forge where you stood.
-    bought = (!buying_parts || buy_parts(parts, to_buy)) && (!ingot || buy_ingot(ingot))
+    bought = (!buying_parts || buy_parts(to_buy)) && (!ingot || buy_ingot(ingot))
     back = return_room.nil? || walked_back?(return_room)
     return unless bought && back
 
@@ -278,19 +305,14 @@ class Smith
     DRCM.ensure_copper_on_hand(copper, @settings, @hometown)
   end
 
-  # Buy the recipe's parts, skipping any already in the crafting container.
+  # Buy the parts worked out by parts_to_buy, stowing each in the crafting
+  # container. A part bought for a run that failed stays there, so the next
+  # run uses it instead of buying another. Hands are already empty (#smith).
   #
-  # A part bought for a run that failed stays in the bag, so the next run
-  # uses it instead of buying another.
-  #
-  # @param parts [Array<String>] part names from the recipe (may repeat)
-  # @param to_buy [Array<String>, nil] the parts to buy when already worked
-  #   out ('here'); nil buys what the crafting container lacks
+  # @param to_buy [Array<String>] part names to buy (may repeat)
   # @return [Boolean] false when a purchase failed
-  def buy_parts(parts, to_buy = nil)
-    DRCI.stow_hands
-
-    (to_buy || missing_parts(parts)).all? do |part|
+  def buy_parts(to_buy)
+    to_buy.all? do |part|
       data = get_data('crafting')['recipe_parts'][part][@hometown]
       if data['part-number']
         DRCT.order_item(data['part-room'], data['part-number'])
@@ -304,44 +326,65 @@ class Smith
     end
   end
 
-  # The parts 'here' still has to buy. forge.lic takes a part from anywhere
-  # in the inventory, so a part the crafting container lacks counts as
-  # carried when 'tap my <part>' finds it elsewhere. A part the recipe needs
-  # more than once is bought by the container count alone: a tap can't
-  # count, and would find the one already in the container. Lists nothing
-  # when the recipe has no parts.
+  # The recipe's parts not yet carried, one entry per part still needed.
+  # forge.lic gets each part with 'get my <part>', so a part counts when it
+  # is in a hand or directly inside a worn container that is open: the
+  # crafting container or any other. lich-5's inventory feed lists both,
+  # with each item's noun as the game sends it. An unfinished part doesn't
+  # count, since forge.lic asks for a finished one.
+  #
+  # Without an answer from the feed nothing counts as carried and every
+  # part is bought: a spare part costs a few hundred coins, while a part
+  # wrongly counted stops forge.lic at assembly on every run.
   #
   # @param parts [Array<String>] part names from the recipe (may repeat)
-  # @return [Array<String>] the parts to buy
-  def parts_to_buy_here(parts)
+  # @return [Array<String>] the parts to buy (empty for a recipe without parts)
+  def parts_to_buy(parts)
     return [] if parts.empty?
 
-    missing = missing_parts(parts)
-    missing.reject { |part| parts.count(part) == 1 && DRCI.exists?(part) }
-  end
+    carried = reachable_items
+    unless carried
+      Lich::Messaging.msg('bold', "smith: The inventory feed didn't answer, so smith can't tell which parts you carry and will buy them all.")
+      return parts.dup
+    end
 
-  # The parts the crafting container doesn't hold yet, one entry per part
-  # still needed. A container item is that part when it ends with the part's
-  # noun (or its plural) and contains its first word: "short cord" is the
-  # short leather cord, but a short-hafted halberd is not a haft. An
-  # unfinished piece doesn't count: forge.lic asks for a finished part.
-  #
-  # @param parts [Array<String>] part names from the recipe (may repeat)
-  # @return [Array<String>] the parts to buy
-  def missing_parts(parts)
-    carried = DRCI.get_item_list(@bag) || []
     parts.reject do |part|
-      index = carried.index { |item| item =~ part_pattern(part) && item !~ /\bunfinished\b/i }
+      index = carried.index { |item| part_item?(item, part) }
       carried.delete_at(index) if index
     end
   end
 
+  # What 'get my <part>' can reach, from a fresh inventory feed snapshot:
+  # what is held, and what lies directly inside a worn container that is
+  # open. A container the feed gives an in_selector is reached another way
+  # (an eddy's is "my watery portal in #<id>", in Kurtus' and Saelia's feed),
+  # so its contents are left out, as are items deeper down: a part there is
+  # bought again rather than counted when forge.lic might not find it.
+  #
+  # @return [Array<Lich::Common::Inventory::Item>, nil] nil when the feed
+  #   didn't answer
+  def reachable_items
+    snapshot = Lich::Common::Inventory.refresh
+    return nil unless snapshot
+
+    held = [snapshot.right_hand, snapshot.left_hand].compact
+    open = snapshot.worn.reject { |container| container.closed? || container.in_selector }
+    held + open.flat_map { |container| container.contents(:in) }
+  end
+
+  # Whether a feed item is this part: its noun is the part's noun, its words
+  # before the noun hold the part's kind word (if it has one), and it isn't
+  # unfinished.
+  #
+  # @param item [Lich::Common::Inventory::Item] a feed item
   # @param part [String] a part name, e.g. "short cord"
-  # @return [Regexp] matches a container item that is this part
-  def part_pattern(part)
-    *adjectives, noun = part.split
-    adjective = adjectives.first && "\\b#{Regexp.escape(adjectives.first)}\\b.*"
-    /#{adjective}\b#{Regexp.escape(noun)}s?\z/i
+  # @return [Boolean]
+  def part_item?(item, part)
+    known = PART_NOUNS[part]
+    return false unless known && known[:nouns].include?(item.noun.to_s.downcase)
+
+    words = "#{item.article} #{item.adjective}".downcase.split
+    !words.include?('unfinished') && (known[:kind].nil? || words.include?(known[:kind]))
   end
 
   # The smallest ingot of the material on sale in this town that holds the
