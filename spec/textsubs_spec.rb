@@ -1661,6 +1661,8 @@ RSpec.describe 'textsubs.lic' do
 
     {
       'You feel fine'                                           => [:words, ['feel']],
+      # Of several whole words the longest is filed, the least common token.
+      'You feel a bitter cold wind blow'                        => [:words, ['bitter']],
       '^Roundtime: \d+ sec'                                     => [:words, ['Roundtime']],
       'You feel (fine|good)\.'                                  => [:words, ['feel']],
       ' (fine|good|well) '                                      => [:words, %w[fine good well]],
