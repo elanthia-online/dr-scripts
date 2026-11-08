@@ -331,8 +331,9 @@ RSpec.describe 'textsubs.lic' do
   end
 
   # Installing a freshly staged Registry empties the catalog and ends any
-  # staging an example left behind (TextSubs.clear alone keeps a staging), so
-  # no example's adds land in a Registry staged by an earlier one.
+  # staging an example left behind, and this thread's own build with it
+  # (TextSubs.clear alone keeps both), so no example's adds land in a
+  # Registry staged by an earlier one.
   after do
     DownstreamHook.remove('textsub')
     TextSubs.install(TextSubs.stage(TextSubs::Registry.new))
@@ -724,6 +725,82 @@ RSpec.describe 'textsubs.lic' do
       TextSubs.clear
       TextSubs.add('cat', 'dog')
       expect(TextSubs.subs).to eq(/cat/ => 'dog')
+    end
+
+    it 'keeps two overlapping starts apart, so neither installs a part of its catalog nor takes keys of the other' do
+      # Run A builds on a thread of its own, as a Lich script does. Run B is a
+      # ';force textsubs' that Lich starts while A builds: it re-runs the class
+      # body, then stages and builds on its own thread. A goes on adding after
+      # B has staged, and finishes first.
+      to_a = Queue.new
+      to_b = Queue.new
+      from_runs = Queue.new
+      run_a = Thread.new do
+        catalog = TextSubs.stage(TextSubs::Registry.new)
+        TextSubs.add('a head', 'A')
+        from_runs << :a_head_added
+        to_a.pop(timeout: 5)
+        TextSubs.add('a tail', 'A')
+        [catalog, TextSubs.install(catalog)]
+      end
+      expect(from_runs.pop(timeout: 5)).to eq(:a_head_added)
+      reload_lic_class('textsubs.lic', 'TextSubs')
+      emptied = TextSubs.subs
+      run_b = Thread.new do
+        catalog = TextSubs.stage(TextSubs::Registry.new)
+        TextSubs.add('b key', 'B')
+        from_runs << :b_staged
+        to_b.pop(timeout: 5)
+        [catalog, TextSubs.install(catalog)]
+      end
+      expect(from_runs.pop(timeout: 5)).to eq(:b_staged)
+      before_a_installs = TextSubs.generation
+
+      to_a << :go
+      catalog_a, installed_a = run_a.value
+      expect(installed_a).to be_nil
+      expect(TextSubs.subs).to equal(emptied)
+      expect(emptied).to eq({})
+      expect(TextSubs.generation).to eq(before_a_installs)
+      expect(catalog_a.snapshot.keys.map(&:source)).to eq(['a head', 'a tail'])
+
+      # Another script's add, made while B builds, goes into B's catalog.
+      TextSubs.add('other script', 'X')
+      to_b << :go
+      catalog_b, installed_b = run_b.value
+      expect(installed_b).to equal(catalog_b)
+      expect(TextSubs.subs.keys.map(&:source)).to eq(['b key', 'other script'])
+    end
+
+    it 'ends a start that a newer one superseded while it built, before it registers a hook' do
+      # The newer start ('b key') begins the moment this one has staged: Lich
+      # re-runs the class body, then the newer start stages on its own thread.
+      # Stubbed on main (where run_lic_entry evaluates the entry), not on
+      # Script.at_exit: another spec replaces the top-level before_dying.
+      reload_lic_class('textsubs.lic', 'TextSubs')
+      dying = []
+      newer = nil
+      emptied = nil
+      allow(TOPLEVEL_BINDING.receiver).to(receive(:before_dying)) do |&block|
+        dying << block
+        reload_lic_class('textsubs.lic', 'TextSubs')
+        emptied = TextSubs.subs
+        newer = Thread.new do
+          catalog = TextSubs.stage(TextSubs::Registry.new)
+          TextSubs.add('b key', 'B')
+          catalog
+        end.value
+      end
+
+      expect { build_catalog('Commoner', 'private_textsubs' => { 'You feel fine' => 'You feel FINE' }) }.to raise_error(SystemExit)
+      expect(DownstreamHook.list).not_to include('textsub')
+      expect(TextSubs.subs).to equal(emptied)
+      expect(emptied).to eq({})
+      expect(newer.snapshot.keys.map(&:source)).to eq(['b key'])
+      expect(dying.map(&:call)).to eq([false])
+
+      TextSubs.add('other script', 'X')
+      expect(newer.snapshot.keys.map(&:source)).to eq(['b key', 'other script'])
     end
   end
 
@@ -1276,6 +1353,140 @@ RSpec.describe 'textsubs.lic' do
       end
       TextSubs.add('cat', 'dog')
       expect(staged.snapshot).to eq(/cat/ => 'dog')
+    end
+  end
+
+  # Each of these runs one step on this thread and, at the gap inside it
+  # where another thread could get in between a check and the change it
+  # leads to, starts another thread's step. Without the lock that step lands
+  # in the gap; with it, it waits until this thread's step is done. The gaps
+  # are reached through a stand-in, not a TracePoint: a probe of C calls
+  # left the examples after it measurably slower.
+  describe 'one step at a time across threads' do
+    # Starts interloper on a thread of its own, once, and gives it 20 ms to
+    # finish before this thread goes on.
+    #
+    # @param state [Hash] holds :other, the interloper's thread, once started
+    # @param interloper [Proc] the other thread's step
+    # @return [void]
+    def start_interloper(state, interloper)
+      return if state.key?(:other)
+
+      state[:other] = nil
+      state[:other] = Thread.new(&interloper)
+      state[:other].join(0.02)
+    end
+
+    # Waits for the interloper, failing when the gap was never reached.
+    #
+    # @param state [Hash] as start_interloper filled it
+    # @param gap [String] what the gap was, for the message
+    # @return [void]
+    # @raise [RuntimeError] when the interloper never started
+    def finish_interloper(state, gap)
+      raise "the step never reached #{gap}" unless state[:other]
+
+      state[:other].join
+    end
+
+    # Runs block on this thread with registry's equal? starting interloper
+    # right after it answers a call made from the line of textsubs.lic whose
+    # stripped text is line: the gap between that check and what follows.
+    #
+    # @param registry [TextSubs::Registry] the Registry the step checks
+    # @param line [String] the stripped text of the checking line
+    # @param interloper [Proc] the other thread's step
+    # @return [Object] what block returns
+    def with_interloper_after_check(registry, line:, interloper:)
+      source = File.readlines(lic_path('textsubs.lic'))
+      state = {}
+      start = method(:start_interloper)
+      registry.define_singleton_method(:equal?) do |other|
+        answer = super(other)
+        site = caller_locations(1, 1).first
+        start.call(state, interloper) if File.basename(site.path) == 'textsubs.lic' && source[site.lineno - 1].strip == line
+        answer
+      end
+      result = yield
+      finish_interloper(state, line.inspect)
+      result
+    end
+
+    # Runs block on this thread with the generation count replaced by a
+    # stand-in whose + starts interloper before it answers: the gap between
+    # reading the count and writing the next one. The real count is put back
+    # if block never wrote one.
+    #
+    # @param interloper [Proc] the other thread's step
+    # @return [Object] what block returns
+    def with_interloper_in_count(interloper:)
+      real = TextSubs.generation
+      state = {}
+      start = method(:start_interloper)
+      counter = SimpleDelegator.new(real)
+      counter.define_singleton_method(:+) do |by|
+        start.call(state, interloper)
+        real + by
+      end
+      TextSubs.class_variable_set(:@@generation, counter)
+      begin
+        result = yield
+      ensure
+        TextSubs.class_variable_set(:@@generation, real) if TextSubs.generation.equal?(counter)
+      end
+      finish_interloper(state, 'the count')
+      result
+    end
+
+    it 'lets no stage of another thread land between the check in unstage and the change' do
+      first = TextSubs.stage(TextSubs::Registry.new)
+      second = TextSubs::Registry.new
+
+      ended = with_interloper_after_check(first, line: 'return false unless registry.equal?(@@staged)',
+                                                 interloper: -> { TextSubs.stage(second) }) do
+        TextSubs.unstage(first)
+      end
+
+      expect(ended).to be(true)
+      TextSubs.add('cat', 'dog')
+      expect(second.snapshot).to eq(/cat/ => 'dog')
+      expect(TextSubs.subs).to eq({})
+    end
+
+    it 'lets no stage of another thread land between the check in install and the end of the staging' do
+      first = TextSubs.stage(TextSubs::Registry.new)
+      second = TextSubs::Registry.new
+
+      with_interloper_after_check(first, line: '@@staged = nil if registry.equal?(@@staged)',
+                                         interloper: -> { TextSubs.stage(second) }) do
+        expect(TextSubs.install(first)).to equal(first)
+      end
+
+      TextSubs.add('cat', 'dog')
+      expect(second.snapshot).to eq(/cat/ => 'dog')
+      expect(TextSubs.subs).to eq({})
+    end
+
+    it 'counts an add and an install on another thread once each, never one number for both' do
+      start = TextSubs.generation
+
+      with_interloper_in_count(interloper: -> { TextSubs.install(TextSubs::Registry.new) }) do
+        TextSubs.add('cat', 'dog')
+      end
+
+      expect(TextSubs.generation).to eq(start + 2)
+    end
+
+    it 'counts the empty catalog a start installs and an install on another thread once each' do
+      start = TextSubs.generation
+      other = TextSubs::Registry.new
+
+      with_interloper_in_count(interloper: -> { TextSubs.install(other) }) do
+        reload_lic_class('textsubs.lic', 'TextSubs')
+      end
+
+      expect(TextSubs.generation).to eq(start + 2)
+      expect(TextSubs.subs).to equal(other.snapshot)
     end
   end
 

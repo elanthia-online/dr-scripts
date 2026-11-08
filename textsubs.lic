@@ -79,9 +79,16 @@ class TextSubs
     end
   end
 
-  @@registry = Registry.new
-  @@staged = nil
-  @@generation = defined?(@@generation) ? @@generation + 1 : 0
+  # One lock, kept across starts like the generation, so a start's class body
+  # and every stage, unstage, install and store, of this run or another, take
+  # turns: each checks the staging and changes it in one step, with no step of
+  # another thread in between.
+  @@lock = Mutex.new unless defined?(@@lock)
+  @@lock.synchronize do
+    @@registry = Registry.new
+    @@staged = nil
+    @@generation = defined?(@@generation) ? @@generation + 1 : 0
+  end
 
   # The catalog, in the order its keys were first added.
   #
@@ -128,20 +135,37 @@ class TextSubs
   # untouched until install. Installing the staged Registry ends the staging,
   # so add and elanthipedia write to it as the installed catalog from then on.
   #
-  # An add that runs on another thread while install swaps the catalog may
-  # land in the Registry being replaced.
+  # A Registry this thread staged is installed only while it is still the one
+  # staged. Once a newer start has staged its own (';force textsubs' while
+  # this one builds), or its class body has dropped the staging, install
+  # refuses it and returns nil: that start's catalog comes next, so this one,
+  # however complete, never replaces it. A Registry this thread did not stage
+  # (a fresh one, as clear installs) is installed whatever is staged.
+  #
+  # An add that runs on another thread just before install swaps the catalog
+  # lands in the Registry being replaced.
   #
   # @param registry [TextSubs::Registry] the catalog to use from now on
-  # @return [TextSubs::Registry] registry
+  # @return [TextSubs::Registry, nil] registry, or nil when it is a Registry
+  #   this thread staged that is no longer the one staged; then the installed
+  #   catalog and the generation are left as they were
   # @raise [ArgumentError] when registry is not a TextSubs::Registry; the
   #   installed catalog and the generation are left as they were
   # @example Start over with an empty catalog
   #   TextSubs.install(TextSubs::Registry.new)
+  # @example How the entry point installs its build, and ends if a newer start superseded it
+  #   exit unless TextSubs.install(new_catalog)
   def self.install(registry)
     check_registry(registry, 'install')
-    @@registry = registry
-    @@staged = nil if registry.equal?(@@staged)
-    @@generation += 1
+    @@lock.synchronize do
+      if registry.equal?(own_build)
+        bind_build(nil)
+        return nil unless registry.equal?(@@staged)
+      end
+      @@registry = registry
+      @@staged = nil if registry.equal?(@@staged)
+      @@generation += 1
+    end
     registry
   end
 
@@ -154,6 +178,13 @@ class TextSubs
   # it installs its staged Registry ends the staging with unstage, so the adds
   # of other scripts reach the installed catalog again.
   #
+  # registry is also this thread's own build until this thread installs or
+  # unstages it: the adds made on this thread go into it even after another
+  # thread stages a Registry of its own, or a start's class body drops the
+  # staging. So when two starts overlap (';force textsubs' while one builds),
+  # neither one's keys reach the other's catalog, and none reaches the
+  # installed one; install then refuses the superseded build (see install).
+  #
   # @param registry [TextSubs::Registry] the catalog to build
   # @return [TextSubs::Registry] registry
   # @raise [ArgumentError] when registry is not a TextSubs::Registry; nothing
@@ -164,7 +195,10 @@ class TextSubs
   #   TextSubs.install(catalog)
   def self.stage(registry)
     check_registry(registry, 'stage')
-    @@staged = registry
+    @@lock.synchronize do
+      bind_build(registry)
+      @@staged = registry
+    end
   end
 
   # Ends the staging of registry without installing it, for a build that did
@@ -172,8 +206,9 @@ class TextSubs
   # the keys registry holds, a sub another script added meanwhile among them,
   # are dropped with it. A partial catalog is never installed. When registry
   # is not the one staged (it was installed, or another Registry was staged
-  # since), nothing changes, so a run that ends late cannot end the staging
-  # of a newer start.
+  # since), the staging is left as it is, so a run that ends late cannot end
+  # the staging of a newer start: the check and the change are one step under
+  # the lock. Either way registry stops being this thread's own build.
   #
   # @param registry [TextSubs::Registry] the Registry the caller staged
   # @return [Boolean] true when it ended the staging, false when registry was
@@ -185,11 +220,32 @@ class TextSubs
   #   before_dying { TextSubs.unstage(catalog) }
   def self.unstage(registry)
     check_registry(registry, 'unstage')
-    return false unless registry.equal?(@@staged)
+    @@lock.synchronize do
+      bind_build(nil) if registry.equal?(own_build)
+      return false unless registry.equal?(@@staged)
 
-    @@staged = nil
-    true
+      @@staged = nil
+      true
+    end
   end
+
+  # The Registry this thread staged and has neither installed nor unstaged
+  # since (see stage). It lives in a thread variable, so it ends with the
+  # thread: a run that dies mid-build leaves nothing behind.
+  #
+  # @return [TextSubs::Registry, nil] this thread's own build, if any
+  def self.own_build
+    Thread.current.thread_variable_get(:textsubs_build)
+  end
+
+  # Makes registry this thread's own build, or ends it when given nil.
+  #
+  # @param registry [TextSubs::Registry, nil] the build, or nil
+  # @return [TextSubs::Registry, nil] registry
+  def self.bind_build(registry)
+    Thread.current.thread_variable_set(:textsubs_build, registry)
+  end
+  private_class_method :own_build, :bind_build
 
   # Refuses anything but a TextSubs::Registry, naming the public method that
   # was given it.
@@ -325,11 +381,13 @@ class TextSubs
   end
 
   # The one writer of the catalog, shared by add and elanthipedia: it writes
-  # the staged Registry while there is one (see stage), else the installed
-  # one. A key written to the installed catalog counts one generation, after
-  # it is written, so the generation never runs ahead of the catalog; a key
-  # written to a staged Registry is not in subs yet and counts none, as
-  # install counts that whole catalog once, when it swaps it in.
+  # write_target, under the lock, so no stage, unstage or install of another
+  # thread lands between choosing the Registry and counting the key. A key
+  # written to the installed catalog counts one generation, after it is
+  # written, so the generation never runs ahead of the catalog; a key written
+  # to a staged Registry or this thread's own build is not in subs yet and
+  # counts none, as install counts that whole catalog once, when it swaps it
+  # in.
   #
   # @param target [String] regex source, compiled unescaped
   # @param result [String] the gsub replacement
@@ -338,12 +396,23 @@ class TextSubs
   #   and the generation are left as they were
   def self.store(target, result)
     key = /#{target}/
-    registry = @@staged || @@registry
-    registry.add(key, result)
-    @@generation += 1 if registry.equal?(@@registry)
+    @@lock.synchronize do
+      registry = write_target
+      registry.add(key, result)
+      @@generation += 1 if registry.equal?(@@registry)
+    end
     result
   end
-  private_class_method :store
+
+  # The Registry an add writes: this thread's own build while it has one
+  # (see stage), else the staged Registry while there is one, else the
+  # installed one.
+  #
+  # @return [TextSubs::Registry]
+  def self.write_target
+    own_build || @@staged || @@registry
+  end
+  private_class_method :store, :write_target
 end
 
 settings = get_settings
@@ -359,6 +428,10 @@ settings = get_settings
 # A build that raises ends the staging when the script dies, so the adds of
 # other scripts reach the installed catalog again; the partial catalog is
 # never installed. Once the catalog is installed, unstage changes nothing.
+# A start that overlaps this one (';force textsubs' while it builds) has a
+# Registry of its own: the adds of each run go only into its own (see
+# TextSubs.stage), and install refuses this run's once the newer start has
+# staged, so this run then ends before it registers a hook.
 new_catalog = TextSubs.stage(TextSubs::Registry.new)
 before_dying { TextSubs.unstage(new_catalog) }
 
@@ -2137,7 +2210,9 @@ TextSubs.add('^(\d\d)\)\.  an immense (\w+) (ingot|nugget)(\.+) ([\d,]+) (\w+)',
 TextSubs.add('^(\d\d)\)\.  a gigantic (\w+) (ingot|nugget)(\.+) ([\d,]+) (\w+)',  '\1).  a  (100) gigantic \2 \3\4. \5 \6')
 TextSubs.add('^(\d\d)\)\.  a colossal (\w+) (ingot|nugget)(\.+) ([\d,]+) (\w+)',  '\1).  a  (200) colossal \2 \3\4. \5 \6')
 
-TextSubs.install(new_catalog)
+# nil when a newer start superseded this one: it installs its catalog and
+# registers its hook, so this run ends here (see TextSubs.install).
+exit unless TextSubs.install(new_catalog)
 
 action = proc do |client_string|
   # Headless: nobody would see the rewrite, so skip every key.
