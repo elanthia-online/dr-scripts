@@ -19,7 +19,7 @@ no_kill_all
 # class itself persists for the session, so it defines no constants but its
 # nested classes: re-running the body would warn "already initialized
 # constant" for any other. Re-running it installs an empty Registry and drops
-# any staging.
+# any staging; only the generation count carries over (see generation).
 class TextSubs
   # An ordered catalog of substitutions: a Regexp key and the gsub replacement
   # it applies. A key added again keeps its first position and takes the last
@@ -80,7 +80,7 @@ class TextSubs
 
   @@registry = Registry.new
   @@staged = nil
-  @@generation = 0
+  @@generation = 0 unless defined?(@@generation)
 
   # The catalog, in the order its keys were first added.
   #
@@ -90,8 +90,15 @@ class TextSubs
     @@registry.snapshot
   end
 
-  # How many times the catalog has changed since the class body last ran: add,
-  # elanthipedia, install and clear each count once.
+  # How many times the catalog has changed this session. install and clear
+  # count once each. add and elanthipedia count once when they write the
+  # installed catalog, and not at all while a Registry is staged (see stage):
+  # install counts that whole catalog once, when it swaps it in.
+  #
+  # The class body sets the count to 0 only the first time it runs in a
+  # session and keeps it on every later start, so the count only rises: two
+  # starts never leave the same number on two different catalogs, and a cache
+  # keyed on it that outlives a restart rebuilds.
   #
   # The count rises only after the change is visible in subs, so a reader on
   # another thread that sees a new generation also sees the catalog it counts.
@@ -99,7 +106,7 @@ class TextSubs
   # change lands in between, the cache holds a newer catalog under an older
   # number and rebuilds on the next call, never the other way round.
   #
-  # @return [Integer] 0 for a catalog nothing has touched yet
+  # @return [Integer] 0 until the catalog first changes in this session
   def self.generation
     @@generation
   end
