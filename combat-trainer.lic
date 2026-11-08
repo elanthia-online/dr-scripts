@@ -34,6 +34,20 @@ module CTGameLine
   end
 end
 
+# Live, hostile creatures (keyed by stable <crtrStatus> id) minus any that an
+# `ignored_npcs` entry names by noun or full name (CreatureInstance#matches?,
+# case-insensitive). Player pets live in that list, so they never become
+# appraisal or manipulation targets.
+module CTTargets
+  def self.unignored(ignored_npcs)
+    ignored = Array(ignored_npcs)
+    Lich::DragonRealms::Creature.targets.reject do |creature|
+      (creature.noun && ignored.include?(creature.noun)) ||
+        ignored.any? { |entry| creature.matches?(entry) }
+    end
+  end
+end
+
 class SetupProcess
   def initialize(settings, equipment_manager)
     @equipment_manager = equipment_manager
@@ -2787,7 +2801,7 @@ class SpellProcess
     echo "Figuring out ready offensive spells..." if $debug_mode_ct
     ready_spells = @offensive_spells.select do |spell|
       next false if spell_disabled?(spell['abbrev'])
-      next false if spell['target_enemy'] && Lich::DragonRealms::Creature.targets.none? { |c| c.noun == spell['target_enemy'] }
+      next false if spell['target_enemy'] && CTTargets.unignored(@ignored_npcs).none? { |c| c.noun == spell['target_enemy'] }
       next false if spell['min_threshold'] && game_state.npcs.length < spell['min_threshold']
       next false if spell['max_threshold'] && game_state.npcs.length > spell['max_threshold']
       next false if spell['expire'] && !Flags["ct-#{spell['abbrev']}"]
@@ -2893,7 +2907,7 @@ class SpellProcess
     echo("prepare spell: #{data}") if $debug_mode_ct
     if data['target_enemy']
       echo("  Target found: #{data['target_enemy']}") if $debug_mode_ct
-      se_target = Lich::DragonRealms::Creature.targets.find { |c| c.noun == data['target_enemy'] }
+      se_target = CTTargets.unignored(@ignored_npcs).find { |c| c.noun == data['target_enemy'] }
       fput(se_target ? "face ##{se_target.id}" : "face #{data['target_enemy']}")
     end
 
@@ -3106,6 +3120,9 @@ end
 class AbilityProcess
   def initialize(settings)
     echo('New AbilityProcess') if $debug_mode_ct
+
+    @ignored_npcs = settings.ignored_npcs || []
+    echo("  @ignored_npcs: #{@ignored_npcs}") if $debug_mode_ct
 
     @buffs = settings.buff_nonspells
     echo("  @buffs: #{@buffs}") if $debug_mode_ct
@@ -3656,7 +3673,7 @@ class AbilityProcess
     Flags.reset('ct-battle-cry-not-facing')
 
     battle_cries = @battle_cries
-                   .select { |battle_cry| battle_cry['target_enemy'] ? Lich::DragonRealms::Creature.targets.any? { |c| c.noun == battle_cry['target_enemy'] } : true }
+                   .select { |battle_cry| battle_cry['target_enemy'] ? CTTargets.unignored(@ignored_npcs).any? { |c| c.noun == battle_cry['target_enemy'] } : true }
                    .select { |battle_cry| battle_cry['min_threshold'] ? game_state.npcs.length >= battle_cry['min_threshold'] : true }
                    .select { |battle_cry| battle_cry['max_threshold'] ? game_state.npcs.length <= battle_cry['max_threshold'] : true }
 
@@ -3672,7 +3689,7 @@ class AbilityProcess
 
       command = battle_cry_data['command']
       if battle_cry_data['target_enemy']
-        bc_target = Lich::DragonRealms::Creature.targets.find { |c| c.noun == battle_cry_data['target_enemy'] }
+        bc_target = CTTargets.unignored(@ignored_npcs).find { |c| c.noun == battle_cry_data['target_enemy'] }
         command += " at " + (bc_target ? "##{bc_target.id}" : battle_cry_data['target_enemy'])
       end
 
@@ -3728,16 +3745,11 @@ class ManipulateProcess
 
   private
 
-  # Live, hostile creatures we may manipulate this tick, keyed by stable
-  # <crtrStatus> id, minus those an ignore entry names by noun or full name
-  # (CreatureInstance#matches?, case-insensitive). Constructs are still counted here
-  # (matching the pre-migration threshold, which read the hostility-agnostic
-  # game_state.npcs) but skipped in #manipulate below.
+  # Creatures we may manipulate this tick (CTTargets.unignored). Constructs are
+  # still counted here (matching the pre-migration threshold, which read the
+  # hostility-agnostic game_state.npcs) but skipped in #manipulate below.
   def manipulable_targets
-    Lich::DragonRealms::Creature.targets.reject do |creature|
-      (creature.noun && @ignored_npcs.include?(creature.noun)) ||
-        @ignored_npcs.any? { |entry| creature.matches?(entry) }
-    end
+    CTTargets.unignored(@ignored_npcs)
   end
 
   def should_manipulate?
@@ -3838,6 +3850,9 @@ class TrainerProcess
       end
 
     @no_app = []
+
+    @ignored_npcs = settings.ignored_npcs || []
+    echo("  @ignored_npcs: #{@ignored_npcs}") if $debug_mode_ct
 
     @dont_stalk = settings.dont_stalk
     echo("  @dont_stalk: #{@dont_stalk}") if $debug_mode_ct
@@ -4016,7 +4031,7 @@ class TrainerProcess
     when /^PrayerMat$/i
       pray_mat(game_state)
     when /^Recall$/i
-      recall_target = Lich::DragonRealms::Creature.targets.first
+      recall_target = CTTargets.unignored(@ignored_npcs).first
       DRC.bput("recall ##{recall_target.id}", 'Roundtime', 'You are far too occupied', 'You search your mind') if recall_target
     when /^Barb Research Augmentation$/i
       DRC.bput('meditate research monkey', /^You clear your mind and begin to meditate/, /^What did you want to research/)
@@ -4301,7 +4316,7 @@ class TrainerProcess
   def appraise(game_state, modifier)
     return if game_state.retreating?
 
-    target = Lich::DragonRealms::Creature.targets.find { |c| !@no_app.include?(c.id) }
+    target = CTTargets.unignored(@ignored_npcs).find { |c| !@no_app.include?(c.id) }
     return unless target
     return if DRSkill.getrank('Appraisal') < 76
     return if DRC.bput("app ##{target.id} #{modifier}", 'Taking stock of', 'It\'s dead', 'You can\'t determine anything about this creature.', 'I could not find', 'You cannot appraise that', 'roundtime', '^Perhaps that', 'Appraise what') != 'Perhaps that'

@@ -7,7 +7,14 @@
   Usage:
     ;aesthene full   - walk to the apprentice Timekeeper, redeem one time slip,
                        ask for access, attune to the lock you are shown and
-                       solve it. Run it again for the next slip.
+                       solve it.
+    ;aesthene full 5 - do that five times in a row, one slip at a time.
+    ;aesthene full all - keep going until you have no time slips left.
+                       A run of several slips stops early at a lock it can't
+                       solve, so no more slips are spent on it.
+                     When a full run ends, the script walks you back to the
+                     room you started it in. It stays put after a lock it
+                     couldn't solve, so you can finish that lock by hand.
     ;aesthene solve  - attune to (or resume) the time lock in your room and
                        solve it. Use this when you already have a redeemed pass.
     ;aesthene check  - read the lock in your room and list the answers that are
@@ -24,6 +31,8 @@
           - cloak
           - patch
 =end
+
+require 'digest'
 
 # Loads and normalizes the word lists the solver works from.
 module AestheneWords
@@ -263,6 +272,22 @@ class AestheneSolver
   # sampled evenly from the dictionary.
   PROBE_WORD_LIMIT = 2000
 
+  # Bump when a change to the scoring would change the guesses without
+  # changing the word lists, the constants above or feedback_code's marks
+  # (the digest samples those itself). That changes the digest, so a guess
+  # table built by the old code is no longer used.
+  SCORING_VERSION = 1
+
+  # Guesses whose feedback against every known answer goes into the digest,
+  # so changing how feedback_code marks a guess retires a guess table built
+  # by the old code even when SCORING_VERSION is not bumped. Repeated letters
+  # are where marking rules differ: doubles, triples, and a letter that is
+  # both right and misplaced.
+  FINGERPRINT_GUESSES = %w[TRALE EERIE LLAMA SASSY ABBEY HAMAR SMALL].freeze
+
+  # Marks as written in a state key: hit, present, absent.
+  KEY_MARKS = { hit: 'h', present: 'p', absent: 'a' }.freeze
+
   # @return [Array<String>] answers still consistent with the feedback
   attr_reader :candidates
 
@@ -270,7 +295,10 @@ class AestheneSolver
   # @param dictionary [Array<String>] normalized fallback words
   # @param opening [String, nil] first guess for an empty lock. Precomputed,
   #   because scoring the empty lock takes several seconds; nil computes it.
-  def initialize(answers, dictionary, opening: nil)
+  # @param table [Hash{String => String}, nil] precomputed guesses by state
+  #   key (see .state_key), from the data file. Only pass a table whose digest
+  #   matches these lists (see .digest).
+  def initialize(answers, dictionary, opening: nil, table: nil)
     @answers = answers
     @dictionary = dictionary
     @opening = opening
@@ -278,6 +306,80 @@ class AestheneSolver
     @known = answers
     @unlisted = dictionary
     @candidates = answers.empty? ? dictionary : answers
+    @guess_cache = table ? table.dup : {}
+  end
+
+  # Fingerprint of everything that decides the guesses: the lists in order,
+  # the opening, the scoring constants, SCORING_VERSION and how feedback_code
+  # marks {FINGERPRINT_GUESSES} against every answer. A guess table is only
+  # valid for the digest it was built for.
+  #
+  # @param answers [Array<String>] normalized known answers, in order
+  # @param dictionary [Array<String>] normalized dictionary words, in order
+  # @param opening [String, nil]
+  # @return [String] hex SHA-256
+  def self.digest(answers, dictionary, opening)
+    feedback = FINGERPRINT_GUESSES.map { |guess| answers.map { |answer| feedback_code(guess, answer) } }
+    inputs = [SCORING_VERSION, PROBES, HEDGE_WEIGHT, SCORING_LIMIT, PROBE_WORD_LIMIT, opening, answers, dictionary, feedback]
+    Digest::SHA256.hexdigest(inputs.inspect)
+  end
+
+  # The key a lock state is remembered by, e.g. "TRALE:aahaa|5".
+  #
+  # @param rows [Array<AestheneGrid::Row>] every row on the lock
+  # @param rows_left [Integer]
+  # @return [String]
+  def self.state_key(rows, rows_left)
+    (rows.map { |row| "#{row.guess}:#{row.marks.map { |mark| KEY_MARKS.fetch(mark) }.join}" } << rows_left).join('|')
+  end
+
+  # Solves every known answer once and returns each guess that had to be
+  # scored, by state key. That is the guess table: with it, no known answer
+  # needs scoring. Slow: tens of seconds.
+  #
+  # @param answers [Array<String>]
+  # @param dictionary [Array<String>]
+  # @param opening [String, nil]
+  # @return [Hash{String => String}] guesses in key order
+  def self.build_table(answers, dictionary, opening)
+    solver = new(answers, dictionary, opening: opening)
+    answers.each { |answer| solver.solve_offline(answer) }
+    solver.instance_variable_get(:@guess_cache).sort.to_h
+  end
+
+  # The marks the game puts on a guess. Unlike Wordle it does not count
+  # letters: a tile that is not a hit is present whenever its letter is
+  # anywhere in the answer. Live logs: HAMAR against FAIRY marks both A's
+  # (+A+ then _A_), and SMALL against PSALM marks both L's (+L+ then _L_).
+  # feedback_code, which scores guesses, still counts letters.
+  #
+  # @param guess [String]
+  # @param answer [String]
+  # @return [Array<Symbol>] :hit, :present or :absent per tile
+  def self.lock_marks(guess, answer)
+    guess.chars.each_with_index.map do |letter, index|
+      if answer[index] == letter then :hit
+      elsif answer.include?(letter) then :present
+      else :absent
+      end
+    end
+  end
+
+  # Plays a lock with a known answer against this solver, as the game would.
+  #
+  # @param answer [String]
+  # @return [Array<String>] the guesses, ending with the answer when solved
+  def solve_offline(answer)
+    rows = []
+    6.times do
+      observe(rows)
+      guess = next_guess(6 - rows.size)
+      break unless guess
+
+      rows += [AestheneGrid::Row.new(guess, AestheneSolver.lock_marks(guess, answer))]
+      break if guess == answer
+    end
+    rows.map(&:guess)
   end
 
   # Re-derives the candidates from every row on the lock.
@@ -308,8 +410,16 @@ class AestheneSolver
   # answer.
   #
   # The second row is the slow one: it scores about 3,000 guesses against
-  # several hundred candidates, which takes a second or more. Later rows have
-  # few candidates left and are near-instant.
+  # several hundred candidates, which takes a second or more (up to 13 seconds
+  # in a live run with other scripts busy). Later rows have few candidates left
+  # and are near-instant.
+  #
+  # The same rows always give the same guess, so each result is remembered
+  # for the life of the solver. In a run of slips, a lock whose first row
+  # repeats an earlier lock's gets its second guess at once; in two 50-lock
+  # runs about 40% of first rows repeated. The cache holds one short entry per
+  # lock state actually scored, a few per lock. A guess table from the data
+  # file seeds it, so known answers need no scoring at all.
   #
   # @param rows_left [Integer] rows still free on the lock
   # @return [String, nil] the guess, or nil when nothing fits
@@ -318,12 +428,7 @@ class AestheneSolver
     return @candidates.first if @candidates.size == 1 || rows_left <= 1
     return @opening if @opening && @rows.empty?
 
-    targets = weighted_targets
-    pool = (unused_probes + sample(@candidates, SCORING_LIMIT) + @answers + probe_words).uniq
-    candidate_set = @candidates.to_h { |word| [word, true] }
-    pool.min_by.with_index do |guess, index|
-      [score(guess, targets, rows_left), candidate_set[guess] ? 0 : 1, index]
-    end
+    @guess_cache[AestheneSolver.state_key(@rows, rows_left)] ||= best_guess(rows_left)
   end
 
   # Whether a word could still be the answer given one row of feedback.
@@ -376,6 +481,19 @@ class AestheneSolver
   end
 
   private
+
+  # Scores the guess pool against the candidates; the slow part of next_guess.
+  #
+  # @param rows_left [Integer] rows still free on the lock
+  # @return [String] the best guess
+  def best_guess(rows_left)
+    targets = weighted_targets
+    pool = (unused_probes + sample(@candidates, SCORING_LIMIT) + @answers + probe_words).uniq
+    candidate_set = @candidates.to_h { |word| [word, true] }
+    pool.min_by.with_index do |guess, index|
+      [score(guess, targets, rows_left), candidate_set[guess] ? 0 : 1, index]
+    end
+  end
 
   # @param word [String]
   # @return [Boolean] true when the word fits every row seen so far
@@ -450,6 +568,11 @@ class Aesthene
   # Room with the apprentice Timekeeper, where slips are redeemed.
   TIMEKEEPER_ROOM = 16_958
 
+  # How commands name the lock. A bare "lock" also matches anything the
+  # character carries whose noun starts with "lock", such as a lockpick, and
+  # the game picks that first ("You reach out and touch a stout lockpick.").
+  LOCK = 'time lock'
+
   # Seconds to wait for the grid after a whisper or look.
   READ_TIMEOUT = 10
   # Seconds to wait for the solved message once every row is used.
@@ -481,15 +604,16 @@ class Aesthene
     elsif args.solve
       attune_and_solve
     else
-      redeem_slip
-      attune_and_solve
+      start_room = Room.current.id
+      return_to(start_room) if run_slips(slip_limit(args.count))
     end
   end
 
   # @return [Array<Array<Hash>>] argument definitions for parse_args
   def arg_definitions
     [
-      [{ name: 'full', regex: /^full$/i, description: 'Redeem a time slip, attune to the lock you are shown and solve it.' }],
+      [{ name: 'full', regex: /^full$/i, description: 'Redeem a time slip, attune to the lock you are shown and solve it.' },
+       { name: 'count', regex: /^([1-9]\d*|all)$/i, optional: true, description: 'How many slips to run, one after another, or all. Default 1.' }],
       [{ name: 'solve', regex: /^solve$/i, description: 'Attune to (or resume) the lock in this room and solve it.' }],
       [{ name: 'check', regex: /^check$/i, description: 'List the answers still possible for the lock in this room.' }]
     ]
@@ -509,16 +633,94 @@ class Aesthene
     opening, = AestheneWords.normalize(data&.opening)
     abort_with('aesthene: no word lists found. Is data/base-aesthene.yaml installed?') if answers.empty? && dictionary.empty?
 
-    AestheneSolver.new(answers, dictionary, opening: opening.first)
+    AestheneSolver.new(answers, dictionary, opening: opening.first, table: guess_table(data, answers, dictionary, opening.first))
+  end
+
+  # The data file's guess table, when it was built for exactly these lists.
+  # A character's aesthene_lock_answers, or data changed without regenerating
+  # the table (util/aesthene_guess_table.rb), changes the digest; the table is
+  # then ignored and guesses are computed as before.
+  #
+  # @return [Hash{String => String}, nil]
+  def guess_table(data, answers, dictionary, opening)
+    table = data&.guess_table
+    return nil unless table.is_a?(Hash) && table['guesses'].is_a?(Hash)
+    return nil unless table['digest'] == AestheneSolver.digest(answers, dictionary, opening)
+
+    table['guesses']
+  end
+
+  # @param count [String, nil] the count argument: digits, 'all' or nil
+  # @return [Integer, Float] slips to run; Float::INFINITY for all
+  def slip_limit(count)
+    return 1 if count.nil?
+    return Float::INFINITY if count == 'all'
+
+    count.to_i
+  end
+
+  # Redeems a slip and solves the lock it opens, again and again, until
+  # `limit` locks are solved, the slips run out, or a lock is not solved.
+  #
+  # Stopping at an unsolved lock matters. The character may still be attuned
+  # to it, and the next lock touched would then resume it, fail again and
+  # spend another slip each time round.
+  #
+  # @param limit [Integer, Float] slips to run; Float::INFINITY for all
+  # @return [Boolean] false when the run stopped at a lock it could not solve
+  def run_slips(limit)
+    solved = 0
+    stop = nil
+    unsolved = false
+    begin
+      while solved < limit
+        unless redeem_slip(first: solved.zero?)
+          stop = 'no time slips left'
+          break
+        end
+        unless attune_and_solve
+          unsolved = true
+          stop = "stopped at a lock it couldn't solve, so no more slips are spent"
+          break
+        end
+        solved += 1
+      end
+      !unsolved
+    ensure
+      # Also runs when a step aborts part-way, so the count is not lost.
+      report_run(solved, stop) if limit > 1 && (solved.positive? || stop)
+    end
+  end
+
+  # Walks back to the room the run started in.
+  #
+  # @param room [Integer, nil] the starting room's id; nil when it was not a
+  #   mapped room
+  # @return [void]
+  def return_to(room)
+    if room.nil?
+      DRC.message("aesthene: the room you started in isn't mapped, so you're staying here.")
+      return
+    end
+    return if Room.current.id == room
+
+    DRC.message("aesthene: couldn't walk back to room #{room}, where you started.") unless DRCT.walk_to(room)
   end
 
   # Walks to the Timekeeper, redeems one time slip and asks to be shown to a
-  # lock. Stops the script if any step fails.
+  # lock. Stops the script if any step fails, except when a later slip of a
+  # run finds none left.
   #
-  # @return [void]
-  def redeem_slip
+  # @param first [Boolean] false for the second and later slips of a run
+  # @return [Boolean] true once shown to a lock; false when a later slip
+  #   finds no time slip
+  def redeem_slip(first: true)
+    unless DRCI.in_hands?('time slip') || DRCI.get_item?('time slip')
+      return false unless first
+
+      abort_with('aesthene: no time slip found.')
+    end
     abort_with("aesthene: couldn't reach the apprentice Timekeeper (room #{TIMEKEEPER_ROOM}).") unless DRCT.walk_to(TIMEKEEPER_ROOM)
-    abort_with('aesthene: no time slip found.') unless DRCI.in_hands?('time slip') || DRCI.get_item?('time slip')
 
     # The first REDEEM asks for confirmation; the second spends the slip.
     response = DRC.bput('redeem my slip', REDEEM_CONFIRM_PATTERN, REDEEMED_PATTERN, NO_REPRESENTATIVE_PATTERN)
@@ -528,14 +730,14 @@ class Aesthene
       abort_with('aesthene: the Timekeeper did not take the slip.')
     end
 
-    return if DRC.bput('ask timekeeper about access', ESCORTED_PATTERN).match?(ESCORTED_PATTERN)
+    return true if DRC.bput('ask timekeeper about access', ESCORTED_PATTERN).match?(ESCORTED_PATTERN)
 
     abort_with('aesthene: the Timekeeper did not take you to a lock.')
   end
 
   # Attunes to the lock in this room, then guesses until it is solved.
   #
-  # @return [void]
+  # @return [Boolean] true when the lock was solved
   def attune_and_solve
     reading = attune_to_lock
     solve(reading)
@@ -548,8 +750,8 @@ class Aesthene
   #   the current grid when resuming one
   def attune_to_lock
     outcomes = [TOUCH_CONFIRM_PATTERN, ATTUNED_PATTERN, ALREADY_ATTUNED_PATTERN, AestheneGrid::NO_PASS_PATTERN]
-    response = DRC.bput('touch lock', *outcomes)
-    response = DRC.bput('touch lock', *outcomes.drop(1)) if response.match?(TOUCH_CONFIRM_PATTERN)
+    response = DRC.bput("touch #{LOCK}", *outcomes)
+    response = DRC.bput("touch #{LOCK}", *outcomes.drop(1)) if response.match?(TOUCH_CONFIRM_PATTERN)
 
     case response
     when ATTUNED_PATTERN then AestheneGrid::Reading.new
@@ -567,12 +769,15 @@ class Aesthene
   # without a limit a lock that never takes it would be whispered forever.
   #
   # @param reading [AestheneGrid::Reading] the lock's current state
-  # @return [void]
+  # @return [Boolean] true when the lock was solved
   def solve(reading)
     stalled = 0
     loop do
       @solver.observe(reading.rows)
-      return report_solved(reading.rows.last&.guess || reading.whispered) if reading.solved?
+      if reading.solved?
+        report_solved(reading.rows.last&.guess || reading.whispered)
+        return true
+      end
       return report_failure('the lock has no rows left.') if reading.rows_left.zero?
       return report_failure("#{STALL_LIMIT} whispers in a row added no row to the lock.") if stalled >= STALL_LIMIT
 
@@ -604,7 +809,7 @@ class Aesthene
   # @return [AestheneGrid::Reading]
   def whisper(guess)
     respond("aesthene: whispering #{guess} (#{@solver.candidates.size} possible)")
-    reading = read_lock("whisper lock #{guess.downcase}")
+    reading = read_lock("whisper #{LOCK} #{guess.downcase}")
     abort_with('aesthene: you are no longer attuned to the lock.') if %i[not_tasked no_pass].include?(reading.status)
     reading = look_at_lock unless reading.grid_complete? && reading.consistent?
     if reading.rows.last&.guess != guess
@@ -617,7 +822,7 @@ class Aesthene
   #
   # @return [AestheneGrid::Reading]
   def look_at_lock
-    reading = read_lock('look lock')
+    reading = read_lock("look #{LOCK}")
     abort_with("aesthene: couldn't read the time lock.") unless reading.grid_complete?
     reading
   end
@@ -664,11 +869,23 @@ class Aesthene
     DRC.message("aesthene: until then, add #{word} to aesthene_lock_answers in your YAML.") if @solver.fallback?
   end
 
-  # @param reason [String]
+  # Sums up a run of several slips.
+  #
+  # @param solved [Integer] locks solved
+  # @param stop [String, nil] why the run ended early; nil when it finished
+  #   or a step stopped the script
   # @return [void]
+  def report_run(solved, stop)
+    locks = solved == 1 ? 'lock' : 'locks'
+    DRC.message("aesthene: solved #{solved} #{locks}#{stop ? "; #{stop}" : ''}.")
+  end
+
+  # @param reason [String]
+  # @return [false] so solve can return it as its result
   def report_failure(reason)
     DRC.message("aesthene: couldn't solve the lock: #{reason}")
     report_candidates
+    false
   end
 
   # Lists the candidates. With none left, the answer is in no word list, so

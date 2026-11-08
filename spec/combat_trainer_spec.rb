@@ -89,6 +89,7 @@ load_lic_class('combat-trainer.lic', 'PetProcess')
 load_lic_class('combat-trainer.lic', 'TrainerProcess')
 load_lic_class('combat-trainer.lic', 'CombatTrainer')
 load_lic_module('combat-trainer.lic', 'CTGameLine')
+load_lic_module('combat-trainer.lic', 'CTTargets')
 
 # Shared setup for combat-trainer tests that need game state stubs.
 # Include in each describe block via: before(:each) { ct_setup }
@@ -1258,6 +1259,38 @@ RSpec.describe AbilityProcess do
       ap = build_cry_ability
       ap.send(:check_battle_cries, gs_double)
       expect(ap).not_to have_received(:fput)
+    end
+
+    # A player's pet can share the configured noun: a plague spawn (pet) and a
+    # forest spawn (creature) are both "spawn". ignored_npcs keeps the pet out.
+    context 'with a pet that shares the target_enemy noun' do
+      let(:pet) { Lich::DragonRealms::CreatureInstance.new(901, 'spawn', 'plague spawn') }
+      let(:mob) { Lich::DragonRealms::CreatureInstance.new(904, 'spawn', 'forest spawn') }
+
+      def build_spawn_cry_ability
+        ap = build_ability(
+          battle_cries: [{ 'name' => 'Roar', 'command' => 'roar', 'target_enemy' => 'spawn' }],
+          battle_cry_cycle: ['Roar'],
+          ignored_npcs: ['plague spawn']
+        )
+        allow(ap).to receive(:waitrt?)
+        allow(ap).to receive(:fput)
+        ap
+      end
+
+      it 'roars at the creature, not the ignored pet listed first' do
+        allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([pet, mob])
+        ap = build_spawn_cry_ability
+        ap.send(:check_battle_cries, gs_double)
+        expect(ap).to have_received(:fput).with('roar at #904')
+      end
+
+      it 'drops the battle cry when the ignored pet is the only match' do
+        allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([pet])
+        ap = build_spawn_cry_ability
+        ap.send(:check_battle_cries, gs_double)
+        expect(ap).not_to have_received(:fput)
+      end
     end
   end
 
@@ -5509,6 +5542,21 @@ RSpec.describe SpellProcess do
 
         expect(instance).to have_received(:fput).with('face kobold')
       end
+
+      it 'faces the creature, not an ignored pet that shares the noun' do
+        pet = Lich::DragonRealms::CreatureInstance.new(901, 'spawn', 'plague spawn')
+        mob = Lich::DragonRealms::CreatureInstance.new(904, 'spawn', 'forest spawn')
+        allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([pet, mob])
+
+        instance = build_spell_process(ignored_npcs: ['plague spawn'])
+        allow(instance).to receive(:fput)
+        data = { 'abbrev' => 'FIRE', 'name' => 'Fire Spirit', 'mana' => 3, 'target_enemy' => 'spawn' }
+
+        instance.send(:prepare_spell, data, build_prep_state)
+
+        expect(instance).to have_received(:fput).with('face #904')
+        expect(instance).not_to have_received(:fput).with('face #901')
+      end
     end
 
     describe '#check_offensive selection gate' do
@@ -5550,6 +5598,19 @@ RSpec.describe SpellProcess do
         gs = build_offensive_state
 
         expect(instance).to receive(:prepare_spell).with(hash_including('target_enemy' => 'kobold'), gs)
+        instance.send(:check_offensive, gs)
+      end
+
+      it 'rejects the spell when the only noun match is an ignored pet' do
+        DRStats.mana = 100
+        pet = Lich::DragonRealms::CreatureInstance.new(901, 'kobold', 'tame kobold')
+        allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([pet])
+
+        instance = build_target_enemy_process
+        instance.instance_variable_set(:@ignored_npcs, ['tame kobold'])
+        gs = build_offensive_state
+
+        expect(instance).not_to receive(:prepare_spell)
         instance.send(:check_offensive, gs)
       end
     end
@@ -6981,6 +7042,37 @@ RSpec.describe 'TrainerProcess#execute Recall' do
 
     expect(DRC).not_to have_received(:bput)
   end
+
+  context 'with a player pet listed in ignored_npcs' do
+    let(:pet) { Lich::DragonRealms::CreatureInstance.new(901, 'spawn', 'plague spawn') }
+    let(:mob) { Lich::DragonRealms::CreatureInstance.new(333, 'goblin', 'a goblin') }
+
+    def build_pet_trainer
+      trainer = build_trainer
+      trainer.instance_variable_set(:@ignored_npcs, ['plague spawn'])
+      trainer
+    end
+
+    it 'recalls the first creature that is not ignored' do
+      allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([pet, mob])
+      allow(DRC).to receive(:bput)
+
+      build_pet_trainer.execute(double('GameState', danger: false))
+
+      expect(DRC).to have_received(:bput)
+        .with('recall #333', 'Roundtime', 'You are far too occupied', 'You search your mind')
+      expect(DRC).not_to have_received(:bput).with('recall #901', any_args)
+    end
+
+    it 'issues no recall when the pet is the only target' do
+      allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([pet])
+      allow(DRC).to receive(:bput)
+
+      build_pet_trainer.execute(double('GameState', danger: false))
+
+      expect(DRC).not_to have_received(:bput)
+    end
+  end
 end
 
 # ===================================================================
@@ -7154,9 +7246,10 @@ RSpec.describe 'GameState summoned-weapon store/restore' do
   # Verify the id-based command, the id-keyed dedup, and the rank gate.
   # -----------------------------------------------------------------
   describe '#appraise' do
-    def build_appraiser(no_app: [])
+    def build_appraiser(no_app: [], ignored_npcs: nil)
       trainer = TrainerProcess.allocate
       trainer.instance_variable_set(:@no_app, no_app)
+      trainer.instance_variable_set(:@ignored_npcs, ignored_npcs) unless ignored_npcs.nil?
       trainer
     end
 
@@ -7216,6 +7309,123 @@ RSpec.describe 'GameState summoned-weapon store/restore' do
 
       expect(DRC).not_to have_received(:bput)
     end
+
+    # A player's pet is in Creature.targets but never teaches Appraisal; in
+    # Mahtra's logs a plague spawn led the target list and took 80% of the
+    # single-target appraisals. ignored_npcs is where pets are listed.
+    context 'with ignored_npcs' do
+      let(:pet) { Lich::DragonRealms::CreatureInstance.new(901, 'spawn', 'plague spawn') }
+      let(:mob) { Lich::DragonRealms::CreatureInstance.new(902, 'blademaster', "Adan'f blademaster") }
+
+      before(:each) do
+        allow(DRC).to receive(:bput).and_return('Taking stock of')
+      end
+
+      it 'skips a creature an entry names by full name and appraises the next one' do
+        allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([pet, mob])
+
+        build_appraiser(ignored_npcs: ['plague spawn']).send(:appraise, appraise_state, 'quick')
+
+        expect(DRC).to have_received(:bput).with('app #902 quick', any_args)
+        expect(DRC).not_to have_received(:bput).with('app #901 quick', any_args)
+      end
+
+      it 'skips a creature an entry names by its noun' do
+        allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([pet, mob])
+
+        build_appraiser(ignored_npcs: ['spawn']).send(:appraise, appraise_state, 'quick')
+
+        expect(DRC).to have_received(:bput).once
+        expect(DRC).to have_received(:bput).with('app #902 quick', any_args)
+      end
+
+      it 'matches entries case-insensitively and ignores a leading article' do
+        allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([pet, mob])
+
+        build_appraiser(ignored_npcs: ['A Plague Spawn']).send(:appraise, appraise_state, 'quick')
+
+        expect(DRC).to have_received(:bput).with('app #902 quick', any_args)
+      end
+
+      it 'does not appraise at all when every target is ignored' do
+        allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([pet])
+
+        build_appraiser(ignored_npcs: ['plague spawn']).send(:appraise, appraise_state, 'quick')
+
+        expect(DRC).not_to have_received(:bput)
+      end
+
+      it 'does not let a one-word entry match a non-noun word of the name' do
+        allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([pet, mob])
+
+        build_appraiser(ignored_npcs: ['plague']).send(:appraise, appraise_state, 'quick')
+
+        expect(DRC).to have_received(:bput).with('app #901 quick', any_args)
+      end
+
+      it 'keeps the ignore and @no_app skips independent' do
+        allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([pet, mob])
+
+        build_appraiser(no_app: [902], ignored_npcs: ['plague spawn']).send(:appraise, appraise_state, 'quick')
+
+        expect(DRC).not_to have_received(:bput)
+      end
+
+      it 'treats a nil ignored_npcs setting as an empty list' do
+        allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([pet, mob])
+        trainer = build_appraiser
+        trainer.instance_variable_set(:@ignored_npcs, nil)
+
+        trainer.send(:appraise, appraise_state, 'quick')
+
+        expect(DRC).to have_received(:bput).with('app #901 quick', any_args)
+      end
+    end
+  end
+end
+
+# CTTargets: the one ignore filter ManipulateProcess and TrainerProcess share.
+RSpec.describe CTTargets do
+  let(:pet) { Lich::DragonRealms::CreatureInstance.new(901, 'spawn', 'plague spawn') }
+  let(:mob) { Lich::DragonRealms::CreatureInstance.new(902, 'moradu', 'jeol moradu') }
+
+  before(:each) do
+    allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([pet, mob])
+  end
+
+  it 'returns every target, in order, when nothing is ignored' do
+    expect(CTTargets.unignored([])).to eq([pet, mob])
+    expect(CTTargets.unignored(nil)).to eq([pet, mob])
+  end
+
+  it 'drops targets named by full name or by noun' do
+    expect(CTTargets.unignored(['plague spawn'])).to eq([mob])
+    expect(CTTargets.unignored(['moradu'])).to eq([pet])
+    expect(CTTargets.unignored(%w[spawn moradu])).to eq([])
+  end
+
+  it 'drops a legacy-stream target by its derived noun, which #matches? does not use' do
+    legacy = Lich::DragonRealms::CreatureInstance.new(903, 'spawn', 'plague spawn', noun_from_server: false)
+    allow(Lich::DragonRealms::Creature).to receive(:targets).and_return([legacy, mob])
+
+    expect(legacy.matches?('spawn')).to be(false)
+    expect(CTTargets.unignored(['spawn'])).to eq([mob])
+  end
+
+  it 'does not mutate the ignore list or the target list' do
+    ignored = ['plague spawn'].freeze
+    targets = [pet, mob].freeze
+    allow(Lich::DragonRealms::Creature).to receive(:targets).and_return(targets)
+
+    expect { CTTargets.unignored(ignored) }.not_to raise_error
+    expect(targets).to eq([pet, mob])
+  end
+
+  it 'backs ManipulateProcess#manipulable_targets' do
+    mp = ManipulateProcess.allocate
+    mp.instance_variable_set(:@ignored_npcs, ['plague spawn'])
+
+    expect(mp.send(:manipulable_targets)).to eq([mob])
   end
 end
 

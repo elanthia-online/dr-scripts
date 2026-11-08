@@ -10,6 +10,9 @@ class Tarantula
     @tarantula = settings.tarantula
     @startup_delay = settings.tarantula_startup_delay
     @tarantula_noun = settings.tarantula_noun
+    # Wait before the first command: at login, other autostarted scripts tap
+    # their own items, and DRC.bput can take another script's reply as ours.
+    pause @startup_delay
     unless DRCI.exists?(@tarantula_noun)
       DRC.message("#{@tarantula_noun} not found, exiting")
       exit
@@ -29,7 +32,6 @@ class Tarantula
       "Survival" => ['Evasion', 'Athletics', 'Perception', 'Instinct', 'Stealth', 'Locksmithing', 'Thievery', 'First Aid', 'Outdoorsmanship', 'Skinning', 'Backstab', 'Thanatology'],
       "Lore"     => ['Forging', 'Engineering', 'Outfitting', 'Alchemy', 'Enchanting', 'Scholarship', 'Appraisal', 'Bardic Lore', 'Trading', 'Performance', 'Tactics', 'Empathy']
     }
-    pause @startup_delay
     passive_loop
   end
 
