@@ -5012,6 +5012,17 @@ RSpec.describe 'textsubs.lic' do
             .to raise_error(ArgumentError, 'section 2 (b) gives scale "s" of 6, but section 1 (a) gives it of 5')
         end
 
+        it "names a later section's own problem, then a repeated section name, before an earlier ladder's repeated n" do
+          repeats = ladder('repeats', [[1, 'a nick'], [1, 'a gash']])
+          bad_gate = ladder('bad gate', [[2, 'a cut']], 'when' => { 'guilds' => ['Nope'] })
+          expect { entries_for('Bard', ladder_catalog(repeats, bad_gate)) }
+            .to raise_error(ArgumentError, %(section 2 (bad gate) 'when' guilds names unknown guild(s) "Nope"))
+          expect { entries_for('Bard', ladder_catalog(repeats, ladder('repeats', [[2, 'a cut']]))) }
+            .to raise_error(ArgumentError, 'section name(s) used more than once: "repeats"')
+          expect { entries_for('Bard', ladder_catalog(repeats, bad_gate.except('when'))) }
+            .to raise_error(ArgumentError, 'section 1 (repeats) uses step number(s) 1 more than once')
+        end
+
         {
           'an empty scale'       => [{ 'scale' => '' }, "'scale' must name the scale, not be empty"],
           'a scale not a string' => [{ 'scale' => 3 }, "'scale' must be a quoted string, not 3"]

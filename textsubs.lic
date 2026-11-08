@@ -1599,7 +1599,12 @@ class TextSubs
     # @return [Array(Array<Hash>, TextSubs::SpellTable, Hash{String=>Regexp})]
     #   its sections, every one checked, its spells table (empty when data
     #   has none), and every pattern the sections give compiled, by its source
-    # @raise [ArgumentError] naming the first problem found
+    # @raise [ArgumentError] naming the first problem found, in this order:
+    #   the top-level keys, schema, spells and sections list; each section's
+    #   own problems, in file order; a section name used more than once;
+    #   then the problems between the sections of one kind (check_across),
+    #   so a ladder's repeated n or matched phrase is named only when every
+    #   section is otherwise sound
     def self.check(data)
       raise ArgumentError, "no 'textsubs:' mapping (the file is missing or did not parse)" unless data.is_a?(Hash)
 
