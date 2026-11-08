@@ -643,7 +643,10 @@ RSpec.describe 'textsubs.lic' do
   # shit list file, so the branches that run when a setting is off or empty
   # read through the recorder too. And one rebuild for a new guild: in that
   # same run TextSubs.watch yields 'Bard', so the block the entry point hands
-  # watch runs and builds again, reading what it reads.
+  # watch runs and builds again, reading what it reads. After every run a
+  # line goes through the 'textsub' hook the run registered, with a front
+  # end attached and with none, so a key the hook proc reads for each line
+  # is recorded as well.
   #
   # textsubs reads its settings by name (settings.<key>) and by index
   # (settings[key], in Context#setting? for a section's when: gate). The
@@ -699,9 +702,34 @@ RSpec.describe 'textsubs.lic' do
     end
     reads = nil
 
+    # Runs the real entry point once with get_settings answering a recorder
+    # over values, then sends one line through the 'textsub' hook it
+    # registered, with a front end attached and with none, so a setting the
+    # hook proc reads, on either side of its front-end guard, is recorded
+    # too. The hook has to be registered still: DownstreamHook.run removes a
+    # hook that raises, as the recorder does for a call it cannot see a key
+    # in, and only says so in a line, so a removed hook fails the examples.
+    #
+    # @param values [Hash{String=>Object}] the value of each setting
+    # @param read [Array<String>] where each key read is added
+    # @return [void]
+    # @raise [RuntimeError] when the hook raised on the line
+    define_method(:record_run) do |values, read|
+      allow(TOPLEVEL_BINDING.receiver).to receive(:get_settings).and_return(recorder.new(values, read))
+      run_lic_entry('textsubs.lic', 'TextSubs')
+      [true, false].each do |attached|
+        allow(TextSubs).to receive(:client_attached?).and_return(attached)
+        run_hooks("You feel fine.\r\n".b)
+        next if DownstreamHook.list.include?('textsub')
+
+        raise "the 'textsub' hook raised on a line (front end attached: #{attached}), so what it read there went unrecorded"
+      end
+    end
+
     # Runs the real entry point with get_settings answering a recorder, in the
     # three ways the comment above describes: the all-on path, the
     # shipped-defaults path, and a rebuild for a new guild through watch.
+    # Each run passes a line through its hook (see record_run).
     #
     # @return [Array<String>] each key read, once
     define_method(:record_reads) do
@@ -711,16 +739,14 @@ RSpec.describe 'textsubs.lic' do
         [{ 'guild' => nil }, *combinations].each do |combination|
           values = combination.except('guild')
                               .merge('integrate_shit_list_with_textsubs' => true, 'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
-          allow(TOPLEVEL_BINDING.receiver).to receive(:get_settings).and_return(recorder.new(values, read))
           DRStats.guild = combination['guild']
-          run_lic_entry('textsubs.lic', 'TextSubs')
+          record_run(values, read)
         end
       end
       with_shit_list(nil) do
-        allow(TOPLEVEL_BINDING.receiver).to receive(:get_settings).and_return(recorder.new(textsubs_defaults, read))
         allow(TextSubs).to receive(:watch).and_yield('Bard')
         DRStats.guild = nil
-        run_lic_entry('textsubs.lic', 'TextSubs')
+        record_run(textsubs_defaults, read)
       end
       read.uniq
     end
