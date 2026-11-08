@@ -10,14 +10,17 @@ require_relative 'spec_helper'
 #
 # HAVE_GTK, Gtk and CharSettings are set as constants on the runner's
 # singleton class, so no global constant is defined or reassigned. Gtk.queue
-# does not yield, so no window is built. The script loops on script.gets?
-# forever, so the reader raises StopRun on its first call. That stop also shows
-# the run got past all the top-level code into the main loop.
+# does not yield, so no window is built; it records that the window was
+# queued. The script loops on script.gets? forever, so the reader returns nil
+# (no game line) a few times, letting the loop go round idle, then raises
+# StopRun. That stop also shows the run got past all the top-level code into
+# the main loop.
 #
 # The runner records each pause instead of sleeping, and can make textsubs
 # show up as running after a given number of them (as autostart starting it
-# just after this script would). It also records respond on its own, apart
-# from echo, so the textsubs hint is pinned to echo.
+# just after this script would). Queued windows and pauses also go, in order,
+# to one event list. It records respond on its own, apart from echo, so the
+# textsubs hint is pinned to echo.
 RSpec.describe 'performance-monitor.lic' do
   let(:path) { lic_path('performance-monitor.lic') }
   let(:stop_run) { Class.new(StandardError) }
@@ -25,6 +28,10 @@ RSpec.describe 'performance-monitor.lic' do
   let(:started_if_available) { [] }
   let(:loop_reached) { [] }
   let(:pauses) { [] }
+  # :queue for each Gtk.queue call and [:pause, seconds] for each pause, in order
+  let(:events) { [] }
+  # how many times script.gets? returns nil (an idle loop pass) before StopRun
+  let(:idle_reads) { 3 }
   let(:responded) { [] }
   # the number of pauses after which textsubs shows up as running; nil = never
   let(:textsubs_starts_after_pauses) { nil }
@@ -41,18 +48,23 @@ RSpec.describe 'performance-monitor.lic' do
   # @return [Object] the runner
   def build_runner(with_start_helper:)
     runner = Object.new
+    log = events
     gtk = Object.new
-    gtk.define_singleton_method(:queue) { |&_block| nil }
+    gtk.define_singleton_method(:queue) { |&_block| log << :queue }
     runner.singleton_class.const_set(:HAVE_GTK, true)
     runner.singleton_class.const_set(:Gtk, gtk)
     runner.singleton_class.const_set(:CharSettings, {})
 
     reached = loop_reached
     over = stop_run
+    idle_left = idle_reads
     reader = Object.new
     reader.define_singleton_method(:gets?) do
       reached << true
-      raise over
+      raise over if idle_left.zero?
+
+      idle_left -= 1
+      nil
     end
     runner.define_singleton_method(:script) { reader }
 
@@ -60,6 +72,7 @@ RSpec.describe 'performance-monitor.lic' do
     starts_after = textsubs_starts_after_pauses
     runner.define_singleton_method(:pause) do |seconds = 1|
       paused << seconds
+      log << [:pause, seconds]
       $running_scripts << 'textsubs' if paused.size == starts_after
     end
     said = responded
@@ -74,7 +87,7 @@ RSpec.describe 'performance-monitor.lic' do
     runner
   end
 
-  # Runs the whole script on a fresh runner until its first script.gets?.
+  # Runs the whole script on a fresh runner until the reader raises StopRun.
   #
   # @param with_start_helper [Boolean] see build_runner
   # @return [Object] the runner the script ran on
@@ -111,13 +124,30 @@ RSpec.describe 'performance-monitor.lic' do
         displayed_messages.grep(/;autostart add textsubs/)
       end
 
+      # @return [Array<String>] echoed or responded messages that name textsubs
+      def textsubs_mentions
+        (displayed_messages + responded).grep(/textsubs/)
+      end
+
+      # @return [Array<Float>] the 0.05 s pauses of the main loop's idle passes
+      def idle_pauses
+        [0.05] * idle_reads
+      end
+
       it 'echoes once, after waiting five seconds, that textsubs is no longer started when it never runs' do
         run_script(with_start_helper: true)
 
-        expect(pauses).to eq([0.5] * 10)
+        expect(loop_reached.size).to eq(idle_reads + 1)
+        expect(pauses).to eq(([0.5] * 10) + idle_pauses)
         expect(hints.size).to eq(1)
         expect(hints.first).to include('performance-monitor no longer starts textsubs')
         expect(responded).to be_empty
+      end
+
+      it 'queues the window before it starts waiting for textsubs' do
+        run_script(with_start_helper: true)
+
+        expect(events.first(2)).to eq([:queue, [:pause, 0.5]])
       end
 
       it 'echoes nothing about textsubs and does not wait when textsubs is already running' do
@@ -126,8 +156,8 @@ RSpec.describe 'performance-monitor.lic' do
         run_script(with_start_helper: true)
 
         expect(loop_reached).not_to be_empty
-        expect(pauses).to be_empty
-        expect(displayed_messages.grep(/textsubs/)).to be_empty
+        expect(pauses).to eq(idle_pauses)
+        expect(textsubs_mentions).to be_empty
       end
 
       context 'when autostart starts textsubs just after performance-monitor' do
@@ -137,8 +167,8 @@ RSpec.describe 'performance-monitor.lic' do
           run_script(with_start_helper: true)
 
           expect(loop_reached).not_to be_empty
-          expect(pauses).to eq([0.5] * 3)
-          expect(displayed_messages.grep(/textsubs/)).to be_empty
+          expect(pauses).to eq(([0.5] * 3) + idle_pauses)
+          expect(textsubs_mentions).to be_empty
         end
       end
     end
