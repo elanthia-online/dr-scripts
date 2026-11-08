@@ -1,6 +1,7 @@
 require 'delegate'
 require 'fileutils'
 require 'json'
+require 'prism'
 require 'stringio'
 require 'tmpdir'
 require 'yaml'
@@ -618,13 +619,69 @@ RSpec.describe 'textsubs.lic' do
   # profiles/base.yaml is where a player looks up what a setting does, and
   # what get_settings answers for a key the player has not set, and the
   # script's own header lists the settings it reads. Every key textsubs reads
-  # has to be in both: those the entry point reads by name (settings.<key>,
-  # settings['<key>'], settings[:<key>] or get_settings.<key>) and those a
-  # section's when: gate in the data file names. Context's own read,
-  # @settings[name], names no key, so the scan passes it by.
+  # has to be in both: those the entry point reads by name and those a
+  # section's when: gate in the data file names.
+  #
+  # The entry point's reads are found in the parsed source, so a line break,
+  # a space or nested parentheses cannot hide one. The settings object is
+  # get_settings or a get_settings(<any arguments>) call, a bare settings
+  # call with no arguments, the local settings, or any local assigned one of
+  # these. Off it, a read is a call with no arguments that OpenStruct (what
+  # get_settings returns) does not answer itself, .<key> or &.<key>; an index
+  # or a dig by a single-quoted, double-quoted or symbol key; or a compound
+  # assignment (||=, &&=, +=) to either. An index or dig by anything else is
+  # named '(a computed key)', so the spec fails on it rather than skip it.
+  # A call that takes arguments (fetch, a setter, an operator) reads no key
+  # off an OpenStruct, and Context's @settings is an instance variable, so
+  # the scan passes those by: Context reads only the keys the data file's
+  # gates name, which are checked from the data file. A settings object
+  # handed to a method under another name is out of a static scan's reach.
   describe 'the settings textsubs reads' do
+    settings_object = lambda do |node, locals|
+      case node
+      when Prism::LocalVariableReadNode then locals.include?(node.name)
+      when Prism::CallNode
+        node.receiver.nil? && (node.name == :get_settings || (node.name == :settings && node.arguments.nil?))
+      else false
+      end
+    end
+    settings_locals = lambda do |nodes|
+      writes = nodes.grep(Prism::LocalVariableWriteNode)
+      locals = [:settings]
+      until (found = writes.select { |write| settings_object.call(write.value, locals) }.map(&:name) - locals).empty?
+        locals += found
+      end
+      locals
+    end
+    literal_key = lambda do |arguments|
+      key = arguments&.arguments&.first
+      key.is_a?(Prism::StringNode) || key.is_a?(Prism::SymbolNode) ? key.unescaped : '(a computed key)'
+    end
+    blank_settings = OpenStruct.new.freeze
+    key_read = lambda do |node|
+      case node
+      when Prism::CallNode
+        if %i[[] dig].include?(node.name) then literal_key.call(node.arguments)
+        elsif node.arguments.nil? && !blank_settings.respond_to?(node.name) then node.name.to_s
+        end
+      when Prism::CallOperatorWriteNode, Prism::CallOrWriteNode, Prism::CallAndWriteNode then node.read_name.to_s
+      when Prism::IndexOperatorWriteNode, Prism::IndexOrWriteNode, Prism::IndexAndWriteNode
+        literal_key.call(node.arguments)
+      end
+    end
     settings_keys_in = lambda do |source|
-      source.scan(/\b(?:get_)?settings(?:\.(\w+)|\[\s*(?:'(\w+)'|"(\w+)"|:(\w+))\s*\])/).flatten.compact.uniq
+      parsed = Prism.parse(source)
+      raise ArgumentError, parsed.errors.map(&:message).join('; ') unless parsed.success?
+
+      nodes = []
+      pending = [parsed.value]
+      until pending.empty?
+        nodes << pending.shift
+        pending.concat(nodes.last.compact_child_nodes)
+      end
+      locals = settings_locals.call(nodes)
+      nodes.filter_map { |node| key_read.call(node) if node.respond_to?(:receiver) && settings_object.call(node.receiver, locals) }
+           .uniq
     end
     base_profile = YAML.unsafe_load_file(File.expand_path('../profiles/base.yaml', __dir__), freeze: true)
     script_source = File.read(File.expand_path('../textsubs.lic', __dir__))
@@ -633,19 +690,89 @@ RSpec.describe 'textsubs.lic' do
     read_by_gates = gates.flat_map { |gate| gate.values_at('setting', 'setting_off') }.compact.uniq
     read = (read_by_entry_point | read_by_gates).freeze
 
-    it 'finds a key read by method, by string or symbol index, or straight off get_settings, and no other' do
+    it 'finds a key read by method, by single-quoted, double-quoted or symbol index, by dig, or straight off get_settings' do
       source = <<~RUBY
         a = settings.by_method
         b = settings['single_quoted']
         c = settings["double_quoted"]
         d = settings[:by_symbol]
-        e = get_settings.off_get_settings
-        f = @settings[name]
-        g = TextSubs::Context.new(guild: nil, settings: settings)
-        h = my_settings.not_a_read
+        e = settings.dig('dug_by_string')
+        f = settings.dig(:dug_by_symbol, 'inner')
+        g = get_settings.off_get_settings
       RUBY
       expect(settings_keys_in.call(source))
-        .to contain_exactly('by_method', 'single_quoted', 'double_quoted', 'by_symbol', 'off_get_settings')
+        .to contain_exactly('by_method', 'single_quoted', 'double_quoted', 'by_symbol', 'dug_by_string', 'dug_by_symbol',
+                            'off_get_settings')
+    end
+
+    it 'finds a key read through safe navigation, or off a get_settings call with any arguments' do
+      source = <<~RUBY
+        a = settings&.safe_method
+        b = get_settings&.safe_off_get_settings
+        c = get_settings(%w[extra]).off_call_with_args
+        d = get_settings(args.map(&:to_s))['off_nested_call']
+        e = get_settings()[:off_empty_call]
+        f = get_settings(f(g(1))).off_deeply_nested_call
+        g = get_settings(')').off_call_with_a_paren_in_a_string
+      RUBY
+      expect(settings_keys_in.call(source))
+        .to contain_exactly('safe_method', 'safe_off_get_settings', 'off_call_with_args', 'off_nested_call', 'off_empty_call',
+                            'off_deeply_nested_call', 'off_call_with_a_paren_in_a_string')
+    end
+
+    it 'finds a key read across a line break or after a space before the dot' do
+      source = <<~RUBY
+        a = get_settings(extra)
+          .after_a_leading_dot
+        b = settings
+          &.after_a_leading_safe_dot
+        c = settings .after_a_space
+        d = get_settings.
+          after_a_trailing_dot
+      RUBY
+      expect(settings_keys_in.call(source))
+        .to contain_exactly('after_a_leading_dot', 'after_a_leading_safe_dot', 'after_a_space', 'after_a_trailing_dot')
+    end
+
+    it 'finds a key read off a local that holds the settings, however many hands it passed through' do
+      source = <<~RUBY
+        config = get_settings(%w[extra])
+        copy = config
+        a = config.off_a_local
+        b = copy[:off_a_copy]
+        c = unrelated.not_a_read
+      RUBY
+      expect(settings_keys_in.call(source)).to contain_exactly('off_a_local', 'off_a_copy')
+    end
+
+    it 'finds a key a compound assignment reads, and names an index it cannot read as a computed key' do
+      source = <<~RUBY
+        settings.or_assigned ||= 1
+        settings.and_assigned &&= 2
+        settings.added_to += 3
+        settings[:index_or_assigned] ||= 4
+        a = settings[name]
+        b = get_settings.dig(key)
+      RUBY
+      expect(settings_keys_in.call(source))
+        .to contain_exactly('or_assigned', 'and_assigned', 'added_to', 'index_or_assigned', '(a computed key)')
+    end
+
+    it 'passes by calls that read no key: off another receiver, with arguments, or a method OpenStruct answers itself' do
+      source = <<~RUBY
+        a = @settings.instance_variable_key
+        b = @settings[name]
+        c = my_settings&.not_a_read
+        d = profile.settings.not_a_read
+        e = settings(x).not_a_read
+        f = get_settings(a) + other(b).not_a_read
+        g = settings.fetch('fetch_raises_on_open_struct')
+        h = settings.nil?
+        i = settings.to_h
+        settings.set_not_read = 1
+        j = TextSubs::Context.new(guild: nil, settings: settings)
+      RUBY
+      expect(settings_keys_in.call(source)).to be_empty
     end
 
     it 'finds the keys textsubs reads in the script and in the data file' do
@@ -4598,7 +4725,6 @@ RSpec.describe 'textsubs.lic' do
       # misspelt, swapped or nil default would still answer false, so the
       # defaults are read from the parsed source instead.
       it 'defaults each source to the Lich global that holds it' do
-        require 'prism'
         tree = Prism.parse_file(lic_path('textsubs.lic')).value
         definition = tree.breadth_first_search do |node|
           node.is_a?(Prism::DefNode) && node.receiver.is_a?(Prism::SelfNode) && node.name == :client_attached?
