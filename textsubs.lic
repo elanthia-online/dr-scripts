@@ -14,7 +14,10 @@
   The settings it reads from your character's YAML (profiles/base.yaml has
   each one with its default) are read once, when textsubs starts, so a
   change takes effect only after ;kill textsubs and ;textsubs again.
-    private_textsubs - your own subs, 'regex source': 'gsub replacement'
+    private_textsubs - your own subs, 'regex source': 'gsub replacement';
+      a key may also be !ruby/regexp /regex source/i, to keep its flags.
+      A key that is a built-in sub's pattern replaces that sub; one with a
+      flag is a pattern of its own, and runs first, beside the built-in one
     integrate_shit_list_with_textsubs - add (SL) after each <name>_shit.list name
     textsubs_spell_links - Elanthipedia links for spells, spellbooks, magic
       feats and your guild's spell list (the spellbook project, MikeLC 2025)

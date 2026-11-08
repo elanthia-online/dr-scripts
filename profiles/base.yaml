@@ -2637,6 +2637,7 @@ card_bags:
 # TextSubs
 private_textsubs:
   # 'regex source': 'gsub replacement' (the key is a regex, so escape . ( ) [ and the like)
+  # a key may also be !ruby/regexp /regex source/i, to keep its flags (see textsubs.lic)
 # For use with shitlist and textsubs
 # Will allow textsubs to put an (SL) at the end of the names of people on your list
 integrate_shit_list_with_textsubs: false
