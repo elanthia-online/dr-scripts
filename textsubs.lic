@@ -2241,11 +2241,14 @@ DownstreamHook.add('textsub', action, persist: false, priority: TextSubs.hook_pr
 # and then swapped in with the subs other scripts added since the start, and
 # without those dropped, unless a newer start took over during the build.
 # The line that says why comes before the build, so any warning the build
-# prints follows it, and the one that says it is done only once installed.
+# prints follows it, and a line right after the build always concludes it:
+# done once installed, or dropped when a newer start took over meanwhile.
 TextSubs.watch('textsub', guild: guild, run: this_run) do |new_guild|
   guild_name = new_guild || 'not known'
   echo "Your guild is now #{guild_name}, so textsubs builds its subs again for it."
   if TextSubs.reinstall(fill_catalog.call(TextSubs::Registry.new, new_guild), run: this_run)
     echo "textsubs has built its subs again for #{guild_name} and uses them now."
+  else
+    echo "A newer textsubs has started, so the subs this one built again for #{guild_name} are dropped."
   end
 end

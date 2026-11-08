@@ -1930,9 +1930,10 @@ RSpec.describe 'textsubs.lic' do
       include_context 'with a front end attached'
 
       let(:song) { "You bring the song to a close, bowing your head.\r\n".b }
-      let(:rebuilt) { displayed_messages.grep(/^Your guild is now|^textsubs has built its subs again/) }
+      let(:rebuilt) { displayed_messages.grep(/^Your guild is now|^textsubs has built its subs again|built again for .* are dropped/) }
       let(:bard_rebuild) { 'Your guild is now Bard, so textsubs builds its subs again for it.' }
       let(:bard_installed) { 'textsubs has built its subs again for Bard and uses them now.' }
+      let(:bard_dropped) { 'A newer textsubs has started, so the subs this one built again for Bard are dropped.' }
 
       # Runs the real watch: the first pause is where INFO lands and sets the
       # guild, after the block (what happens before it, on the old catalog);
@@ -2070,18 +2071,20 @@ RSpec.describe 'textsubs.lic' do
         expect(run_hooks(fine)).to eq("NEW RUN.\r\n")
 
         # Its rebuild, as if its last check had passed just before the newer
-        # start, is refused when it comes to install.
+        # start, is refused when it comes to install, and says so at once.
         generation = TextSubs.generation
         old_rebuild.call('Bard')
         expect(TextSubs.generation).to eq(generation)
         expect(run_hooks(fine)).to eq("NEW RUN.\r\n")
+        expect(displayed_messages.last(2)).to eq([bard_rebuild, bard_dropped])
 
         # The new run's watch rebuilds for the Bard, and returns once its hook goes.
         expect(TextSubs.watch(new_hook, **new_options, &new_rebuild)).to be_nil
         expect(pauses).to eq(1)
         expect(installed_entries).to eq([['You feel fine', 0, 'NEW RUN'], *golden_catalog(spell_links_on.merge('guild' => 'Bard'))])
-        # The refused rebuild said why it started, but never that it was done.
-        expect(rebuilt).to eq([bard_rebuild, bard_rebuild, bard_installed])
+        # The refused rebuild said why it started and that it was dropped,
+        # never that it was done.
+        expect(rebuilt).to eq([bard_rebuild, bard_dropped, bard_rebuild, bard_installed])
       end
 
       # The first write once the guild is Bard (the rebuild's) and every
