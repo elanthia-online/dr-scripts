@@ -1932,8 +1932,10 @@ RSpec.describe 'textsubs.lic' do
     end
 
     # add_catalog stores these keys, so each has to be the key TextSubs.add
-    # would store for its source (eql? and the same hash, as a Hash key needs,
-    # and frozen, as the /#{source}/ add compiles is).
+    # would store for the source the YAML gives (eql? and the same hash, as a
+    # Hash key needs, and frozen, as the /#{source}/ add compiles is). The
+    # sources are written out here rather than read back from the keys, so a
+    # key compiled from the wrong sub's pattern fails too.
     it 'gives the same subs through keyed_entries, each key the one add would store for its source' do
       data = catalog_data(<<~'YAML')
         textsubs:
@@ -1946,12 +1948,15 @@ RSpec.describe 'textsubs.lic' do
                 - ['(?<n>\d+) coins?', 'z']
       YAML
       context = TextSubs::Context.new(guild: 'Bard', settings: settings)
+      sources = ['^(It is labeled) "Burden\\."', 'a/b', '(?<n>\\d+) coins?']
       keyed = TextSubs::Catalog.keyed_entries(data, context)
 
-      expect(keyed.map { |key, replacement, meta| [key.source, replacement, meta] }).to eq(TextSubs::Catalog.entries(data, context))
-      keyed.each do |key, _replacement, _meta|
-        expect(key).to eql(/#{key.source}/)
-        expect(key.hash).to eq(/#{key.source}/.hash)
+      expect(keyed.map { |_key, replacement, meta| [replacement, meta] })
+        .to eq([['x', { section: 'keys' }], ['y', { section: 'keys' }], ['z', { section: 'keys' }]])
+      keyed.map(&:first).zip(sources).each do |key, source|
+        expect(key.source).to eq(source)
+        expect(key).to eql(/#{source}/)
+        expect(key.hash).to eq(/#{source}/.hash)
         expect(key).to be_frozen
       end
     end
