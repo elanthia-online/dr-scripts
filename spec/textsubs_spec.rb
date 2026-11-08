@@ -34,7 +34,8 @@ require_relative '../test/textsubs_corpus'
 #     composite lines, each two of those samples joined by a space, that two or
 #     more keys of every guild catalog match; in a few of them the order the
 #     keys run in changes the output (a coin amount before a spell link, whose
-#     '>' turns the coin rule off; the two "a devastating hit" keys), so the
+#     '>' turns the coin rule off; a scroll label before a link to the same
+#     spell, which the link rule then finds inside the label), so the
 #     per-guild sweeps also pin the order of real keys, not just each key. The
 #     lines of samples_hand_added.jsonl come last;
 #   - synthetic_stream.xml is a hand-written XML stream (inv pushStream dump,
@@ -127,6 +128,63 @@ RSpec.describe 'textsubs.lic' do
   # @return [Array<Array(String, Integer, String)>] that combination's catalog
   def build_combination(combination)
     build_catalog(combination['guild'], combination.except('guild'))
+  end
+
+  # Each combination's catalog, built once per run by whichever example asks
+  # first. The examples that only read a catalog share these builds, so the 96
+  # catalogs are not rebuilt once per such example. The examples that need
+  # TextSubs.subs to hold the catalog call build_combination instead.
+  built_catalogs = {}
+
+  # The stubs active in this example that could change what build_catalog
+  # builds: any stub on DRStats (the guild predicates), File (run_lic_entry
+  # reads the script through it, and the shit-list branch reads a file), or the
+  # top-level object (get_settings), and any stub on TextSubs except
+  # client_attached?, which the script reads only inside the hook.
+  #
+  # @return [Array<String>] one label per stubbed object or TextSubs method;
+  #   empty when nothing that catalog building reads is stubbed
+  def stubs_on_catalog_reads
+    space = RSpec::Mocks.space
+    stubbed = { 'DRStats' => DRStats, 'File' => File, 'the top-level object' => TOPLEVEL_BINDING.receiver }
+              .select { |_label, input| space.registered?(input) }.keys
+    return stubbed unless space.registered?(TextSubs)
+
+    proxy = space.proxy_for(TextSubs)
+    stubbed + (TextSubs.singleton_methods - [:client_attached?])
+              .select { |name| proxy.method_double_if_exists_for_message(name) }
+              .map { |name| "TextSubs.#{name}" }
+  end
+
+  # Memoized build_combination, for examples that only read the returned
+  # catalog. Whether TextSubs.subs holds that catalog afterwards depends on
+  # whether this call built it, so callers must not rely on TextSubs.subs
+  # either way; examples that need it call build_combination.
+  #
+  # Under --order random (as the seed gate runs it) any caller may be the first
+  # to ask for a combination, and the first caller builds it in its own
+  # context, so a stub on something catalog building reads would leak into
+  # every later caller's catalog. Every call therefore refuses to run while
+  # such a stub is active (see stubs_on_catalog_reads), cached or not, so a
+  # caller in a stubbing group fails on every run, whatever the order.
+  #
+  # @param combination [Hash{String=>Object}] one element of `combinations`
+  # @return [Array<Array(String, Integer, String)>] that combination's catalog,
+  #   deep-frozen (outer array, entries and their strings), because every
+  #   caller shares it. An unfrozen string is copied before it is frozen, so
+  #   the cache never shares a mutable string with TextSubs.subs.
+  # @raise [RuntimeError] when a stub on something catalog building reads is
+  #   active in the calling example
+  define_method(:catalog_of) do |combination|
+    stubbed = stubs_on_catalog_reads
+    unless stubbed.empty?
+      raise "catalog_of: #{stubbed.join(', ')} stubbed here would change the shared catalog; " \
+            'call build_combination in this group instead'
+    end
+
+    built_catalogs[combination] ||= build_combination(combination).map do |entry|
+      entry.map { |value| value.frozen? ? value : value.dup.freeze }.freeze
+    end.freeze
   end
 
   # Expands a list of inclusive [first, last] index ranges into entries.
@@ -261,7 +319,7 @@ RSpec.describe 'textsubs.lic' do
         it "reproduces the #{combination['guild']} catalog with #{flags_label}" do
           golden = @golden_combinations.find { |c| c.except('ranges') == combination }
           expected = expand_ranges(@golden_entries, golden['ranges'])
-          actual = build_combination(combination)
+          actual = catalog_of(combination)
           expect(actual == expected).to be(true), -> { catalog_difference(combination, expected, actual) }
         end
       end
@@ -673,6 +731,73 @@ RSpec.describe 'textsubs.lic' do
       expect { install_probe_catalog }.not_to raise_error
       expect(DownstreamHook.list).to include('textsub')
       expect(TextSubs.subs.size).to be > 100
+    end
+  end
+
+  # What single built-in subs do to the game lines they were written for. The
+  # golden catalog pins each entry as it stands, mistakes included; these pin
+  # the output a player should see.
+  describe 'built-in subs' do
+    include_context 'with a front end attached'
+
+    # Builds `guild`'s catalog with the real entry point and sends one server
+    # line through the registered hooks.
+    #
+    # @param line [String] a server line without its line ending
+    # @param guild [String] whose catalog to build
+    # @return [String, nil] what the hooks pass on for "#{line}\r\n"
+    # @example
+    #   hooked('The back of your neck prickles.', guild: 'Necromancer')
+    #   # => "The back of your neck prickles. (DO gained from being in a Holy area. Move away to avoid this hit.)\r\n"
+    def hooked(line, guild: 'Commoner')
+      build_catalog(guild)
+      run_hooks("#{line}\r\n".b)
+    end
+
+    # A double-quoted literal turns "\1" into byte 0x01 and "\b" into a
+    # backspace; a single-quoted one keeps the backslash for the regex engine.
+    it 'holds no control byte (0x00-0x1f) in any key or value of any catalog' do
+      offenders = combinations.flat_map do |combination|
+        catalog_of(combination).filter_map do |source, _options, replacement|
+          [combination, source, replacement] if [source, replacement].any? { |text| text.bytes.any? { |byte| byte < 0x20 } }
+        end
+      end
+      expect(offenders).to be_empty, lambda {
+        "#{offenders.size} entr(y/ies) hold a control byte (a double-quoted \"\\1\" or \"\\b\"?):\n" \
+          "#{offenders.uniq { |entry| entry.drop(1) }.first(5).map { |entry| "  #{entry.inspect}" }.join("\n")}"
+      }
+    end
+
+    describe 'the Holy-area Divine Outrage warning' do
+      note = ' (DO gained from being in a Holy area. Move away to avoid this hit.)'
+      ['The back of your neck prickles.', 'You feel judged and hated.', 'Muddled thoughts of paranoia nag at you.',
+       'You are exposed and vulnerable in this place.', "You have a feeling that you aren't welcome here.",
+       'You worry for your safety and well-being.'].each do |sentence|
+        it "keeps \"#{sentence}\" and adds the DO note after it" do
+          expect(hooked(sentence, guild: 'Necromancer')).to eq("#{sentence}#{note}\r\n")
+        end
+      end
+
+      it 'needs the closing full stop, not just any character after the sentence' do
+        expect(hooked('You feel judged and hatedX', guild: 'Necromancer')).to eq("You feel judged and hatedX\r\n")
+      end
+    end
+
+    # The game tells tier 18 from tier 17 only by the "(That'll leave a mark!)"
+    # after the hit, so the two keys must see real parentheses there.
+    describe 'the devastating-hit tiers' do
+      # A plain tier-17 line was already labelled right before the quoting
+      # fix; this pins it so a later edit to the lookahead cannot stop key 17
+      # from matching. The tier-18 example is the one that fails on the bug.
+      it 'labels a devastating hit (17/23) and nothing else' do
+        expect(hooked("The punch lands a devastating hit to the goblin's chest."))
+          .to eq("The punch lands a devastating hit (17/23) to the goblin's chest.\r\n")
+      end
+
+      it "labels a devastating hit (That'll leave a mark!) (18/23) and nothing else" do
+        expect(hooked("The punch lands a devastating hit (That'll leave a mark!) to the goblin's chest."))
+          .to eq("The punch lands a devastating hit (That'll leave a mark!) (18/23) to the goblin's chest.\r\n")
+      end
     end
   end
 

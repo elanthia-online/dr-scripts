@@ -160,12 +160,14 @@ module TextsubsCorpus
 
   # Joins whose output depends on the key order: a spell link after a coin
   # amount (the link's '>' turns the coin rule's (?!.*>) off when the link
-  # runs first), and the two "a devastating hit" keys (tier 18, then tier 17).
+  # runs first), and a scroll label before a link to the same spell (the
+  # Demrris' Resolve label drops the title's full stop, so the link rule's
+  # '..\(' finds the label's ' (Bard)' when the label runs first).
   ORDER_SENSITIVE_JOINS = [
     [/\A5{5}Kronar\z/, /\A\.+ +Awaken\.\.\(\)\z/],
     [/\A5{5}Dokora\z/, /\A\.+ +Damaris' Lullaby\.\.\(\)\z/],
     [/\A5+ platinumKronar\z/, /\A\.+ +Awaken\.\.\(\)\z/],
-    [/\Aa devastating hit\b.*\bmark\b/, /\Aa devastating hit\z/]
+    [/\AIt is labeled "Demrris' Resolve\b/, /\A\.+ +Demrris' Resolve\.\.\(\)\z/]
   ].freeze
 
   # For every distinct catalog entry, up to SAMPLES_PER_ENTRY expansions its
