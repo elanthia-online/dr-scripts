@@ -887,7 +887,7 @@ RSpec.describe 'textsubs.lic' do
     it "adds no '<' outside an <a href=\"...\">...</a> link in any value of any catalog" do
       link = %r{<a href="[^"<>]*">[^<>]*</a>}
       offenders = combinations.flat_map do |combination|
-        build_combination(combination).filter_map do |source, _options, replacement|
+        catalog_of(combination).filter_map do |source, _options, replacement|
           [combination['guild'], source, replacement] if replacement.gsub(link, '').include?('<')
         end
       end
