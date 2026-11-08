@@ -4582,6 +4582,18 @@ RSpec.describe 'textsubs.lic' do
         )
       end
 
+      # A pattern may hold {label} as well as the names: the check compiles
+      # the pattern filled with the label the table gives, as expand fills it,
+      # so the key Catalog compiled is the one each sub is stored under.
+      it 'fills {label} in a pattern too, with the label the table gives, for a recognition group and a scroll name' do
+        labelled_groups = recognition.merge('pattern' => '^(You recognize) the ({names}) spell, {label}.', 'groups' => [['Lay Ward', 'Manifest Force']])
+        labelled_scrolls = scrolls.merge('pattern' => '^(It is labeled) "{name}" \({label}\).', 'names' => ['Halo'])
+        expect(pairs_for(spell_catalog(labelled_groups, labelled_scrolls)).map(&:first)).to eq(
+          ['^(You recognize) the (Lay Ward|Manifest Force) spell, Analogous Patterns: basic warding.',
+           '^(It is labeled) "Halo" \(Cleric\).']
+        )
+      end
+
       it 'rewrites a game line with a group sub, whichever name of the group the line holds' do
         TextSubs.clear
         expect(TextSubs.add_catalog(spell_catalog(recognition), TextSubs::Context.new(guild: 'Bard', settings: settings), file: 'f')).to be_nil

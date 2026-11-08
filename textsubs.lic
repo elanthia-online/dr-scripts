@@ -1659,11 +1659,16 @@ class TextSubs
       nil
     end
 
-    # @param pairs [Array<Array(String, String)>] generated subs
-    # @return [Array<Regexp>] their patterns, compiled, in order
-    # @raise [ArgumentError] when a pattern does not compile
-    def self.check_patterns(pairs)
-      pairs.map { |pattern, _replacement| check_pattern(pattern) }
+    # Fills a pattern template as fill does and compiles each pattern it
+    # gives: what a template section's check hands Catalog, without filling
+    # the replacement, which nothing compiles.
+    #
+    # @param template [String] a checked pattern template
+    # @param value_sets [Array<Hash{Symbol=>String}>] as fill takes them
+    # @return [Array<Regexp>] the filled patterns, compiled, in order
+    # @raise [ArgumentError] as fill does, or when a pattern does not compile
+    def self.check_filled(template, value_sets)
+      fill(template, value_sets).map { |pattern| check_pattern(pattern) }
     end
 
     # @param section [Hash] a section
@@ -1976,7 +1981,7 @@ class TextSubs
 
         values = labels(names, spells)
         Generators.check_unique(values.map { |value| value[:name] })
-        Generators.check_patterns(Generators.fill_pairs(section, values))
+        Generators.check_filled(section['pattern'], values)
       end
 
       # @param section [Hash] a checked scroll_labels section
@@ -2051,7 +2056,7 @@ class TextSubs
           { names: group.join('|'), label: check_labels(group, index, spells) }
         end
         Generators.check_unique(groups.flatten)
-        Generators.check_patterns(Generators.fill_pairs(section, values))
+        Generators.check_filled(section['pattern'], values)
       end
 
       # @param section [Hash] a checked spell_recognition section
@@ -2066,7 +2071,9 @@ class TextSubs
       # @param group [Array<String>] the names of one group
       # @param index [Integer] its position, for the message
       # @param spells [TextSubs::SpellTable]
-      # @return [String] the label every name of the group gives
+      # @return [String] the label every name of the group gives, which check
+      #   fills the pattern with, as expand does, since a pattern may hold
+      #   {label} too
       # @raise [ArgumentError] naming the first name whose label differs from
       #   the label of the group's first name
       def self.check_labels(group, index, spells)
