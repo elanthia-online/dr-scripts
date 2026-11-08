@@ -1436,9 +1436,9 @@ class TextSubs
     # not hold. Setting keys are not read, so gates told apart only by
     # settings are never guild-disjoint: strict on purpose, though a setting
     # and its setting_off are never both on. Two gates whose lists share no
-    # entry are guild-disjoint: no catalog holds the sections of both. A character whose guild is not known yet needs
-    # no entry: only a gate with no guild key passes it, and that gate
-    # passes every guild.
+    # entry are guild-disjoint: no catalog holds the sections of both. A
+    # character whose guild is not known yet needs no entry: only a gate
+    # with no guild key passes it, and that gate passes every guild.
     #
     # @param gate [Hash, nil] a checked `when:` value
     # @return [Array<String>] frozen
@@ -1908,8 +1908,8 @@ class TextSubs
     #   scale   optional name of the scale, the section's own name by
     #           default; the ladder sections that name one scale (a scale
     #           split around rows that stay pairs) give the same of, and
-    #           each n is used once across them, but by two sections
-    #           whose when: gates no one guild passes both of
+    #           each n is used once across them, except that two sections
+    #           no one guild gets both of may share an n
     #
     # The phrase (with the prefix) is the pattern as it is written, so it is
     # regex source, and the replacement is that text with each backslash

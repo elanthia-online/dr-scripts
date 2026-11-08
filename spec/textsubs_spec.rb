@@ -155,10 +155,12 @@ RSpec.describe 'textsubs.lic' do
   # the sections (the frozen shipped data itself), and the spells table and
   # keys Hash, which are not frozen but which keyed_entries only reads. Data
   # that is not that object (a copy, a change, a synthetic catalog) is
-  # checked in full every time. Each catalog
-  # build checks the whole file, ~1,600 patterns compiled in ~4.7 ms, and the
-  # file makes some 450 builds: without the memo it ran in about 10.0 s wall
-  # instead of about 8.0 s, over the 10 s budget for this file.
+  # checked in full every time. Each catalog build checks the whole file:
+  # ~1,580 patterns compiled and the ladder steps tried against each other
+  # and against every other pattern, ~41 ms a check (~30 ms of it the checks
+  # between sections), and the file makes some 450 builds. Measured at
+  # layer 24 (rspec-reported, 3 runs each): about 7.9 s with the memo, about
+  # 23.5 s without it, over the 12.5 s budget for this file.
   shipped_data = shipped_catalog['textsubs']
   shipped_check = nil
   before do
@@ -4927,7 +4929,7 @@ RSpec.describe 'textsubs.lic' do
         end
 
         # @param data [Hash] a `textsubs:` value
-        # @param guild [String]
+        # @param guild [String] what DRStats.guild reports (default Bard)
         # @return [Array<String>] the replacement of each sub the guild gets
         def replacements_for(data, guild = 'Bard')
           entries_for(guild, data).map { |_source, replacement, _meta| replacement }
