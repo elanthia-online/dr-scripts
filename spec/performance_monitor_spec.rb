@@ -147,7 +147,7 @@ RSpec.describe 'performance-monitor.lic' do
   # PerformanceFilter ranks each hit with its own (n/23) tag, then reads the
   # rank back to average damage over roundtime per weapon. The filter class is
   # the one the real script defined on the runner.
-  describe 'devastating hit ranks' do
+  describe 'PerformanceFilter' do
     let(:runner) { run_script(with_start_helper: true) }
     let(:filter) { runner.singleton_class.const_get(:PerformanceFilter).new }
 
@@ -163,29 +163,34 @@ RSpec.describe 'performance-monitor.lic' do
       [hit, filter.process_line("Roundtime: #{seconds} sec.".b)]
     end
 
-    it 'ranks a devastating hit 17 and averages that rank' do
-      line, completed = hit_then_roundtime('a devastating hit')
+    describe 'devastating hit ranks' do
+      it 'ranks a devastating hit 17 and averages that rank' do
+        line, completed = hit_then_roundtime('a devastating hit')
 
-      expect(line).to include('lands a devastating hit (17/23) to')
-      expect(line).not_to include('18/23')
-      expect(completed).to be(true)
-      expect(filter.weapon_stats).to eq([{ weapon: 'broadsword', avgrt: 3.0, avgdps: 17 / 3.0 }])
+        expect(line).to include('lands a devastating hit (17/23) to')
+        expect(line).not_to include('18/23')
+        expect(completed).to be(true)
+        expect(filter.weapon_stats).to eq([{ weapon: 'broadsword', avgrt: 3.0, avgdps: 17 / 3.0 }])
+      end
+
+      it "ranks a devastating hit (That'll leave a mark!) 18 and averages that rank" do
+        line, completed = hit_then_roundtime("a devastating hit (That'll leave a mark!)")
+
+        expect(line).to include("lands a devastating hit (That'll leave a mark!) (18/23) to")
+        expect(line).not_to include('17/23')
+        expect(completed).to be(true)
+        expect(filter.weapon_stats).to eq([{ weapon: 'broadsword', avgrt: 3.0, avgdps: 18 / 3.0 }])
+      end
     end
 
-    it "ranks a devastating hit (That'll leave a mark!) 18 and averages that rank" do
-      line, completed = hit_then_roundtime("a devastating hit (That'll leave a mark!)")
+    describe 'roundtime' do
+      it 'reads every digit of a two-digit roundtime' do
+        line, completed = hit_then_roundtime('a light hit', seconds: 12)
 
-      expect(line).to include("lands a devastating hit (That'll leave a mark!) (18/23) to")
-      expect(line).not_to include('17/23')
-      expect(completed).to be(true)
-      expect(filter.weapon_stats).to eq([{ weapon: 'broadsword', avgrt: 3.0, avgdps: 18 / 3.0 }])
-    end
-
-    it 'reads every digit of a two-digit roundtime' do
-      _line, completed = hit_then_roundtime('a devastating hit', seconds: 12)
-
-      expect(completed).to be(true)
-      expect(filter.weapon_stats).to eq([{ weapon: 'broadsword', avgrt: 12.0, avgdps: 17 / 12.0 }])
+        expect(line).to include('lands a light hit (1/23) to')
+        expect(completed).to be(true)
+        expect(filter.weapon_stats).to eq([{ weapon: 'broadsword', avgrt: 12.0, avgdps: 1 / 12.0 }])
+      end
     end
   end
 end
