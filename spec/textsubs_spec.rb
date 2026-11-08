@@ -601,8 +601,9 @@ RSpec.describe 'textsubs.lic' do
       # that is being stopped. The class body is not evaluated again here, so
       # the installed catalog is still the old run's; that isolates what the
       # staging alone guarantees (the restart Lich runs, which re-runs the
-      # class body, is the next example). After every add, subs has to be the
-      # old catalog itself, and every 250th add sends the lines through it.
+      # class body, is covered under 'a start in Lich, which evaluates the
+      # class body before the entry point'). After every add, subs has to be
+      # the old catalog itself, and every 250th add sends the lines through it.
       allow(TextSubs).to(receive(:add).and_wrap_original do |original, target, result|
         stored = original.call(target, result)
         partial << target unless TextSubs.subs.equal?(old_catalog)
@@ -700,21 +701,26 @@ RSpec.describe 'textsubs.lic' do
     end
 
     it 'ends the staging of a build that raises when the script dies, installing none of it' do
+      # 'before' is the run before's; the class body empties the catalog.
+      TextSubs.add('before', 'BEFORE')
+      reload_lic_class('textsubs.lic', 'TextSubs')
       # Stubbed on main (where run_lic_entry evaluates the entry), not on
       # Script.at_exit: another spec replaces the top-level before_dying.
       dying = []
       allow(TOPLEVEL_BINDING.receiver).to(receive(:before_dying)) { |&block| dying << block }
-      TextSubs.add('before', 'BEFORE')
       installed = TextSubs.subs
+      expect(installed).to eq({})
       private_subs = { 'You feel fine' => 'You feel FINE', '(' => 'not valid regex source' }
 
       expect { build_catalog('Commoner', 'private_textsubs' => private_subs) }.to raise_error(RegexpError)
       expect(TextSubs.subs).to equal(installed)
       dying.each(&:call)
 
-      TextSubs.add('You feel fine', 'You feel FINE')
-      expect(TextSubs.subs.keys).to eq([/before/, /You feel fine/])
-      expect(TextSubs.apply(+'You feel fine.')).to eq('You feel FINE.')
+      # Another script's add reaches the installed catalog, which holds none
+      # of the partial build ('You feel fine').
+      TextSubs.add('bird', 'fish')
+      expect(TextSubs.subs).to eq(/bird/ => 'fish')
+      expect(TextSubs.apply(+'You feel fine, bird.')).to eq('You feel fine, fish.')
       TextSubs.clear
       TextSubs.add('cat', 'dog')
       expect(TextSubs.subs).to eq(/cat/ => 'dog')
