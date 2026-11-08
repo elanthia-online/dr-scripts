@@ -74,6 +74,8 @@ class PerformanceFilter
   def update_stats
     @weapon_stats = []
     @weapon_hits.each do |weapon, hits|
+      next if @weapon_rts[weapon].empty?
+
       dmg = hits.inject(&:+)
       rt = @weapon_rts[weapon].inject(&:+)
       @weapon_stats.push(weapon: weapon, avgrt: rt * 1.0 / hits.size, avgdps: dmg * 1.0 / rt)

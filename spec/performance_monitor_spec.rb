@@ -192,5 +192,25 @@ RSpec.describe 'performance-monitor.lic' do
         expect(filter.weapon_stats).to eq([{ weapon: 'broadsword', avgrt: 12.0, avgdps: 1 / 12.0 }])
       end
     end
+
+    describe 'weapon stats' do
+      it 'leaves out a monitored weapon that has no hit with a roundtime yet' do
+        $test_settings.performance_monitor_weapons = %w[broadsword scimitar]
+
+        _line, completed = hit_then_roundtime('a good hit')
+
+        expect(completed).to be(true)
+        expect(filter.weapon_stats).to eq([{ weapon: 'broadsword', avgrt: 3.0, avgdps: 2 / 3.0 }])
+      end
+
+      it 'leaves out a weapon whose hit was followed by another weapon before any roundtime' do
+        $test_settings.performance_monitor_weapons = %w[broadsword scimitar]
+        filter.process_line('< You slash your scimitar at a goblin.  The blade lands a good hit to the goblin.'.b)
+
+        hit_then_roundtime('a light hit')
+
+        expect(filter.weapon_stats).to eq([{ weapon: 'broadsword', avgrt: 3.0, avgdps: 1 / 3.0 }])
+      end
+    end
   end
 end
