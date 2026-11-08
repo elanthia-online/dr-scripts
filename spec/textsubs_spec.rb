@@ -6,6 +6,7 @@ require 'stringio'
 require 'tmpdir'
 require 'yaml'
 require_relative '../test/textsubs_corpus'
+require_relative '../test/textsubs_parent_quotes'
 
 # textsubs.lic builds its whole substitution catalog when it starts: the entry
 # point adds the shit-list and private_textsubs entries, then the ~1,600
@@ -26,6 +27,14 @@ require_relative '../test/textsubs_corpus'
 # Regenerate it (only in a commit that changes the catalog on purpose) with
 #   TEXTSUBS_GOLDEN_WRITE=1 bundle exec rspec spec/textsubs_spec.rb
 # and review the fixture diff: it names every entry the change touched.
+#
+# parent_double_quoted.jsonl, beside them, lists the 271 catalog calls in the
+# textsubs.lic the catalog came from whose double-quoted arguments lost a
+# backslash escape ("\." became '.'; 1116 calls used double quotes in all),
+# each as its author wrote it; 'the subs the parent wrote in double quotes'
+# holds the catalogs to that, and holds the list to what
+# test/textsubs_parent_quotes.rb, which says how to rewrite it, reads from
+# the parent.
 #
 # A nil guild (textsubs started before DRStats knows the guild) is not part of
 # the golden set; 'a guild DRStats does not know yet' covers it, holding the
@@ -109,6 +118,7 @@ RSpec.describe 'textsubs.lic' do
   samples_path = File.join(fixture_dir, 'samples.jsonl')
   stream_path = File.join(fixture_dir, 'synthetic_stream.xml')
   hand_added_path = File.join(fixture_dir, 'samples_hand_added.jsonl')
+  parent_quotes_path = File.join(fixture_dir, 'parent_double_quoted.jsonl')
   # @return [Array<Array(String, Integer, String)>] the rows of catalog_entries.jsonl
   read_entries = -> { File.readlines(entries_path).map { |line| JSON.parse(line) } }
   # Every key of every catalog a player can run: the keys of
@@ -4563,7 +4573,7 @@ RSpec.describe 'textsubs.lic' do
       end
       let(:recognition) do
         { 'name' => 'recognition', 'kind' => 'spell_recognition',
-          'pattern' => '^(You recognize|You decipher) the ({names}) spell.', 'replacement' => '\1 the \2 spell. [{label}]',
+          'pattern' => '^(You recognize|You decipher) the ({names}) spell\.', 'replacement' => '\1 the \2 spell. [{label}]',
           'groups' => [['Halo'], ['Strange Arrow'], ['Lay Ward', 'Manifest Force']] }
       end
 
@@ -4649,9 +4659,9 @@ RSpec.describe 'textsubs.lic' do
 
       it 'gives one recognition sub per group, in list order, with the names joined and the label the table computes' do
         expect(pairs_for(spell_catalog(recognition))).to eq(
-          [['^(You recognize|You decipher) the (Halo) spell.', '\1 the \2 spell. [signature Cleric (Holy Defense): advanced debilitation/warding]'],
-           ['^(You recognize|You decipher) the (Strange Arrow) spell.', '\1 the \2 spell. [Analogous Patterns: introductory targeted]'],
-           ['^(You recognize|You decipher) the (Lay Ward|Manifest Force) spell.', '\1 the \2 spell. [Analogous Patterns: basic warding]']]
+          [['^(You recognize|You decipher) the (Halo) spell\.', '\1 the \2 spell. [signature Cleric (Holy Defense): advanced debilitation/warding]'],
+           ['^(You recognize|You decipher) the (Strange Arrow) spell\.', '\1 the \2 spell. [Analogous Patterns: introductory targeted]'],
+           ['^(You recognize|You decipher) the (Lay Ward|Manifest Force) spell\.', '\1 the \2 spell. [Analogous Patterns: basic warding]']]
         )
       end
 
@@ -6156,6 +6166,231 @@ RSpec.describe 'textsubs.lic' do
             .to eq("They are #{quality} (#{tier}/12).\r\n")
         end
       end
+    end
+
+    # The catalog left textsubs.lic at TextsubsParentQuotes::PARENT_COMMIT,
+    # where 271 catalog calls written in double quotes lost a backslash
+    # escape (1116 used double quotes in all), as Ruby takes the backslash
+    # out of an escape it has no meaning for: "spell\." reached the regex as
+    # 'spell.', whose full stop matches any character, and "\1" as byte
+    # 0x01. parent_double_quoted.jsonl lists every such call with what its
+    # author wrote, read as single-quoted text; the catalog holds that.
+    describe 'the subs the parent wrote in double quotes' do
+      parent_rows = File.readlines(parent_quotes_path).map { |line| JSON.parse(line) }
+
+      # @param row [Hash] a row of parent_double_quoted.jsonl
+      # @return [Array<String>] its arguments as Ruby read them
+      def ruby_reading(row)
+        row['intent'].each_with_index.map { |text, index| row['dropped'].include?(index) ? TextsubsParentQuotes.double_quoted(text) : text }
+      end
+
+      # Every [key source, replacement] of the 96 catalogs, once each.
+      #
+      # @return [Set<Array(String, String)>]
+      define_method(:catalog_pairs) do
+        combinations.flat_map { |combination| catalog_of(combination) }.to_set { |source, _options, replacement| [source, replacement] }
+      end
+
+      # The two end-anchored Ranger howl tiers (parent lines 821 and 824) end
+      # in '(?=\r?$)' where their author wrote '$', as raw lines end in \r\n
+      # ('the end-anchored Ranger howl tiers' above). Every other add is held
+      # as its author wrote it.
+      #
+      # @param row [Hash] a row of parent_double_quoted.jsonl for an add
+      # @return [Array(String, String)] the [key source, replacement] the catalog holds for it
+      def held_as(row)
+        pattern, replacement = row['intent']
+        pattern = pattern.delete_suffix('$') + '(?=\r?$)' if [821, 824].include?(row['line'])
+        [pattern, replacement]
+      end
+
+      # The list is the reader's, not a hand-kept one: an edit to a row (and
+      # to the catalog with it) fails here. The test job's checkout is
+      # shallow and has no PARENT_COMMIT, so there it is skipped, saying why;
+      # 'the restored full stops' still covers every restored family there.
+      it "is the list the reader makes of the parent's textsubs.lic, row for row" do
+        source = begin
+          TextsubsParentQuotes.parent_source
+        rescue RuntimeError => e
+          raise unless TextsubsParentQuotes.shallow_clone?
+
+          skip "#{e.message}; this clone is shallow (git fetch --unshallow to run it)"
+        end
+        expect(TextsubsParentQuotes.rows(source)).to eq(parent_rows)
+      end
+
+      it 'holds every add the parent wrote in double quotes as its author wrote it' do
+        pairs = catalog_pairs
+        adds = parent_rows.select { |row| row['method'] == 'add' }
+        missing = adds.reject { |row| pairs.include?(held_as(row)) }
+        expect(adds.size).to eq(270)
+        expect(missing).to be_empty, -> { "#{missing.size} parent sub(s) not held as written:\n#{missing.first(5).map { |row| "  #{row.inspect}" }.join("\n")}" }
+      end
+
+      it 'holds no key or replacement the way Ruby read a double-quoted escape' do
+        pairs = catalog_pairs
+        sources = pairs.to_set(&:first)
+        replacements = pairs.to_set(&:last)
+        as_read = parent_rows.select { |row| row['method'] == 'add' }.flat_map do |row|
+          pattern, replacement = ruby_reading(row)
+          [(pattern if row['dropped'].include?(0) && sources.include?(pattern)),
+           (replacement if row['dropped'].include?(1) && replacements.include?(replacement))].compact
+        end
+        expect(as_read).to be_empty, -> { "held as Ruby read them:\n#{as_read.first(5).map { |text| "  #{text.inspect}" }.join("\n")}" }
+      end
+
+      # TextSubs.elanthipedia writes its text back as the link's name and
+      # target too, and '\-' outside a bracket expression matches what '-'
+      # does, so 'Iyqaromos Fire-Lens', as Ruby read it, is the text meant:
+      # a backslash there would show in the link.
+      it "keeps the one double-quoted elanthipedia text, 'Iyqaromos Fire\\-Lens', as Ruby read it" do
+        links = parent_rows.select { |row| row['method'] == 'elanthipedia' }
+        sources = catalog_pairs.map(&:first)
+        expect(links.map { |row| [row['line'], row['intent'].first, ruby_reading(row).first] })
+          .to eq([[372, 'Iyqaromos Fire\-Lens', 'Iyqaromos Fire-Lens']])
+        expect(sources.grep(/\(Iyqaromos Fire-Lens\)/)).not_to be_empty
+        expect(sources.grep(/Fire\\-Lens/)).to be_empty
+      end
+
+      describe TextsubsParentQuotes do
+        it "reads a double-quoted argument's escapes as written, fills in its string locals, and skips the rest" do
+          source = <<~'PARENT'
+            pre = 'The air'
+            TextSubs.add("^#{pre} hums\.", "#{pre} hums. (1/2)")
+            TextSubs.add("it\'s \"so\"", 'kept')
+            TextSubs.add('single\. \"kept\"', 'kept')
+            TextSubs.add("(\w+) waves", "\1 waves")
+            Other.add("other\.", 'kept')
+            TextSubs.elanthipedia("Fire\-Lens", '^', ':')
+            TextSubs.add("one\.", "one \\ backslash")
+            TextSubs.add(%q(percent q\. \"kept\"), 'kept')
+            TextSubs.add(<<~'HEREDOC', 'kept')
+              heredoc \\ kept
+            HEREDOC
+            dq = "^The sky\."
+            TextSubs.add("#{dq} hums", 'x')
+          PARENT
+          expect(described_class.rows(source)).to eq(
+            [{ 'line' => 2, 'method' => 'add', 'intent' => ['^The air hums\.', 'The air hums. (1/2)'], 'dropped' => [0] },
+             { 'line' => 5, 'method' => 'add', 'intent' => ['(\w+) waves', '\1 waves'], 'dropped' => [0, 1] },
+             { 'line' => 7, 'method' => 'elanthipedia', 'intent' => ['Fire\-Lens', '^', ':'], 'dropped' => [0] },
+             { 'line' => 8, 'method' => 'add', 'intent' => ['one\.', 'one \ backslash'], 'dropped' => [0] },
+             { 'line' => 14, 'method' => 'add', 'intent' => ['^The sky\. hums', 'x'], 'dropped' => [0] }]
+          )
+        end
+
+        it 'refuses to guess an interpolation other than a string local' do
+          source = <<~'PARENT'
+            TextSubs.add("#{DRStats.guild} hums\.", "x")
+          PARENT
+          expect { described_class.rows(source) }
+            .to raise_error(ArgumentError, /cannot read #\{DRStats.guild\} at line 1/)
+          expect { described_class.rows(%(pre = 'The air'\nTextSubs.add("\#{pre; x} hums\\.", 'x'))) }
+            .to raise_error(ArgumentError, /cannot read #\{pre; x\} at line 2/)
+        end
+
+        it 'forgets a string local once it is set to anything else' do
+          source = <<~'PARENT'
+            pre = 'The air'
+            pre = pre.upcase
+            TextSubs.add("#{pre} hums\.", "x")
+          PARENT
+          expect { described_class.rows(source) }
+            .to raise_error(ArgumentError, /cannot read #\{pre\} at line 3/)
+        end
+
+        # double_quoted of a dropped argument's intent has to give what Ruby
+        # read; a '\\' (read as one backslash) or a single-quoted local's
+        # backslash would come out of it as an escape instead.
+        it 'refuses a dropped argument whose Ruby reading its intent cannot rebuild' do
+          expect { described_class.rows(%q(TextSubs.add("a\\\\b\.", 'x'))) }
+            .to raise_error(ArgumentError, %q{cannot rebuild Ruby's reading of "a\\\\b\\." at line 1 from "a\\\\b\\\\."})
+          expect { described_class.rows(%(pre = 'a\\\\.'\nTextSubs.add("\#{pre} b\\.", 'x'))) }
+            .to raise_error(ArgumentError, %q{cannot rebuild Ruby's reading of "#{pre} b\\." at line 2 from "a\\\\. b\\\\."})
+        end
+
+        it 'gives what Ruby makes of text between double quotes, without interpolating' do
+          expect(described_class.double_quoted('spell\.')).to eq('spell.')
+          expect(described_class.double_quoted('\1')).to eq("\u0001")
+          expect(described_class.double_quoted("say \"hi\" \#{x}")).to eq("say \"hi\" \#{x}")
+        end
+
+        it 'refuses text Ruby cannot read between double quotes' do
+          expect { described_class.double_quoted('abc\\') }
+            .to raise_error(ArgumentError, /"abc\\\\" is not the body of one double-quoted literal/)
+          expect { described_class.double_quoted('a\u{zz}b') }.to raise_error(ArgumentError)
+        end
+      end
+    end
+
+    # The full stops the parent's double quotes dropped, back in: each of
+    # these keys used to match any character there.
+    describe 'the restored full stops' do
+      recognition = 'You recognize the familiar mnemonics of the Burden spell'
+
+      it 'labels a recognized spell on a line that ends in a full stop' do
+        expect(hooked("#{recognition}.")).to eq("#{recognition}. [Analogous Patterns: introductory debilitation]\r\n")
+      end
+
+      it 'labels a deciphered signature spell, a name with a quote in it' do
+        expect(hooked("You decipher the telltale signs of the Murrula's Flames spell."))
+          .to eq("You decipher the telltale signs of the Murrula's Flames spell. " \
+                 "[signature Cleric (Divine Intervention): advanced utility]\r\n")
+      end
+
+      it 'leaves a recognition line alone when no full stop follows the spell' do
+        expect(hooked("#{recognition}!")).to eq("#{recognition}!\r\n")
+      end
+
+      # Every Osrel Meraud step, written out, so a step put back to its
+      # dropped form fails here even if its fixture row changed with it.
+      { 'The strength of the sensation evokes the image of' =>
+          [['a pile of cold ashes', '1/10'], ['a pile of smoldering ashes', '2/10'],
+           ['a nearly burnt-out candle wick', '3/10'], ['a half-melted burning candle', '4/10'],
+           ['a tall burning candle', '5/10'], ['a blazing torch', '6/10'], ['a small campfire', '7/10'],
+           ['a roaring bonfire', '8/10'], ['flaming magma pouring through a volcanic crevasse', '9/10'],
+           ["torrents of fiery rain falling upon Elanthia from the World Dragon's maw", '10/10']],
+        'The pervasiveness of the sensation evokes the image of' =>
+          [["a stream in your mind's eye", '1/11'], ["a pond in your mind's eye", '2/11'],
+           ["a river in your mind's eye", '3/11'], ["a lake in your mind's eye", '4/11'],
+           ["a sea in your mind's eye", '5/11'], ["an ocean in your mind's eye", '6/11'],
+           ["Drogor's deeps in your mind's eye", '7/11'],
+           ["Elanthia's tides rising toward Katamba in your mind's eye", '8/11'],
+           ["the sapphirine planet Merewalda in your mind's eye", '9/11'],
+           ["Alamhif's Bridge arching from the cold seas of Death in your mind's eye", '10/11'],
+           ["the fathomless ebon abysms of the Starry Road in your mind's eye", '11/11']] }.each do |prefix, steps|
+        steps.each do |step, tier|
+          image = "#{prefix} #{step}"
+
+          it "counts the Osrel Meraud image '#{step}.' (#{tier})" do
+            expect(hooked("#{image}.", guild: 'Cleric')).to eq("#{image}. (#{tier})\r\n")
+          end
+
+          it "leaves the Osrel Meraud image '#{step}' alone without its full stop" do
+            expect(hooked("#{image}, fading.", guild: 'Cleric')).to eq("#{image}, fading.\r\n")
+          end
+        end
+      end
+
+      sanaati = "After a moment, you feel a clear presence like a warm blanket covering you beneath the shade of a giant sana'ati tree"
+
+      it "counts the Cleric (16/16) presence and writes Sana'ati with its capital" do
+        expect(hooked("#{sanaati}.", guild: 'Cleric')).to eq("#{sanaati.sub('sana', 'Sana')}. (16/16)\r\n")
+      end
+
+      it 'leaves the (16/16) presence alone without its full stop' do
+        expect(hooked("#{sanaati}s.", guild: 'Cleric')).to eq("#{sanaati}s.\r\n")
+      end
+
+      # Restored by the howl-tier fix; 'the end-anchored Ranger howl tiers'
+      # above labels them with their full stop.
+      ["You open your mouth and roar with everything you've got!  A few soft sounds reminiscent of a baby robin's " \
+       'first song twitter sweetly from within you', "You howl quietly to yourself, echoing a soft, desolate sound that doesn't sound quite right"]
+        .zip(%w[4/15 7/15]).each do |howl, tier|
+          it "leaves the (#{tier}) howl alone when it ends in something other than a full stop" do
+            expect(hooked("#{howl}!", guild: 'Ranger')).to eq("#{howl}!\r\n")
+          end
+        end
     end
   end
 

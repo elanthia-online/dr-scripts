@@ -422,7 +422,7 @@ textsubs:
         guilds: ['Cleric']
       subs:
         - ['^After a moment, you see a crystal-clear vision of your god who speaks slowly and deliberately, "Your unwavering faith and devotion pleases me greatly, (\w+)\.\s+Go forth and continue your works, and you shall only attain a greater level of purity\."', 'After a moment, you see a crystal-clear vision of your god who speaks slowly and deliberately, "Your unwavering faith and devotion pleases me greatly, \1.  Go forth, and continue your works and you shall only attain a greater level of purity." (15/16)']
-        - ['^After a moment, you feel a clear presence like a warm blanket covering you beneath the shade of a giant sana''ati tree.', 'After a moment, you feel a clear presence like a warm blanket covering you beneath the shade of a giant Sana''ati tree. (16/16)']
+        - ['^After a moment, you feel a clear presence like a warm blanket covering you beneath the shade of a giant sana''ati tree\.', 'After a moment, you feel a clear presence like a warm blanket covering you beneath the shade of a giant Sana''ati tree. (16/16)']
 
     # Osrel Meraud power / capacity messaging for Clerics (seen when you 'focus orb')
     - name: 'Cleric Osrel Meraud power'
@@ -433,16 +433,16 @@ textsubs:
       prefix: 'The strength of the sensation evokes the image of'
       of: 10
       steps:
-        - [1, 'a pile of cold ashes.']
-        - [2, 'a pile of smoldering ashes.']
-        - [3, 'a nearly burnt-out candle wick.']
-        - [4, 'a half-melted burning candle.']
-        - [5, 'a tall burning candle.']
-        - [6, 'a blazing torch.']
-        - [7, 'a small campfire.']
-        - [8, 'a roaring bonfire.']
-        - [9, 'flaming magma pouring through a volcanic crevasse.']
-        - [10, 'torrents of fiery rain falling upon Elanthia from the World Dragon''s maw.']
+        - [1, 'a pile of cold ashes\.']
+        - [2, 'a pile of smoldering ashes\.']
+        - [3, 'a nearly burnt-out candle wick\.']
+        - [4, 'a half-melted burning candle\.']
+        - [5, 'a tall burning candle\.']
+        - [6, 'a blazing torch\.']
+        - [7, 'a small campfire\.']
+        - [8, 'a roaring bonfire\.']
+        - [9, 'flaming magma pouring through a volcanic crevasse\.']
+        - [10, 'torrents of fiery rain falling upon Elanthia from the World Dragon''s maw\.']
 
     - name: 'Cleric Osrel Meraud capacity'
       when:
@@ -452,17 +452,17 @@ textsubs:
       prefix: 'The pervasiveness of the sensation evokes the image of'
       of: 11
       steps:
-        - [1, 'a stream in your mind''s eye.']
-        - [2, 'a pond in your mind''s eye.']
-        - [3, 'a river in your mind''s eye.']
-        - [4, 'a lake in your mind''s eye.']
-        - [5, 'a sea in your mind''s eye.']
-        - [6, 'an ocean in your mind''s eye.']
-        - [7, 'Drogor''s deeps in your mind''s eye.']
-        - [8, 'Elanthia''s tides rising toward Katamba in your mind''s eye.']
-        - [9, 'the sapphirine planet Merewalda in your mind''s eye.']
-        - [10, 'Alamhif''s Bridge arching from the cold seas of Death in your mind''s eye.']
-        - [11, 'the fathomless ebon abysms of the Starry Road in your mind''s eye.']
+        - [1, 'a stream in your mind''s eye\.']
+        - [2, 'a pond in your mind''s eye\.']
+        - [3, 'a river in your mind''s eye\.']
+        - [4, 'a lake in your mind''s eye\.']
+        - [5, 'a sea in your mind''s eye\.']
+        - [6, 'an ocean in your mind''s eye\.']
+        - [7, 'Drogor''s deeps in your mind''s eye\.']
+        - [8, 'Elanthia''s tides rising toward Katamba in your mind''s eye\.']
+        - [9, 'the sapphirine planet Merewalda in your mind''s eye\.']
+        - [10, 'Alamhif''s Bridge arching from the cold seas of Death in your mind''s eye\.']
+        - [11, 'the fathomless ebon abysms of the Starry Road in your mind''s eye\.']
 
     # Ranger pace messaging substitutions, these show the wilderness level of the room so you can determine how much the room will raise or decrease your bonus.
     # Neutral messaging is purposefully not reported here because non-rangers would see it.
@@ -928,7 +928,7 @@ textsubs:
 
     - name: 'spell recognition'
       kind: 'spell_recognition'
-      pattern: '^(You recognize the familiar mnemonics|You decipher the telltale signs) of the ({names}) spell.'
+      pattern: '^(You recognize the familiar mnemonics|You decipher the telltale signs) of the ({names}) spell\.'
       replacement: '\1 of the \2 spell. [{label}]'
       groups:
         - ['Strange Arrow']

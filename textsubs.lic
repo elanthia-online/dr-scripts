@@ -2558,10 +2558,10 @@ class TextSubs
     # sub shows one label for them all.
     #
     # @example
-    #   section = { 'pattern' => '^You recognize the ({names}) spell.', 'replacement' => '\0 [{label}]',
+    #   section = { 'pattern' => '^You recognize the ({names}) spell\.', 'replacement' => '\0 [{label}]',
     #               'groups' => [['Lay Ward', 'Manifest Force']] }
     #   TextSubs::Generators::SpellRecognition.expand(section, context, spells)
-    #   # => [['^You recognize the (Lay Ward|Manifest Force) spell.', '\0 [Analogous Patterns: basic warding]']]
+    #   # => [['^You recognize the (Lay Ward|Manifest Force) spell\.', '\0 [Analogous Patterns: basic warding]']]
     class SpellRecognition
       # @return [Array<String>] frozen
       def self.fields
