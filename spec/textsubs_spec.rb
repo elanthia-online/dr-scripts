@@ -816,6 +816,22 @@ RSpec.describe 'textsubs.lic' do
       expect(TextSubs.subs.keys.map(&:source)).to eq(%w[cat bird])
     end
 
+    it 'swaps in the empty catalog before it counts a clear, so a reader never sees the count run ahead' do
+      TextSubs.add('cat', 'dog')
+      old_catalog = TextSubs.subs
+      before_clear = TextSubs.generation
+      seen = []
+      # A reader before every line of clear and at its return, as the hook
+      # thread can run between any two of them. It records each new state:
+      # the count, and whether subs is still the catalog clear replaces.
+      probe = TracePoint.new(:line, :return) do
+        state = [TextSubs.generation, TextSubs.subs.equal?(old_catalog) ? :old : :new]
+        seen << state unless seen.last == state
+      end
+      expect(probe.enable(target: TextSubs.method(:clear)) { TextSubs.clear }).to eq({})
+      expect(seen).to eq([[before_clear, :old], [before_clear, :new], [before_clear + 1, :new]])
+    end
+
     it 'keeps the return values add, elanthipedia and clear had before the counter' do
       expect(TextSubs.add('cat', 'dog')).to eq('dog')
       expect(TextSubs.elanthipedia('Fae Arts')).to eq('\1<a href="https://elanthipedia.play.net/Fae_Arts">Fae Arts</a>\3')

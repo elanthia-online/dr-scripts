@@ -41,7 +41,8 @@ class TextSubs
     @@generation
   end
 
-  # Empties the catalog.
+  # Empties the catalog. It swaps in the new, empty Hash first and counts the
+  # change after, as store does, so the generation never runs ahead of subs.
   #
   # @return [Hash] the new, empty catalog
   def self.clear
