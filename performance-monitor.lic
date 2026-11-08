@@ -9,13 +9,15 @@ unless HAVE_GTK
   exit
 end
 
-if respond_to?(:start_scripts_if_available)
-  start_scripts_if_available(%w[textsubs])
-else
-  custom_require.call(%w[textsubs])
-end
-
+# Ranks each hit with a monitored weapon by its damage phrase and
+# averages roundtime and damage per second of roundtime for each weapon.
+# The weapons come from the performance_monitor_weapons setting.
 class PerformanceFilter
+  # Reads the weapon list from the character's settings and sets up empty hit
+  # and roundtime records for each weapon, plus the 23 damage phrases with the
+  # (n/23) rank tag each is rewritten to.
+  #
+  # @return [PerformanceFilter]
   def initialize
     @settings = get_settings
     @weapon_hits = {}
@@ -25,8 +27,8 @@ class PerformanceFilter
       @weapon_rts[x] = []
     end
     @weapon_stats = []
-    @last_weapon = nil
-    @new_hit = false
+    @pending_weapon = nil
+    @pending_ranks = []
     @damage_subs = [
       ['a light hit', 'a light hit (1/23)'],
       ['a good hit', 'a good hit (2/23)'],
@@ -44,8 +46,8 @@ class PerformanceFilter
       ['an earth-shaking strike', 'an earth-shaking strike (14/23)'],
       ['a demolishing hit', 'a demolishing hit (15/23)'],
       ['a spine-rattling strike', 'a spine-rattling strike (16/23)'],
-      ["a devastating hit(?! \(That'll leave a mark!\))", 'a devastating hit (17/23)'],
-      ["a devastating hit \(That'll leave a mark!\)", "a devastating hit (That'll leave a mark!) (18/23)"],
+      [/a devastating hit(?! \(That'll leave a mark!\))/, 'a devastating hit (17/23)'],
+      [/a devastating hit \(That'll leave a mark!\)/, "a devastating hit (That'll leave a mark!) (18/23)"],
       ['an overwhelming strike', 'an overwhelming strike (19/23)'],
       ['an obliterating hit', 'an obliterating hit (20/23)'],
       ['an annihilating strike', 'an annihilating strike (21/23)'],
@@ -54,41 +56,88 @@ class PerformanceFilter
     ]
   end
 
+  # @return [Array<String>, nil] the monitored weapon names, as set in
+  #   performance_monitor_weapons (nil when the setting is empty)
   def weapon_list
     @settings.performance_monitor_weapons
   end
 
+  # Tags the damage phrase in a game line with its (n/23) rank and holds the
+  # rank of a hit with a monitored weapon until the next roundtime line, which
+  # records the held ranks and that roundtime together, then updates the stats.
+  # Several hits of one weapon before a roundtime are held together; a hit
+  # with a different weapon drops the held ones, whose roundtime is unknown.
+  #
+  # @param line [String] a game line; changed in place, with each damage
+  #   phrase followed by its (n/23) tag
+  # @return [Boolean] true when the line gave the roundtime of a hit (the
+  #   stats were updated), false otherwise
   def process_line(line)
     @damage_subs.each { |x| line.gsub!(x.first, x.last) }
     weapon_name = @settings.performance_monitor_weapons.find { |name| %r{^<.*\b#{name}\b.*\((\d+)/23\)} =~ line }
-    if weapon_name
-      @weapon_hits[weapon_name].push(Regexp.last_match(1).to_i)
-      @last_weapon = weapon_name
-      @new_hit = true
-    end
+    hold_hit(weapon_name, Regexp.last_match(1).to_i) if weapon_name
 
-    if @new_hit && /roundtime.*(\d+)/i =~ line
-      @new_hit = false
-      @weapon_rts[@last_weapon].push(Regexp.last_match(1).to_i)
-      update_stats
-      true
-    else
-      false
-    end
+    return false unless @pending_weapon && /roundtime\D*(\d+)/i =~ line
+
+    record_roundtime(Regexp.last_match(1).to_i)
+    true
   end
 
+  # Holds one hit's rank until its roundtime arrives. A hit with a different
+  # weapon than the held hits drops them first.
+  #
+  # @param weapon [String] the monitored weapon the hit names
+  # @param rank [Integer] the hit's damage rank, 1 to 23
+  # @return [void]
+  def hold_hit(weapon, rank)
+    @pending_ranks = [] unless weapon == @pending_weapon
+    @pending_weapon = weapon
+    @pending_ranks.push(rank)
+  end
+
+  # Records the held hits and their roundtime under the held weapon, clears
+  # the held hits and updates the stats.
+  #
+  # @param seconds [Integer] the roundtime that followed the held hits
+  # @return [void]
+  def record_roundtime(seconds)
+    @weapon_hits[@pending_weapon].concat(@pending_ranks)
+    @weapon_rts[@pending_weapon].push(seconds)
+    @pending_weapon = nil
+    @pending_ranks = []
+    update_stats
+  end
+
+  # Rebuilds {#weapon_stats} from the recorded hits and roundtimes. Hits are
+  # only recorded with their roundtime, so a weapon with no roundtime recorded
+  # yet has no hits either and is left out.
+  #
+  # @return [void]
   def update_stats
     @weapon_stats = []
     @weapon_hits.each do |weapon, hits|
+      next if @weapon_rts[weapon].empty?
+
       dmg = hits.inject(&:+)
       rt = @weapon_rts[weapon].inject(&:+)
       @weapon_stats.push(weapon: weapon, avgrt: rt * 1.0 / hits.size, avgdps: dmg * 1.0 / rt)
     end
   end
 
+  # @return [Array<Hash{Symbol => Object}>] one entry per weapon with a
+  #   roundtime recorded: :weapon (String), :avgrt (Float, the weapon's total
+  #   roundtime over its hits that had a roundtime; a roundtime after several
+  #   hits of the weapon is spread over them) and :avgdps (Float, total rank
+  #   over total roundtime); empty until the first hit's roundtime. A hit
+  #   followed by another weapon's hit before any roundtime is not counted.
   attr_reader :weapon_stats
 end
 
+# Shows one weapon's averages in its stats entry.
+#
+# @param entry [Gtk::Entry] the weapon's entry in the window
+# @param data [Hash{Symbol => Object}] one {PerformanceFilter#weapon_stats} entry
+# @return [void]
 def update_stat_bar(entry, data)
   entry.text = "#{data[:weapon]}:\tavg RT:#{data[:avgrt].round(1)}\tavg DPS:#{data[:avgdps].round(1)}"
 end
@@ -144,6 +193,20 @@ begin
     end
     window.show_all
   end
+
+  # This script used to start textsubs; it no longer does, so tell a player
+  # who relied on that how to start it at login instead. Autostart starts
+  # scripts one after another without waiting for each, so textsubs may come
+  # up just after this script: give it a few seconds before deciding. The
+  # window is already queued, so it is not held up; game lines wait in this
+  # script's buffer (lich keeps the last 400), so none are lost, though they
+  # are handled up to five seconds late.
+  10.times do
+    break if Script.running?('textsubs')
+
+    pause 0.5
+  end
+  echo 'performance-monitor no longer starts textsubs. To start textsubs at every login: ;autostart add textsubs' unless Script.running?('textsubs')
 
   loop do
     line = script.gets?
