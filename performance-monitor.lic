@@ -9,7 +9,15 @@ unless HAVE_GTK
   exit
 end
 
+# Ranks each hit with a monitored weapon by its damage phrase and
+# averages roundtime and damage per second of roundtime for each weapon.
+# The weapons come from the performance_monitor_weapons setting.
 class PerformanceFilter
+  # Reads the weapon list from the character's settings and sets up empty hit
+  # and roundtime records for each weapon, plus the 23 damage phrases with the
+  # (n/23) rank tag each is rewritten to.
+  #
+  # @return [PerformanceFilter]
   def initialize
     @settings = get_settings
     @weapon_hits = {}
@@ -48,10 +56,20 @@ class PerformanceFilter
     ]
   end
 
+  # @return [Array<String>, nil] the monitored weapon names, as set in
+  #   performance_monitor_weapons (nil when the setting is empty)
   def weapon_list
     @settings.performance_monitor_weapons
   end
 
+  # Tags the damage phrase in a game line with its (n/23) rank, records the
+  # rank when the line is a hit with a monitored weapon, and records the
+  # roundtime of the next roundtime line after a hit, then updates the stats.
+  #
+  # @param line [String] a game line; changed in place, with each damage
+  #   phrase followed by its (n/23) tag
+  # @return [Boolean] true when the line gave the roundtime of a hit (the
+  #   stats were updated), false otherwise
   def process_line(line)
     @damage_subs.each { |x| line.gsub!(x.first, x.last) }
     weapon_name = @settings.performance_monitor_weapons.find { |name| %r{^<.*\b#{name}\b.*\((\d+)/23\)} =~ line }
@@ -71,6 +89,10 @@ class PerformanceFilter
     end
   end
 
+  # Rebuilds {#weapon_stats} from the recorded hits and roundtimes. A weapon
+  # with no roundtime recorded yet is left out.
+  #
+  # @return [void]
   def update_stats
     @weapon_stats = []
     @weapon_hits.each do |weapon, hits|
@@ -82,9 +104,18 @@ class PerformanceFilter
     end
   end
 
+  # @return [Array<Hash{Symbol => Object}>] one entry per weapon with a
+  #   roundtime recorded: :weapon (String), :avgrt (Float, total roundtime
+  #   over the number of hits) and :avgdps (Float, total rank over total
+  #   roundtime); empty until the first hit's roundtime
   attr_reader :weapon_stats
 end
 
+# Shows one weapon's averages in its stats entry.
+#
+# @param entry [Gtk::Entry] the weapon's entry in the window
+# @param data [Hash{Symbol => Object}] one {PerformanceFilter#weapon_stats} entry
+# @return [void]
 def update_stat_bar(entry, data)
   entry.text = "#{data[:weapon]}:\tavg RT:#{data[:avgrt].round(1)}\tavg DPS:#{data[:avgdps].round(1)}"
 end
