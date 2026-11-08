@@ -634,10 +634,15 @@ RSpec.describe 'textsubs.lic' do
   # has to be in both.
   #
   # The keys are found by running the real entry point with get_settings
-  # answering a recorder: once for each of the 96 combinations, each with a
-  # shit list on disk, integrate_shit_list_with_textsubs on and a private sub,
-  # so every branch that reads a key runs, and once more with no guild known.
-  # textsubs reads its settings by name (settings.<key>) and by index
+  # answering a recorder, three ways. The all-on path: once for each of the
+  # 96 combinations and once more with no guild known, each with a shit list
+  # on disk, integrate_shit_list_with_textsubs on and a private sub. The
+  # shipped-defaults path: once with base.yaml's values (the flags off,
+  # private_textsubs nil) and no shit list file, so the branches that run
+  # when a setting is off or empty read through the recorder too. And one
+  # rebuild for a new guild: in that same run TextSubs.watch yields 'Bard',
+  # so the block the entry point hands watch runs and builds again, reading
+  # what it reads. textsubs reads its settings by name (settings.<key>) and by index
   # (settings[key], in Context#setting? for a section's when: gate). The
   # recorder answers those two and dig. Any other call that takes arguments
   # (fetch, a setter, respond_to?) raises, so a new way of reading a key
@@ -665,8 +670,9 @@ RSpec.describe 'textsubs.lic' do
     end
     reads = nil
 
-    # Runs the real entry point with no guild and for every combination, with
-    # get_settings answering a recorder, as the comment above describes.
+    # Runs the real entry point with get_settings answering a recorder, in the
+    # three ways the comment above describes: the all-on path, the
+    # shipped-defaults path, and a rebuild for a new guild through watch.
     #
     # @return [Array<String>] each key read, once
     define_method(:record_reads) do
@@ -680,6 +686,12 @@ RSpec.describe 'textsubs.lic' do
           DRStats.guild = combination['guild']
           run_lic_entry('textsubs.lic', 'TextSubs')
         end
+      end
+      with_shit_list(nil) do
+        allow(TOPLEVEL_BINDING.receiver).to receive(:get_settings).and_return(recorder.new(textsubs_defaults, read))
+        allow(TextSubs).to receive(:watch).and_yield('Bard')
+        DRStats.guild = nil
+        run_lic_entry('textsubs.lic', 'TextSubs')
       end
       read.uniq
     end
