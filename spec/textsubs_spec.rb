@@ -849,6 +849,21 @@ RSpec.describe 'textsubs.lic' do
         expect(displayed_messages).to eq(["private_textsubs #{Regexp.new(durability).inspect} is also a built-in sub; " \
                                           'your replacement is used instead of the built-in one.'])
       end
+
+      # YAML gives !ruby/regexp /text/n as Regexp::NOENCODING. On an ASCII-only
+      # source that is the same Regexp as the flagless key (== and #hash
+      # agree), so it is the built-in key, not a key of its own like /i.
+      it 'with only /n on an ASCII source is the built-in key of the same source: it keeps the private slot and value, and says so once' do
+        plain = build_catalog('Commoner')
+        key = Regexp.new(durability, Regexp::NOENCODING)
+
+        catalog = build_catalog('Commoner', 'private_textsubs' => { key => 'MINE: \1' })
+
+        expect(catalog.first).to eq([durability, Regexp::NOENCODING, 'MINE: \1'])
+        expect(catalog.drop(1)).to eq(plain.reject { |source, _, _| source == durability })
+        expect(displayed_messages).to eq(["private_textsubs /#{durability}/n is also a built-in sub; " \
+                                          'your replacement is used instead of the built-in one.'])
+      end
     end
 
     # A quoted key compiles with no flags, so it is the same Regexp as a
