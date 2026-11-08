@@ -2243,18 +2243,25 @@ class TextSubs
   class LinkBuilder
     # @param text [String] the text to link; also the page name, spaces
     #   turned into underscores
-    # @param pretext [String] context before the text, capture group 1
-    # @param postext [String] context after the text, capture group 3
     # @param prelink [String] prefix of the page path (such as 'Category:')
     # @param poslink [String] suffix of the page path (such as '_spellbook')
     # @param preresult [String] replacement before the link
     # @param posresult [String] replacement after the link
+    # @param key_args [Hash{Symbol=>String}] the keywords of key (those
+    #   key_keywords names), passed to it as they are, so the key pair gives
+    #   is the one key gives for them and a keyword key gains reaches pair
+    #   with no edit here
+    # @option key_args [String] :pretext context before the text, capture
+    #   group 1
+    # @option key_args [String] :postext context after the text, capture
+    #   group 3
     # @return [Array(String, String)] the regex source and the replacement
+    # @raise [ArgumentError] for a keyword neither pair nor key takes
     # @example
     #   TextSubs::LinkBuilder.pair('Fae Arts', pretext: '^', postext: ':', prelink: 'Category:', poslink: '_spellbook')
     #   # => ["(^)(Fae Arts)(:)", "\\1<a href=\"https://elanthipedia.play.net/Category:Fae_Arts_spellbook\">Fae Arts</a>\\3"]
-    def self.pair(text, pretext: '', postext: '', prelink: '', poslink: '', preresult: '\1', posresult: '\3')
-      [key(text, pretext: pretext, postext: postext), preresult + TextSubs.wiki_link(page(prelink, text, poslink), text) + posresult]
+    def self.pair(text, prelink: '', poslink: '', preresult: '\1', posresult: '\3', **key_args)
+      [key(text, **key_args), preresult + TextSubs.wiki_link(page(prelink, text, poslink), text) + posresult]
     end
 
     # The key pair gives, as regex source, on its own: what a check
@@ -2270,17 +2277,27 @@ class TextSubs
       "(#{pretext})(#{text})(#{postext})"
     end
 
-    # The options key takes, of those pair takes, read from key's own
-    # parameters, so a check that builds only the key passes it what pair
-    # would, and a keyword key gains reaches both.
+    # The keywords key takes, declared once: key_options slices by them,
+    # and a keyword added to key belongs here too (a spec pins the two
+    # together).
+    #
+    # @return [Array<Symbol>] frozen
+    # @example
+    #   TextSubs::LinkBuilder.key_keywords # => [:pretext, :postext]
+    def self.key_keywords
+      %i[pretext postext].freeze
+    end
+
+    # The options key takes, of those pair takes, so a check that builds
+    # only the key passes it what pair passes it.
     #
     # @param options [Hash{Symbol=>String}] keyword arguments for pair
-    # @return [Hash{Symbol=>String}] those of them key takes
+    # @return [Hash{Symbol=>String}] those of them key_keywords names
     # @example
     #   TextSubs::LinkBuilder.key_options(pretext: '^', prelink: 'Category:', postext: ':')
     #   # => {pretext: "^", postext: ":"}
     def self.key_options(options)
-      options.slice(*method(:key).parameters.filter_map { |type, name| name if type == :key })
+      options.slice(*key_keywords)
     end
 
     # @param prelink [String] prefix of the page path

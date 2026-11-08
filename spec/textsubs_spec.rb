@@ -4796,6 +4796,10 @@ RSpec.describe 'textsubs.lic' do
       expect(TextSubs::LinkBuilder.pair('Aura of Tongues'))
         .to eq(['()(Aura of Tongues)()', '\1<a href="https://elanthipedia.play.net/Aura_of_Tongues">Aura of Tongues</a>\3'])
     end
+
+    it 'passes key a keyword neither of them takes, so a typo raises rather than being dropped' do
+      expect { TextSubs::LinkBuilder.pair('Halo', pretxt: '^') }.to raise_error(ArgumentError, /pretxt/)
+    end
   end
 
   # The links check builds keys alone, with the options key_options keeps,
@@ -4806,6 +4810,17 @@ RSpec.describe 'textsubs.lic' do
       kept = TextSubs::LinkBuilder.key_options(options)
       expect(kept).to eq(pretext: '\S|^', postext: '\s*Slot')
       expect(TextSubs::LinkBuilder.key('Halo', **kept)).to eq(TextSubs::LinkBuilder.pair('Halo', **options).first)
+    end
+
+    it 'keeps what key_keywords names, which is every keyword key takes, optional or required' do
+      key_params = TextSubs::LinkBuilder.method(:key).parameters
+      expect(TextSubs::LinkBuilder.key_keywords)
+        .to match_array(key_params.filter_map { |type, name| name if %i[key keyreq].include?(type) })
+    end
+
+    it 'keeps them even when key is wrapped, so a spy or a prepend cannot empty the check keys' do
+      allow(TextSubs::LinkBuilder).to receive(:key).and_call_original
+      expect(TextSubs::LinkBuilder.key_options(pretext: '^', postext: ':', prelink: 'Category:')).to eq(pretext: '^', postext: ':')
     end
   end
 
