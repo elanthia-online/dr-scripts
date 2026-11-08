@@ -1,3 +1,4 @@
+require 'delegate'
 require 'fileutils'
 require 'json'
 require 'tmpdir'
@@ -837,14 +838,32 @@ RSpec.describe 'textsubs.lic' do
       expect(seen.last).to eq([before_clear + 1, :new])
     end
 
-    it 'writes subs before generation in its own bytecode, however clear lays the two writes out on its lines' do
-      # The class variable writes clear compiles to, in the order the VM runs
-      # them. This holds for one line or a parallel assignment, which the line
-      # probe above cannot split. It also pins that clear makes both writes
-      # itself: a write moved into a helper drops out of this list.
-      bytecode = RubyVM::InstructionSequence.of(TextSubs.method(:clear)).disasm
-      writes = bytecode.scan(/setclassvariable\s+:(@@\w+)/).flatten
-      expect(writes).to eq(%w[@@subs @@generation])
+    it 'swaps in the empty catalog before it works out the next count, even with both writes on one line' do
+      TextSubs.add('cat', 'dog')
+      old_catalog = TextSubs.subs
+      before_clear = TextSubs.generation
+      seen = []
+      # A count that records, at the moment clear asks it for the next number,
+      # whether subs is still the catalog clear replaces. The line probe above
+      # cannot split two writes on one line or in one parallel assignment;
+      # this reader runs inside the count write itself, wherever clear puts it.
+      # It forwards everything else to the real count.
+      counter = SimpleDelegator.new(before_clear)
+      %i[+ succ next].each do |step|
+        counter.define_singleton_method(step) do |by = 1|
+          seen << (TextSubs.subs.equal?(old_catalog) ? :old : :new)
+          before_clear + by
+        end
+      end
+      TextSubs.class_variable_set(:@@generation, counter)
+      begin
+        expect(TextSubs.clear).to eq({})
+      ensure
+        TextSubs.class_variable_set(:@@generation, before_clear + 1) unless TextSubs.generation.instance_of?(Integer)
+      end
+      expect(seen).to eq([:new])
+      expect(TextSubs.generation).to eq(before_clear + 1)
+      expect(TextSubs.subs).not_to equal(old_catalog)
     end
 
     it 'keeps the return values add, elanthipedia and clear had before the counter' do
