@@ -1,6 +1,7 @@
 require 'fileutils'
 require 'json'
 require 'tmpdir'
+require_relative '../test/textsubs_corpus'
 
 # textsubs.lic builds its whole substitution catalog at top level: the entry
 # point registers the 'textsub' DownstreamHook, adds the shit-list and
@@ -22,6 +23,48 @@ require 'tmpdir'
 #
 # A nil guild (textsubs started before DRStats knows the guild) is not part of
 # the golden set; it is covered on its own when the guild handling is fixed.
+#
+# The golden catalog says WHAT the hook applies; the reference-engine oracle
+# below says HOW. reference_apply keeps today's matching engine verbatim, and
+# the hook has to give the same output for every guild catalog over two
+# committed inputs, both synthetic (no real player names):
+#   - samples.jsonl holds one JSON string per line, expanded from the catalog's
+#     own regex sources (up to two alternatives per entry), so every key of
+#     every guild catalog is matched by at least one sample. Then come
+#     composite lines, each two of those samples joined by a space, that two or
+#     more keys of every guild catalog match; in a few of them the order the
+#     keys run in changes the output (a coin amount before a spell link, whose
+#     '>' turns the coin rule off; the two "a devastating hit" keys), so the
+#     per-guild sweeps also pin the order of real keys, not just each key. The
+#     lines of samples_hand_added.jsonl come last;
+#   - synthetic_stream.xml is a hand-written XML stream (inv pushStream dump,
+#     room objs with exist ids, prompts, roundTime, coin and wealth lines and a
+#     49 KB digit-heavy inventoryManager line), every line ending in \r\n.
+# test/textsubs_corpus.rb generates both: the samples from catalog_entries.jsonl,
+# the stream from its own text. 'corpus fixtures' checks that each file is the
+# generator's output (for samples.jsonl, followed by the lines of
+# samples_hand_added.jsonl, each line once). A commit that changes the catalog
+# regenerates the golden fixture first, then these two, in a separate run
+# (the corpus writer refuses to run beside the golden writer):
+#   TEXTSUBS_GOLDEN_WRITE=1 bundle exec rspec spec/textsubs_spec.rb
+#   TEXTSUBS_CORPUS_WRITE=1 bundle exec rspec spec/textsubs_spec.rb
+# and reviews the diff. To pin a pattern with a line the generator does not
+# make, add it to samples_hand_added.jsonl (one JSON string per line, matched
+# by some key of some guild catalog) and regenerate; nothing writes that file,
+# so a hand-added line is never dropped. A line added straight to
+# samples.jsonl is: the every-run check names it before it says to regenerate,
+# and the writer names every line it drops.
+#
+# What the real catalogs cannot pin: on no corpus line does a key create a
+# match for a key that runs after it (the only two such pairs a search of every
+# key's output on its own samples found run the other way round), so an engine
+# that checks each key against the changing line instead of the original gives
+# the same output on every corpus line. The hand-made catalogs in 'hook engine
+# semantics' pin that rule.
+#
+# Hooks run through run_hooks, never DownstreamHook.run directly: a `return`
+# in the hook proc (where `next` belongs) is a top-level return in this spec
+# and would end rspec silently with status 0.
 
 load_lic_class('textsubs.lic', 'TextSubs')
 
@@ -37,6 +80,11 @@ RSpec.describe 'textsubs.lic' do
   fixture_dir = File.expand_path('fixtures/textsubs', __dir__)
   entries_path = File.join(fixture_dir, 'catalog_entries.jsonl')
   combos_path = File.join(fixture_dir, 'catalog_combos.json')
+  samples_path = File.join(fixture_dir, 'samples.jsonl')
+  stream_path = File.join(fixture_dir, 'synthetic_stream.xml')
+  hand_added_path = File.join(fixture_dir, 'samples_hand_added.jsonl')
+  # @return [Array<Array(String, Integer, String)>] the rows of catalog_entries.jsonl
+  read_entries = -> { File.readlines(entries_path).map { |line| JSON.parse(line) } }
 
   # Runs the real textsubs.lic entry point for one combination and returns the
   # catalog it built.
@@ -109,6 +157,57 @@ RSpec.describe 'textsubs.lic' do
       "  actual:   #{actual[index].inspect}"
   end
 
+  # Today's matching engine, kept verbatim as the oracle the hook is held to:
+  # select every key that matches the ORIGINAL line, then gsub! each selected
+  # key, in insertion order, on the line as it changes. It is deliberately a
+  # copy, not a call: later changes rewrite the hook's engine, and this is the
+  # behaviour they must keep.
+  #
+  # @param subs [Hash{Regexp=>String}] ordered catalog (TextSubs.subs)
+  # @param line [String] a server line
+  # @return [String] the line after substitution; `line` is not modified
+  def reference_apply(subs, line)
+    client_string = line.dup
+    matches = subs.select { |key, _| key =~ client_string }
+    matches.each { |target, result| client_string.gsub!(target, result) }
+    client_string
+  end
+
+  # Sends a line through every registered DownstreamHook, as Lich does.
+  #
+  # run_lic_entry evaluates the entry in a copy of TOPLEVEL_BINDING, so a
+  # `return` inside the hook proc (where `next` belongs) is a top-level return:
+  # Ruby unwinds the whole rspec process and exits with status 0, skipping
+  # every example after it, and neither `rescue Exception` nor the SystemExit
+  # guard in spec_helper sees it. The ensure clause still runs on that unwind,
+  # and raising there turns it into an ordinary failure of this example.
+  #
+  # The rescue clause only notes that the hooks raised, and re-raises the same
+  # exception. $! cannot tell the two exits apart: run_hooks called while an
+  # exception is being rescued sees that exception in $! on a top-level return.
+  #
+  # @param line [String] a binary server line
+  # @return [String, nil] what the hooks pass on to the client
+  # @raise [RuntimeError] when the hooks neither returned nor raised
+  # @raise [Exception] whatever a hook raises that DownstreamHook.run does not
+  #   rescue (it rescues StandardError), unchanged
+  # @example
+  #   run_hooks("You feel fine.\r\n".b) # => "You feel FINE.\r\n"
+  def run_hooks(line)
+    exit_by = :unwind
+    output = DownstreamHook.run(line)
+    exit_by = :return
+    output
+  rescue Exception # rubocop:disable Lint/RescueException
+    exit_by = :raise
+    raise
+  ensure
+    if exit_by == :unwind
+      raise "a DownstreamHook left without returning (a `return` in the hook proc where `next` belongs?); " \
+            'unchecked, that would end the whole rspec run with status 0'
+    end
+  end
+
   after do
     DownstreamHook.remove('textsub')
     TextSubs.clear
@@ -132,7 +231,7 @@ RSpec.describe 'textsubs.lic' do
   else
     describe 'golden catalog' do
       before(:all) do
-        @golden_entries = File.readlines(entries_path).map { |line| JSON.parse(line) }
+        @golden_entries = read_entries.call
         @golden_combinations = JSON.parse(File.read(combos_path))['combinations']
       end
 
@@ -284,7 +383,7 @@ RSpec.describe 'textsubs.lic' do
     it "registers 'textsub', and the registered hook applies the catalog" do
       build_catalog('Commoner', 'private_textsubs' => { 'You feel fine' => 'You feel FINE' })
       expect(DownstreamHook.list).to include('textsub')
-      expect(DownstreamHook.run("You feel fine today.\n")).to eq("You feel FINE today.\n")
+      expect(run_hooks("You feel fine today.\n".b)).to eq("You feel FINE today.\n")
     end
 
     it "removes 'textsub', and only 'textsub', in before_dying" do
@@ -301,6 +400,467 @@ RSpec.describe 'textsubs.lic' do
       expect(DownstreamHook.list).to include('other-script')
     ensure
       DownstreamHook.remove('other-script')
+    end
+  end
+
+  describe 'run_hooks' do
+    # Registers, as 'textsub', a hook proc made the way run_lic_entry makes
+    # textsubs.lic's: evaluated in a copy of TOPLEVEL_BINDING, so the `return`
+    # in it is a top-level return.
+    #
+    # @return [void]
+    def add_top_level_return_hook
+      DownstreamHook.add('textsub', eval('proc { |_server_string| return }', TOPLEVEL_BINDING.dup, __FILE__, __LINE__))
+    end
+
+    # Registers, as 'textsub', a hook that raises a new exception class that is
+    # not a StandardError, so DownstreamHook.run does not swallow it.
+    #
+    # @return [Class] the exception class the hook raises, with message
+    #   'from the hook'
+    def add_raising_hook
+      hook_error = Class.new(Exception) # rubocop:disable Lint/InheritException
+      DownstreamHook.add('textsub', proc { |_server_string| raise hook_error, 'from the hook' })
+      hook_error
+    end
+
+    # Calls run_hooks and gives back what came out of it, value or exception.
+    # A top-level return that gets past run_hooks would end rspec with status
+    # 0, so this has its own guard: `finished` is set only once run_hooks has
+    # returned or raised, and the ensure clause turns any other exit into a
+    # failure of the example, whatever $! holds.
+    #
+    # @param line [String] a binary server line
+    # @return [String, nil, Exception] the hooks' output, or the exception
+    #   run_hooks raised
+    # @raise [RuntimeError] when a top-level return got past run_hooks
+    def run_hooks_outcome(line)
+      finished = false
+      outcome = begin
+        run_hooks(line)
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        e
+      end
+      finished = true
+      outcome
+    ensure
+      raise 'a top-level return in the hook got past run_hooks' unless finished
+    end
+
+    it 'hands back an exception the hook raises as itself, whatever its class' do
+      hook_error = add_raising_hook
+      expect(run_hooks_outcome("You feel fine.\r\n".b)).to be_a(hook_error).and have_attributes(message: 'from the hook')
+    end
+
+    it 'turns a top-level return in the hook into an error' do
+      add_top_level_return_hook
+      expect(run_hooks_outcome("You feel fine.\r\n".b)).to be_a(RuntimeError).and have_attributes(message: /left without returning/)
+    end
+
+    it 'turns a top-level return in the hook into an error when run_hooks is called while an exception is rescued' do
+      add_top_level_return_hook
+      outcome = begin
+        raise ArgumentError, 'an exception being rescued leaves $! set'
+      rescue ArgumentError
+        run_hooks_outcome("You feel fine.\r\n".b)
+      end
+      expect(outcome).to be_a(RuntimeError).and have_attributes(message: /left without returning/)
+    end
+
+    it 'lets an exception the hook raises through unchanged when run_hooks is called while an exception is rescued' do
+      hook_error = add_raising_hook
+      expect do
+        raise ArgumentError, 'an exception being rescued leaves $! set'
+      rescue ArgumentError
+        run_hooks("You feel fine.\r\n".b)
+      end.to raise_error(hook_error, 'from the hook')
+    end
+  end
+
+  describe 'hook engine semantics' do
+    # Runs the real entry point, so the real 'textsub' hook is registered, then
+    # swaps the built catalog for exactly `pairs` through the public TextSubs
+    # API, so the example controls every key the hook can see.
+    #
+    # @param pairs [Array<Array(String, String)>] [target, result] pairs, added in order
+    # @return [void]
+    def install_catalog(*pairs)
+      build_catalog('Commoner')
+      TextSubs.clear
+      pairs.each { |target, result| TextSubs.add(target, result) }
+    end
+
+    # @param line [String] a server line; sent as the binary string Lich hands hooks
+    # @return [String, nil] what the downstream hooks pass on to the client
+    def through_hook(line)
+      run_hooks(line.b)
+    end
+
+    it 'does not fire a key that matches only after an earlier key rewrote the line' do
+      install_catalog(%w[cat dog], %w[dog bird])
+      expect(through_hook("The cat sleeps.\r\n")).to eq("The dog sleeps.\r\n")
+    end
+
+    it 'does nothing for a key that matched the original line but no longer matches it' do
+      # 'c' matches "The cat sleeps." but not "The dog sleeps.", which is what
+      # it sees after 'cat' ran; it never gets to turn "cat" into "kat".
+      install_catalog(%w[cat dog], %w[c k])
+      expect(through_hook("The cat sleeps.\r\n")).to eq("The dog sleeps.\r\n")
+    end
+
+    it 'applies the selected keys in insertion order, each to the output of the one before' do
+      # In reverse order the line would read "blue green"; applied each to the
+      # original line, "red green".
+      install_catalog(%w[red blue], %w[blue green])
+      expect(through_hook("red blue\r\n")).to eq("green green\r\n")
+    end
+
+    it 'keeps the first slot for a key added twice, with the value of the last add' do
+      # Moving 'cat' behind 'c' would give "The kat sleeps."; keeping the
+      # first value, "The dog sleeps."
+      install_catalog(%w[cat dog], %w[c k], %w[cat lion])
+      expect(through_hook("The cat sleeps.\r\n")).to eq("The lion sleeps.\r\n")
+    end
+
+    it 'keeps the \r\n line ending and the binary encoding of a rewritten line' do
+      install_catalog(['fine\.', 'FINE.'])
+      output = through_hook("You feel fine.\r\n")
+      expect(output).to eq("You feel FINE.\r\n")
+      expect(output.encoding).to eq(Encoding::ASCII_8BIT)
+    end
+
+    it 'returns a line that no key matches byte for byte' do
+      install_catalog(%w[cat dog])
+      expect(through_hook("A bird sings.\r\n")).to eq("A bird sings.\r\n")
+    end
+  end
+
+  describe 'reference-engine oracle' do
+    samples = TextsubsCorpus.parse_samples(File.read(samples_path)).map(&:b)
+    stream = File.binread(stream_path).lines
+    big_line = stream.max_by(&:bytesize)
+    # The 49 KB line spends ~0.5 s in the coin regex per pass, so the per-guild
+    # sweeps leave it to the one whole-stream example below.
+    stream_without_big_line = stream - [big_line]
+    every_flag_on = { 'textsubs_spell_links' => true, 'herb_textsubs' => true }.freeze
+
+    # The lines the catalog sweeps run: every sample, then every stream line
+    # but the 49 KB one. A sample's index here is its index in `samples`.
+    corpus = samples + stream_without_big_line
+    # reference_apply's select step, run once per distinct key: the indexes of
+    # the corpus lines each key matches (key.match?(line) is true exactly when
+    # key =~ line is), worked out the first time an example asks for the key.
+    # The guild catalogs share most of their keys, so the sweeps run each key
+    # over the corpus once instead of once per catalog. A key built again by a
+    # later example finds its entry: Regexp#eql? compares source and options.
+    corpus_matches = Hash.new { |cache, key| cache[key] = corpus.each_index.select { |at| key.match?(corpus[at]) } }
+    entries = read_entries.call
+    # Every key of every catalog a player can run: the golden fixture's
+    # entries, which the golden examples hold to what the script builds.
+    every_key = entries.map { |source, options, _replacement| Regexp.new(source, options) }.uniq
+    # What the generator makes of today's catalog, each part worked out the
+    # first time an example asks for it:
+    # - :expanded, the samples expanded from the catalog's regex sources;
+    # - :composites, the composite lines joined from them;
+    # - :generated, both in order ('corpus fixtures' checks that samples.jsonl
+    #   is these lines, then the hand-added ones);
+    # - :composite_indexes, the indexes in `samples` of the composite lines.
+    # Not worked out while the file loads: a generator error (a catalog change
+    # leaving a COMPOSITE_FAMILIES pattern with no sample to match) then fails
+    # the examples that need the generator, not the loading of every spec file
+    # in the run.
+    corpus_generator = Hash.new do |generator, part|
+      generator[part] =
+        case part
+        when :expanded then TextsubsCorpus.expanded_samples(entries)
+        when :composites then TextsubsCorpus.composite_samples(generator[:expanded])
+        when :generated then generator[:expanded] + generator[:composites]
+        when :composite_indexes
+          composite_lines = generator[:composites].map(&:b).to_set
+          samples.each_index.select { |at| composite_lines.include?(samples[at]) }
+        else raise KeyError, "the generator makes no #{part.inspect}"
+        end
+    end
+    hand_added = TextsubsCorpus.parse_samples(File.read(hand_added_path))
+
+    # For each corpus line, the keys of `subs` that match it, in catalog order:
+    # what reference_apply's select step gives for the line.
+    #
+    # @param subs [Hash{Regexp=>String}] ordered catalog (TextSubs.subs)
+    # @param corpus_matches [Hash{Regexp=>Array<Integer>}] corpus line indexes per key
+    # @param size [Integer] number of corpus lines
+    # @return [Array<Array<Regexp>>] one ordered key list per corpus line
+    def selected_keys(subs, corpus_matches, size)
+      selected = Array.new(size) { [] }
+      subs.each_key { |key| corpus_matches[key].each { |at| selected[at] << key } }
+      selected
+    end
+
+    # reference_apply's apply step: gsub! each selected key, in the order
+    # given, on the line as it changes.
+    #
+    # @param subs [Hash{Regexp=>String}] the catalog the keys come from
+    # @param keys [Array<Regexp>] the selected keys, in the order they run
+    # @param line [String] a server line; not modified
+    # @return [String] the line after substitution
+    def apply_selected(subs, keys, line)
+      keys.each_with_object(line.dup) { |key, output| output.gsub!(key, subs[key]) }
+    end
+
+    # reference_apply's output for every corpus line, with its select step
+    # looked up in corpus_matches.
+    #
+    # @param subs [Hash{Regexp=>String}] ordered catalog (TextSubs.subs)
+    # @param corpus [Array<String>] the corpus lines
+    # @param corpus_matches [Hash{Regexp=>Array<Integer>}] corpus line indexes per key
+    # @return [Array<String>] the reference output for each corpus line
+    def looked_up_reference(subs, corpus, corpus_matches)
+      selected_keys(subs, corpus_matches, corpus.size).each_with_index.map { |keys, at| apply_selected(subs, keys, corpus[at]) }
+    end
+
+    # Sends each line through the registered hooks and compares the output
+    # with the reference output for that line.
+    #
+    # @param lines [Array<String>] binary server lines
+    # @param expected [Array<String>] the reference output for each line;
+    #   reference_apply with the current TextSubs.subs unless given
+    # @return [Array<Array(String, String, String)>] [line, hook output,
+    #   reference output] for each line where the two differ
+    def oracle_mismatches(lines, expected = lines.map { |line| reference_apply(TextSubs.subs, line) })
+      lines.each_with_index.filter_map do |line, at|
+        hooked = run_hooks(line)
+        [line, hooked, expected[at]] unless hooked == expected[at]
+      end
+    end
+
+    # @param catalog [String] which catalog was in force
+    # @param mismatches [Array<Array(String, String, String)>] from oracle_mismatches
+    # @return [String] the count and the first five differences, each value cut
+    #   to 300 characters so the 49 KB line stays readable
+    def mismatch_report(catalog, mismatches)
+      shown = mismatches.first(5).map do |line, hooked, expected|
+        "  line:      #{line.inspect[0, 300]}\n  hook:      #{hooked.inspect[0, 300]}\n  " \
+          "reference: #{expected.inspect[0, 300]}"
+      end
+      "#{mismatches.size} line(s) differ from reference_apply with the #{catalog} catalog:\n#{shown.join("\n")}"
+    end
+
+    describe 'corpus fixtures' do
+      if ENV['TEXTSUBS_CORPUS_WRITE'] == '1'
+        it 'writes samples.jsonl and synthetic_stream.xml from the catalog and samples_hand_added.jsonl' do
+          # Both writers run in one rspec run in random order, so the samples
+          # could come from the catalog_entries.jsonl the golden writer replaces.
+          expect(ENV.fetch('TEXTSUBS_GOLDEN_WRITE', nil)).not_to eq('1'),
+                                                                 'run TEXTSUBS_GOLDEN_WRITE=1 first, then TEXTSUBS_CORPUS_WRITE=1 on its own'
+          generated = corpus_generator[:generated]
+          composites = corpus_generator[:composites]
+          redundant = TextsubsCorpus.redundant_hand_added(generated, hand_added)
+          expect(redundant).to eq([]), "delete these from samples_hand_added.jsonl (repeated, or generated): #{redundant.inspect}"
+          # The every-run examples check this for the flags-on catalogs with plat
+          # grouping off, and for Trader with it on; here every catalog with
+          # spell links and herbs on, before the new composites are written.
+          composite_matches = Hash.new { |cache, key| cache[key] = composites.each_index.select { |at| key.match?(composites[at]) } }
+          thin = combinations.select { |combination| combination['textsubs_spell_links'] && combination['herb_textsubs'] }.flat_map do |combination|
+            build_combination(combination)
+            selected = selected_keys(TextSubs.subs, composite_matches, composites.size)
+            composites.each_index.reject { |at| selected[at].size >= 2 }.map { |at| [combination['guild'], composites[at]] }
+          end
+          expect(thin).to eq([]), 'each composite sample must be matched by two or more keys of every catalog with spell links and ' \
+                                  "herbs on; [guild, composite] pairs where it is not: #{thin.inspect}"
+
+          lines = TextsubsCorpus.samples_lines(generated, hand_added)
+          # Names every line the rewrite drops, so a line added straight to
+          # samples.jsonl is not lost without a word.
+          dropped = TextsubsCorpus.drop_warning(File.read(samples_path), lines)
+          warn dropped if dropped
+          File.write(samples_path, TextsubsCorpus.samples_jsonl(lines))
+          File.binwrite(stream_path, TextsubsCorpus.stream)
+        end
+      else
+        it 'holds the generated samples, then the lines of samples_hand_added.jsonl, each line once' do
+          fault = TextsubsCorpus.samples_fault(File.read(samples_path), corpus_generator[:generated], hand_added)
+          expect(fault).to be_nil, fault
+        end
+
+        it 'holds the generated stream' do
+          committed = File.binread(stream_path)
+          generated_stream = TextsubsCorpus.stream
+          at = TextsubsCorpus.first_difference(committed.bytes, generated_stream.bytes) unless committed == generated_stream
+          expect(at).to be_nil, lambda {
+            "synthetic_stream.xml differs from TextsubsCorpus.stream at byte #{at}: " \
+              "#{committed[at, 60].inspect} vs #{generated_stream[at, 60].inspect}; regenerate it with " \
+              'TEXTSUBS_CORPUS_WRITE=1 bundle exec rspec spec/textsubs_spec.rb'
+          }
+        end
+      end
+
+      it 'takes each composite part as the first expanded sample its pattern matches' do
+        expect(TextsubsCorpus.composite_part(['a hit', 'a light hit', 'a light hit (grazing)'], /\Aa light hit\b/, 'COMPOSITE_FAMILIES'))
+          .to eq('a light hit')
+      end
+
+      it 'names the constant and the pattern when no expanded sample is left for a composite part' do
+        expect { TextsubsCorpus.composite_samples(corpus_generator[:expanded].grep_v(/\AEncumbrance : /)) }
+          .to raise_error(ArgumentError, %r{\ACOMPOSITE_FAMILIES pattern /\\AEncumbrance : Burdened\\b/ matches no expanded sample})
+      end
+
+      it 'keeps every hand-added sample, after the generated ones and in its file order' do
+        # A regeneration after a catalog change: 'gen two' is no longer made.
+        expect(TextsubsCorpus.samples_lines(['gen one', 'gen three'], ['hand first', 'hand second']))
+          .to eq(['gen one', 'gen three', 'hand first', 'hand second'])
+      end
+
+      it 'fails a samples.jsonl that moved a hand-added line into the generated ones, or dropped it' do
+        generated = corpus_generator[:generated]
+        hand = ['HAND line pinning a pattern', 'HAND line at the end']
+        in_order = TextsubsCorpus.samples_jsonl(generated + hand)
+        moved = TextsubsCorpus.samples_jsonl(generated.dup.insert(100, hand.first) + hand.drop(1))
+        dropped = TextsubsCorpus.samples_jsonl(generated + hand.drop(1))
+        expect(TextsubsCorpus.samples_fault(in_order, generated, hand)).to be_nil
+        expect(TextsubsCorpus.samples_fault(moved, generated, hand)).to start_with('samples.jsonl line 101 is "\"HAND line pinning a pattern\"')
+        expect(TextsubsCorpus.samples_fault(dropped, generated, hand)).to start_with("samples.jsonl line #{generated.size + 1} ")
+      end
+
+      it 'names first the lines regenerating drops, then where samples.jsonl ends early or runs on' do
+        generated = corpus_generator[:generated]
+        hand = ['HAND line']
+        stray = 'STRAY line added straight to samples.jsonl'
+        runs_on = TextsubsCorpus.samples_fault(TextsubsCorpus.samples_jsonl(generated + hand + [stray]), generated, hand)
+        ends_early = TextsubsCorpus.samples_fault(TextsubsCorpus.samples_jsonl(generated), generated, hand)
+        stray_line = "#{stray.to_json}\n".inspect
+        hand_line = "#{hand.first.to_json}\n".inspect
+        expect(runs_on).to start_with('regenerating samples.jsonl drops 1 line(s) that neither the generator nor ' \
+                                      'samples_hand_added.jsonl makes; move any added by hand to samples_hand_added.jsonl')
+          .and include(": #{[stray].inspect}; samples.jsonl line #{generated.size + 2} is #{stray_line}, " \
+                       'the generator puts nothing (end of file) there; regenerate it')
+        expect(ends_early).to start_with("samples.jsonl has no line #{generated.size + 1} (end of file), " \
+                                         "the generator puts #{hand_line} there; regenerate it")
+      end
+
+      it 'names every line of samples.jsonl a regeneration drops, and nothing when it drops none' do
+        content = TextsubsCorpus.samples_jsonl(['kept', 'no longer generated', 'added by hand'])
+        expect(TextsubsCorpus.drop_warning(content, ['kept', 'new'])).to end_with(['no longer generated', 'added by hand'].inspect)
+        expect(TextsubsCorpus.drop_warning(content, ['added by hand', 'new', 'no longer generated', 'kept'])).to be_nil
+      end
+
+      it 'fails a hand-added line that is there twice or that the generator makes too' do
+        generated = corpus_generator[:generated]
+        hand = ['HAND line', generated.first, 'HAND line']
+        fault = TextsubsCorpus.samples_fault(TextsubsCorpus.samples_jsonl(generated + hand), generated, hand)
+        expect(fault).to start_with('samples_hand_added.jsonl holds these lines more than once')
+          .and include(['HAND line', generated.first].inspect)
+      end
+    end
+
+    it 'reads a synthetic stream of \r\n lines holding one 49 KB digit-heavy line with no currency word' do
+      expect(stream).to all(end_with("\r\n"))
+      expect(stream.join).to be_ascii_only
+      expect(big_line.bytesize).to be >= 49_000
+      expect(big_line.count('0-9')).to be > 10_000
+      expect(big_line).not_to match(/Kronar|Dokora|Lirum/)
+    end
+
+    it 'reads one-line ASCII samples' do
+      expect(samples.size).to be > 2_000
+      expect(samples).to all(be_ascii_only)
+      expect(samples.grep(/[\r\n]/)).to eq([])
+    end
+
+    guilds.each do |guild|
+      it "gives reference_apply's output for every sample and stream line with the #{guild} catalog" do
+        build_catalog(guild, every_flag_on)
+        mismatches = oracle_mismatches(corpus, looked_up_reference(TextSubs.subs, corpus, corpus_matches))
+        expect(mismatches).to be_empty, -> { mismatch_report(guild, mismatches) }
+      end
+
+      it "matches every key of the #{guild} catalog with at least one sample" do
+        build_catalog(guild, every_flag_on)
+        unmatched = TextSubs.subs.keys.reject { |key| corpus_matches[key].any? { |at| at < samples.size } }
+        expect(unmatched.map(&:source)).to eq([]), lambda {
+          "#{unmatched.size} #{guild} key(s) match no line of samples.jsonl; add a sample for each:\n" \
+            "#{unmatched.map { |key| "  #{key.source}" }.join("\n")}"
+        }
+      end
+
+      # Without lines that several keys match, and some where their order
+      # matters, the sweep above holds each real key to the reference on its
+      # own and a reordered engine would still pass it. Running reference_apply
+      # over the catalog reversed is exactly such an engine.
+      it "holds lines that two or more #{guild} keys match, in some of which the key order changes the output" do
+        # reference_apply over the reversed catalog selects the same keys and
+        # runs them in reverse order.
+        build_catalog(guild, every_flag_on)
+        subs = TextSubs.subs
+        selected = selected_keys(subs, corpus_matches, corpus.size).first(samples.size)
+        shared = samples.each_index.select { |at| selected[at].size >= 2 }
+        order_sensitive = shared.reject do |at|
+          apply_selected(subs, selected[at].reverse, samples[at]) == apply_selected(subs, selected[at], samples[at])
+        end
+        thin = corpus_generator[:composite_indexes].reject { |at| selected[at].size >= 2 }.map { |at| samples[at] }
+        expect(thin).to eq([]), "every composite sample must be matched by two or more #{guild} keys; these are not: #{thin.inspect}"
+        expect(shared.size).to be >= 50, "only #{shared.size} sample(s) are matched by two or more #{guild} keys"
+        expect(order_sensitive.size).to be >= 4,
+                                        "only #{order_sensitive.size} sample(s) give another output with the #{guild} keys reversed"
+      end
+    end
+
+    it "gives reference_apply's output for the whole stream, 49 KB line included, with the default coin rule" do
+      build_catalog('Trader', every_flag_on.merge('textsubs_use_plat_grouping' => false))
+      mismatches = oracle_mismatches(stream)
+      expect(mismatches).to be_empty, -> { mismatch_report('Trader (plat grouping off)', mismatches) }
+    end
+
+    it "gives reference_apply's output for every sample and stream line with textsubs_use_plat_grouping on" do
+      # The 49 KB line is left out: through the two platinum-aware coin rules it
+      # costs ~3.5 s, and the coin rules see it in the default-rule example above.
+      build_catalog('Trader', every_flag_on.merge('textsubs_use_plat_grouping' => true))
+      mismatches = oracle_mismatches(corpus, looked_up_reference(TextSubs.subs, corpus, corpus_matches))
+      expect(mismatches).to be_empty, -> { mismatch_report('Trader (plat grouping on)', mismatches) }
+      # The per-guild key order examples check the composites with plat
+      # grouping off; its two coin rules have to match them too.
+      selected = selected_keys(TextSubs.subs, corpus_matches, corpus.size)
+      expect(corpus_generator[:composite_indexes].reject { |at| selected[at].size >= 2 }.map { |at| samples[at] }).to eq([])
+    end
+
+    # The sweeps above take reference_apply's select step from corpus_matches.
+    # Here it is held to reference_apply's own select (key =~ line). Every line
+    # the lookup lists for a key of any catalog has to match the key: gsub!
+    # with a key that does not match changes nothing, so an extra line would
+    # pass every output comparison and pad the key coverage and key order
+    # examples. reference_apply runs on every corpus line with the Trader
+    # catalog; the keys its select step picks (recorded from a copy of the
+    # catalog, so the regexes run once) have to be the looked-up ones, in
+    # catalog order, and its output the looked-up output.
+    it 'looks up the same select step reference_apply runs, on every corpus line' do
+      extra = every_key.select { |key| corpus_matches[key].any? { |at| (key =~ corpus[at]).nil? } }
+      build_catalog('Trader', every_flag_on.merge('textsubs_use_plat_grouping' => true))
+      subs = TextSubs.subs
+      selections = []
+      recording = subs.dup
+      recording.define_singleton_method(:select) { |&block| super(&block).tap { |matches| selections << matches.keys } }
+      looked_up = looked_up_reference(subs, corpus, corpus_matches)
+      differ = corpus.each_index.reject { |at| looked_up[at] == reference_apply(recording, corpus[at]) }
+      selected = selected_keys(subs, corpus_matches, corpus.size)
+      expect(extra.map(&:source)).to eq([])
+      expect(selections.size).to eq(corpus.size)
+      expect(corpus.each_index.reject { |at| selected[at] == selections[at] }.map { |at| corpus[at] }).to eq([])
+      expect(looked_up.each_index.count { |at| looked_up[at] != corpus[at] }).to be > 1_000
+      expect(differ.map { |at| corpus[at] }).to eq([])
+    end
+
+    it 'matches every hand-added sample with a key of some catalog' do
+      unmatched = hand_added.reject { |line| every_key.any? { |key| key.match?(line.b) } }
+      expect(unmatched).to eq([]), "samples_hand_added.jsonl lines no key matches; delete them or fix the key: #{unmatched.inspect}"
+    end
+
+    it 'keeps the \r\n ending on every stream line the Empath catalog rewrites' do
+      build_catalog('Empath', every_flag_on)
+      rewritten = stream_without_big_line.filter_map do |line|
+        output = run_hooks(line)
+        output unless output == line
+      end
+      expect(rewritten).not_to be_empty
+      expect(rewritten).to all(end_with("\r\n"))
     end
   end
 end
