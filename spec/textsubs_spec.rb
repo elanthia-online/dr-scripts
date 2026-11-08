@@ -874,7 +874,7 @@ RSpec.describe 'textsubs.lic' do
       expect(staged_subs).to eq({})
       expect(installed).to equal(staged)
       expect(installed_subs.map { |pattern, replacement| [pattern.source, pattern.options, replacement] }).to eq(catalog)
-      expect([name, options]).to eq(['textsub', { persist: false }])
+      expect([name, options]).to eq(['textsub', { persist: false, priority: -100 }])
       expect(subs_at_hook).to equal(installed_subs)
       expect(catalog.map(&:first)).not_to include('stale')
     end
@@ -940,6 +940,76 @@ RSpec.describe 'textsubs.lic' do
       build_catalog('Ranger', 'herb_textsubs' => false)
       expect(DownstreamHook.list.count('textsub')).to eq(1)
       expect(run_hooks("You pick some nilos.\r\n".b)).to eq("You pick some nilos.\r\n")
+    end
+
+    # Other scripts register hooks that read or squelch lines, almost always
+    # at the default priority of 0, and they must match the server's text, not
+    # textsubs' rewrite of it, whichever script started first.
+    describe 'beside the hooks of other scripts' do
+      # Registers a hook named name that records each line it is handed and
+      # passes it on unchanged.
+      #
+      # @param name [String] the hook name
+      # @param options [Hash] persist:/priority: for DownstreamHook.add
+      # @return [Array<String>] the lines the hook has seen, filled as they come
+      def add_reader(name, **options)
+        [].tap { |seen| DownstreamHook.add(name, proc { |line| seen << line.dup; line }, **options) }
+      end
+
+      # Starts textsubs with "Bob" on the shit list, as integrate_shit_list_with_textsubs reads it.
+      #
+      # @return [void]
+      def start_textsubs_with_bob_on_the_shit_list
+        Dir.mktmpdir('textsubs-hook-priority') do |dir|
+          File.write(File.join(dir, "#{checkname}_shit.list"), "bob,stole my kill\n")
+          Dir.chdir(dir) { build_catalog('Commoner', 'integrate_shit_list_with_textsubs' => true) }
+        end
+      end
+
+      after do
+        %w[reader-started-before reader-started-after reader-below].each { |name| DownstreamHook.remove(name) }
+      end
+
+      it 'runs after a default-priority hook registered after it, and before one below -100' do
+        before_reader = add_reader('reader-started-before')
+        start_textsubs_with_bob_on_the_shit_list
+        after_reader = add_reader('reader-started-after')
+        below_reader = add_reader('reader-below', priority: -101)
+
+        expect(run_hooks("Bob just arrived.\r\n".b)).to eq("Bob (SL) just arrived.\r\n")
+        expect(before_reader).to eq(["Bob just arrived.\r\n"])
+        expect(after_reader).to eq(["Bob just arrived.\r\n"])
+        expect(below_reader).to eq(["Bob (SL) just arrived.\r\n"])
+      end
+
+      # A re-registered name keeps its first position among equal priorities
+      # (lich-5 HookRegistry), so a textsubs started while the old one's hook
+      # is still there inherits that hook's place ahead of a reader added
+      # since; one started after Lich removed it lands behind every hook.
+      it 'still runs last after a restart, whether it replaced its old hook or Lich removed that first' do
+        start_textsubs_with_bob_on_the_shit_list
+        reader = add_reader('reader-started-after')
+
+        start_textsubs_with_bob_on_the_shit_list
+        expect(run_hooks("Bob just arrived.\r\n".b)).to eq("Bob (SL) just arrived.\r\n")
+        expect(reader).to eq(["Bob just arrived.\r\n"])
+
+        DownstreamHook.remove('textsub')
+        start_textsubs_with_bob_on_the_shit_list
+        expect(run_hooks("Bob waves.\r\n".b)).to eq("Bob (SL) waves.\r\n")
+        expect(reader).to eq(["Bob just arrived.\r\n", "Bob waves.\r\n"])
+      end
+
+      it 'never hands a line a default-priority hook squelched to TextSubs.apply' do
+        start_textsubs_with_bob_on_the_shit_list
+        DownstreamHook.add('reader-started-after', proc { |line| line.start_with?('Bob') ? nil : line })
+        allow(TextSubs).to receive(:apply).and_call_original
+
+        expect(run_hooks("Bob just arrived.\r\n".b)).to be_nil
+        expect(TextSubs).not_to have_received(:apply)
+        expect(run_hooks("You feel fine.\r\n".b)).to eq("You feel fine.\r\n")
+        expect(TextSubs).to have_received(:apply).once
+      end
     end
 
     it "ends by watching 'textsub', once, after the hook is registered" do
