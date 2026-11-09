@@ -878,6 +878,8 @@ RSpec.describe Bescort do
 
         def pause
           @pauses += 1
+          raise 'bescort paused again and again without re-checking' if @pauses > 50
+
           @left = @polls
         end
 
@@ -993,14 +995,57 @@ RSpec.describe Bescort do
       expect(messages).to include('  1. Go to the bank: room 7224. go2 is still waiting on this trip, so use ;force go2 7224')
     end
 
-    it 'boards the dirigible after the player fetches the fare' do
+    it 'boards the dirigible after the player fetches the fare, with one WEALTH per check' do
       DRStats.circle = 63
       allow(DRCM).to receive(:wealth).with('Aesry').and_return(3000, 3150)
       at_rooms(dock)
       allow(bescort).to receive(:manual_go2)
       allow(DRC).to receive(:bput).with('join dirigible', any_args).and_return('You hand over your funds and step closer')
       bescort.send(:take_dirigible, 'shard')
+      expect(me.pauses).to eq(1)
+      expect(DRCM).to have_received(:wealth).twice
+      expect(messages.grep(/^Not enough/).size).to eq(1)
+      expect(bescort).not_to have_received(:echo).with('Get money you slob!')
       expect(DRC).to have_received(:bput).with('join dirigible', any_args).at_least(:once)
+    end
+
+    # Every site that hands a shortfall to get_fare? passes the coins its own
+    # WEALTH found and leaves the shortfall message to get_fare?.
+    [
+      [:take_m_m_galley, 'mriss', 6555, "Mer'Kresh", [300, "Mer'Kresh", 6555]],
+      [:take_dirigible, 'aesry', 12_862, 'Shard', [3150, 'Shard', 12_862]],
+      [:take_dirigible, 'shard', 12_942, 'Aesry', [3150, 'Aesry', 12_942]],
+      [:take_balloon, 'mriss', 8793, 'Therenborough', [3150, 'Therenborough', 8793]],
+      [:take_balloon, 'langenfirth', 8794, "Mer'Kresh", [3150, "Mer'Kresh", 8794]],
+      [:take_xing_ferry, 'crossing', 1904, 'Crossing', [35, 'Leth Deriel', 1904]],
+      [:take_xing_ferry, 'leth', 957, 'Crossing', [70, 'Crossing', 957]],
+      [:take_ain_ghazal_ferry, 'ainghazal', 3986, 'Shard', [62, 'Hibarnhvidar', 3986]],
+      [:take_rh_lang_barge, nil, 3434, 'Riverhaven', [300, 'Therenborough', 3434]],
+      [:take_rh_lang_barge, nil, 466, 'Riverhaven', [300, 'Riverhaven', 466]],
+      [:take_haven_throne_ferry, nil, 452, 'Riverhaven', [300, 'Riverhaven', 452]],
+      [:take_haven_throne_ferry, nil, 3084, 'Riverhaven', [300, 'Throne City', 3084]]
+    ].each do |method, mode, room, wealth_town, fare_args|
+      it "#{method} from room #{room} hands its WEALTH to get_fare? and leaves the message to it" do
+        DRStats.circle = 63
+        UserVars.citizenship = 'Ilithi'
+        at_rooms(room)
+        allow(bescort).to receive(:manual_go2)
+        allow(DRCM).to receive(:wealth).with(wealth_town).and_return(10)
+        allow(bescort).to receive(:get_fare?).and_return(false)
+        mode ? bescort.send(method, mode) : bescort.send(method)
+        expect(bescort).to have_received(:get_fare?).with(*fare_args, 10)
+        expect(DRCM).to have_received(:wealth).once
+        expect(bescort).not_to have_received(:echo).with('Get money you slob!')
+      end
+    end
+
+    it 'still says Get money you slob! on the Ain Ghazal dock that fetches no fare' do
+      at_rooms(11_027)
+      allow(DRCM).to receive(:wealth).with('Shard').and_return(10)
+      allow(bescort).to receive(:get_fare?)
+      bescort.send(:take_ain_ghazal_ferry, 'shard')
+      expect(bescort).to have_received(:echo).with('Get money you slob!')
+      expect(bescort).not_to have_received(:get_fare?)
     end
 
     it 'leaves the dirigible alone when go2 is killed while paused' do
