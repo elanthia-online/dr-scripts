@@ -653,6 +653,306 @@ RSpec.describe TaskMaster do
       end
     end
 
+    describe 'a task already open when the run asks for one' do
+      # The real start-up, task loop, get_task, resume_task, read_task,
+      # check_task_giver and read_instructions, with only the leaves that
+      # talk to the game or do the work stubbed to record themselves.
+      let(:rope_materials) { '   (1) finished fabric cloth (4 yards)' }
+      let(:on_task) { 'You are already on a task.' }
+      let(:offer) { 'You may accept by typing ACCEPT TASK.' }
+      let(:wait) { 'Seamstress Zasele says, "I am sorry, you must wait before I can give you a task."' }
+      # Another taskmaster's task: Zasele's journal line as the game prints it
+      # (Fidon, 2026-11) with Dorhum named as the giver instead, as the
+      # foreign-task examples under #resume_task do.
+      let(:dorhum_journal) do
+        'While visiting Andreshlew for the Hollow Eve festivities, Dorhum has asked you to craft some items to assist her ongoing efforts with the Merelew and others.  ' \
+          'In particular, she wanted you to craft a coil of reinforced cloth rope and indicated that 3 would suffice.  So far, you have returned 0 to her.'
+      end
+
+      # asks: the replies to ASK <taskmaster> FOR TASK, in order; journals:
+      # the TASK replies, in order (one per resume and one per accepted
+      # task); banked: what turn_in_banked returns for each resume, in order
+      # (0 when the bag alone finished the task), the owed count when
+      # empty. The wrap-up flag goes up with the hand-in numbered
+      # wrap_up_after, a banked finish counting as one. real_banked runs the
+      # real turn_in_banked instead, with nothing to give (give_item nil).
+      # real_zasele runs the real zasele worker, buy_stackables and trash,
+      # recording the stock bought and binned. Returns the recorded steps;
+      # :exit when the script ended.
+      def open_run(asks:, journals:, banked: [], wrap_up_after: nil, ticket: false, settings: {}, samples: [], stock_ok: true,
+                   real_banked: false, real_zasele: false, **args)
+        tm = described_class.allocate
+        events = []
+        handed_in = 0
+        hand_in = lambda do
+          handed_in += 1
+          Flags['wrap-up'] = true if handed_in == wrap_up_after
+        end
+        allow(tm).to receive(:get_settings).and_return(OpenStruct.new({ outfitting_tools: ['scissors'], outfitting_belt: outfitting_belt }.merge(settings)))
+        allow(tm).to receive(:get_data).and_return({ 'stock' => { 'burlap' => { 'stock-value' => 125, 'stock-number' => 5 } } })
+        allow(tm).to receive(:parse_args).and_return(OpenStruct.new(args))
+        allow_any_instance_of(Array).to receive(:sample).and_wrap_original do |original, *rest|
+          original.receiver == %w[poltu bradyn zasele] ? samples.shift : original.call(*rest)
+        end
+        allow(DRCI).to receive(:exists?).with('rangu ticket').and_return(ticket)
+        allow(DRCI).to receive(:stow_hands)
+        allow(DRCC).to receive(:stow_crafting_item)
+        allow(tm).to receive(:reconcile_hands) { events << :reconcile }
+        allow(tm).to receive(:top_up_copper) { events << [:copper, tm.instance_variable_get(:@remainder), tm.instance_variable_get(:@dispose)] }
+        allow(tm).to receive(:refresh_haste) { events << :haste }
+        allow(tm).to receive(:run_before_scripts) { events << :before }
+        allow(tm).to receive(:find_npc)
+        allow(tm).to receive(:pause) { |seconds| events << [:pause, seconds] }
+        allow(tm).to receive(:tool_pickup) { events << :tool_pickup }
+        allow(tm).to receive(:ensure_instructions) { |item, owed| events << [:ensure_instructions, item, owed] }
+        if real_banked
+          allow(tm).to receive(:give_item) do |item, owed|
+            events << [:give, item, owed]
+            nil
+          end
+        else
+          allow(tm).to receive(:turn_in_banked) do |item, owed|
+            left = banked.empty? ? owed : banked.shift
+            events << [:banked, item, owed, left]
+            if left.zero?
+              # What the real hand-in's task_handed_in notes.
+              tm.instance_variable_set(:@task_handed_in, true)
+              hand_in.call
+            end
+            left
+          end
+        end
+        if real_zasele
+          allow(DRCM).to receive(:ensure_copper_on_hand)
+          allow(tm).to receive(:buy_stock) { |*stock| events << [:buy, *stock] }
+          allow(tm).to receive(:dispose_leftovers) { |*stock| events << [:dispose, *stock] }
+        end
+        (real_zasele ? %i[poltu bradyn] : %i[poltu bradyn zasele]).each do |npc|
+          allow(tm).to receive(npc) do |*task|
+            events << [:work, npc, *task]
+            tm.instance_variable_set(:@remainder, true)
+            tm.instance_variable_set(:@dispose, true)
+          end
+        end
+        allow(tm).to receive(:complete_task) do |item, count|
+          events << [:complete, item, count]
+          tm.instance_variable_set(:@task_handed_in, true)
+          hand_in.call
+        end
+        allow(tm).to receive(:cancel_task) { |giver, item| events << [:cancel, giver, item] }
+        allow(tm).to receive(:restock) { events << :restock }
+        allow(tm).to receive(:check_stock) do |*needed|
+          raise "check_stock with #{needed.inspect}" if needed.any?(&:nil?)
+
+          events << [:check_stock, *needed]
+          stock_ok
+        end
+        allow(tm).to receive(:repair)
+        allow(tm).to receive(:tailor_item) { |*task| events << [:tailor, *task] }
+        allow(DRC).to receive(:message) { |text| events << [:message, text] if text.start_with?('You are not on a task', 'You are on a task', 'Your task journal') }
+        ask = lambda do |command, *|
+          events << [:ask, command[/\Aask (\w+) for task/, 1]]
+          # A loop that no longer stops fails here instead of hanging the suite.
+          raise 'asked again after the last reply' if asks.empty?
+
+          asks.shift
+        end
+        game('ask '                      => ask,
+             'accept task'               => 'You can check your progress with the TASK verb.',
+             'task'                      => ->(*) { journals.shift || raise('read the journal again after the last entry') },
+             'read my rope instructions' => rope_materials)
+        begin
+          tm.send(:initialize)
+          tm.run
+        rescue SystemExit
+          events << :exit
+        end
+        events
+      end
+
+      let(:before_task) { [[:copper, false, false], :haste, :before] }
+      # A resume that finishes the open rope task: 2 of 5 left after the
+      # banked items, worked and handed in. resume_task tops up copper and
+      # haste itself before the work.
+      let(:resumed) do
+        [[:banked, 'rope', 2, 2], [:ensure_instructions, 'rope', 2], :haste, [:copper, false, false], [:work, :zasele, 'rope', 2, 4, 'cloth', 'burlap'], [:complete, 'rope', 2]]
+      end
+      let(:new_task) { [[:work, :zasele, 'rope', 3, 4, 'cloth', 'burlap'], [:complete, 'rope', 3]] }
+
+      it 'with repeat, finishes the open task, then asks for and works a new one, clearing the flags first' do
+        events = open_run(npc: 'zasele', repeat: true, wrap_up_after: 2, asks: [on_task, offer],
+                          journals: [journal('a coil of reinforced cloth rope', 5, 3), journal('a coil of reinforced cloth rope', 3, 0)])
+        expect(events).to eq([:reconcile, *before_task, [:ask, 'zasele'], *resumed,
+                              *before_task, [:ask, 'zasele'], *new_task])
+      end
+
+      it 'with repeat, goes on asking when the banked items alone finish the open task, without working or handing in anything else for it' do
+        events = open_run(npc: 'zasele', repeat: true, wrap_up_after: 2, asks: [on_task, offer], banked: [0],
+                          journals: [journal('a coil of reinforced cloth rope', 5, 3), journal('a coil of reinforced cloth rope', 3, 0)])
+        expect(events).to eq([:reconcile, *before_task, [:ask, 'zasele'], [:banked, 'rope', 2, 0],
+                              *before_task, [:ask, 'zasele'], *new_task])
+      end
+
+      it 'with repeat, keeps finishing open tasks while the taskmaster says one is open, and waits out a cooldown before the next' do
+        events = open_run(npc: 'zasele', repeat: true, wrap_up_after: 3, asks: [on_task, on_task, wait, offer], banked: [0, 2],
+                          journals: [journal('a coil of reinforced cloth rope', 5, 3), journal('a coil of reinforced cloth rope', 5, 3), journal('a coil of reinforced cloth rope', 3, 0)])
+        expect(events).to eq([:reconcile, *before_task, [:ask, 'zasele'], [:banked, 'rope', 2, 0],
+                              *before_task, [:ask, 'zasele'], *resumed,
+                              *before_task, [:ask, 'zasele'], [:pause, 15], [:ask, 'zasele'], *new_task])
+      end
+
+      it 'with repeat and a rangu ticket, picks up tools once on a resumed pass, inside the resume, and again only for the new task' do
+        events = open_run(npc: 'zasele', repeat: true, wrap_up_after: 2, ticket: true, asks: [on_task, offer],
+                          journals: [journal('a coil of reinforced cloth rope', 5, 3), journal('a coil of reinforced cloth rope', 3, 0)])
+        resumed_with_pickup = resumed.dup.insert(4, :tool_pickup)
+        expect(events).to eq([:reconcile, *before_task, [:ask, 'zasele'], *resumed_with_pickup,
+                              *before_task, [:ask, 'zasele'], :tool_pickup, *new_task])
+        events = open_run(npc: 'zasele', repeat: true, wrap_up_after: 2, ticket: true, banked: [0], asks: [on_task, offer],
+                          journals: [journal('a coil of reinforced cloth rope', 5, 3), journal('a coil of reinforced cloth rope', 3, 0)])
+        expect(events).to eq([:reconcile, *before_task, [:ask, 'zasele'], [:banked, 'rope', 2, 0],
+                              *before_task, [:ask, 'zasele'], :tool_pickup, *new_task])
+      end
+
+      describe 'a journal that shows every item returned, with nothing to give' do
+        let(:all_returned) { journal('a coil of reinforced cloth rope', 3, 3) }
+
+        it 'with repeat, stops after one ask instead of resuming the same open task over and over' do
+          events = open_run(npc: 'zasele', repeat: true, real_banked: true, asks: [on_task, on_task, on_task], journals: [all_returned, all_returned, all_returned])
+          expect(events.count([:ask, 'zasele'])).to eq(1)
+          expect(events.last(3)).to eq([[:give, 'rope', 0],
+                                        [:message, 'Your task journal shows nothing more owed to Zasele, but nothing could be handed in, so the task is still open. Stopping.'], :exit])
+          expect(events.map { |event| Array(event).first }).not_to include(:work, :complete)
+        end
+
+        it 'stops there with repeat even after an earlier task of the run was handed in' do
+          events = open_run(npc: 'zasele', repeat: true, real_banked: true, asks: [offer, on_task, on_task],
+                            journals: [journal('a coil of reinforced cloth rope', 3, 0), all_returned, all_returned])
+          expect(events.count([:ask, 'zasele'])).to eq(2)
+          expect(events.grep(Array).select { |event| event.first == :complete }).to eq([[:complete, 'rope', 3]])
+          expect(events.last).to eq(:exit)
+        end
+
+        it 'stops the same way in marathon, cycle, a single run and finish' do
+          [{ marathon: true }, { cycle: true, samples: %w[zasele] }, {}, { finish: true }].each do |mode|
+            events = open_run(npc: 'zasele', real_banked: true, asks: [on_task, on_task], journals: [all_returned, all_returned], **mode)
+            expect(events.count([:ask, 'zasele'])).to eq(mode[:finish] ? 0 : 1), mode.inspect
+            expect(events.last(2)).to eq([[:message, 'Your task journal shows nothing more owed to Zasele, but nothing could be handed in, so the task is still open. Stopping.'], :exit]), mode.inspect
+          end
+        end
+      end
+
+      it 'stops at the wrap-up call during the resumed task without asking again, and still picks up tools at the end as asked' do
+        events = open_run(npc: 'zasele', repeat: true, wrap_up_after: 1, ticket: true, settings: { task_self_repair: true, task_get_tools_on_completion: true },
+                          asks: [on_task], journals: [journal('a coil of reinforced cloth rope', 5, 3)])
+        expect(events).to eq([:reconcile, *before_task, [:ask, 'zasele'], *resumed, :tool_pickup])
+      end
+
+      it 'stops at the wrap-up call when the banked items finish the open task, with no tool pickup unless asked' do
+        events = open_run(npc: 'zasele', repeat: true, wrap_up_after: 1, banked: [0], asks: [on_task], journals: [journal('a coil of reinforced cloth rope', 5, 3)])
+        expect(events).to eq([:reconcile, *before_task, [:ask, 'zasele'], [:banked, 'rope', 2, 0]])
+        expect(events).not_to include(:exit, :tool_pickup)
+      end
+
+      it 'with cycle, picks the next taskmaster from the cycle list after the resumed task and works its task' do
+        events = open_run(npc: 'zasele', cycle: true, wrap_up_after: 2, samples: %w[zasele poltu], asks: [on_task, offer],
+                          journals: [journal('a coil of reinforced cloth rope', 5, 3), journal('a coil of reinforced cloth rope', 3, 0)])
+        expect(events.grep(Array).select { |event| event.first == :ask }).to eq([[:ask, 'zasele'], [:ask, 'poltu']])
+        expect(events.last(2)).to eq([[:work, :poltu, 'rope', 3, 4, 'cloth', 'burlap'], [:complete, 'rope', 3]])
+      end
+
+      it 'without repeat, ends the script once the open task is handed in, before the end-of-run tool pickup, as before' do
+        events = open_run(npc: 'zasele', ticket: true, settings: { task_self_repair: true, task_get_tools_on_completion: true },
+                          asks: [on_task], journals: [journal('a coil of reinforced cloth rope', 5, 3)])
+        expect(events).to eq([:reconcile, *before_task, [:ask, 'zasele'], *resumed, :exit])
+      end
+
+      it 'without repeat, ends the script when the banked items alone finish the open task' do
+        events = open_run(npc: 'zasele', banked: [0], asks: [on_task], journals: [journal('a coil of reinforced cloth rope', 5, 3)])
+        expect(events).to eq([:reconcile, *before_task, [:ask, 'zasele'], [:banked, 'rope', 2, 0], :exit])
+      end
+
+      it 'finish still ends the script once the task is handed in, never asking for another, even with repeat' do
+        events = open_run(npc: 'zasele', finish: true, repeat: true, asks: [], journals: [journal('a coil of reinforced cloth rope', 5, 3)])
+        expect(events).to eq([:reconcile, *resumed, :exit])
+        events = open_run(npc: 'zasele', finish: true, repeat: true, banked: [0], asks: [], journals: [journal('a coil of reinforced cloth rope', 5, 3)])
+        expect(events).to eq([:reconcile, [:banked, 'rope', 2, 0], :exit])
+      end
+
+      it 'still stops on a run that is not on a task after all, whatever the mode' do
+        events = open_run(npc: 'zasele', repeat: true, asks: [on_task], journals: ['You are not currently on a task.'])
+        expect(events.last(2)).to eq([[:message, 'You are not on a task with zasele.'], :exit])
+      end
+
+      describe 'marathon' do
+        # The resumed rope task made from the carried stock: 2 left, 4 yards each.
+        let(:resumed_marathon) do
+          [[:banked, 'rope', 2, 2], [:ensure_instructions, 'rope', 2], :haste, [:copper, false, false],
+           [:check_stock, 8, 'burlap', 'cloth'], [:tailor, 'rope', 2, 'cloth', 'burlap'], [:complete, 'rope', 2]]
+        end
+
+        it 'finishes the open task from the carried stock, then checks stock for, tailors and hands in the next, never checking stock with nothing' do
+          events = open_run(npc: 'zasele', marathon: true, wrap_up_after: 2, asks: [on_task, offer],
+                            journals: [journal('a coil of reinforced cloth rope', 5, 3), journal('a coil of reinforced cloth rope', 3, 0)])
+          expect(events).to eq([:reconcile, :restock, [:copper, nil, nil], :haste, :before, [:ask, 'zasele'], *resumed_marathon,
+                                [:copper, false, false], :haste, :before, [:ask, 'zasele'],
+                                [:check_stock, 12, 'burlap', 'cloth'], [:tailor, 'rope', 3, 'cloth', 'burlap'], [:complete, 'rope', 3], :exit])
+        end
+
+        it 'never buys stock for the resumed task nor bins the carried stack, with the real zasele worker in reach' do
+          events = open_run(npc: 'zasele', marathon: true, real_zasele: true, wrap_up_after: 2, asks: [on_task, offer],
+                            journals: [journal('a coil of reinforced cloth rope', 5, 3), journal('a coil of reinforced cloth rope', 3, 0)])
+          expect(events.map { |event| Array(event).first }).not_to include(:buy, :dispose)
+          expect(events.grep(Array).select { |event| event.first == :tailor }).to eq([[:tailor, 'rope', 2, 'cloth', 'burlap'], [:tailor, 'rope', 3, 'cloth', 'burlap']])
+          expect(events).to eq([:reconcile, :restock, [:copper, nil, nil], :haste, :before, [:ask, 'zasele'], *resumed_marathon,
+                                [:copper, false, false], :haste, :before, [:ask, 'zasele'],
+                                [:check_stock, 12, 'burlap', 'cloth'], [:tailor, 'rope', 3, 'cloth', 'burlap'], [:complete, 'rope', 3], :exit])
+        end
+
+        it 'restocks during the resumed task when the carried stock runs short, as for a new one' do
+          events = open_run(npc: 'zasele', marathon: true, wrap_up_after: 1, stock_ok: false, asks: [on_task],
+                            journals: [journal('a coil of reinforced cloth rope', 5, 3)])
+          expect(events).to eq([:reconcile, :restock, [:copper, nil, nil], :haste, :before, [:ask, 'zasele'],
+                                [:banked, 'rope', 2, 2], [:ensure_instructions, 'rope', 2], :haste, [:copper, false, false],
+                                [:check_stock, 8, 'burlap', 'cloth'], :restock, [:tailor, 'rope', 2, 'cloth', 'burlap'], [:complete, 'rope', 2], :exit])
+        end
+
+        it 'outside marathon, the same resume with the real zasele worker buys stock for the task and bins the remainder' do
+          events = open_run(npc: 'zasele', repeat: true, real_zasele: true, wrap_up_after: 1, asks: [on_task],
+                            journals: [journal('a coil of reinforced cloth rope', 5, 3)])
+          expect(events.grep(Array).select { |event| %i[buy dispose].include?(event.first) }).to eq([[:buy, 'cloth', 5, 1, 8], [:dispose, 'burlap cloth', 14_886]])
+          expect(events).not_to include([:check_stock, 8, 'burlap', 'cloth'])
+        end
+
+        it 'goes on asking when the banked items alone finish the open task, and exits at the wrap-up call' do
+          events = open_run(npc: 'zasele', marathon: true, wrap_up_after: 1, banked: [0], asks: [on_task], journals: [journal('a coil of reinforced cloth rope', 5, 3)])
+          expect(events).to eq([:reconcile, :restock, [:copper, nil, nil], :haste, :before, [:ask, 'zasele'], [:banked, 'rope', 2, 0], :exit])
+          events = open_run(npc: 'zasele', marathon: true, wrap_up_after: 2, banked: [0], asks: [on_task, offer],
+                            journals: [journal('a coil of reinforced cloth rope', 5, 3), journal('a coil of reinforced cloth rope', 3, 0)])
+          expect(events.last(4)).to eq([[:check_stock, 12, 'burlap', 'cloth'], [:tailor, 'rope', 3, 'cloth', 'burlap'], [:complete, 'rope', 3], :exit])
+        end
+      end
+
+      describe "another taskmaster's task" do
+        it 'with task_cancel_foreign_tasks, cancels it and asks its own taskmaster again in the same iteration, as before' do
+          events = open_run(npc: 'zasele', settings: { task_cancel_foreign_tasks: true }, asks: [on_task, offer],
+                            journals: [dorhum_journal, journal('a coil of reinforced cloth rope', 3, 0)])
+          expect(events).to eq([:reconcile, *before_task, [:ask, 'zasele'], [:cancel, 'dorhum', 'rope'], [:pause, 600], [:ask, 'zasele'], *new_task])
+        end
+
+        it 'with repeat, cancels it, works its own task and goes on, nothing of the cancelled task worked or handed in' do
+          events = open_run(npc: 'zasele', repeat: true, wrap_up_after: 1, settings: { task_cancel_foreign_tasks: true }, asks: [on_task, offer],
+                            journals: [dorhum_journal, journal('a coil of reinforced cloth rope', 3, 0)])
+          expect(events).to eq([:reconcile, *before_task, [:ask, 'zasele'], [:cancel, 'dorhum', 'rope'], [:pause, 600], [:ask, 'zasele'], *new_task])
+        end
+
+        it 'without task_cancel_foreign_tasks, stops with repeat too, saying whose task it is' do
+          events = open_run(npc: 'zasele', repeat: true, asks: [on_task], journals: [dorhum_journal])
+          expect(events.last(2)).to eq([[:message, 'You are on a task for Dorhum, not Zasele. Finish it with ;taskmaster dorhum, or cancel it with ASK DORHUM FOR TASK CANCEL (taskmasters then refuse you for about ten minutes). Or set task_cancel_foreign_tasks to have taskmaster cancel such tasks itself.'], :exit])
+          expect(events.map { |event| Array(event).first }).not_to include(:banked, :work, :complete)
+        end
+      end
+    end
+
     describe 'other modes' do
       it 'finish sorts the hands and resumes the task in progress, without asking for a new one' do
         expect(start(npc: 'zasele', finish: true)).to eq(%i[reconcile resume exit])
@@ -1342,10 +1642,10 @@ RSpec.describe TaskMaster do
         let(:on_task) { 'You are already on a task.' }
 
         # Plays the replies in order and records each search, ask, pause and
-        # command. Accepting returns finish's result and an ongoing task
-        # resume_task's, both stubbed. Returns get_task's result, the steps
-        # and the instance.
-        def asking(replies, boost: false)
+        # command. Accepting returns finish's (stubbed) result; an ongoing
+        # task calls the stubbed resume_task, and get_task then returns nil.
+        # Returns get_task's result, the steps and the instance.
+        def asking(replies, boost: false, **get_task_args)
           tm = reader(boost: boost, cooldown_poll: 7)
           events = []
           allow(tm).to receive(:find_npc) { events << :find }
@@ -1374,7 +1674,7 @@ RSpec.describe TaskMaster do
           end
           game('ask zasele for task' => ask, 'accept task' => accept)
           yield tm if block_given?
-          [tm.get_task, events, tm]
+          [tm.get_task(**get_task_args), events, tm]
         end
 
         let(:accepted) { %i[find ask accept finish] }
@@ -1433,12 +1733,23 @@ RSpec.describe TaskMaster do
           expect(events).to eq([[:pause, 7]])
         end
 
-        it 'resumes the task already in progress and returns what resuming returns' do
-          expect(asking([on_task]).first(2)).to eq([:resumed, %i[find ask resume]])
+        it 'resumes the task already in progress, ending the script there by default' do
+          result, events, tm = asking([on_task])
+          expect([result, events]).to eq([nil, %i[find ask resume]])
+          expect(tm).to have_received(:resume_task).with(exit_when_done: true)
         end
 
         it 'resumes after waiting out a cooldown' do
-          expect(asking([wait, on_task]).first(2)).to eq([:resumed, [:find, :ask, [:pause, 7], :find, :ask, :resume]])
+          expect(asking([wait, on_task]).first(2)).to eq([nil, [:find, :ask, [:pause, 7], :find, :ask, :resume]])
+        end
+
+        it 'returns nil, never what resuming returns, once the task in progress is handed in for a run that goes on' do
+          result, events, tm = asking([on_task], exit_after_resume: false) do |run|
+            # A value resuming might leak, which must not reach the worker.
+            allow(run).to receive(:resume_task).and_return(['rope', 2, 4, 'cloth', 'burlap'])
+          end
+          expect([result, events]).to eq([nil, %i[find ask]])
+          expect(tm).to have_received(:resume_task).with(exit_when_done: false).once
         end
 
         it 'mixes replies in any order, asking until there is an offer' do
@@ -4097,6 +4408,8 @@ RSpec.describe TaskMaster do
         giving([sack_handed], banked: 1)
         expect(tm.turn_in_banked('rope', 1)).to eq(0)
         expect(tm).to have_received(:bin_task_stock).once
+        # Noted for resume_task, which tells this from nothing to give.
+        expect(tm.instance_variable_get(:@task_handed_in)).to be(true)
       end
 
       it 'does not bin while items are still owed' do
@@ -4107,6 +4420,14 @@ RSpec.describe TaskMaster do
         giving([more_needed(2)], banked: 1)
         expect(tm.turn_in_banked('rope', 3)).to eq(2)
         expect(tm).not_to have_received(:bin_task_stock)
+        expect(tm.instance_variable_get(:@task_handed_in)).to be_nil
+      end
+
+      it 'returns 0 without noting a hand-in when nothing is owed and there is nothing to give' do
+        tm = build
+        allow(tm).to receive(:give_item).and_return(nil)
+        expect(tm.turn_in_banked('rope', 0)).to eq(0)
+        expect(tm.instance_variable_get(:@task_handed_in)).to be_nil
       end
     end
 
@@ -7483,6 +7804,80 @@ RSpec.describe TaskMaster do
             expect(game.sent.include?('ask nezhiri for instructions')).to eq(asks)
             expect(UserVars.taskmaster_replacements).to eq(asks ? { 'nezhiri' => 'draught' } : nil)
           end
+        end
+
+        # ;taskmaster nezhiri repeat with 6400's task already open (its
+        # journal entry, 6400:306, is 6101:24's word for word: 12 doses of
+        # scale moisturizer, none returned) and no doses on hand. The open
+        # task is finished inside the loop: the two crafts planned make 5
+        # each, as in log 6400 (6400:683, 811, 813), one extra craft makes the
+        # 15, 5 a craft is remembered, the 15 are cut to 12 and handed in,
+        # and the loop then asks Nezhiri for the next task rather than
+        # ending the script. The extra craft's COMBINE and COUNT, the cut and
+        # the hand-in are past 6400's end: 6100's lines stand in.
+        it 'finishes the open task under repeat with an extra craft, remembers the yield, hands in, then asks for the next task (6400:306, 683-813)' do
+          asked_again = Class.new(StandardError)
+          UserVars.taskmaster_remedy_yields = nil
+          tm = maker(npc: 'nezhiri', boosts: [], copper_floor: 0)
+          game, commons = shop_world(kit + [['scale moisturizer instructions', 'duffel bag']], shop: :model)
+          iterations = 0
+          allow(tm).to receive(:prepare_for_task) { iterations += 1 }
+          allow(tm).to receive(:repair)
+          allow(tm).to receive(:sort_sack)
+          game.script('ask nezhiri for task', ReplayGame.code('You are already on a task.', from: "the reply get_task waits for (/You are already on a task/); no Nezhiri log has it"))
+          game.script('task', ReplayGame.log('6101:24'))
+          # turn_in_banked's hand-in and nezhiri's count find no doses.
+          2.times { game.script('rummage /C moisturizer in my duffel bag', rummaged('moisturizer', 'some scale moisturizer instructions')) }
+          game.script('read my moisturizer instructions', ReplayGame.log('6100:208')) # ensure_instructions: 13 uses
+          game.script('read my moisturizer instructions', *reads['moisturizer'])
+          2.times do
+            game.script('count my first brine', ReplayGame.log('6100:8800')) # ten parts
+            game.script('count my second brine', ReplayGame.log('6100:8793'))
+            game.script('tap my first coal nugget', ReplayGame.log('6100:8910')) # large: 4 rubs
+            game.script('count my first red flowers', ReplayGame.log('6100:8793'))
+          end
+          runs = remedy_makes(commons, 'scale moisturizer', %w[7002 7004 7006])
+          game.script('count #7002', ReplayGame.log('6400:683'))
+          game.script('combine #7002 with #7004', ReplayGame.log('6400:811'), after: merges(commons, 'scale moisturizer', '7002', '7004', into: '7005'))
+          game.script('count #7005', ReplayGame.log('6400:813'))
+          game.script('combine #7005 with #7006', ReplayGame.log('6100:9368'), after: merges(commons, 'scale moisturizer', '7005', '7006', into: '7007'))
+          game.script('count #7007', ReplayGame.log('6100:6040')) # 15 doses
+          game.script('rummage /C moisturizer in my duffel bag', rummaged('moisturizer', 'some scale moisturizer instructions and some scale moisturizer'))
+          game.script('count #7007', ReplayGame.log('6100:6040'))
+          game.script('mark my moisturizer at 12', ReplayGame.code('You measure out 12 usable portions from the stack and mark it for cutting.', from: '6100:9688 with 12 portions'))
+          game.script('break my moisturizer', ReplayGame.code('You carefully break off 12 pieces from the stack.', from: '6100:9690 with 12 pieces'),
+                      after: breaks(commons, 'scale moisturizer', '7007', kept: '7009', rest: '7008', kept_hand: :right))
+          game.script('count #7009', ReplayGame.log('6100:22617')) # 12 doses
+          game.script('give my moisturizer to nezhiri', ReplayGame.log('6100:3753'), ReplayGame.log('6100:3756'), after: ->(_) { commons.release('#7009') })
+          game.fallback('dump junk', ReplayGame.log('6100:10286'))
+          # The loop's next ask: what matters is that it is made.
+          game.script('ask nezhiri for task', ReplayGame.log('6100:145'), after: ->(_) { raise asked_again })
+
+          expect { tm.run_tasks(OpenStruct.new(repeat: true)) }.to raise_error(asked_again)
+
+          expect(runs.count { |name, _| name == 'remedy' }).to eq(3)
+          expect(game.sent).to eq(
+            ['ask nezhiri for task', 'task', 'rummage /C moisturizer in my duffel bag', 'read my moisturizer instructions', 'read my moisturizer instructions',
+             'rummage /C moisturizer in my duffel bag', 'count my first brine', 'count my second brine', 'tap my first coal nugget', 'count my first red flowers',
+             'count #7002', 'combine #7002 with #7004', 'count #7005',
+             'count my first brine', 'count my second brine', 'tap my first coal nugget', 'count my first red flowers',
+             'combine #7005 with #7006', 'count #7007',
+             'rummage /C moisturizer in my duffel bag', 'count #7007', 'mark my moisturizer at 12', 'break my moisturizer', 'count #7009',
+             'give my moisturizer to nezhiri', 'dump junk', 'ask nezhiri for task']
+          )
+          expect(DRC).to have_received(:message).with('0 of the 12 doses of scale moisturizer owed are on hand: not enough to hand in yet.').ordered
+          expect(DRC).to have_received(:message).with('12 doses of scale moisturizer owed, 0 on hand: 2 crafts to make.').ordered
+          expect(DRC).to have_received(:message).with('10 of 12 doses of scale moisturizer made: 1 more craft to make.').ordered
+          expect(DRC).to have_received(:message).with('15 doses of scale moisturizer made and combined into one.').ordered
+          expect(DRC).not_to have_received(:message).with(/short of the|Stopping/)
+          expect(UserVars.taskmaster_remedy_yields).to eq('scale moisturizer' => 5)
+          expect(tm.instance_variable_get(:@task_handed_in)).to be(true)
+          expect(tm).to have_received(:repair).once
+          expect(tm).to have_received(:sort_sack).once
+          # The 3 doses left over wait in the bag for the next task.
+          expect([commons.location_of('#7008'), commons.location_of('#7009'), tm.instance_variable_get(:@remedy_stack)]).to eq(['duffel bag', nil, '7008'])
+          expect(iterations).to eq(2)
+          expect(game.diagnostics).to eq([])
         end
 
         # ;taskmaster nezhiri repeat: a gill glop task is cut from 18 to 13,
