@@ -4179,9 +4179,20 @@ RSpec.describe TaskMaster do
         build(settings: settings, lootbag: 'backpack').tap { |tm| tm.send(:configure_loot_filter) }
       end
 
+      # The reward sack in hand, as GameObj gives it (<right exist="63768227"
+      # noun="sack">woven sack</right>, Hollow Eve 2026 XML logs).
+      let(:reward_sack) { OpenStruct.new(noun: 'sack', name: 'woven sack', id: '63768227') }
+
+      def hold(right, left = nil)
+        allow(GameObj).to receive(:right_hand).and_return(right)
+        allow(GameObj).to receive(:left_hand).and_return(left)
+      end
+
+      before { hold(reward_sack) }
+
       def sort(tm, contents)
         allow(DRC).to receive(:bput).and_return('You pick up')
-        allow(DRC).to receive(:bput).with('look in my sack', anything).and_return("In the woven sack you see #{contents}.")
+        allow(DRC).to receive(:bput).with('look in #63768227', anything).and_return("In the woven sack you see #{contents}.")
         allow(DRCI).to receive(:put_away_item?)
         allow(DRCI).to receive(:dispose_trash)
         UserVars.taskmaster_sacks = { 'zasele' => [] }
@@ -4192,7 +4203,7 @@ RSpec.describe TaskMaster do
         tm = filtered(task_junk_list: ['dye'], task_slack_keepers: true)
         expect(tm).to receive(:send_slackbot_message).with('Found a keeper: large haledroth shard')
         sort(tm, 'a large haledroth shard')
-        expect(DRCI).to have_received(:put_away_item?).with('sack', 'backpack')
+        expect(DRCI).to have_received(:put_away_item?).with('#63768227', 'backpack')
       end
 
       it 'does not ping Slack unless task_slack_keepers is set' do
@@ -4211,6 +4222,131 @@ RSpec.describe TaskMaster do
       it 'strips the LOOK prefix from a keeper whose description has no leading article' do
         sort(filtered(task_junk_list: ['dye']), '3 haledroth shards')
         expect(DRC).to have_received(:message).with('Found a keeper: 3 haledroth shards')
+      end
+
+      describe 'naming the sack by its id' do
+        # Catheroine's pet sack (Hollow Eve 2026, binned 2026-11-06 00:31:13
+        # by a lagged second sort whose "get my sack" fetched it from the
+        # duffel bag).
+        let(:pet_sack) { OpenStruct.new(noun: 'sack', name: 'soft woven sack with a golden piglet charm', id: '57001234') }
+
+        def commands
+          sent = []
+          allow(DRC).to receive(:bput) do |command, *|
+            sent << command
+            command == 'look in #63768227' ? 'In the woven sack you see some coral dye.' : ''
+          end
+          sent
+        end
+
+        it 'sends no command naming a bare sack apart from the pouch fill' do
+          sent = commands
+          allow(DRCI).to receive(:dispose_trash)
+          allow(DRCI).to receive(:fill_gem_pouch_with_container)
+          UserVars.taskmaster_sacks = { 'zasele' => [] }
+          filtered(task_junk_list: ['dye']).sort_sack('rope')
+          expect(sent).to eq(['get coin from #63768227', 'look in #63768227'])
+          expect(DRCI).to have_received(:dispose_trash).with('#63768227', nil, nil)
+          expect(DRCI).to have_received(:fill_gem_pouch_with_container).with(anything, anything, 'sack', any_args)
+        end
+
+        it 'leaves a pet sack in hand alone: nothing is looked in, kept or binned' do
+          hold(pet_sack)
+          stub_const("#{described_class}::REWARD_SACK_WAIT", 0)
+          sent = commands
+          allow(DRCI).to receive(:dispose_trash)
+          allow(DRCI).to receive(:put_away_item?)
+          allow(DRCI).to receive(:fill_gem_pouch_with_container)
+          filtered(task_junk_list: ['dye']).sort_sack('rope')
+          expect(sent).to be_empty
+          expect(DRCI).not_to have_received(:dispose_trash)
+          expect(DRCI).not_to have_received(:put_away_item?)
+          expect(DRCI).not_to have_received(:fill_gem_pouch_with_container)
+          expect(DRC).to have_received(:message).with('No reward sack in hand to sort.')
+        end
+
+        it 'does nothing with empty hands, so a sack already binned is never fetched by noun' do
+          hold(nil, nil)
+          stub_const("#{described_class}::REWARD_SACK_WAIT", 0)
+          sent = commands
+          allow(DRCI).to receive(:dispose_trash)
+          filtered(task_junk_list: ['dye']).sort_sack('rope')
+          expect(sent).to be_empty
+          expect(DRCI).not_to have_received(:dispose_trash)
+        end
+
+        it 'does nothing with a reward sack the game gave no id' do
+          hold(OpenStruct.new(noun: 'sack', name: 'woven sack', id: nil))
+          stub_const("#{described_class}::REWARD_SACK_WAIT", 0)
+          sent = commands
+          allow(DRCI).to receive(:dispose_trash)
+          filtered(task_junk_list: ['dye']).sort_sack('rope')
+          expect(sent).to be_empty
+          expect(DRCI).not_to have_received(:dispose_trash)
+        end
+
+        it 'picks the reward sack from the other hand when a pet sack is held too' do
+          hold(pet_sack, reward_sack)
+          sent = commands
+          allow(DRCI).to receive(:dispose_trash)
+          UserVars.taskmaster_sacks = { 'zasele' => [] }
+          filtered(task_junk_list: ['dye']).sort_sack('rope')
+          expect(sent).to include('look in #63768227')
+          expect(DRCI).to have_received(:dispose_trash).with('#63768227', nil, nil)
+          expect(sent.join(' ')).not_to include('57001234')
+        end
+
+        it 'waits for a hand update that trails the hand-in, then sorts by that id' do
+          hands = [nil, nil, reward_sack]
+          allow(GameObj).to receive(:right_hand) { hands.size > 1 ? hands.shift : hands.first }
+          tm = filtered(task_junk_list: ['dye'])
+          allow(tm).to receive(:pause)
+          sent = commands
+          allow(DRCI).to receive(:dispose_trash)
+          UserVars.taskmaster_sacks = { 'zasele' => [] }
+          tm.sort_sack('rope')
+          expect(tm).to have_received(:pause).with(0.1).twice
+          expect(DRCI).to have_received(:dispose_trash).with('#63768227', nil, nil)
+          expect(sent).to include('look in #63768227')
+        end
+
+        it 'gives up waiting after REWARD_SACK_WAIT seconds' do
+          hold(nil, nil)
+          tm = filtered(task_junk_list: ['dye'])
+          clock = Time.at(0)
+          allow(Time).to receive(:now) { clock }
+          allow(tm).to receive(:pause) { |seconds| clock += seconds }
+          sent = commands
+          tm.sort_sack('rope')
+          expect(sent).to be_empty
+          expect(clock - Time.at(0)).to be_within(0.15).of(described_class::REWARD_SACK_WAIT)
+        end
+
+        it 'keeps a sack whose LOOK cannot be read, unopened and unlogged, instead of binning it unseen' do
+          allow(DRC).to receive(:bput).and_return('')
+          allow(DRCI).to receive(:put_away_item?)
+          allow(DRCI).to receive(:dispose_trash)
+          UserVars.taskmaster_sacks = { 'zasele' => [] }
+          tm = filtered(task_junk_list: ['dye'])
+          tm.sort_sack('rope')
+          expect(DRCI).to have_received(:put_away_item?).with('#63768227', 'backpack')
+          expect(DRCI).not_to have_received(:dispose_trash)
+          expect(DRC).to have_received(:message).with('Could not read the reward sack; keeping it unopened.')
+          expect(DRC).not_to have_received(:message).with(/\ANothing special/)
+          expect(UserVars.taskmaster_sacks['zasele']).to be_empty
+        end
+
+        it 'keeps a sack whose LOOK reply is about something else (the pet-sack line), never binning it' do
+          allow(DRC).to receive(:bput) do |command, *patterns|
+            line = command == 'look in #63768227' ? 'Curled up inside a soft woven sack with a golden piglet charm is a foul-smelling field pig.' : ''
+            patterns.flatten.filter_map { |pt| line[pt.is_a?(Regexp) ? pt : /#{pt}/] }.first || ''
+          end
+          allow(DRCI).to receive(:put_away_item?)
+          allow(DRCI).to receive(:dispose_trash)
+          filtered(task_junk_list: ['dye']).sort_sack('rope')
+          expect(DRCI).not_to have_received(:dispose_trash)
+          expect(DRCI).to have_received(:put_away_item?).with('#63768227', 'backpack')
+        end
       end
 
       describe 'taking the coins' do
@@ -4240,9 +4376,9 @@ RSpec.describe TaskMaster do
           coins = coins.dup
           allow(DRC).to receive(:bput) do |command, *matchers|
             commands << command
-            reply = if command == 'get coin from my sack'
+            reply = if command == 'get coin from #63768227'
                       line || coins.shift || no_coin
-                    elsif command == 'look in my sack'
+                    elsif command == 'look in #63768227'
                       "In the woven sack you see #{contents}."
                     else
                       ''
@@ -4258,21 +4394,21 @@ RSpec.describe TaskMaster do
         end
 
         def gets(commands)
-          commands.count('get coin from my sack')
+          commands.count('get coin from #63768227')
         end
 
         # Every get comes before the LOOK that decides the sack's fate.
         def looked_after_gets(commands)
-          commands.rindex('get coin from my sack') < commands.index('look in my sack')
+          commands.rindex('get coin from #63768227') < commands.index('look in #63768227')
         end
 
         real_sacks.each do |stacks, (coins, contents)|
           it "takes every coin of a #{stacks}-stack sack, then sorts the sack as before" do
             commands = sort_coins(coins, contents: contents)
             expect(looked_after_gets(commands)).to be(true)
-            expect(commands.uniq).to eq(['get coin from my sack', 'look in my sack'])
+            expect(commands.uniq).to eq(['get coin from #63768227', 'look in #63768227'])
             expect(DRC).to have_received(:message).with("Nothing special: In the woven sack you see #{contents}.")
-            expect(DRCI).to have_received(:dispose_trash).with('sack', nil, nil)
+            expect(DRCI).to have_received(:dispose_trash).with('#63768227', nil, nil)
           end
 
           it "stops asking for coins at the first empty reply from a #{stacks}-stack sack" do
@@ -4290,7 +4426,7 @@ RSpec.describe TaskMaster do
         it 'asks once for a sack with no coins' do
           commands = sort_coins([])
           expect(gets(commands)).to eq(1)
-          expect(commands).to include('look in my sack')
+          expect(commands).to include('look in #63768227')
         end
 
         it "stops at the cap of gets when the coins never run out, and still sorts the sack" do
@@ -4304,7 +4440,7 @@ RSpec.describe TaskMaster do
         it 'stops asking when a get times out' do
           commands = sort_coins([], line: 'Kythkani drums his fingers on his bucket rhythmically.')
           expect(gets(commands)).to eq(1)
-          expect(commands).to include('look in my sack')
+          expect(commands).to include('look in #63768227')
         end
       end
     end
@@ -4323,7 +4459,7 @@ RSpec.describe TaskMaster do
     end
 
     describe '#sort_sack with task_unpack_keepers' do
-      let(:sack) { OpenStruct.new(noun: 'sack', id: '63768227') }
+      let(:sack) { OpenStruct.new(noun: 'sack', name: 'woven sack', id: '63768227') }
       let(:bar) { OpenStruct.new(noun: 'bar', id: '63768234') }
       let(:empty_hand) { OpenStruct.new(noun: nil, id: nil) }
       # Replies from a live run (Hollow Eve 2026, a woven sack holding a large tyrium bar).
@@ -4347,8 +4483,8 @@ RSpec.describe TaskMaster do
         allow(DRC).to receive(:left_hand) { hands[:left]&.noun }
         allow(DRC).to receive(:right_hand) { hands[:right]&.noun }
         allow(tm).to receive(:pause)
-        game('look in my sack'            => "In the woven sack you see #{contents}.",
-             'get coin from my sack'      => 'What were you referring to?',
+        game('look in #63768227'          => "In the woven sack you see #{contents}.",
+             'get coin from #63768227'    => 'What were you referring to?',
              'get '                       => lambda do |*|
                reply = get_replies.shift
                hands[:left] = bar if reply == got_bar
@@ -4369,7 +4505,7 @@ RSpec.describe TaskMaster do
         expect(DRC).to have_received(:bput).with('inventory #63768227', any_args)
         expect(DRCI).to have_received(:put_away_item?).with('#63768234', "traveler's.pack")
         expect(DRCI).to have_received(:dispose_trash).with('#63768227', 'bucket', 'tap')
-        expect(DRCI).not_to have_received(:put_away_item?).with('sack', anything)
+        expect(DRCI).not_to have_received(:put_away_item?).with('#63768227', anything)
       end
 
       it 'puts the empty sack in the loot bag when it cannot be binned' do
@@ -4377,13 +4513,13 @@ RSpec.describe TaskMaster do
         unpack(tm, disposed: false)
         expect(DRCI).to have_received(:put_away_item?).with('#63768234', "traveler's.pack")
         expect(DRCI).to have_received(:dispose_trash).with('#63768227', 'bucket', 'tap')
-        expect(DRCI).to have_received(:put_away_item?).with('sack', "traveler's.pack")
+        expect(DRCI).to have_received(:put_away_item?).with('#63768227', "traveler's.pack")
       end
 
       it 'puts the sack in the loot bag when dispose_trash finds it no longer in hand' do
         tm = unpacker
         unpack(tm, disposed: nil)
-        expect(DRCI).to have_received(:put_away_item?).with('sack', "traveler's.pack")
+        expect(DRCI).to have_received(:put_away_item?).with('#63768227', "traveler's.pack")
       end
 
       it 'waits for a free hand and retries once when another script holds it' do
@@ -4396,7 +4532,7 @@ RSpec.describe TaskMaster do
       it 'keeps the whole sack when the get fails twice for want of a hand' do
         tm = unpacker
         unpack(tm, get_replies: ['You need a free hand to pick that up.'] * 2)
-        expect(DRCI).to have_received(:put_away_item?).with('sack', "traveler's.pack")
+        expect(DRCI).to have_received(:put_away_item?).with('#63768227', "traveler's.pack")
         expect(DRCI).not_to have_received(:dispose_trash)
       end
 
@@ -4404,7 +4540,7 @@ RSpec.describe TaskMaster do
         tm = unpacker
         unpack(tm, contents: '3 haledroth shards', get_replies: ['What were you referring to?'])
         expect(DRC).to have_received(:bput).with('get shards from #63768227', any_args)
-        expect(DRCI).to have_received(:put_away_item?).with('sack', "traveler's.pack")
+        expect(DRCI).to have_received(:put_away_item?).with('#63768227', "traveler's.pack")
         expect(DRCI).not_to have_received(:dispose_trash)
       end
 
@@ -4412,7 +4548,7 @@ RSpec.describe TaskMaster do
         tm = unpacker
         unpack(tm, put_ok: false)
         expect(DRC).to have_received(:bput).with('put #63768234 in #63768227', any_args)
-        expect(DRCI).to have_received(:put_away_item?).with('sack', "traveler's.pack")
+        expect(DRCI).to have_received(:put_away_item?).with('#63768227', "traveler's.pack")
         expect(DRCI).not_to have_received(:dispose_trash)
       end
 
@@ -4420,38 +4556,29 @@ RSpec.describe TaskMaster do
         tm = unpacker
         unpack(tm, inventory: 'Inside a woven sack, you see:')
         expect(DRCI).to have_received(:put_away_item?).with('#63768234', "traveler's.pack")
-        expect(DRCI).to have_received(:put_away_item?).with('sack', "traveler's.pack")
+        expect(DRCI).to have_received(:put_away_item?).with('#63768227', "traveler's.pack")
         expect(DRCI).not_to have_received(:dispose_trash)
       end
 
       it 'keeps the sack when INVENTORY gives no recognised reply' do
         tm = unpacker
         unpack(tm, inventory: '')
-        expect(DRCI).to have_received(:put_away_item?).with('sack', "traveler's.pack")
+        expect(DRCI).to have_received(:put_away_item?).with('#63768227', "traveler's.pack")
         expect(DRCI).not_to have_received(:dispose_trash)
-      end
-
-      it 'keeps the sack when the sack in hand has no id' do
-        tm = unpacker
-        allow(tm).to receive(:held_id).and_call_original
-        allow(tm).to receive(:held_id).with('sack').and_return(nil)
-        unpack(tm)
-        expect(DRC).not_to have_received(:bput).with(/\Aget bar/, any_args)
-        expect(DRCI).to have_received(:put_away_item?).with('sack', "traveler's.pack")
       end
 
       it 'never unpacks junk, which is binned with its sack as before' do
         tm = unpacker
         unpack(tm, contents: 'some coral dye')
         expect(DRC).not_to have_received(:bput).with(/\Aget dye/, any_args)
-        expect(DRCI).to have_received(:dispose_trash).with('sack', 'bucket', 'tap')
+        expect(DRCI).to have_received(:dispose_trash).with('#63768227', 'bucket', 'tap')
       end
 
       it 'keeps the whole sack, as before, when task_unpack_keepers is off' do
         tm = unpacker(task_unpack_keepers: false)
         unpack(tm)
         expect(DRC).not_to have_received(:bput).with(/\Aget bar/, any_args)
-        expect(DRCI).to have_received(:put_away_item?).with('sack', "traveler's.pack")
+        expect(DRCI).to have_received(:put_away_item?).with('#63768227', "traveler's.pack")
         expect(DRCI).not_to have_received(:dispose_trash)
       end
 
@@ -6130,9 +6257,11 @@ RSpec.describe TaskMaster do
                     9689 => breaks(commons, 'gill glop', '7005', kept: '7007', rest: '7006'),
                     10257 => lambda { |_|
                       commons.release('#7007')
-                      commons.hold('woven sack')
+                      commons.hold('woven sack', id: '7900')
                     } }
           transcript('2026-11-06_6100_whole_glop').script(game, commands: commands, skip: [8799, 9672, 10281], after: hooks)
+          game.alias_command('get coin from #7900', as: 'get coin from my sack')
+          game.alias_command('look in #7900', as: 'look in my sack')
           game.script('rummage /C glop in my duffel bag', rummaged('glop', 'some gill glop instructions'))
           game.script('count my second brine', ReplayGame.log('6100:8793'))
           # The client script tapped "my coal nugget" (6100:8909): a large one,
@@ -6159,7 +6288,7 @@ RSpec.describe TaskMaster do
              '>> give Rangu', '>> give Rangu', '>> stow ticket', '>> give Rangu', '>> give Rangu', '>> stow ticket',
              '>> rummage /C glop in my duffel bag', '>> count #7005', '>> mark my glop at 13', '>> break my glop', '>> count #7006', '>> count #7007',
              '>> swap', '>> give my glop to nezhiri',
-             '>> get coin from my sack', '>> get coin from my sack', '>> get coin from my sack', '>> get coin from my sack', '>> look in my sack', '>> dump junk']
+             '>> get coin from #7900', '>> get coin from #7900', '>> get coin from #7900', '>> get coin from #7900', '>> look in #7900', '>> dump junk']
           )
           expect(runs.select { |name, _| name == 'remedy' }).to eq([['remedy', ['instructions', 'georin', 'coal nugget', 'mortar', 'glop', '25']]] * 3)
           calls = commons.calls.map(&:first)
@@ -6199,9 +6328,11 @@ RSpec.describe TaskMaster do
                     11184 => breaks(commons, 'deep-sea draught', '7105', kept: '7106', rest: '7105', kept_hand: :right),
                     11300 => lambda { |_|
                       commons.release('#7106')
-                      commons.hold('woven sack')
+                      commons.hold('woven sack', id: '7900')
                     } }
           transcript('2026-11-06_6100_leftover_draught').script(game, commands: commands, skip: [10502, 10512, 10527, 10529, 10531, 10533, 11169, 11323], after: hooks)
+          game.alias_command('get coin from #7900', as: 'get coin from my sack')
+          game.alias_command('look in #7900', as: 'look in my sack')
           game.script('rummage /C draught in my duffel bag', rummaged('draught', 'some deep-sea draught instructions and some deep-sea draught'))
           game.script('count #7101', ReplayGame.log('6100:10519'))
           game.script('tap my first coal nugget', ReplayGame.log('6100:10599'))
@@ -6228,7 +6359,7 @@ RSpec.describe TaskMaster do
              '>> give Rangu', '>> give Rangu', '>> stow ticket', '>> give Rangu', '>> give Rangu', '>> stow ticket',
              '>> rummage /C draught in my duffel bag', '>> count #7105', '>> mark my draught at 13', '>> break my draught', '>> count #7106',
              '>> give my draught to nezhiri',
-             '>> get coin from my sack', '>> get coin from my sack', '>> get coin from my sack', '>> get coin from my sack', '>> look in my sack', '>> dump junk']
+             '>> get coin from #7900', '>> get coin from #7900', '>> get coin from #7900', '>> get coin from #7900', '>> look in #7900', '>> dump junk']
           )
           expect(runs.select { |name, _| name == 'remedy' }).to eq([['remedy', ['instructions', 'junliar', 'coal nugget', 'bowl', 'draught', '25']]] * 2)
           expect(commons.calls.map(&:first)).not_to include('DRCT.buy_item')

@@ -35,7 +35,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.08.2'
+  VERSION = '2026.11.09'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -417,8 +417,9 @@ class TaskMaster
     @unpack_keepers = @settings.task_unpack_keepers
   end
 
-  # An unreadable or empty look is never a keeper, so a failed LOOK cannot
-  # fill the loot bag with empty sacks in junk-list mode.
+  # An empty look is never a keeper. sort_sack never asks about one: it
+  # keeps a sack whose LOOK it could not read, and only sorts a sack it
+  # holds, so a missing sack cannot fill the loot bag in junk-list mode.
   #
   # @param contents [String, nil] the LOOK IN reply for the reward sack
   # @return [Boolean] true to keep the sack
@@ -3994,32 +3995,74 @@ class TaskMaster
   # Gets before giving up on a sack whose coins never seem to run out.
   SACK_COIN_GETS_MAX = 20
 
+  # What the game calls the reward sack in hand (<right exist="..."
+  # noun="sack">woven sack</right>, Hollow Eve 2026 XML logs). Players carry
+  # other sacks ("a soft woven sack with a golden piglet charm"), so the noun
+  # alone does not pick out the reward.
+  REWARD_SACK_NAME = 'woven sack'
+  # Seconds to wait for the reward sack to show in a hand, as the hand update
+  # can trail the "hands you a woven sack" line.
+  REWARD_SACK_WAIT = 3
+
   # Sorts the reward sack: gems go to the gem pouch and coins are picked up,
   # then a keeper goes into the loot bag (with a Slack message if asked)
   # and anything else is binned. Logs the contents to the Task Master
   # window and the sack history.
   #
+  # Every command after the pouch fill names the sack by the id it has in
+  # hand. A bare "sack" reaches the first sack the game finds, so a lagged
+  # second sort of a sack already binned (Hollow Eve 2026: Catheroine,
+  # 2026-11-06 00:31) looked in, and then fetched and binned, a pet sack from
+  # the duffel bag. With no reward sack in hand there is nothing to sort;
+  # one whose LOOK cannot be read is kept, as its contents were never seen.
+  #
   # @param _item [String, nil] unused
   # @return [void]
   def sort_sack(_item)
+    sack_id = reward_sack_id
+    unless sack_id
+      DRC.message('No reward sack in hand to sort.')
+      return
+    end
+    sack = "##{sack_id}"
     DRCI.fill_gem_pouch_with_container(@settings.gem_pouch_adjective, @settings.gem_pouch_noun, 'sack', @settings.full_pouch_container, @settings.spare_gem_pouch_container, @settings.tie_gem_pouches)
 
     SACK_COIN_GETS_MAX.times do
-      break unless DRC.bput('get coin from my sack', SACK_COIN_TAKEN, SACK_NO_COIN).match?(SACK_COIN_TAKEN)
+      break unless DRC.bput("get coin from #{sack}", SACK_COIN_TAKEN, SACK_NO_COIN).match?(SACK_COIN_TAKEN)
     end
-    result = DRC.bput("look in my sack", /^In the .* you see.*/)
+    result = DRC.bput("look in #{sack}", /^In the .* you see.*/)
+    if result.to_s.strip.empty?
+      DRC.message('Could not read the reward sack; keeping it unopened.')
+      DRCI.put_away_item?(sack, @lootbag)
+      return
+    end
     if keeper?(result)
       result = result.sub(/In the woven sack you see (?:(?:a|an|some) )?/, '').sub(/\.$/, '')
       DRC.message("Found a keeper: #{result}")
       send_slackbot_message("Found a keeper: #{result}") if @slack_keepers
-      DRCI.put_away_item?('sack', @lootbag) unless @unpack_keepers && unpack_keeper?(result)
+      DRCI.put_away_item?(sack, @lootbag) unless @unpack_keepers && unpack_keeper?(result, sack_id)
     else
       DRC.message("Nothing special: #{result}")
-      DRCI.dispose_trash('sack', @worn_trashcan, @worn_trashcan_verb)
+      DRCI.dispose_trash(sack, @worn_trashcan, @worn_trashcan_verb)
     end
-    result.sub!('In the woven sack you see', '')
+    result = result.sub('In the woven sack you see', '')
     DRC.log_window(result, "Task Master", true, true)
     remember_sack(result)
+  end
+
+  # The id of the reward sack in hand, waiting briefly for the hand update.
+  #
+  # @return [String, nil] nil when neither hand holds a reward sack
+  def reward_sack_id
+    deadline = Time.now + REWARD_SACK_WAIT
+    loop do
+      sack = [GameObj.right_hand, GameObj.left_hand]
+             .find { |obj| obj&.name == REWARD_SACK_NAME && obj.id }
+      return sack.id if sack
+      return nil if Time.now >= deadline
+
+      pause 0.1
+    end
   end
 
   # Replies used to take a keeper out of its sack (Hollow Eve 2026 logs).
@@ -4039,11 +4082,11 @@ class TaskMaster
   # empty, so nothing is ever thrown away unseen, and it is binned by its id.
   #
   # @param description [String] the sack contents, LOOK prefix stripped
+  # @param sack_id [String] the reward sack's id
   # @return [Boolean] true when the item is in the loot bag and the sack is
   #   binned; false leaves the sack in hand (with whatever is still in it,
   #   or empty when it could not be binned) for the caller to keep as before
-  def unpack_keeper?(description)
-    sack_id = held_id('sack')
+  def unpack_keeper?(description, sack_id)
     noun = description.to_s.split.last
     return false unless sack_id && noun
 
