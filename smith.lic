@@ -321,9 +321,11 @@ class Smith
   end
 
   # The parts the crafting container doesn't hold yet, one entry per part
-  # still needed. A container item is that part when it ends with the part's
+  # still needed. Each container item's description, from " with " on, is
+  # dropped first; what is left is that part when it ends with the part's
   # noun (or its plural) and contains its first word: "short cord" is the
-  # short leather cord, but a short-hafted halberd is not a haft. An
+  # short leather cord, but a short-hafted halberd is not a haft, and an
+  # "icesteel drawknife with a gold wire wrapped hilt" is not a hilt. An
   # unfinished piece doesn't count: forge.lic asks for a finished part.
   #
   # @param parts [Array<String>] part names from the recipe (may repeat)
