@@ -1088,5 +1088,23 @@ RSpec.describe Spin do
         expect(spin.send(:crafting_container_ref)).to eq(weave.send(:crafting_container_ref))
       end
     end
+
+    # Each case is one where a last-word rule and the word rule give different
+    # answers, so a copy that drifts back (or drifts any other way) goes red.
+    it 'names the crafting container the same way where a tail-of-name rule would differ' do
+      camlet = OpenStruct.new(id: '1', noun: 'bag', name: 'deep black camlet duffel bag set with a crimson windsteel medallion')
+      [
+        ['duffel bag', [camlet], '#1'],
+        ['duffel bag', [OpenStruct.new(id: '1', noun: 'bag', name: 'duffel bag'), OpenStruct.new(id: '2', noun: 'bag', name: 'canvas duffel bag')], 'duffel bag'],
+        ['duffel bag', [OpenStruct.new(id: '3', noun: 'strap', name: 'duffel bag strap')], 'duffel bag'],
+        ['duffel.bag', [camlet], '#1'],
+        ['shadows', [OpenStruct.new(id: '4', noun: 'web', name: 'writhing web of shadows'), OpenStruct.new(id: '5', noun: 'shadows', name: 'some dark encompassing shadows of twilight dreamweave')], '#5']
+      ].each do |setting, worn, expected|
+        $worn_items = worn
+        [spin, weave].each { |script| script.instance_variable_set(:@bag, setting) }
+        expect([setting, spin.send(:crafting_container_ref)]).to eq([setting, expected])
+        expect([setting, weave.send(:crafting_container_ref)]).to eq([setting, expected])
+      end
+    end
   end
 end
