@@ -1359,8 +1359,8 @@ class Bescort
       dock = 8301
       mammoth_type = 'sea'
     end
-    manual_go2(dock)
-    unless Room.current.id == dock
+    manual_go2(dock) if dock
+    unless dock && Room.current.id == dock
       DRC.message("Couldn't reach the mammoth dock (room #{dock}); stopped in room #{Room.current.id.inspect}. Not joining a mammoth here.")
       exit
     end

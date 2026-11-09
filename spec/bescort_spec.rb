@@ -583,6 +583,19 @@ RSpec.describe Bescort do
           end
         end
 
+        context 'when there is no reachable dock for fang' do
+          before do
+            allow(DRCT).to receive(:sort_destinations).and_return([])
+            at_room(nil)
+          end
+
+          it 'stops without walking or joining, even though an unknown room and no dock are both nil' do
+            expect { bescort.send(:take_mammoth, 'fang') }.to raise_error(SystemExit)
+            expect(bescort).not_to have_received(:manual_go2)
+            expect(DRC).not_to have_received(:bput).with(/join .* mammoth/, any_args)
+          end
+        end
+
         context 'when no mammoth arrives in time' do
           it 'gives up instead of waiting forever, and does not try again' do
             matchtimeout_reads(player_text_lines(arrive))
