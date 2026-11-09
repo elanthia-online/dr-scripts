@@ -35,7 +35,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.09.4'
+  VERSION = '2026.11.10.1'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -635,22 +635,25 @@ class TaskMaster
     end
   end
 
-  # The ingots of each metal taskmaster buys, as RUMMAGE lists them.
+  # The ingots of each metal taskmaster buys, as the game names them.
   TASK_METAL_INGOTS = ['bronze ingot', 'steel ingot'].freeze
 
   # How many ingots of each task metal a container (the crafting bag unless
-  # given) holds, from one RUMMAGE /C ingot (asked twice when it goes
-  # unanswered).
+  # given) holds, from one INVENTORY of it (container_listing; asked twice
+  # when it goes unanswered). An ingot goes by its noun (count_listed), so
+  # a deed for a bronze ingot is not one. An ingot in a container inside
+  # that one is not counted: INVENTORY does not list what such a container
+  # holds.
   #
   # @param from [String] the container
   # @return [Hash{String => Integer}, nil] e.g. {'bronze ingot' => 2,
-  #   'steel ingot' => 0}; nil when RUMMAGE went unanswered twice
+  #   'steel ingot' => 0}; nil when INVENTORY went unanswered twice
   def carried_ingots(from = @bag)
-    contents = rummage(from, 'ingot')
-    contents = rummage(from, 'ingot') if contents.to_s.empty?
-    return nil if contents.to_s.empty?
+    lines = container_listing(from)
+    lines = container_listing(from) if lines.nil?
+    return nil if lines.nil?
 
-    TASK_METAL_INGOTS.to_h { |name| [name, count_listed(contents, name)] }
+    TASK_METAL_INGOTS.to_h { |name| [name, count_listed(lines, name)] }
   end
 
   # Throws away a metal task's own leftover ingots of one metal (see
@@ -735,7 +738,7 @@ class TaskMaster
   # forge used to leave in the stow container, where nothing else looks for
   # it. It bins the player's own ingots there too, which is why it is a
   # setting to set once and unset. The sweep stops at the first ingot it
-  # can't throw away, and counts what is left with RUMMAGE: only an empty
+  # can't throw away, and counts what is left with INVENTORY: only an empty
   # container ends it for the run (and says to unset the setting); otherwise
   # it says so and tries again before the next metal task. A swept ingot
   # still in hand stops the run before any metal is bought. A container that
@@ -769,7 +772,7 @@ class TaskMaster
   end
 
   # What bin_stray_ingots says at the end, and whether the sweep is done for
-  # the run: only when RUMMAGE counted no bronze or steel ingot left.
+  # the run: only when INVENTORY counted no bronze or steel ingot left.
   #
   # @param container [String] the swept container
   # @param binned [Integer] ingots thrown away
@@ -846,7 +849,7 @@ class TaskMaster
   # so unused ingots kept now would only pile up in crafting_container. The
   # ingots in crafting_container are counted before buying, so the player's
   # own are not thrown away with the task's (trash_task_ingots), and a short
-  # count after a full run (RUMMAGE unanswered) throws away nothing: the
+  # count after a full run (INVENTORY unanswered) throws away nothing: the
   # task's ingots were all used.
   #
   # @param item [String] item noun from the task journal
@@ -1122,26 +1125,122 @@ class TaskMaster
   # Kronars." (2026-11-03).
   FOUNT_PRICE = 312
 
-  # RUMMAGE /C in a container, whose reply lists what is like the word:
-  # "You rummage through a heavy silk duffel bag looking for something
-  # similar to "pins" and see some sepia pins, some sepia pins and some sepia
-  # pins."
+  # What a container holds, from one INVENTORY of it: "inventory #<id>" for
+  # the one worn container a setting names (worn_container_id), else
+  # "inventory <setting>", as "inve sack" was sent in the log
+  # inventory_listing cites. A blank setting is not sent, as a bare
+  # INVENTORY lists everything carried.
   #
-  # @param container [String]
-  # @param word [String]
-  # @return [String] the reply
-  def rummage(container, word)
-    DRC.bput("rummage /C #{word} in my #{container}", /^You rummage .*/, /That would accomplish nothing/)
+  # @param container [String, nil] a container setting, e.g. 'duffel bag'
+  # @return [Array<String>, nil] see inventory_listing; nil for a blank
+  #   setting
+  def container_listing(container)
+    id = worn_container_id(container)
+    name = container.to_s.sub(/\A\s*my(?:\s+|\z)/i, '').strip
+    return nil if id.nil? && name.empty?
+
+    inventory_listing(id ? "##{id}" : name)
   end
 
-  # How many items a RUMMAGE reply lists whose name ends in `name`: a "rock"
-  # but not a "rock marble deed" (a Dorhum reward) or the quoted word.
+  # Sends INVENTORY of one container and reads the reply, which names each
+  # item in full on a line of its own (Kythkani, 2026-11-09 16:51:38 NZDT):
   #
-  # @param contents [String] a rummage reply
+  #   Inside a <a exist="21309821" noun="sack">woven sack</a>, you see:
+  #
+  #     some rat-skin leather
+  #     a gold coin
+  #
+  #   [Use <d cmd='inventory help'>INVENTORY HELP</d> for more options.]
+  #
+  # The items are the lines indented by exactly two spaces between the
+  # header and the INVENTORY HELP line. They carry no ids. A container
+  # inside the listed one is a line of its own like any other item:
+  # INVENTORY does not list what is in it. An empty container answers
+  # "There's nothing inside a woven sack!" (Hollow Eve 2026). Any other
+  # reply, none included, is not read as either.
+  #
+  # @param ref [String] the container: "#<id>", or a name
+  # @return [Array<String>, nil] the item lines, tags and indent stripped; [] for an empty container; nil when neither reply came, or
+  #   the list came with no item line in it (a reply that can't be read)
+  def inventory_listing(ref)
+    lines = Array(Lich::Util.issue_command("inventory #{ref}", INVENTORY_REPLY)).map { |line| line.gsub(/<[^>]+>/, '').rstrip }
+    start = lines.index { |line| line.match?(INVENTORY_REPLY) }
+    return nil unless start
+    return [] if lines[start].match?(SACK_EMPTY)
+
+    items = lines.drop(start + 1)
+                 .take_while { |line| !line.match?(INVENTORY_LIST_END) }
+                 .filter_map { |line| line.strip if line.start_with?('  ') }
+    items.empty? ? nil : items
+  end
+
+  # The words of an item's name, downcased: "an intricate decay
+  # sigil-scroll" gives ['an', 'intricate', 'decay', 'sigil-scroll'].
+  #
+  # @param name [String, nil]
+  # @return [Array<String>]
+  def name_words(name)
+    name.to_s.downcase.scan(/[a-z0-9'-]+/)
+  end
+
+  # Sorts INVENTORY item lines (inventory_listing) against a kind of item,
+  # `name`. Only a line that holds every word of the kind as a whole word
+  # is sorted at all. Such a line is of the kind when lich-5's DRC.get_noun
+  # reads the kind's noun off it (the noun of 'decay sigil-scroll' is
+  # "sigil-scroll"): "a sturdy ironwood wand wrapped in braided lengths of
+  # sinew" is a wand, and "an intricate congruence sigil-scroll" is not
+  # sorted as a decay one. It is unsure when get_noun reads another noun
+  # off it, or none. "a rock marble deed" and "a deed for a large anjisis
+  # rock" are unsure rocks, and are deeds; but the task's own "intricate
+  # decay sigil-scroll comprised of broad strokes" is an unsure
+  # sigil-scroll too, as get_noun reads "strokes" off it: lich-5's
+  # FLAVOR_TEXT_PATTERN has no "comprised of" (a gap to fill there, not
+  # with another rule here). The unsure lines get_noun reads no noun off at
+  # all are also listed as unread. Each caller decides what an unsure or
+  # unread line counts as.
+  #
+  # @param lines [Array<String>, nil] inventory_listing's item lines
+  # @param name [String] e.g. 'rock', 'decay sigil-scroll'
+  # @return [Hash{Symbol => Array<String>}] the :of_kind and :unsure
+  #   lines, and :unread, the unsure lines with no noun read off them; none
+  #   when get_noun reads no noun off the name
+  def sort_listed(lines, name)
+    sorted = { of_kind: [], unsure: [], unread: [] }
+    noun = DRC.get_noun(name)&.downcase
+    return sorted if noun.to_s.empty?
+
+    words = name_words(name)
+    Array(lines).each do |line|
+      next unless (words - name_words(line)).empty?
+
+      read = DRC.get_noun(line)&.downcase
+      sorted[read == noun ? :of_kind : :unsure] << line.strip
+      sorted[:unread] << line.strip if read.nil?
+    end
+    sorted
+  end
+
+  # How many of a container's items are of a kind,
+  # by their noun (sort_listed): a "rock" but not a "rock marble deed" (a
+  # Dorhum reward). Unsure lines are not counted.
+  #
+  # @param lines [Array<String>, nil] inventory_listing's item lines
   # @param name [String] e.g. 'rock', 'decay sigil-scroll'
   # @return [Integer]
-  def count_listed(contents, name)
-    contents.to_s.scan(/ #{Regexp.escape(name)}(?=,| and |\.)/).size
+  def count_listed(lines, name)
+    sort_listed(lines, name)[:of_kind].size
+  end
+
+  # A note that names the items a guard counted as of a noun, though no
+  # noun could be read off them (sort_listed's unread lines).
+  #
+  # @param noun [String]
+  # @param lines [Array<String>]
+  # @return [String] '' for none, else a sentence with a leading space
+  def unread_note(noun, lines)
+    return '' if lines.empty?
+
+    " Counted as #{noun}s, since taskmaster can't tell that #{lines.size == 1 ? 'it is' : 'they are'} not: #{lines.map { |line| "\"#{line}\"" }.join(', ')}."
   end
 
   # The hand-in gives whatever item of the task's noun it finds in
@@ -1150,16 +1249,28 @@ class TaskMaster
   # rocks), not taken at the hand-in, or the player's own. So the run stops
   # before buying anything rather than hand those in. A resume runs it right
   # after handing in the finished items it found; dorhum then skips it.
+  # task_loot_bag is read with INVENTORY (container_listing), and items go
+  # by their noun (sort_listed). The hand-in GETs by noun, so an item whose
+  # name holds the noun but whose noun reads as another ("a rock marble
+  # deed", "some glow shell instructions") is not one it would give, and
+  # does not count. One with no noun read off it at all (unread) counts,
+  # and is named: it may be one the hand-in would give, so the run stops
+  # rather than give or bin the player's item. get_noun read the noun of
+  # every rock, shell and wand logged in November 2026 right, so no real
+  # one is let through as another noun. An INVENTORY that goes unanswered
+  # counts as none, as an unanswered RUMMAGE did before.
   #
   # @param noun [String] the finished items' noun
   # @return [void]
   # @raise [SystemExit] when task_loot_bag holds any
   def check_loot_bag_clear(noun)
-    held = count_listed(rummage(@lootbag, noun), noun)
+    sorted = sort_listed(container_listing(@lootbag), noun)
     @loot_bag_checked = true
+    unread = sorted[:unread]
+    held = sorted[:of_kind].size + unread.size
     return if held.zero?
 
-    DRC.message("#{@lootbag} already holds #{held} #{noun}#{held == 1 ? '' : 's'} that this task has not made or could not hand in: left from another task, not taken at the hand-in, or your own. The hand-in would give those first. Move them out of #{@lootbag}, then start again.")
+    DRC.message("#{@lootbag} already holds #{held} #{noun}#{held == 1 ? '' : 's'} that this task has not made or could not hand in: left from another task, not taken at the hand-in, or your own. The hand-in would give those first. Move them out of #{@lootbag}, then start again.#{unread_note(noun, unread)}")
     exit
   end
 
@@ -1351,17 +1462,34 @@ class TaskMaster
 
   # Orders the sigil-scrolls the task needs (one per sigil per item, less any
   # already carried) from the Crossing enchanting supplies, into the crafting
-  # bag.
+  # bag. The carried ones are read off one INVENTORY of the crafting bag
+  # (container_listing) and go by their noun (sort_listed). The task's own
+  # scrolls are named "an intricate decay sigil-scroll comprised of broad
+  # strokes" (taskmaster-nezhiri logs, 2026-11-06), whose noun lich-5's
+  # DRC.get_noun reads as "strokes", so an unsure scroll, one whose name
+  # holds "decay sigil-scroll" as whole words, counts as carried too, with a
+  # message naming it. Buying each such scroll again costs up to 1575
+  # Kronars, and would happen on every task; counting one that is not a
+  # scroll only leaves the task short, which the message says how to put
+  # right. One in a container inside the bag is not counted: INVENTORY does
+  # not list what such a container holds. An INVENTORY that goes unanswered counts none, so
+  # every scroll is bought, as an unanswered RUMMAGE did before.
   #
   # @param sigils [Array<String>] one entry per sigil used on each item
   # @param count [Integer] items to make
   # @return [void]
   def buy_sigils(sigils, count)
     needs = sigils.tally.transform_values { |per_item| per_item * count }
-    carried = rummage(@bag, 'sigil-scroll')
+    carried = container_listing(@bag)
     needs.each_key do |sigil|
-      pause_for_unknown_item("No #{sigil} sigil-scroll in the crafting data.") unless @stockdata["#{sigil} sigil-scroll"]
-      needs[sigil] -= count_listed(carried, "#{sigil} sigil-scroll")
+      kind = "#{sigil} sigil-scroll"
+      pause_for_unknown_item("No #{kind} in the crafting data.") unless @stockdata[kind]
+      sorted = sort_listed(carried, kind)
+      sorted[:unsure].tally.each do |line, many|
+        DRC.message("Counted #{many} \"#{line}\" in your #{@bag} as #{kind}#{many == 1 ? '' : 's'}, so none is bought for #{many == 1 ? 'it' : 'them'}: the name holds \"#{kind}\", but its noun could not be read. " \
+                    "If #{many == 1 ? 'it is not one' : 'they are not'}, move #{many == 1 ? 'it' : 'them'} out of your #{@bag} and start again.")
+      end
+      needs[sigil] -= sorted[:of_kind].size + sorted[:unsure].size
     end
     cost = needs.sum { |sigil, needed| [needed, 0].max * @stockdata["#{sigil} sigil-scroll"]['stock-value'] }
     afford(cost + FOUNT_PRICE + 7500) if cost.positive? # a fount if it is used up, 5 gold for the next task, 2500 for repairs
@@ -2265,10 +2393,10 @@ class TaskMaster
   end
 
   # Gets every stack of the task's remedy into one hand, combining them:
-  # those already held, then each one RUMMAGE lists in the crafting bag. The
+  # those already held, then each one INVENTORY lists in the crafting bag. The
   # stack noted in @remedy_stack is got by its id first. Anything else held
   # is put in the crafting bag first, so a hand is free for each get. The
-  # remedy's vessel in hand is dealt with after the RUMMAGE and before the
+  # remedy's vessel in hand is dealt with after the INVENTORY and before the
   # hands are freed (clear_held_vessel): an unfinished remedy in it is
   # carried on, a finished one taken out, and either then counts with the
   # rest.
@@ -2485,33 +2613,41 @@ class TaskMaster
     exit
   end
 
-  # How many stacks of the task's remedy RUMMAGE lists in the crafting bag.
+  # How many stacks of the task's remedy the crafting bag holds, from one
+  # INVENTORY of it (container_listing), by their noun (sort_listed).
   # Another item there with the same noun but another name (a healing
   # potion when the remedy is landsickness potion) stops the run: remedy
   # and the hand-in work the remedy by its noun, so it could be crafted
-  # into, combined or handed in. The instructions ("some gill glop
-  # instructions") are not of the noun and do not count. A RUMMAGE with no
-  # answer is asked once more; unanswered twice it stops the run, since
-  # taking it for an empty bag would craft doses already made, or leave
-  # them out of the hand-in. On the stop the hands are emptied, but for the
-  # remedy's vessel, which may hold an unfinished remedy the next run
-  # carries on (clear_held_vessel).
+  # into, combined or handed in. So does an item whose name holds the noun
+  # but with no noun read off it at all (unread in sort_listed), as it may
+  # be one of the noun; it is named. One whose noun reads as another is not
+  # one they would take, and does not count: the task's own instructions
+  # ("some gill glop instructions", noun "instructions"), or "a cracked
+  # black leather draught holster set with a vivid fire whirl ruby". get_noun
+  # read the noun of every glop, moisturizer, potion and draught logged in
+  # November 2026 right. An INVENTORY with no answer is asked once more;
+  # unanswered twice it stops the run, since taking it for an empty bag
+  # would craft doses already made, or leave them out of the hand-in. On
+  # the stop the hands are emptied, but for the remedy's vessel, which may
+  # hold an unfinished remedy the next run carries on (clear_held_vessel).
   #
   # @param recipe [Hash] the task's recipe
   # @return [Integer] stacks of the remedy in the bag
-  # @raise [SystemExit] when another item has the remedy's noun, or RUMMAGE
-  #   went unanswered twice
+  # @raise [SystemExit] when another item may have the remedy's noun, or
+  #   INVENTORY went unanswered twice
   def remedy_stacks_in_bag(recipe)
     noun = recipe[:noun]
-    contents = rummage(@bag, noun)
-    contents = rummage(@bag, noun) if contents.to_s.empty?
-    stop_stock("Could not look for #{recipe[:product]} in your #{@bag}: RUMMAGE went unanswered twice.") if contents.to_s.empty?
-    ours = count_listed(contents, recipe[:product])
-    others = count_listed(contents, noun) - ours
+    lines = container_listing(@bag)
+    lines = container_listing(@bag) if lines.nil?
+    stop_stock("Could not look for #{recipe[:product]} in your #{@bag}: INVENTORY went unanswered twice.") if lines.nil?
+    ours = count_listed(lines, recipe[:product])
+    sorted = sort_listed(lines, noun)
+    unread = sorted[:unread]
+    others = sorted[:of_kind].size - ours + unread.size
     return ours if others.zero?
 
     DRCI.stow_hands unless held_vessel(recipe)
-    DRC.message("Your #{@bag} holds #{others} #{noun}#{others == 1 ? '' : 's'} that #{others == 1 ? 'is' : 'are'} not #{recipe[:product]}. remedy and the hand-in find the #{recipe[:product]} by its noun, so they could take #{others == 1 ? 'it' : 'them'} instead. Move #{others == 1 ? 'it' : 'them'} out of your #{@bag}, then start again. Stopping before buying anything.")
+    DRC.message("Your #{@bag} holds #{others} #{noun}#{others == 1 ? '' : 's'} that #{others == 1 ? 'is' : 'are'} not #{recipe[:product]}. remedy and the hand-in find the #{recipe[:product]} by its noun, so they could take #{others == 1 ? 'it' : 'them'} instead. Move #{others == 1 ? 'it' : 'them'} out of your #{@bag}, then start again. Stopping before buying anything.#{unread_note(noun, unread)}")
     exit
   end
 
@@ -3802,7 +3938,7 @@ class TaskMaster
   def craft_each(script, item, count)
     start = before = finished_count(item)
     unless start
-      DRC.message("Could not count the #{item}s in #{@bag} (no reply to RUMMAGE), so no #{script} runs.")
+      DRC.message("Could not count the #{item}s in #{@bag} (no reply to INVENTORY), so no #{script} runs.")
       return 0
     end
     stalled = false
@@ -3822,32 +3958,33 @@ class TaskMaster
     if stalled
       DRC.message("Made #{made} of #{count} #{item}s: no new #{item} in #{@bag} or in hand after the last #{script} run, so no more runs.")
     elsif made < count
-      DRC.message("Counted #{made} of #{count} #{item}s made (RUMMAGE did not answer after every #{script} run).")
+      DRC.message("Counted #{made} of #{count} #{item}s made (INVENTORY did not answer after every #{script} run).")
     else
       DRC.message("#{made} #{item}s completed")
     end
     made
   end
 
-  # Finished items of the noun in the crafting bag (RUMMAGE, which also
-  # lists an unfinished one, the same before and after a run) and in hand
-  # (a finished item the bag would not take stays there). Only names that
-  # end in the noun count: the "netting instructions" sew and forge stow in
-  # the same bag do not, so a run that makes the last item and uses up the
-  # instructions still counts as one made.
+  # Finished items of the noun in the crafting bag (one INVENTORY of it,
+  # container_listing, which also lists an unfinished one, the same before
+  # and after a run) and in hand (a finished item the bag would not take
+  # stays there). Items in the bag count by their noun (count_listed): the
+  # "netting instructions" sew and forge stow in the same bag do not, so a
+  # run that makes the last item and uses up the instructions still counts
+  # as one made. A held item counts when its hand text ends in the noun.
   #
-  # bput returns '' when neither RUMMAGE reply came within its timeout; that
-  # is asked once more, and is not a count of none.
+  # An INVENTORY that goes unanswered is asked once more, and is not a
+  # count of none.
   #
   # @param item [String] item noun
-  # @return [Integer, nil] nil when RUMMAGE got no reply twice
+  # @return [Integer, nil] nil when INVENTORY got no reply twice
   def finished_count(item)
-    contents = rummage(@bag, item)
-    contents = rummage(@bag, item) if contents.to_s.empty?
-    return nil if contents.to_s.empty?
+    lines = container_listing(@bag)
+    lines = container_listing(@bag) if lines.nil?
+    return nil if lines.nil?
 
     held = held_items.count { |name| name =~ /\b#{Regexp.escape(item)}$/i && name !~ /\bunfinished\b/i }
-    count_listed(contents, item) + held
+    count_listed(lines, item) + held
   end
 
   # Pins and thread are checked once for the whole task, so each sew run can
@@ -4413,6 +4550,12 @@ class TaskMaster
   UNPACK_GET_FAILURES = [/^What were you referring to/, /^I could not find/].freeze
   SACK_EMPTY = /^There's nothing inside/
   SACK_NOT_EMPTY = /^Inside .*, you see:/
+  # INVENTORY replies for any container (inventory_listing): its list, or
+  # the reply for an empty one.
+  INVENTORY_REPLY = Regexp.union(SACK_NOT_EMPTY, SACK_EMPTY)
+  # The line INVENTORY ends a container's list with, tags stripped: "[Use
+  # <d cmd='inventory help'>INVENTORY HELP</d> for more options.]".
+  INVENTORY_LIST_END = /^\[Use INVENTORY HELP/
   # Seconds to wait for another script to free a hand before the one retry.
   UNPACK_FREE_HAND_WAIT = 20
 
@@ -4439,7 +4582,7 @@ class TaskMaster
       DRC.bput("put ##{item_id} in ##{sack_id}", 'You put', 'What were you referring to')
       return false
     end
-    return false unless DRC.bput("inventory ##{sack_id}", SACK_EMPTY, SACK_NOT_EMPTY).match?(SACK_EMPTY)
+    return false unless inventory_listing("##{sack_id}") == []
 
     return false unless DRCI.dispose_trash("##{sack_id}", @worn_trashcan, @worn_trashcan_verb)
 
