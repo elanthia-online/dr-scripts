@@ -1382,49 +1382,50 @@ class Bescort
     end
   end
 
-  # The aeromancer charges the fare on the JOIN that boards you. When you can
-  # pay, that can be the first JOIN: "Alright.  That'll be N Lirums."  You hand
-  # over your funds and step closer. Otherwise the first JOIN only quotes the
-  # fare ("Woah there") and a second JOIN pays.
-  DIRIGIBLE_BOARDED = '^(?:The Elothean aeromancer says, .*)?You hand over your funds and step closer'
-  DIRIGIBLE_FARE_QUOTED = '^The Elothean aeromancer says, "Woah there'
-  DIRIGIBLE_NOT_HERE = '^What were you referring to'
-
   def take_dirigible(mode)
-    fare = DRStats.circle * 50
     case mode
     when 'aesry'
       manual_go2(12_862)
-      return unless dirigible_fare?(fare, 'Shard', 12_862)
+      if DRCM.wealth('Shard') < DRStats.circle * 50
+        echo('Get money you slob!')
+        return unless get_fare?(DRStats.circle * 50, 'Shard', 12_862)
+      end
     when 'shard'
-      return unless dirigible_fare?(fare, 'Aesry', 12_942)
-
+      if DRCM.wealth('Aesry') < DRStats.circle * 50
+        echo('Get money you slob!')
+        return unless get_fare?(DRStats.circle * 50, 'Aesry', 12_942)
+      end
       manual_go2(12_942)
     end
-    case DRC.bput('join dirigible', DIRIGIBLE_FARE_QUOTED, DIRIGIBLE_BOARDED, DIRIGIBLE_NOT_HERE)
+    return unless board_flight('dirigible', 'The Elothean aeromancer', '[[Aboard the Dirigible, Gondola]]') == :not_here
+
+    waitfor 'JOIN CHARCOAL DIRIGIBLE'
+    take_dirigible(mode)
+  end
+
+  # JOIN the dirigible or balloon and ride it out. The operator charges the
+  # fare on the JOIN that boards you. When you can pay, that can be the first
+  # JOIN: "Alright.  That'll be N Lirums."  You hand over your funds and step
+  # closer. Otherwise the first JOIN only quotes the fare ("Woah there") and a
+  # second JOIN pays or fails ("You reach your funds, but"). Every reply is
+  # anchored to the operator's own line, so another player repeating one is
+  # ignored. Returns :boarded once off the gondola, :not_here when there is
+  # nothing to join, or :failed.
+  def board_flight(noun, operator, gondola)
+    boarded = "^(?:#{operator} says, .*)?You hand over your funds and step closer"
+    case DRC.bput("join #{noun}", "^#{operator} says, \"Woah there", boarded, '^What were you referring to')
     when /Woah there/
-      return unless DRC.bput('join dirigible', DIRIGIBLE_BOARDED, 'You reach your funds, but').match?(/step closer/)
-
-      ride_dirigible
+      return :failed unless DRC.bput("join #{noun}", boarded, "^(?:#{operator} says, .*)?You reach your funds, but").match?(/step closer/)
     when /step closer/
-      ride_dirigible
+      nil
     when /What were you referring to/
-      waitfor 'JOIN CHARCOAL DIRIGIBLE'
-      take_dirigible(mode)
+      return :not_here
+    else
+      return :failed
     end
-  end
-
-  def dirigible_fare?(fare, town, room)
-    on_hand = DRCM.wealth(town)
-    return true if on_hand >= fare
-
-    echo("Get money you slob! The dirigible fare is #{fare} #{DRCM.hometown_currency(town)} (circle x 50) and you have #{on_hand}.")
-    get_fare?(fare, town, room)
-  end
-
-  def ride_dirigible
     pause 5
-    pause until XMLData.room_title != '[[Aboard the Dirigible, Gondola]]'
+    pause until XMLData.room_title != gondola
+    :boarded
   end
 
   def take_airship_muspari
@@ -1453,19 +1454,10 @@ class Bescort
       end
       manual_go2(8794)
     end
-    case DRC.bput('join balloon', 'The Gnomish operator says, "Woah there', 'What were you referring to?')
-    when /Gnomish operator /
-      case DRC.bput('join balloon', 'You hand over your funds and step closer', 'You reach your funds, but')
-      when /closer/
-        pause 5
-        pause until XMLData.room_title != '[[Aboard the Balloon, Gondola]]'
-      else
-        return
-      end
-    when /What were you referring to/
-      waitfor 'JOIN GNOMISH BALLOON'
-      take_balloon(mode)
-    end
+    return unless board_flight('balloon', 'The Gnomish operator', '[[Aboard the Balloon, Gondola]]') == :not_here
+
+    waitfor 'JOIN GNOMISH BALLOON'
+    take_balloon(mode)
   end
 
   def take_rh_ferry(north)
