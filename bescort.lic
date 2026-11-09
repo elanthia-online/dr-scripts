@@ -1339,26 +1339,59 @@ class Bescort
     end
   end
 
-  def take_mammoth(mode)
+  # Seconds take_mammoth waits at the dock for a mammoth to arrive, and again
+  # aboard for it to reach the far shore, before giving up. A safety cap well
+  # above a normal crossing, not a timing: without it a wait started in the
+  # wrong room, or for a mammoth that never comes, held bescort (and the go2
+  # waiting on it) forever.
+  MAMMOTH_WAIT_TIMEOUT = 20 * 60
+
+  # Times take_mammoth tries JOIN before giving up. Each failed JOIN waits for
+  # the next arrival, so this also caps the total wait when an arrival never
+  # lets us join.
+  MAMMOTH_JOIN_ATTEMPTS = 3
+
+  def take_mammoth(mode, attempt = 1)
     case mode
     when 'fang'
       id_to_mammoth = { 2239 => 'tall', 11_130 => 'sea' }
-      closest_mammoth = DRCT.sort_destinations(id_to_mammoth.keys).first
-      manual_go2(closest_mammoth)
-      mammoth_type = id_to_mammoth[closest_mammoth]
+      dock = DRCT.sort_destinations(id_to_mammoth.keys).first
+      mammoth_type = id_to_mammoth[dock]
     when 'acen'
-      manual_go2(8301)
+      dock = 8301
       mammoth_type = 'tall'
     when 'ratha'
-      manual_go2(8301)
+      dock = 8301
       mammoth_type = 'sea'
     end
-    case DRC.bput("join #{mammoth_type} mammoth", 'What were you referring to', 'You join the Merelew driver')
+    unless dock
+      DRC.message("No mammoth dock to walk to for '#{mode}' from room #{Room.current.id.inspect}. Not joining a mammoth.")
+      exit
+    end
+    manual_go2(dock)
+    unless Room.current.id == dock
+      DRC.message("Couldn't reach the mammoth dock (room #{dock}); stopped in room #{Room.current.id.inspect}. Not joining a mammoth here.")
+      exit
+    end
+    case (result = DRC.bput("join #{mammoth_type} mammoth", 'What were you referring to', 'You join the Merelew driver'))
     when /What were you referring to/
-      waitfor '^[^"]*?The waves along the waterline increase drastically', '^[^"]*?A watery trumpeting sound heralds the swift approach'
-      take_mammoth(mode)
+      if attempt >= MAMMOTH_JOIN_ATTEMPTS
+        DRC.message("Tried to join the #{mammoth_type} mammoth #{attempt} times at room #{dock} without getting on. Giving up.")
+        exit
+      end
+      unless matchtimeout(MAMMOTH_WAIT_TIMEOUT, '^[^"]*?The waves along the waterline increase drastically', '^[^"]*?A watery trumpeting sound heralds the swift approach')
+        DRC.message("No #{mammoth_type} mammoth reached room #{dock} in #{MAMMOTH_WAIT_TIMEOUT / 60} minutes. Giving up.")
+        exit
+      end
+      take_mammoth(mode, attempt + 1)
     when /You join the Merelew driver/
-      waitfor '^[^"]*?The burly beast trumpets a series of watery blasts', 'Here we are, ladies and gentlemen'
+      return if matchtimeout(MAMMOTH_WAIT_TIMEOUT, '^[^"]*?The burly beast trumpets a series of watery blasts', 'Here we are, ladies and gentlemen')
+
+      DRC.message("The #{mammoth_type} mammoth hasn't reached the shore after #{MAMMOTH_WAIT_TIMEOUT / 60} minutes. Giving up; you may still be aboard.")
+      exit
+    else
+      DRC.message("Unexpected reply to 'join #{mammoth_type} mammoth': #{result.inspect}. Not waiting for a mammoth.")
+      exit
     end
   end
 

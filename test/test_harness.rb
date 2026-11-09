@@ -1198,6 +1198,10 @@ module Harness
 
   def waitfor(*_args); end
 
+  def matchtimeout(_secs, *_args)
+    false
+  end
+
   # Character/state seams with test-overridable globals.
   def checkname
     $charname || 'Testchar'
