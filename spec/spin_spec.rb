@@ -139,6 +139,24 @@ RSpec.describe Spin do
 
       expect(game.sent.count('spin wheel')).to eq(5)
     end
+
+    it 'keeps spinning when the thing put in a hand only ends in "thread" (a quiver wrapped with silver thread)' do
+      # Made-up hand text: this quiver (noun quiver) is real, but the noun
+      # corpus has it only as room and container text. A DR hand shows a
+      # short 'adj noun' form, so no log shows a hand reading like this. It
+      # parts the noun from the text's last word, which the check once read.
+      quiver = 'soft white thigh quiver of snow leopard fur artfully wrapped with silver thread'
+      $hand_nouns[quiver] = 'quiver'
+      $hand_ids[quiver] = '7001'
+      game.override('clean wheel', log('1104:30226'), log('1104:30227'), after: ->(_) { $right_hand = quiver })
+
+      expect(DRCI).to receive(:put_away_item?).with('#1958040', 'duffel bag').and_return(true)
+
+      Spin.new
+
+      expect(game.sent.count('spin wheel')).to eq(5)
+      expect(UserVars.spun_spools.map { |spool| spool['id'] }).to eq(['1958040'])
+    end
   end
 
   describe 'starting with something in a hand' do
@@ -605,6 +623,151 @@ RSpec.describe Spin do
 
       Spin.new
     end
+
+    # A real worn duffel bag (noun bag) whose name goes on past the setting
+    # (noun corpus); the old check wanted the name to end in 'duffel bag'.
+    let(:camlet_bag) { OpenStruct.new(name: 'deep black camlet duffel bag set with a crimson windsteel medallion', noun: 'bag', id: '1222175') }
+
+    it 'puts the spool by id in the worn duffel bag whose name goes on past the setting' do
+      $worn_items = [camlet_bag, OpenStruct.new(name: "scuffed traveler's pack", noun: 'pack', id: '1222003')]
+      expect(DRCI).to receive(:put_away_item?).with('#1958040', '#1222175').and_return(true)
+
+      Spin.new
+    end
+
+    it 'still finds that duffel bag by id when a duffel bag strap is worn too' do
+      $worn_items = [OpenStruct.new(name: 'duffel bag strap', noun: 'strap', id: '1'), camlet_bag]
+      expect(DRCI).to receive(:put_away_item?).with('#1958040', '#1222175').and_return(true)
+
+      Spin.new
+    end
+
+    it 'names the container, for the game to choose, when two worn duffel bags fit the setting' do
+      $worn_items = [OpenStruct.new(name: 'duffel bag', noun: 'bag', id: '750671'), camlet_bag]
+      expect(DRCI).to receive(:put_away_item?).with('#1958040', 'duffel bag').and_return(true)
+
+      Spin.new
+    end
+
+    it 'does not take a worn item whose noun is a setting word but whose name splits the setting' do
+      $worn_items = [OpenStruct.new(name: 'duffel strap bag', noun: 'bag', id: '1')]
+      expect(DRCI).to receive(:put_away_item?).with('#1958040', 'duffel bag').and_return(true)
+
+      Spin.new
+    end
+
+    # Real worn items (noun corpus) and a real setting: Moza's sample profile
+    # has crafting_container: shadows (profiles/Samples/Thief/Moza-setup.yaml).
+    # The web's name ends in 'shadows' but its noun is web; the old check took
+    # it for the container.
+    it 'puts the spool in the worn shadows, not the web of shadows, when the setting is "shadows"' do
+      $test_settings.crafting_container = 'shadows'
+      $worn_items = [OpenStruct.new(name: 'writhing web of shadows', noun: 'web', id: '12'),
+                     OpenStruct.new(name: 'some dark encompassing shadows of twilight dreamweave', noun: 'shadows', id: '11')]
+      expect(DRCI).to receive(:put_away_item?).with('#1958040', '#11').and_return(true)
+
+      Spin.new
+    end
+
+    # The noun may be any word of the setting, not only its last: a setting
+    # that gives the camlet bag's full name still finds it by its noun, bag.
+    it "finds the worn duffel bag by id when the setting is the bag's full name" do
+      $test_settings.crafting_container = camlet_bag.name
+      $worn_items = [camlet_bag, OpenStruct.new(name: "scuffed traveler's pack", noun: 'pack', id: '1222003')]
+      expect(DRCI).to receive(:put_away_item?).with('#1958040', '#1222175').and_return(true)
+
+      Spin.new
+    end
+
+    it 'reads a setting written in the adj.noun form, "duffel.bag"' do
+      $test_settings.crafting_container = 'duffel.bag'
+      $worn_items = [camlet_bag]
+      expect(DRCI).to receive(:put_away_item?).with('#1958040', '#1222175').and_return(true)
+
+      Spin.new
+    end
+
+    it 'reads a setting written in capitals, "Duffel Bag"' do
+      $test_settings.crafting_container = 'Duffel Bag'
+      $worn_items = [camlet_bag]
+      expect(DRCI).to receive(:put_away_item?).with('#1958040', '#1222175').and_return(true)
+
+      Spin.new
+    end
+
+    it 'does not count a worn item GameObj gives no id, so the one with an id is still named by it' do
+      $worn_items = [OpenStruct.new(name: 'duffel bag', noun: 'bag', id: nil), camlet_bag]
+      expect(DRCI).to receive(:put_away_item?).with('#1958040', '#1222175').and_return(true)
+
+      Spin.new
+    end
+
+    it 'does not take a worn item where the setting is only part of a longer word' do
+      # Made up: no logged item has such a name; each holds 'duffel bag' only
+      # inside a longer word, before or after.
+      $worn_items = [OpenStruct.new(name: 'duffel baggage bag', noun: 'bag', id: '2'),
+                     OpenStruct.new(name: 'superduffel bag', noun: 'bag', id: '3'),
+                     camlet_bag]
+      expect(DRCI).to receive(:put_away_item?).with('#1958040', '#1222175').and_return(true)
+
+      Spin.new
+    end
+
+    it 'gives no container when there is no crafting_container setting' do
+      spin = Spin.allocate
+      spin.instance_variable_set(:@bag, nil)
+
+      expect(spin.send(:crafting_container_ref)).to be_nil
+    end
+  end
+
+  # GameObj gives each hand the game's noun (XML noun=); the hand's text is
+  # only a short form of the name, so the helpers go by the noun.
+  describe 'telling what a hand holds' do
+    let(:spin) { Spin.allocate.tap { |instance| instance.instance_variable_set(:@product, 'thread') } }
+
+    it 'takes a hand whose noun is thread for the spool even when its text ends in another word' do
+      # No log shows such a hand; the text is made up to separate noun from tail.
+      $left_hand = 'silk thread with a frayed end'
+      $hand_nouns[$left_hand] = 'thread'
+
+      expect(spin.send(:spool_in_hand)&.name).to eq('silk thread with a frayed end')
+    end
+
+    it 'does not take a quiver wrapped with silver thread for the spool' do
+      # Made-up hand text, as above: no logged hand shows the full name.
+      $right_hand = 'soft white thigh quiver of snow leopard fur artfully wrapped with silver thread'
+      $hand_nouns[$right_hand] = 'quiver'
+
+      expect(spin.send(:spool_in_hand)).to be_nil
+    end
+
+    it 'takes yarn, not thread, when spinning yarn' do
+      spin.instance_variable_set(:@product, 'yarn')
+      $left_hand = 'wool thread'
+      $right_hand = 'wool yarn'
+
+      expect(spin.send(:spool_in_hand)&.name).to eq('wool yarn')
+    end
+
+    it 'finds and counts fiber in hand by its noun, whatever its text ends in' do
+      # Made up, as above: no logged fiber hand ends in anything but 'fibers'.
+      $left_hand = 'silk fibers in a loose bundle'
+      $hand_nouns[$left_hand] = 'fibers'
+      $right_hand = 'silk fibers'
+
+      expect(spin.send(:held_fiber)&.name).to eq('silk fibers in a loose bundle')
+      expect(spin.send(:hands_holding_fiber)).to eq(2)
+    end
+
+    it 'does not count a hand whose text ends in "fibers" when its noun is something else' do
+      # Made up: no logged item has such a name.
+      $left_hand = 'pouch of loose fibers'
+      $hand_nouns[$left_hand] = 'pouch'
+
+      expect(spin.send(:held_fiber)).to be_nil
+      expect(spin.send(:hands_holding_fiber)).to eq(0)
+    end
   end
 
   # Every wheel reply in Mahtra's seven silk spins on 2026-11-04 (1104 log).
@@ -746,6 +909,21 @@ RSpec.describe Spin do
 
       expect(DRCT).to have_received(:order_item).exactly(14).times
       expect(DRCI).not_to have_received(:get_item?)
+    end
+
+    it 'uses a leftover bundle whose name goes on past "fibers"' do
+      # Made up: every logged fibers name ends in 'fibers' (noun corpus). The
+      # bundle is known by its noun, fibers, with 'silk' right before it.
+      $containers[pack.id] = [OpenStruct.new(id: '2135081', noun: 'fibers', name: 'silk fibers tied with a strip of twine')]
+      game.script('count #2135081', twenty)
+      game.script('count #3001', thirty)
+      game.script('mark #3001 at 20', log('2052:11228'))
+      game.script('cut #3001 with my scissors', log('2052:11233'))
+
+      Spin.new
+
+      expect(DRCI).to have_received(:get_item?).with('#2135081')
+      expect(DRCT).to have_received(:order_item).exactly(13).times
     end
 
     it 'ignores fiber of another material' do
@@ -908,6 +1086,24 @@ RSpec.describe Spin do
       [[OpenStruct.new(id: '1', noun: 'bag', name: 'duffel bag')], [], nil].each do |worn|
         $worn_items = worn
         expect(spin.send(:crafting_container_ref)).to eq(weave.send(:crafting_container_ref))
+      end
+    end
+
+    # Each case is one where a last-word rule and the word rule give different
+    # answers, so a copy that drifts back (or drifts any other way) goes red.
+    it 'names the crafting container the same way where a tail-of-name rule would differ' do
+      camlet = OpenStruct.new(id: '1', noun: 'bag', name: 'deep black camlet duffel bag set with a crimson windsteel medallion')
+      [
+        ['duffel bag', [camlet], '#1'],
+        ['duffel bag', [OpenStruct.new(id: '1', noun: 'bag', name: 'duffel bag'), OpenStruct.new(id: '2', noun: 'bag', name: 'canvas duffel bag')], 'duffel bag'],
+        ['duffel bag', [OpenStruct.new(id: '3', noun: 'strap', name: 'duffel bag strap')], 'duffel bag'],
+        ['duffel.bag', [camlet], '#1'],
+        ['shadows', [OpenStruct.new(id: '4', noun: 'web', name: 'writhing web of shadows'), OpenStruct.new(id: '5', noun: 'shadows', name: 'some dark encompassing shadows of twilight dreamweave')], '#5']
+      ].each do |setting, worn, expected|
+        $worn_items = worn
+        [spin, weave].each { |script| script.instance_variable_set(:@bag, setting) }
+        expect([setting, spin.send(:crafting_container_ref)]).to eq([setting, expected])
+        expect([setting, weave.send(:crafting_container_ref)]).to eq([setting, expected])
       end
     end
   end

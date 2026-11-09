@@ -729,13 +729,15 @@ class WeaveCloth
   def pull_thread(held = [])
     return unless PULLED.match?(DRC.bput('pull loom', PULLED, NOTHING_TO_PULL, LOOM_EMPTY))
 
-    thread = [GameObj.left_hand, GameObj.right_hand].find { |hand| hand.name.split.last == 'thread' && held.none? { |other| other.id == hand.id } }
+    thread = [GameObj.left_hand, GameObj.right_hand].find { |hand| hand.noun == 'thread' && held.none? { |other| other.id == hand.id } }
     thread&.id ? thread : false
   end
 
-  # The hand holding something with this noun. A hand shows a spool as
-  # 'silk thread' and cloth as 'silk cloth'; something else in a hand, such
-  # as a book a background script picked up, does not count.
+  # The hand holding something with this noun, the noun GameObj gives the
+  # hand (XML noun="thread" for a spool shown as 'silk thread'), never the
+  # last word of its name: a quiver wrapped with silver thread is not a
+  # thread. Something else in a hand, such as a book a background script
+  # picked up, does not count.
   #
   # @param noun [String] 'thread' or 'cloth'
   # @return [GameObj, nil] the hand, or nil when neither holds one
@@ -743,12 +745,13 @@ class WeaveCloth
     hands_holding(noun).first
   end
 
-  # The hands holding something with this noun.
+  # The hands holding something with this noun, by GameObj noun as for
+  # {#hand_holding}.
   #
   # @param noun [String] 'thread' or 'cloth'
   # @return [Array<GameObj>] none, one or both hands
   def hands_holding(noun)
-    [GameObj.left_hand, GameObj.right_hand].select { |hand| hand.name.split.last == noun }
+    [GameObj.left_hand, GameObj.right_hand].select { |hand| hand.noun == noun }
   end
 
   # Puts a held item in the crafting container by id.
@@ -769,17 +772,29 @@ class WeaveCloth
     DRCI.put_away_item?("##{id}", crafting_container_ref)
   end
 
-  # The crafting container as a command names it: by id when it is worn,
-  # so another item of the same noun cannot catch the put (a crafting
-  # container that is a duffel bag, while a duffel bag is being sewn); by
-  # name otherwise. "put #<id> in #<id>" works in game (1104:35084-35085).
+  # The crafting container as a command names it: by id when exactly one
+  # worn item is it, so another item of the same noun cannot catch the put (a
+  # crafting container that is a duffel bag, while a duffel bag is being
+  # sewn); by name otherwise. A worn item is it when its noun is one of the
+  # setting's words and its name holds the setting's words in order, as
+  # whole words (a rule like the one lich-5's DRCI.carried_ids uses), so
+  # "duffel bag" finds "deep black camlet duffel bag set with a crimson
+  # windsteel medallion" but not a "duffel bag strap", and "shadows" finds
+  # "some dark encompassing shadows of twilight dreamweave" but not a
+  # "writhing web of shadows". A dot in the setting reads as a space
+  # ("duffel.bag"). "put #<id> in #<id>" works in game (1104:35084-35085:
+  # "You put your book in your duffel bag."). spin.lic has its own
+  # copy of this method; spec/spin_spec.rb holds the two to the same
+  # answers.
   #
   # @return [String] '#<id>' or the container's name
   def crafting_container_ref
     return @bag unless @bag
 
-    worn = (GameObj.inv || []).find { |item| item.name.to_s =~ /\b#{Regexp.escape(@bag)}\z/i }
-    worn&.id ? "##{worn.id}" : @bag
+    words = @bag.downcase.tr('.', ' ').split
+    phrase = /(?<![\w'-])#{words.map { |word| Regexp.escape(word) }.join('\s+')}(?![\w'-])/i
+    worn = (GameObj.inv || []).select { |item| item.id && words.include?(item.noun.to_s.downcase) && item.name.to_s.match?(phrase) }
+    worn.size == 1 ? "##{worn.first.id}" : @bag
   end
 
   # Drops spools from the record spin keeps.

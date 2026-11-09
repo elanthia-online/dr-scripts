@@ -587,6 +587,115 @@ RSpec.describe Bescort do
       end
     end
 
+    # The dirigible lines are from a player's log; the balloon's are modelled on
+    # them, since board_flight drives both with the operator's name swapped in.
+    [
+      { method: :take_dirigible, mode: 'shard', noun: 'dirigible', operator: 'The Elothean aeromancer',
+        gondola: '[[Aboard the Dirigible, Gondola]]', arrival: 'JOIN CHARCOAL DIRIGIBLE' },
+      { method: :take_balloon, mode: 'langenfirth', noun: 'balloon', operator: 'The Gnomish operator',
+        gondola: '[[Aboard the Balloon, Gondola]]', arrival: 'JOIN GNOMISH BALLOON' }
+    ].each do |flight|
+      describe "##{flight[:method]}" do
+        let(:flight) { flight }
+        let(:join) { "join #{flight[:noun]}" }
+        let(:one_step) { %(#{flight[:operator]} says, "Alright.  That'll be 3150 Lirums."  You hand over your funds and step closer.  You join #{flight[:operator].sub('The ', 'the ')}.  "Right this way, madam.") }
+        let(:quoted) { %(#{flight[:operator]} says, "Woah there, madam.  I can only take a handful with me at a time.  It's going to cost you if you want to come along.  I'll accept 3150 copper Lirums.") }
+        let(:paid) { 'You hand over your funds and step closer.' }
+        let(:cannot_pay) { 'You reach your funds, but realize you cannot afford it.' }
+
+        # Each JOIN reads the next set of lines, the way Lich's DRC.bput does:
+        # the first line matching any pattern returns the matched text.
+        def join_replies(*line_sets)
+          sets = line_sets.dup
+          allow(DRC).to receive(:bput).with(join, any_args) do |_command, *matches|
+            regexes = matches.map { |m| m.is_a?(Regexp) ? m : /#{m}/i }
+            (sets.shift || []).lazy.filter_map { |line| regexes.filter_map { |regex| line.match(regex)&.to_a&.first }.first }.first || ''
+          end
+        end
+
+        # The ride: pause is stubbed, so step the room title off the gondola
+        # after a few polls and count them.
+        def fly(polls_aboard)
+          XMLData.room_title = flight[:gondola]
+          polls = 0
+          allow(bescort).to receive(:pause) do
+            polls += 1
+            XMLData.room_title = '[[Landing Field]]' if polls > polls_aboard
+          end
+          -> { polls }
+        end
+
+        def take
+          bescort.send(flight[:method], flight[:mode])
+        end
+
+        before { DRStats.circle = 63 }
+
+        after { XMLData.room_title = nil }
+
+        it 'stays aboard when the first JOIN pays the fare' do
+          join_replies(player_text_lines(paid) + [one_step])
+          polls = fly(3)
+          take
+          expect(DRC).to have_received(:bput).with(join, any_args).once
+          expect(polls.call).to be > 3
+          expect(XMLData.room_title).not_to eq(flight[:gondola])
+        end
+
+        it 'pays on the second JOIN when the first only quotes the fare' do
+          join_replies([quoted], [paid])
+          polls = fly(2)
+          take
+          expect(DRC).to have_received(:bput).with(join, any_args).twice
+          expect(polls.call).to be > 2
+        end
+
+        it 'pays on the second JOIN when the operator says the boarding line' do
+          join_replies([quoted], [one_step])
+          polls = fly(2)
+          take
+          expect(polls.call).to be > 2
+        end
+
+        it 'gets off the ride path when the second JOIN cannot pay' do
+          join_replies([quoted], [cannot_pay])
+          take
+          expect(bescort).not_to have_received(:pause)
+        end
+
+        it 'stays on the ride path when another player repeats the cannot-pay line' do
+          join_replies([quoted], player_text_lines(cannot_pay) + [paid])
+          polls = fly(2)
+          take
+          expect(polls.call).to be > 2
+        end
+
+        it 'waits for it when there is nothing to join, then boards' do
+          join_replies(['What were you referring to?'], [one_step])
+          allow(bescort).to receive(:waitfor).with(flight[:arrival])
+          take
+          expect(bescort).to have_received(:waitfor).with(flight[:arrival]).once
+          expect(DRC).to have_received(:bput).with(join, any_args).twice
+        end
+
+        it 'ignores the fare lines when another player repeats them' do
+          join_replies(player_text_lines(quoted) + player_text_lines(one_step) + ['What were you referring to?'], [one_step])
+          allow(bescort).to receive(:waitfor)
+          take
+          expect(bescort).to have_received(:waitfor).with(flight[:arrival]).once
+          expect(DRC).to have_received(:bput).with(join, any_args).twice
+        end
+
+        it 'gives up without riding when the JOIN reply is unrecognised' do
+          join_replies(['You are already part of a group.'])
+          allow(bescort).to receive(:waitfor)
+          take
+          expect(bescort).not_to have_received(:pause)
+          expect(bescort).not_to have_received(:waitfor)
+        end
+      end
+    end
+
     describe "wander_maze_until 'maze-reset'" do
       let(:maze_room) { double('MazeRoom') }
       let(:moves) { [] }
@@ -859,6 +968,215 @@ RSpec.describe Bescort do
           expect(DRCA).to have_received(:release_cyclics).once
         end
       end
+    end
+  end
+
+  describe '#get_fare? without bescort_fare_handling' do
+    # A Lich script that the player unpauses after `polls` checks.
+    let(:script_class) do
+      Class.new do
+        attr_reader :name, :pauses, :unpauses
+
+        def initialize(name, polls)
+          @name = name
+          @polls = polls
+          @pauses = 0
+          @unpauses = 0
+          @left = 0
+        end
+
+        def pause
+          @pauses += 1
+          raise 'bescort paused again and again without re-checking' if @pauses > 50
+
+          @left = @polls
+        end
+
+        def paused?
+          return false if @left <= 0
+
+          @left -= 1
+          true
+        end
+
+        def unpause
+          @unpauses += 1
+          @left = 0
+        end
+      end
+    end
+    let(:me) { script_class.new('bescort', 2) }
+    let(:go2) { script_class.new('go2', 0) }
+    let(:running) { [go2, me] }
+    let(:messages) { [] }
+    let(:dock) { 12_942 }
+    let(:bank) { 7224 }
+
+    before do
+      $test_data.town = { 'Aesry' => { 'currency' => 'lirums', 'deposit' => { 'id' => bank } } }
+      allow(DRCM).to receive(:hometown_currency).with('Aesry').and_return('lirums')
+      # Lich's DRCM.minimize_coins: copper split into the fewest coins.
+      allow(DRCM).to receive(:minimize_coins) do |copper|
+        [[10_000, 'platinum'], [1000, 'gold'], [100, 'silver'], [10, 'bronze'], [1, 'copper']].each_with_object([]) do |(value, name), coins|
+          coins << "#{copper / value} #{name}" if copper >= value
+          copper %= value
+        end
+      end
+      allow(DRC).to receive(:message) { |text| messages << text }
+      allow(Script).to receive(:current).and_return(me)
+      allow(Script).to receive(:running) { running.dup }
+      allow(bescort).to receive(:pause)
+      allow(bescort).to receive(:echo)
+      titles = { bank => ['[[Tona Kertigen, Deposit Window]]'], dock => ["[[Aesry Surlaenis'a, Landing Field]]"] }
+      allow(Map).to receive(:[]) { |id| titles[id] && double('map room', title: titles[id]) }
+    end
+
+    # go2 is killed on the first poll; a bescort that never notices would wait
+    # forever, so fail instead of hanging.
+    def kill_go2_while_paused
+      polls = 0
+      allow(bescort).to receive(:pause) do
+        running.delete(go2)
+        raise 'bescort never noticed go2 was killed' if (polls += 1) > 500
+      end
+    end
+
+    def at_rooms(*ids)
+      allow(Room).to receive(:current).and_return(*ids.map { |id| double('room', id: id) })
+    end
+
+    it 'pauses with the bank, the coins to withdraw and the room to come back to' do
+      allow(DRCM).to receive(:wealth).with('Aesry').and_return(3000, 3150)
+      at_rooms(dock)
+      expect(bescort.send(:get_fare?, 3150, 'Aesry', dock)).to be true
+      expect(me.pauses).to eq(1)
+      expect(messages).to eq(
+        [
+          'Not enough lirums for the fare: you need 3150 copper lirums and are carrying 3000. bescort is paused.',
+          '  1. Go to the bank: Tona Kertigen, Deposit Window (room 7224). go2 is still waiting on this trip, so use ;force go2 7224',
+          '  2. withdraw 1 silver, withdraw 5 bronze',
+          "  3. Return to Aesry Surlaenis'a, Landing Field (room 12942), then ;unpause bescort",
+          '  Set bescort_fare_handling: true in your yaml to have bescort do this for you.'
+        ]
+      )
+    end
+
+    it 'pauses again when unpaused still short, with the new shortfall' do
+      allow(DRCM).to receive(:wealth).with('Aesry').and_return(3000, 3100, 3150)
+      at_rooms(dock)
+      expect(bescort.send(:get_fare?, 3150, 'Aesry', dock)).to be true
+      expect(me.pauses).to eq(2)
+      expect(messages.grep(/^  2\./)).to eq(['  2. withdraw 1 silver, withdraw 5 bronze', '  2. withdraw 5 bronze'])
+    end
+
+    it 'pauses again when unpaused with the fare but away from the room' do
+      allow(DRCM).to receive(:wealth).with('Aesry').and_return(3000, 3150, 3150)
+      at_rooms(bank, dock)
+      expect(bescort.send(:get_fare?, 3150, 'Aesry', dock)).to be true
+      expect(me.pauses).to eq(2)
+      expect(messages.last).to eq("You have the fare. Return to Aesry Surlaenis'a, Landing Field (room 12942), then ;unpause bescort")
+    end
+
+    it 'unpauses and gives up when go2 is killed while paused' do
+      allow(DRCM).to receive(:wealth).with('Aesry').and_return(3000)
+      at_rooms(dock)
+      paused_me = script_class.new('bescort', 100)
+      allow(Script).to receive(:current).and_return(paused_me)
+      kill_go2_while_paused
+      expect(bescort.send(:get_fare?, 3150, 'Aesry', dock)).to be false
+      expect(paused_me.unpauses).to eq(1)
+      expect(messages.last).to eq('go2 has stopped, so bescort is stopping too.')
+    end
+
+    it 'waits on the pause alone when bescort was started without go2' do
+      running.delete(go2)
+      allow(DRCM).to receive(:wealth).with('Aesry').and_return(3000, 3150)
+      at_rooms(dock)
+      expect(bescort.send(:get_fare?, 3150, 'Aesry', dock)).to be true
+      expect(me.unpauses).to eq(0)
+    end
+
+    it 'names a room the map does not have by its id' do
+      allow(Map).to receive(:[]).and_return(nil)
+      allow(DRCM).to receive(:wealth).with('Aesry').and_return(3000, 3150)
+      at_rooms(dock)
+      bescort.send(:get_fare?, 3150, 'Aesry', dock)
+      expect(messages).to include('  1. Go to the bank: room 7224. go2 is still waiting on this trip, so use ;force go2 7224')
+    end
+
+    it 'boards the dirigible after the player fetches the fare, with one WEALTH per check' do
+      DRStats.circle = 63
+      allow(DRCM).to receive(:wealth).with('Aesry').and_return(3000, 3150)
+      at_rooms(dock)
+      allow(bescort).to receive(:manual_go2)
+      allow(DRC).to receive(:bput).with('join dirigible', any_args).and_return('You hand over your funds and step closer')
+      bescort.send(:take_dirigible, 'shard')
+      expect(me.pauses).to eq(1)
+      expect(DRCM).to have_received(:wealth).twice
+      expect(messages.grep(/^Not enough/).size).to eq(1)
+      expect(bescort).not_to have_received(:echo).with('Get money you slob!')
+      expect(DRC).to have_received(:bput).with('join dirigible', any_args).at_least(:once)
+    end
+
+    # Every site that hands a shortfall to get_fare? passes the coins its own
+    # WEALTH found and leaves the shortfall message to get_fare?.
+    [
+      [:take_m_m_galley, 'mriss', 6555, "Mer'Kresh", [300, "Mer'Kresh", 6555]],
+      [:take_dirigible, 'aesry', 12_862, 'Shard', [3150, 'Shard', 12_862]],
+      [:take_dirigible, 'shard', 12_942, 'Aesry', [3150, 'Aesry', 12_942]],
+      [:take_balloon, 'mriss', 8793, 'Therenborough', [3150, 'Therenborough', 8793]],
+      [:take_balloon, 'langenfirth', 8794, "Mer'Kresh", [3150, "Mer'Kresh", 8794]],
+      [:take_xing_ferry, 'crossing', 1904, 'Crossing', [35, 'Leth Deriel', 1904]],
+      [:take_xing_ferry, 'leth', 957, 'Crossing', [70, 'Crossing', 957]],
+      [:take_ain_ghazal_ferry, 'ainghazal', 3986, 'Shard', [62, 'Hibarnhvidar', 3986]],
+      [:take_rh_lang_barge, nil, 3434, 'Riverhaven', [300, 'Therenborough', 3434]],
+      [:take_rh_lang_barge, nil, 466, 'Riverhaven', [300, 'Riverhaven', 466]],
+      [:take_haven_throne_ferry, nil, 452, 'Riverhaven', [300, 'Riverhaven', 452]],
+      [:take_haven_throne_ferry, nil, 3084, 'Riverhaven', [300, 'Throne City', 3084]]
+    ].each do |method, mode, room, wealth_town, fare_args|
+      it "#{method} from room #{room} hands its WEALTH to get_fare? and leaves the message to it" do
+        DRStats.circle = 63
+        UserVars.citizenship = 'Ilithi'
+        at_rooms(room)
+        allow(bescort).to receive(:manual_go2)
+        allow(DRCM).to receive(:wealth).with(wealth_town).and_return(10)
+        allow(bescort).to receive(:get_fare?).and_return(false)
+        mode ? bescort.send(method, mode) : bescort.send(method)
+        expect(bescort).to have_received(:get_fare?).with(*fare_args, 10)
+        expect(DRCM).to have_received(:wealth).once
+        expect(bescort).not_to have_received(:echo).with('Get money you slob!')
+      end
+    end
+
+    it 'still says Get money you slob! on the Ain Ghazal dock that fetches no fare' do
+      at_rooms(11_027)
+      allow(DRCM).to receive(:wealth).with('Shard').and_return(10)
+      allow(bescort).to receive(:get_fare?)
+      bescort.send(:take_ain_ghazal_ferry, 'shard')
+      expect(bescort).to have_received(:echo).with('Get money you slob!')
+      expect(bescort).not_to have_received(:get_fare?)
+    end
+
+    it 'leaves the dirigible alone when go2 is killed while paused' do
+      DRStats.circle = 63
+      allow(DRCM).to receive(:wealth).with('Aesry').and_return(3000)
+      at_rooms(dock)
+      allow(Script).to receive(:current).and_return(script_class.new('bescort', 100))
+      kill_go2_while_paused
+      allow(bescort).to receive(:manual_go2)
+      bescort.send(:take_dirigible, 'shard')
+      expect(DRC).not_to have_received(:bput).with('join dirigible', any_args)
+      expect(bescort).not_to have_received(:manual_go2)
+    end
+
+    it 'still fetches the fare itself when bescort_fare_handling is on' do
+      bescort.instance_variable_get(:@settings).bescort_fare_handling = true
+      allow(bescort).to receive(:manual_go2)
+      allow(bescort).to receive(:reget).and_return(nil)
+      allow(DRCM).to receive(:get_money_from_bank).and_return(true)
+      expect(bescort.send(:get_fare?, 3150, 'Aesry', dock)).to be true
+      expect(me.pauses).to eq(0)
+      expect(bescort).to have_received(:manual_go2).with(bank)
     end
   end
 end

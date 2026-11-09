@@ -16,22 +16,74 @@
 rooms = [10_506, 10_507, 10_508, 10_509, 10_482, 10_497, 10_515, 10_510, 10_539, 10_590, 10_520, 10_640, 10_557, 10_576, 10_617, 10_620,
          10_572, 10_677]
 
-# The first bug among the room's objects, as `<adjective> <noun>` for
-# `get the <adjective> <noun>`, or nil when none of them is a bug. The bug word
-# has to be the object's noun, its last word, singular or plural (crickets,
-# mantises, fireflies): DR matches `get the bug` against the start of an item's
-# noun, so a bugle, mothballs, a moth antenna or the dropped dragonfly wing
-# must not count. The word before the noun goes into the get as well, so
-# `get the stink bug` can't take a battered brass bugle listed ahead of the
-# bug. Both words are returned as the room lists them; an object listed under
-# its noun alone, or after an article, is named by its noun alone.
-def room_bug
-  DRRoom.room_objs.each do |obj|
-    match = obj.match(/(?:(\S+)\s+)?\b((?:locust|bug|beetle|cricket|hornet|moth|scarab|mantis)(?:e?s)?|(?:fire|dragon)fl(?:y|ies))\z/i)
-    next unless match
+# Whether a noun is one of the bug nouns, singular or plural (crickets,
+# mantises, fireflies). The whole noun has to be the bug word: DR matches
+# `get the bug` against the start of an item's noun, so a bugle, mothballs,
+# ladybugs or a humbug must not count. The game sends some nouns with a
+# leading space.
+#
+# @param noun [String, nil] an object's noun
+# @return [Boolean]
+def bug_noun?(noun)
+  noun.to_s.strip.match?(/\A(?:(?:locust|bug|beetle|cricket|hornet|moth|scarab|mantis)(?:e?s)?|(?:fire|dragon)fl(?:y|ies))\z/i)
+end
 
-    adjective = match[1] unless match[1].to_s.match?(/\A(?:a|an|some|the)\z/i)
-    return [adjective, match[2]].compact.join(' ')
+# The first bug in the room, as what to get and the name to report it by, or
+# nil when nothing in the room is a bug. Gets already tried and failed in this
+# room are passed in and skipped, so an object that only looks like a bug
+# can't keep the room's real bugs from being picked up.
+#
+# An object the room's links name (GameObj.loot) is a bug when the game's own
+# noun for it is a bug noun, and is got by its id. A vela'tohr bush surrounded
+# by ephemeral flickering fireflies is a bush, and a moth antenna or the
+# dropped dragonfly wing is no bug. Only when no linked object is a bug does
+# the room's object list (DRRoom.room_objs) count: the game sends that list
+# without links, or cuts it short with links for the objects before the cut.
+#
+# @param missed [Array<String>] gets that took nothing in this room
+# @return [Array(String, String), nil] what to get (`#<id>` or
+#   `the <adjective> <noun>`) and the bug's name
+def room_bug(missed = [])
+  loot = GameObj.loot.to_a
+  bug = loot.find { |obj| bug_noun?(obj.noun) && !missed.include?("##{obj.id}") }
+  return ["##{bug.id}", bug.name] if bug
+
+  listed_room_bug(loot.map(&:name), missed)
+end
+
+# The first bug in the room's object list that the room's links don't name,
+# as `the <adjective> <noun>` for the get and `<adjective> <noun>` to report
+# it by, or nil when there is none. With no links, lich-5's DRC.get_noun gives
+# each object's noun. The word before the noun goes into the get as well, so
+# `get the stink bug` can't take a battered brass bugle listed ahead of the
+# bug. Both words are used as the room lists them; an object listed under its
+# noun alone, or after an article, is named by its noun alone.
+#
+# get_noun reads the bush above as fireflies, so such an object is tried once
+# per visit, takes nothing, and is passed over for the next bug.
+#
+# A linked object is left out only when the room's object list gives it under
+# the same whole name. lich-5 splits that list at commas and at " and ", so a
+# linked object whose name holds either is listed in pieces, and each piece
+# is judged by DRC.get_noun like an unlinked object: at worst one get that
+# takes nothing.
+#
+# @param linked [Array<String>] names of the objects the room's links name,
+#   whose real nouns room_bug has already judged
+# @param missed [Array<String>] gets that took nothing in this room
+# @return [Array(String, String), nil]
+def listed_room_bug(linked, missed)
+  DRRoom.room_objs.each do |obj|
+    name = obj.sub(/\A(?:a|an|some|the)\s+/i, '')
+    next if linked.include?(name)
+
+    noun = DRC.get_noun(name)
+    next unless bug_noun?(noun)
+
+    words = name.split
+    at = words.index { |word| word.casecmp?(noun) }
+    bug = [(words[at - 1] if at&.positive?), noun].compact.join(' ')
+    return ["the #{bug}", bug] unless missed.include?("the #{bug}")
   end
   nil
 end
@@ -51,35 +103,82 @@ def walk_to_or_stop(room, held = nil)
   exit
 end
 
+# What each hand holds, as GameObj shows it (right hand first), or nil for a
+# hand that holds nothing.
+#
+# @return [Array(Object, Object)] the right and left hands' GameObj, each nil
+#   when empty
+def held_items
+  [GameObj.right_hand, GameObj.left_hand].map do |hand|
+    hand if hand && !['', 'Empty'].include?(hand.name.to_s)
+  end
+end
+
+# Whether two GameObj hand items are the same object: same id and same name.
+#
+# @param item [Object, nil] a hand's GameObj
+# @param other [Object, nil] a hand's GameObj
+# @return [Boolean]
+def same_item?(item, other)
+  !item.nil? && !other.nil? && item.id == other.id && item.name == other.name
+end
+
+# What a get picked up: the item in the first hand (right, then left) that
+# holds something it did not hold before the get, with that hand's place in
+# held_items. Nil when neither hand changed, so something already held is
+# never taken for the bug.
+#
+# @param before [Array(Object, Object)] held_items from before the get
+# @return [Array(Object, Integer), nil] the item got and its hand's index
+def picked_up(before)
+  held_items.each_with_index.find { |item, hand| item && !same_item?(item, before[hand]) }
+end
+
 # Picks up each bug in the room in turn, drops a wing and takes anything else
-# to the shrine. Returns false, leaving the object where it is, when a get
-# leaves both hands empty (the object can't be picked up, or someone else got
-# it first), so the circuit moves on instead of carrying nothing to the shrine
-# and coming straight back for it.
+# to the shrine. Only what the get picked up is handled: the hands are read
+# before and after the get, and the hand that holds something new is the one
+# the get filled. What goes on the shrine is named by the noun GameObj gives
+# for that item, and it is stowed after only when that hand still holds it.
+# Anything the character already held stays in hand. A get that puts nothing
+# new in either hand (the object can't be picked up, someone else got it
+# first, both hands were full, or it only looked like a bug) leaves the
+# object where it is, and the next bug in the room is tried. Returns false
+# when nothing was picked up, so the circuit moves on instead of coming
+# straight back for an object it can't get.
+#
+# @return [Boolean] whether anything was picked up
 def collect_bugs
-  while (bug = room_bug)
+  missed = []
+  took = false
+  while (bug = room_bug(missed))
+    target, name = bug
     fput('stand') until checkstanding
-    fput("get the #{bug}")
+    before = held_items
+    fput("get #{target}")
     pause 1
     waitrt?
-    thing = checkright || checkleft
-    case thing
-    when nil
-      DRC.message("bug-grabber: could not pick up the #{bug}. Moving on.")
-      return false
-    when /\bwing/i
+    item, hand = picked_up(before)
+    if item.nil?
+      DRC.message("bug-grabber: could not pick up the #{name}. Moving on.")
+      missed << target
+      next
+    end
+    thing = item.noun.to_s.strip
+    if thing.match?(/\bwing/i)
       fput('drop wing')
     else
       walk_to_or_stop(10_506, thing)
+      missed.clear
       fput("put #{thing} on shrine")
       pause
       waitrt?
       pause
-      fput("stow #{checkright || checkleft}")
+      fput("stow #{thing}") if same_item?(held_items[hand], item)
     end
+    took = true
     waitrt?
   end
-  true
+  took
 end
 
 # Walks the circuit until a room's bugs are collected, then starts over. A

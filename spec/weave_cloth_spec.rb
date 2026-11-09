@@ -1019,6 +1019,124 @@ RSpec.describe WeaveCloth do
 
       WeaveCloth.new
     end
+
+    # A real worn duffel bag whose name runs on past its noun (noun="bag",
+    # XML: "deep black camlet duffel bag set with a crimson windsteel
+    # medallion"), so the setting "duffel bag" is not the end of its name.
+    it 'puts the cloth in a worn duffel bag by its id when its name runs on past "duffel bag"' do
+      $worn_items = [OpenStruct.new(name: 'deep black camlet duffel bag set with a crimson windsteel medallion', noun: 'bag', id: '1222175')]
+      expect(DRCI).to receive(:put_away_item?).with('#1976604', '#1222175').and_return(true)
+
+      WeaveCloth.new
+    end
+
+    it 'never takes a worn item whose noun is not one of the setting\'s words, such as a duffel bag strap' do
+      $worn_items = [OpenStruct.new(name: 'duffel bag strap', noun: 'strap', id: '1222176')]
+      expect(DRCI).to receive(:put_away_item?).with('#1976604', 'duffel bag').and_return(true)
+
+      WeaveCloth.new
+    end
+
+    it 'names the container when two worn duffel bags both answer to the setting, rather than pick one' do
+      $worn_items = [OpenStruct.new(name: 'deep black camlet duffel bag set with a crimson windsteel medallion', noun: 'bag', id: '1222175'),
+                     OpenStruct.new(name: 'heavy silk duffel bag', noun: 'bag', id: '1222177')]
+      expect(DRCI).to receive(:put_away_item?).with('#1976604', 'duffel bag').and_return(true)
+
+      WeaveCloth.new
+    end
+
+    it 'finds a worn backpack whose name runs on past its noun for the setting "backpack"' do
+      weave = WeaveCloth.allocate.tap { |instance| instance.instance_variable_set(:@bag, 'backpack') }
+      $worn_items = [OpenStruct.new(name: 'faded muslin backpack clasped with an agonite gargoyle medallion', noun: 'backpack', id: '1222178')]
+
+      expect(weave.send(:crafting_container_ref)).to eq('#1222178')
+    end
+
+    # A real worn bag (noun="bag") whose name does not hold "duffel bag":
+    # its noun is one of the setting's words, but it is another bag.
+    it 'names the container rather than take a worn bag whose name does not hold "duffel bag"' do
+      weave = WeaveCloth.allocate.tap { |instance| instance.instance_variable_set(:@bag, 'duffel bag') }
+      $worn_items = [OpenStruct.new(name: 'dark watersilk bag bearing a detailed cambrinth medallion', noun: 'bag', id: '1144457')]
+
+      expect(weave.send(:crafting_container_ref)).to eq('duffel bag')
+    end
+
+    # A real worn sack (noun="sack") set as the whole name, whose noun is
+    # not the setting's last word.
+    it 'finds a worn sack by its id when the setting is its full name, whose last word is not its noun' do
+      weave = WeaveCloth.allocate.tap { |instance| instance.instance_variable_set(:@bag, 'soft woven sack with a golden piglet charm') }
+      $worn_items = [OpenStruct.new(name: 'soft woven sack with a golden piglet charm', noun: 'sack', id: '1420')]
+
+      expect(weave.send(:crafting_container_ref)).to eq('#1420')
+    end
+
+    it 'finds the worn container by its id whatever the case of the setting' do
+      weave = WeaveCloth.allocate.tap { |instance| instance.instance_variable_set(:@bag, 'Duffel Bag') }
+      $worn_items = [OpenStruct.new(name: 'deep black camlet duffel bag set with a crimson windsteel medallion', noun: 'bag', id: '1222175')]
+
+      expect(weave.send(:crafting_container_ref)).to eq('#1222175')
+    end
+
+    it 'names the container when the worn item that answers to it has no id' do
+      weave = WeaveCloth.allocate.tap { |instance| instance.instance_variable_set(:@bag, 'duffel bag') }
+      $worn_items = [OpenStruct.new(name: 'deep black camlet duffel bag set with a crimson windsteel medallion', noun: 'bag', id: nil)]
+
+      expect(weave.send(:crafting_container_ref)).to eq('duffel bag')
+    end
+  end
+
+  # What a hand holds is told by the noun GameObj gives it, never by the last
+  # word of its name. Logged hand tags are short ("silk thread", "silk
+  # cloth"), so these hands carry the full names of real items whose name
+  # ends in another item's noun, as a hand would if it ever showed one: a
+  # quiver (noun="quiver") wrapped with silver thread, and a deed
+  # (noun="deed") for some heavy titanese cloth.
+  describe 'telling thread and cloth in hand' do
+    let(:quiver) { 'soft white thigh quiver of snow leopard fur artfully wrapped with silver thread' }
+    let(:deed) { 'deed for some heavy titanese cloth' }
+    let(:weave) { WeaveCloth.allocate.tap { |instance| instance.instance_variable_set(:@bag, 'duffel bag') } }
+
+    before do
+      $hand_nouns[quiver] = 'quiver'
+      $hand_nouns[deed] = 'deed'
+    end
+
+    it 'takes the pulled thread, not a held quiver wrapped with silver thread' do
+      $left_hand = quiver
+      $hand_ids[quiver] = '2300001'
+      # The pulled thread lands in the other hand (XML: <right
+      # exist="1626431" noun="thread">cotton thread</right>, as 1104:30752).
+      game.script('pull loom', log('1104:30752'), after: lambda { |_|
+        $right_hand = 'cotton thread'
+        $hand_ids['cotton thread'] = '1626431'
+      })
+
+      expect(weave.send(:pull_thread).id).to eq('1626431')
+    end
+
+    it 'cannot tell which thread was pulled when only a quiver wrapped with silver thread shows in hand' do
+      $left_hand = quiver
+      $hand_ids[quiver] = '2300001'
+      game.script('pull loom', log('1104:30752'))
+
+      expect(weave.send(:pull_thread)).to be(false)
+    end
+
+    it 'does not take a held deed for some heavy titanese cloth for the woven cloth' do
+      $right_hand = deed
+      $hand_ids[deed] = '2300002'
+
+      expect(weave.send(:hand_holding, 'cloth')).to be_nil
+    end
+
+    it 'counts only the cloth among the hands, not a deed for cloth beside it' do
+      $right_hand = deed
+      $hand_ids[deed] = '2300002'
+      $left_hand = 'silk cloth'
+      $hand_ids['silk cloth'] = '1976604'
+
+      expect(weave.send(:hands_holding, 'cloth').map(&:id)).to eq(['1976604'])
+    end
   end
 
   # Every loom reply in Mahtra's four heavy silk weaves on 2026-11-04.
