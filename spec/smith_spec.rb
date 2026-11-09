@@ -102,6 +102,48 @@ RSpec.describe Smith do
     allow(instance).to receive(:buy_parts).and_return(true)
   end
 
+  # An item as lich-5's inventory feed reports it. The feed sends the name
+  # as "article,adjective,noun" (Kurtus' feed, 2026-11-02:
+  # name="a,short,pole" long="a short oak pole"); it is split here the way
+  # Inventory.parse_name splits it.
+  #
+  # @param wire_name [String] e.g. "some,large cloth,padding"
+  # @param contents [Array] what is inside it
+  # @param closed [Boolean]
+  # @param in_selector [String, nil] the feed's verb hint for its interior
+  # @return [RSpec::Mocks::Double]
+  def feed_item(wire_name, contents: [], closed: false, in_selector: nil)
+    fields = wire_name.split(',').map(&:strip)
+    item = double("feed item #{wire_name}",
+                  article: fields.size > 1 ? fields.first : '',
+                  adjective: fields[1..-2].to_a.reject(&:empty?).join(' '),
+                  noun: fields.last,
+                  closed?: closed,
+                  in_selector: in_selector)
+    allow(item).to receive(:contents).with(:in).and_return(contents)
+    item
+  end
+
+  # The inventory feed answers with this snapshot.
+  #
+  # @param worn [Array] worn items (containers carry their contents)
+  # @param right_hand [RSpec::Mocks::Double, nil]
+  # @param left_hand [RSpec::Mocks::Double, nil]
+  # @return [void]
+  def feed_answers(worn: [], right_hand: nil, left_hand: nil)
+    snapshot = double('feed snapshot', worn: worn, right_hand: right_hand, left_hand: left_hand)
+    allow(Lich::Common::Inventory).to receive(:refresh).and_return(snapshot)
+  end
+
+  # The feed lists these items in the worn crafting container, and nothing
+  # else carried.
+  #
+  # @param wire_names [Array<String>] feed names, e.g. "a,short,pole"
+  # @return [void]
+  def bag_holds(*wire_names)
+    feed_answers(worn: [feed_item('a heavy silk,duffel,bag', contents: wire_names.map { |name| feed_item(name) })])
+  end
+
   shared_examples 'a run that stops before forging' do
     it 'never starts forge.lic' do
       expect(forge_runs).to be_empty
@@ -236,6 +278,35 @@ RSpec.describe Smith do
       expect(DRCC).to have_received(:find_anvil).with('Shard')
     end
 
+    it "away from 'here', buys no part already carried but still carries the parts budget, which pays for oil too" do
+      instance = build_smith
+      allow(instance).to receive(:buy_parts)
+      bag_holds('a simple,oak,haft')
+
+      instance.smith(smith_args, morning_star)
+
+      expect(instance).not_to have_received(:buy_parts)
+      expect(DRCM).to have_received(:ensure_copper_on_hand).with(Smith::PARTS_COPPER, settings, 'Shard')
+      expect(forge_runs.size).to eq(1)
+    end
+
+    # forge.lic exits with "Need a free hand to forge" (validate_free_hand).
+    # buy_parts used to empty the hands, but with every part carried it
+    # isn't called.
+    it 'empties its hands before reading the inventory feed, even with nothing to buy' do
+      instance = build_smith
+      allow(instance).to receive(:buy_parts)
+      allow(DRCI).to receive(:stow_hands)
+      bag_holds('a simple,oak,haft')
+
+      instance.smith(smith_args, morning_star)
+
+      expect(DRCI).to have_received(:stow_hands).ordered
+      expect(Lich::Common::Inventory).to have_received(:refresh).ordered
+      expect(instance).not_to have_received(:buy_parts)
+      expect(forge_runs.size).to eq(1)
+    end
+
     it 'leaves the private forge walk and the rental to forge.lic' do
       instance = build_smith(use_private_forge: true)
       parts_already_carried(instance)
@@ -252,7 +323,7 @@ RSpec.describe Smith do
     it "stays in the room with 'here' and every part in the bag: no anvil search, no walking, no buying, no coin" do
       instance = build_smith
       allow(instance).to receive(:buy_parts)
-      allow(DRCI).to receive(:get_item_list).with('duffel bag').and_return(['wooden haft', 'flask of oil'])
+      bag_holds('a simple,oak,haft', 'a,flask,oil')
       allow(DRCT).to receive(:walk_to)
       allow(Room).to receive(:current).and_return(OpenStruct.new(id: 51_058))
 
@@ -265,18 +336,18 @@ RSpec.describe Smith do
       expect(forge_runs.size).to eq(1)
     end
 
-    it "doesn't list the bag with 'here' for a recipe without parts" do
-      allow(DRCI).to receive(:get_item_list)
+    it "doesn't ask the inventory feed with 'here' for a recipe without parts" do
+      allow(Lich::Common::Inventory).to receive(:refresh)
 
       build_smith.smith(smith_args(here: 'here'), morning_star.except('part'))
 
-      expect(DRCI).not_to have_received(:get_item_list)
+      expect(Lich::Common::Inventory).not_to have_received(:refresh)
       expect(forge_runs.size).to eq(1)
     end
 
     it "tells every forge run to skip restocking and stay put with 'here'" do
       forge_runs_end_holding('steel morning star', 'steel morning star')
-      allow(DRCI).to receive(:get_item_list).with('duffel bag').and_return(['wooden haft'])
+      bag_holds('a simple,oak,haft')
 
       build_smith.smith(smith_args(here: 'here', temper: 'temper'), morning_star)
 
@@ -324,7 +395,7 @@ RSpec.describe Smith do
       allow(DRCT).to receive(:walk_to) { |room| events << [:walk, room] }.and_return(true)
       allow(DRCT).to receive(:buy_item) { |room, part| events << [:buy, room, part] }
       allow(DRCC).to receive(:stow_crafting_item)
-      allow(DRCI).to receive(:get_item_list).with('duffel bag').and_return(['flask of oil'])
+      bag_holds('a flask of,,oil')
       allow(DRC).to receive(:wait_for_script_to_complete) do |name, args|
         next unless name == 'forge'
 
@@ -392,7 +463,7 @@ RSpec.describe Smith do
     end
 
     it 'still fetches the ingot and walks back with buy when every part is in the bag' do
-      allow(DRCI).to receive(:get_item_list).with('duffel bag').and_return(['wooden haft'])
+      bag_holds('a simple,oak,haft')
       allow(DRCI).to receive(:in_hands?).and_return(true)
       allow(DRCI).to receive(:exists?).and_return(false)
       allow(DRCT).to receive(:order_item) { |room, number| events << [:order, room, number] }
@@ -404,7 +475,7 @@ RSpec.describe Smith do
     end
 
     it 'buys the leather strip reinforce needs' do
-      allow(DRCI).to receive(:get_item_list).with('duffel bag').and_return(['wooden haft'])
+      bag_holds('a simple,oak,haft')
       allow(DRCI).to receive(:in_hands?).and_return(true)
 
       instance.smith(smith_args(here: 'here', reinforce: 'reinforce'), morning_star)
@@ -414,9 +485,14 @@ RSpec.describe Smith do
       expect(events).to eq([[:buy, strip_shop, 'leather strip'], [:walk, start_room], [:forge], [:forge]])
     end
 
-    # forge.lic gets each part with DRCI.get_item?(part), from anywhere.
+    # forge.lic gets each part with DRCI.get_item?(part), from anywhere it
+    # can reach. Kurtus, 2026-11-07: "You tap a long oak pole inside your
+    # traveler's pack." while his crafting container was the duffel bag.
     context 'when the part is carried outside the crafting container' do
-      before { allow(DRCI).to receive(:exists?).with('haft').and_return(true) }
+      let(:pack) { feed_item("a scuffed,traveler's,pack", contents: [feed_item('a simple,oak,haft')]) }
+      let(:empty_bag) { feed_item('a heavy silk,duffel,bag') }
+
+      before { feed_answers(worn: [empty_bag, pack]) }
 
       it 'counts it as carried: no coin, no shopping, no walking, and it forges' do
         instance.smith(smith_args(here: 'here'), morning_star)
@@ -425,31 +501,30 @@ RSpec.describe Smith do
         expect(events).to eq([[:forge]])
       end
 
-      it 'does the same when the crafting container cannot be listed' do
-        allow(DRCI).to receive(:get_item_list).with('duffel bag').and_return(nil)
+      it 'counts one held in a hand too' do
+        feed_answers(worn: [empty_bag], left_hand: feed_item('a simple,oak,haft'))
 
         instance.smith(smith_args(here: 'here'), morning_star)
 
         expect(events).to eq([[:forge]])
       end
 
-      it 'buys by the container count when the recipe needs that part twice (a tap cannot count)' do
+      it 'buys only the second when the recipe needs that part twice' do
         allow(DRCI).to receive(:in_hands?).and_return(true)
 
         instance.smith(smith_args(here: 'here'), morning_star.merge('part' => %w[haft haft]))
 
-        expect(events.count { |event| event.first == :buy }).to eq(2)
+        expect(events).to eq([[:buy, 4436, 'haft'], [:walk, start_room], [:forge]])
       end
     end
 
     # mrhoribu, #7979: a brigandine hauberk needs a large padding and two
-    # small paddings. With one of each in the bag, 'tap my small padding'
-    # finds the bagged one, so the tap can't stand for the second.
+    # small paddings. With one of each in the bag, only the second small
+    # padding is missing.
     it 'buys the second of a doubled part when the bag holds one' do
       hauberk = SmithSpecData.recipe('a brigandine hauberk')
       expect(hauberk['part']).to eq(['large padding', 'small padding', 'small padding'])
-      allow(DRCI).to receive(:get_item_list).with('duffel bag').and_return(['large padding', 'small padding'])
-      allow(DRCI).to receive(:exists?).with('small padding').and_return(true)
+      bag_holds('some,large cloth,padding', 'some,small cloth,padding')
       allow(DRCI).to receive(:in_hands?).and_return(true)
       allow(DRCT).to receive(:order_item) { |room, number| events << [:order, room, number] }
 
@@ -882,13 +957,7 @@ RSpec.describe Smith do
       allow(DRCI).to receive(:in_hands?).and_return(true)
     end
 
-    def carrying(*bag_items)
-      allow(DRCI).to receive(:get_item_list).with('duffel bag').and_return(bag_items)
-    end
-
-    it 'buys every part when the crafting container holds none' do
-      carrying('steel ingot', 'flask of oil')
-
+    it 'buys each part it is given' do
       expect(instance.buy_parts(['short cord', 'haft'])).to be true
       # Shard sells both parts in room 4436 (base-crafting recipe_parts).
       expect(DRCT).to have_received(:buy_item).with(4436, 'short cord')
@@ -896,86 +965,25 @@ RSpec.describe Smith do
     end
 
     it "orders a part the town's shop sells by number (Shard long cord: 'order 17' in Kurtus' logs)" do
-      carrying
-
       instance.buy_parts(['long cord'])
 
       expect(DRCT).to have_received(:order_item).with(10_939, 17)
       expect(DRCT).not_to have_received(:buy_item)
     end
 
-    it 'uses parts already in the crafting container, matched by adjective and noun as the game does' do
-      carrying('short leather cord', 'simple oak haft', 'long oak pole')
-
-      instance.buy_parts(['short cord', 'haft', 'long pole'])
-
-      expect(DRCT).not_to have_received(:buy_item)
-      expect(DRCT).not_to have_received(:order_item)
-    end
-
-    it 'does not take a long cord for a short cord' do
-      carrying('long leather cord')
-
-      instance.buy_parts(['short cord'])
-
-      expect(DRCT).to have_received(:buy_item).with(anything, 'short cord')
-    end
-
-    it 'does not take a crafted short-hafted halberd for a haft, or a bone-hilted dagger for a hilt' do
-      carrying('steel short-hafted halberd', 'bone-hilted dagger')
-
-      instance.buy_parts(%w[haft hilt])
-
-      expect(DRCT).to have_received(:buy_item).with(anything, 'haft')
-      expect(DRCT).to have_received(:buy_item).with(anything, 'hilt')
-    end
-
-    # forge.lic asks for "another finished wooden hilt", so an unfinished
-    # piece left in the bag is not a part it can use.
-    it 'does not count an unfinished part as one already carried' do
-      carrying('unfinished wooden hilt')
-
-      instance.buy_parts(%w[hilt])
-
-      expect(DRCT).to have_received(:buy_item).with(anything, 'hilt')
-    end
-
-    it 'buys only the shortfall when a recipe needs the same part twice' do
-      carrying('simple oak haft')
-
-      instance.buy_parts(%w[haft haft])
-
-      expect(DRCT).to have_received(:buy_item).with(anything, 'haft').once
-    end
-
-    it 'buys everything when the container is empty' do
-      carrying
-
+    it 'buys a part as often as it is listed' do
       instance.buy_parts(%w[haft haft])
 
       expect(DRCT).to have_received(:buy_item).with(anything, 'haft').twice
     end
 
-    it 'buys everything when the container cannot be listed (get_item_list returns nil)' do
-      allow(DRCI).to receive(:get_item_list).and_return(nil)
-
-      instance.buy_parts(%w[haft haft])
-
-      expect(DRCT).to have_received(:buy_item).with(anything, 'haft').twice
-    end
-
-    it 'empties its hands first, then stows each part it bought' do
-      allow(DRCI).to receive(:stow_hands)
-      carrying
-
+    it 'stows each part it bought in the crafting container' do
       instance.buy_parts(['haft'])
 
-      expect(DRCI).to have_received(:stow_hands).ordered
-      expect(DRCC).to have_received(:stow_crafting_item).with('haft', 'duffel bag', belt).ordered
+      expect(DRCC).to have_received(:stow_crafting_item).with('haft', 'duffel bag', belt)
     end
 
     it 'reports failure and stops buying when a purchase leaves nothing in hand' do
-      carrying
       allow(DRCI).to receive(:in_hands?).with('short cord').and_return(false)
 
       expect(instance.buy_parts(['short cord', 'haft'])).to be false
@@ -984,10 +992,159 @@ RSpec.describe Smith do
     end
   end
 
-  # 'buy' used to compare the recipe against the town's stock-volume (5 in
-  # every town) and order the workorders_materials metal whatever metal was
-  # typed: all three ';smith ... buy' runs in the logs (steel morning star,
-  # tyrium awl pike) were refused.
+  # Parts are told by the noun lich-5's inventory feed reports, never by the
+  # words at the end of a description. Names below are in the feed's
+  # "article,adjective,noun" form; the padding, short pole and shield handle
+  # ones are Kurtus' and Saelia's own feed lines.
+  describe '#parts_to_buy' do
+    let(:instance) { build_smith }
+
+    it 'lists every part when nothing carried is one' do
+      bag_holds('a,steel,ingot', 'a flask of,,oil')
+
+      expect(instance.parts_to_buy(['short cord', 'haft'])).to eq(['short cord', 'haft'])
+    end
+
+    it 'counts parts in the crafting container by noun and kind word' do
+      bag_holds('a,short,cord', 'a simple,oak,haft', 'a,long,pole', 'some,large cloth,padding', 'a,shield,handle')
+
+      expect(instance.parts_to_buy(['short cord', 'haft', 'long pole', 'large padding', 'shield handle'])).to be_empty
+    end
+
+    # Fizzlestiks, 2026-11-07 (dr-scripts #8036): RUMMAGE listed "icesteel
+    # drawknife with a gold wire wrapped hilt", smith took it for a hilt and
+    # bought none, and every kasai stopped at "You need another finished
+    # wooden hilt". Kurtus carries "a kertig dagesse fitted with a pattern
+    # welded hilt" and "a tyrium shovel with a long ebonwood handle".
+    it "does not take a tool whose description names a part for that part: its noun isn't the part's" do
+      bag_holds('an icesteel,drawknife', 'a kertig,dagesse', 'a,tyrium,shovel')
+
+      expect(instance.parts_to_buy(['hilt', 'shield handle'])).to eq(['hilt', 'shield handle'])
+    end
+
+    it 'does not take a crafted short-hafted halberd for a haft, or a bone-hilted dagger for a hilt' do
+      bag_holds('a steel,short-hafted,halberd', 'a,bone-hilted,dagger')
+
+      expect(instance.parts_to_buy(%w[haft hilt])).to eq(%w[haft hilt])
+    end
+
+    it 'does not take a long cord for a short cord, or a small padding for a large one' do
+      bag_holds('a,long,cord', 'some,small cloth,padding')
+
+      expect(instance.parts_to_buy(['short cord', 'large padding'])).to eq(['short cord', 'large padding'])
+    end
+
+    it "needs the kind word as a whole word: 'short-handled' is not 'short'" do
+      bag_holds('a,short-handled,pole')
+
+      expect(instance.parts_to_buy(['short pole'])).to eq(['short pole'])
+    end
+
+    # forge.lic asks for "another finished wooden hilt"; the feed puts
+    # "unfinished" before the noun ("some unfinished,georin,salve", Saelia).
+    it 'does not count an unfinished part' do
+      bag_holds('an unfinished,wooden,hilt')
+
+      expect(instance.parts_to_buy(%w[hilt])).to eq(%w[hilt])
+    end
+
+    it 'lists only the shortfall when a recipe needs the same part twice' do
+      bag_holds('a simple,oak,haft')
+
+      expect(instance.parts_to_buy(%w[haft haft])).to eq(%w[haft])
+    end
+
+    it 'lists nothing when the parts needed twice are both carried, one in the bag and one in hand' do
+      feed_answers(worn: [feed_item('a heavy silk,duffel,bag', contents: [feed_item('a simple,oak,haft')])],
+                   right_hand: feed_item('a simple,oak,haft'))
+
+      expect(instance.parts_to_buy(%w[haft haft])).to be_empty
+    end
+
+    it 'counts a part in any worn container, not just the crafting container' do
+      feed_answers(worn: [feed_item('a heavy silk,duffel,bag'),
+                          feed_item("a scuffed,traveler's,pack", contents: [feed_item('a,long,pole')])])
+
+      expect(instance.parts_to_buy(['long pole'])).to be_empty
+    end
+
+    it "does not count a part in a closed container: 'get my <part>' can't reach it" do
+      feed_answers(worn: [feed_item("a scuffed,traveler's,pack", contents: [feed_item('a,long,pole')], closed: true)])
+
+      expect(instance.parts_to_buy(['long pole'])).to eq(['long pole'])
+    end
+
+    it 'does not count a part inside a container inside a worn one' do
+      pouch = feed_item('a,leather,pouch', contents: [feed_item('a simple,oak,hilt')])
+      feed_answers(worn: [feed_item("a scuffed,traveler's,pack", contents: [pouch])])
+
+      expect(instance.parts_to_buy(%w[hilt])).to eq(%w[hilt])
+    end
+
+    it 'counts a leather strip by either noun the game may use' do
+      bag_holds('some,leather,strips')
+
+      expect(instance.parts_to_buy(['leather strip'])).to be_empty
+    end
+
+    it 'always lists a part it has no noun for' do
+      stub_const('Smith::PART_NOUNS', Smith::PART_NOUNS.except('haft'))
+      bag_holds('a simple,oak,haft')
+
+      expect(instance.parts_to_buy(%w[haft])).to eq(%w[haft])
+    end
+
+    it "doesn't ask the feed for a recipe without parts" do
+      allow(Lich::Common::Inventory).to receive(:refresh)
+
+      expect(instance.parts_to_buy([])).to eq([])
+      expect(Lich::Common::Inventory).not_to have_received(:refresh)
+    end
+
+    context 'when the inventory feed does not answer' do
+      before { allow(Lich::Common::Inventory).to receive(:refresh).and_return(nil) }
+
+      it 'lists every part, a copy of the recipe list, and says why' do
+        parts = %w[haft haft]
+
+        result = instance.parts_to_buy(parts)
+
+        expect(result).to eq(%w[haft haft])
+        expect(result).not_to be(parts)
+        expect(Lich::Messaging).to have_received(:msg).with('bold', /inventory feed didn't answer/)
+      end
+    end
+
+    # Every eddy in Kurtus' and Saelia's feed is worn, never closed, and has
+    # in_selector="my watery portal in #<id>": 'get my <part>' doesn't reach in.
+    it 'does not count a part inside a worn eddy' do
+      eddy = feed_item('a,swirling,eddy', contents: [feed_item('a simple,oak,hilt')], in_selector: 'my watery portal in #55074825')
+      feed_answers(worn: [eddy])
+
+      expect(instance.parts_to_buy(%w[hilt])).to eq(%w[hilt])
+    end
+
+    # The feed passes nouns through as the server sends them; one is
+    # capitalized ("an elongated,finivire,Seed", Kurtus).
+    it 'matches the noun whatever its case' do
+      bag_holds('a simple,oak,Hilt')
+
+      expect(instance.parts_to_buy(%w[hilt])).to be_empty
+    end
+  end
+
+  describe 'PART_NOUNS' do
+    it 'knows every part a smithing recipe or reinforce can need' do
+      needed = SmithSpecData.smithing_recipes.flat_map { |recipe| recipe['part'] || [] }.uniq + [Smith::REINFORCE_PART]
+
+      expect(needed - Smith::PART_NOUNS.keys).to be_empty
+    end
+
+    it 'lists only parts the shops sell (base-crafting recipe_parts)' do
+      expect(Smith::PART_NOUNS.keys - SmithSpecData.crafting['recipe_parts'].keys).to be_empty
+    end
+  end
+
   describe "'buy'" do
     let(:instance) { build_smith }
 
@@ -1127,7 +1284,6 @@ RSpec.describe Smith do
       before do
         allow(DRCI).to receive(:exists?) { |item| carried.include?(item) }
         allow(DRCI).to receive(:in_hands?).and_return(true)
-        allow(DRCI).to receive(:get_item_list).and_return([])
         allow(DRCC).to receive(:stow_crafting_item)
         allow(DRCC).to receive(:crafting_cost).and_return(200)
         allow(DRCT).to receive(:order_item) { carried << 'bronze ingot' }
@@ -1215,7 +1371,6 @@ RSpec.describe Smith do
 
     context 'when a part purchase fails' do
       before do
-        allow(DRCI).to receive(:get_item_list).and_return([])
         allow(DRCT).to receive(:buy_item)
         allow(DRCT).to receive(:order_item)
         allow(DRCI).to receive(:in_hands?).and_return(false)
