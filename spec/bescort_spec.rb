@@ -587,6 +587,115 @@ RSpec.describe Bescort do
       end
     end
 
+    # The dirigible lines are from a player's log; the balloon's are modelled on
+    # them, since board_flight drives both with the operator's name swapped in.
+    [
+      { method: :take_dirigible, mode: 'shard', noun: 'dirigible', operator: 'The Elothean aeromancer',
+        gondola: '[[Aboard the Dirigible, Gondola]]', arrival: 'JOIN CHARCOAL DIRIGIBLE' },
+      { method: :take_balloon, mode: 'langenfirth', noun: 'balloon', operator: 'The Gnomish operator',
+        gondola: '[[Aboard the Balloon, Gondola]]', arrival: 'JOIN GNOMISH BALLOON' }
+    ].each do |flight|
+      describe "##{flight[:method]}" do
+        let(:flight) { flight }
+        let(:join) { "join #{flight[:noun]}" }
+        let(:one_step) { %(#{flight[:operator]} says, "Alright.  That'll be 3150 Lirums."  You hand over your funds and step closer.  You join #{flight[:operator].sub('The ', 'the ')}.  "Right this way, madam.") }
+        let(:quoted) { %(#{flight[:operator]} says, "Woah there, madam.  I can only take a handful with me at a time.  It's going to cost you if you want to come along.  I'll accept 3150 copper Lirums.") }
+        let(:paid) { 'You hand over your funds and step closer.' }
+        let(:cannot_pay) { 'You reach your funds, but realize you cannot afford it.' }
+
+        # Each JOIN reads the next set of lines, the way Lich's DRC.bput does:
+        # the first line matching any pattern returns the matched text.
+        def join_replies(*line_sets)
+          sets = line_sets.dup
+          allow(DRC).to receive(:bput).with(join, any_args) do |_command, *matches|
+            regexes = matches.map { |m| m.is_a?(Regexp) ? m : /#{m}/i }
+            (sets.shift || []).lazy.filter_map { |line| regexes.filter_map { |regex| line.match(regex)&.to_a&.first }.first }.first || ''
+          end
+        end
+
+        # The ride: pause is stubbed, so step the room title off the gondola
+        # after a few polls and count them.
+        def fly(polls_aboard)
+          XMLData.room_title = flight[:gondola]
+          polls = 0
+          allow(bescort).to receive(:pause) do
+            polls += 1
+            XMLData.room_title = '[[Landing Field]]' if polls > polls_aboard
+          end
+          -> { polls }
+        end
+
+        def take
+          bescort.send(flight[:method], flight[:mode])
+        end
+
+        before { DRStats.circle = 63 }
+
+        after { XMLData.room_title = nil }
+
+        it 'stays aboard when the first JOIN pays the fare' do
+          join_replies(player_text_lines(paid) + [one_step])
+          polls = fly(3)
+          take
+          expect(DRC).to have_received(:bput).with(join, any_args).once
+          expect(polls.call).to be > 3
+          expect(XMLData.room_title).not_to eq(flight[:gondola])
+        end
+
+        it 'pays on the second JOIN when the first only quotes the fare' do
+          join_replies([quoted], [paid])
+          polls = fly(2)
+          take
+          expect(DRC).to have_received(:bput).with(join, any_args).twice
+          expect(polls.call).to be > 2
+        end
+
+        it 'pays on the second JOIN when the operator says the boarding line' do
+          join_replies([quoted], [one_step])
+          polls = fly(2)
+          take
+          expect(polls.call).to be > 2
+        end
+
+        it 'gets off the ride path when the second JOIN cannot pay' do
+          join_replies([quoted], [cannot_pay])
+          take
+          expect(bescort).not_to have_received(:pause)
+        end
+
+        it 'stays on the ride path when another player repeats the cannot-pay line' do
+          join_replies([quoted], player_text_lines(cannot_pay) + [paid])
+          polls = fly(2)
+          take
+          expect(polls.call).to be > 2
+        end
+
+        it 'waits for it when there is nothing to join, then boards' do
+          join_replies(['What were you referring to?'], [one_step])
+          allow(bescort).to receive(:waitfor).with(flight[:arrival])
+          take
+          expect(bescort).to have_received(:waitfor).with(flight[:arrival]).once
+          expect(DRC).to have_received(:bput).with(join, any_args).twice
+        end
+
+        it 'ignores the fare lines when another player repeats them' do
+          join_replies(player_text_lines(quoted) + player_text_lines(one_step) + ['What were you referring to?'], [one_step])
+          allow(bescort).to receive(:waitfor)
+          take
+          expect(bescort).to have_received(:waitfor).with(flight[:arrival]).once
+          expect(DRC).to have_received(:bput).with(join, any_args).twice
+        end
+
+        it 'gives up without riding when the JOIN reply is unrecognised' do
+          join_replies(['You are already part of a group.'])
+          allow(bescort).to receive(:waitfor)
+          take
+          expect(bescort).not_to have_received(:pause)
+          expect(bescort).not_to have_received(:waitfor)
+        end
+      end
+    end
+
     describe "wander_maze_until 'maze-reset'" do
       let(:maze_room) { double('MazeRoom') }
       let(:moves) { [] }

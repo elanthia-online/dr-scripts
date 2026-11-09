@@ -1397,19 +1397,35 @@ class Bescort
       end
       manual_go2(12_942)
     end
-    case DRC.bput('join dirigible', 'The Elothean aeromancer says, "Woah there', 'What were you referring to?')
-    when /Elothean aeromancer/
-      case DRC.bput('join dirigible', 'You hand over your funds and step closer', 'You reach your funds, but')
-      when /closer/
-        pause 5
-        pause until XMLData.room_title != '[[Aboard the Dirigible, Gondola]]'
-      else
-        return
-      end
+    return unless board_flight('dirigible', 'The Elothean aeromancer', '[[Aboard the Dirigible, Gondola]]') == :not_here
+
+    waitfor 'JOIN CHARCOAL DIRIGIBLE'
+    take_dirigible(mode)
+  end
+
+  # JOIN the dirigible or balloon and ride it out. The operator charges the
+  # fare on the JOIN that boards you. When you can pay, that can be the first
+  # JOIN: "Alright.  That'll be N Lirums."  You hand over your funds and step
+  # closer. Otherwise the first JOIN only quotes the fare ("Woah there") and a
+  # second JOIN pays or fails ("You reach your funds, but"). Every reply is
+  # anchored to the operator's own line, so another player repeating one is
+  # ignored. Returns :boarded once off the gondola, :not_here when there is
+  # nothing to join, or :failed.
+  def board_flight(noun, operator, gondola)
+    boarded = "^(?:#{operator} says, .*)?You hand over your funds and step closer"
+    case DRC.bput("join #{noun}", "^#{operator} says, \"Woah there", boarded, '^What were you referring to')
+    when /Woah there/
+      return :failed unless DRC.bput("join #{noun}", boarded, "^(?:#{operator} says, .*)?You reach your funds, but").match?(/step closer/)
+    when /step closer/
+      nil
     when /What were you referring to/
-      waitfor 'JOIN CHARCOAL DIRIGIBLE'
-      take_dirigible(mode)
+      return :not_here
+    else
+      return :failed
     end
+    pause 5
+    pause until XMLData.room_title != gondola
+    :boarded
   end
 
   def take_airship_muspari
@@ -1438,19 +1454,10 @@ class Bescort
       end
       manual_go2(8794)
     end
-    case DRC.bput('join balloon', 'The Gnomish operator says, "Woah there', 'What were you referring to?')
-    when /Gnomish operator /
-      case DRC.bput('join balloon', 'You hand over your funds and step closer', 'You reach your funds, but')
-      when /closer/
-        pause 5
-        pause until XMLData.room_title != '[[Aboard the Balloon, Gondola]]'
-      else
-        return
-      end
-    when /What were you referring to/
-      waitfor 'JOIN GNOMISH BALLOON'
-      take_balloon(mode)
-    end
+    return unless board_flight('balloon', 'The Gnomish operator', '[[Aboard the Balloon, Gondola]]') == :not_here
+
+    waitfor 'JOIN GNOMISH BALLOON'
+    take_balloon(mode)
   end
 
   def take_rh_ferry(north)
