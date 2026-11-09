@@ -12,7 +12,7 @@
   task_slack_keepers: true/false # send a Slack message (slack_username) for each keeper
   task_unpack_keepers: true/false # put a keeper's item (not its sack) in task_loot_bag and bin the empty sack
   task_bin_leftover_stock: true/false # after each Zasele task is handed in, bin her leftover stock and offcuts from the crafting bag into worn_trashcan (needs worn_trashcan; not in marathon, which carries its stock between tasks)
-  task_bin_metal_from: <container> # before the first metal task (Poltu, Bradyn) of a run, bin every bronze and steel ingot in this container: a one-time sweep of leftover task metal that forge used to leave in the stow container. Bins your own ingots there too; unset it once it says none are left (until then it tries again before each metal task). Ignored when it has the same noun as crafting_container
+  task_bin_metal_from: <container> # before the first metal task (Poltu, Bradyn) of a run, bin every bronze and steel ingot in this container: a one-time sweep of leftover task metal that forge used to leave in the stow container. Bins your own ingots there too; unset it once it says none are left (until then it tries again before each metal task). Ignored when it may be crafting_container: the same worn container, or a noun the same as its noun or shortened from it
   task_crafting_room: <room number> # Room to craft in. Ensure it meets specifications for tooling required...
   task_before_scripts: ['restock'] # scripts (with any arguments) to run before asking for each task, while the previous task's cooldown runs
   task_copper_floor: 20000 # before each task, if you carry less copper (Kronars) than this, exchange foreign coins and withdraw up to task_copper_target
@@ -35,7 +35,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.09.3'
+  VERSION = '2026.11.09.4'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -738,9 +738,12 @@ class TaskMaster
   # can't throw away, and counts what is left with RUMMAGE: only an empty
   # container ends it for the run (and says to unset the setting); otherwise
   # it says so and tries again before the next metal task. A swept ingot
-  # still in hand stops the run before any metal is bought. A container with
-  # the same noun as crafting_container is left alone, as it may be the same
-  # one: the task's leftovers there are thrown away after each task.
+  # still in hand stops the run before any metal is bought. A container that
+  # may be crafting_container (same_container? without adjectives: the same
+  # worn container, or, when the two names can't be told apart by the worn
+  # containers, a noun that is the same as crafting_container's or shortened
+  # from it) is left alone: the task's leftovers there are thrown away after
+  # each task.
   #
   # @return [void]
   # @raise [SystemExit] when a swept ingot is still in hand
@@ -748,9 +751,9 @@ class TaskMaster
     container = @settings.task_bin_metal_from.to_s.strip.sub(/\Amy\s+/i, '')
     return if container.empty? || @stray_ingots_binned
 
-    if same_noun?(container, @bag)
+    if same_container?(container, @bag, adjectives: false)
       @stray_ingots_binned = true
-      DRC.message("task_bin_metal_from (#{container}) has the same noun as your crafting_container (#{@bag}) and may be the same container, so nothing is swept: the task's leftover metal there is thrown away after each task.")
+      DRC.message("task_bin_metal_from (#{container}) may be your crafting_container (#{@bag}), so nothing is swept: the task's leftover metal there is thrown away after each task.")
       return
     end
 
@@ -787,17 +790,6 @@ class TaskMaster
     else
       DRC.message("#{swept}, and could not finish (see above, or check that you carry a #{container}). It tries again before the next metal task.")
     end
-  end
-
-  # Whether two container names have the same noun (the last word; DR's dot
-  # form, "travel.pack", counts as words): such names may be one container.
-  #
-  # @param one [String]
-  # @param other [String]
-  # @return [Boolean]
-  def same_noun?(one, other)
-    noun = ->(name) { name.to_s.downcase.split(/[\s.]+/).reject(&:empty?).last }
-    !noun.call(one).nil? && noun.call(one) == noun.call(other)
   end
 
   # Works one of Poltu's metal tasks.
@@ -1020,20 +1012,95 @@ class TaskMaster
     DORHUM_ITEMS[item] || pause_for_unknown_item("taskmaster does not know how to make Dorhum's #{item}s yet.")
   end
 
-  # Whether two container names may be the same bag: the same noun, and
-  # either a bare noun ("put my rock in my backpack" finds a "sturdy
-  # backpack" too) or an adjective in common. Names may use DR's dot form,
-  # "travel.pack"; "travel.pack" and "traveler's.pack" are two bags.
+  # Whether two container settings may name the same bag. When each names
+  # one worn container (worn_container_id), they are the same bag only when
+  # that is the same container. Otherwise it goes by their nouns
+  # (container_noun): the nouns must be the same, or one shortened from the
+  # other, since DR takes the start of a noun for the whole of it ("backp"
+  # finds a backpack). With adjectives (check_loot_bag) the names must also
+  # share an adjective, or one be a bare noun ("put my rock in my backpack"
+  # finds a "sturdy backpack" too); "travel.pack" and "traveler's.pack" are
+  # two bags. Without (bin_stray_ingots, which bins what it finds), a noun
+  # that matches is enough. A name whose noun can't be read (a blank one
+  # too) may be any bag.
   #
   # @param one [String, nil]
   # @param other [String, nil]
+  # @param adjectives [Boolean] whether names of one noun must also share
+  #   an adjective
   # @return [Boolean]
-  def same_container?(one, other)
-    *one_adjectives, one_noun = one.to_s.downcase.split(/[\s.]+/).reject(&:empty?)
-    *other_adjectives, other_noun = other.to_s.downcase.split(/[\s.]+/).reject(&:empty?)
-    return false unless one_noun && one_noun == other_noun
+  def same_container?(one, other, adjectives: true)
+    one_id = worn_container_id(one)
+    other_id = worn_container_id(other)
+    return one_id == other_id if one_id && other_id
+
+    one_noun, one_adjectives = container_noun(one)
+    other_noun, other_adjectives = container_noun(other)
+    return true unless one_noun && other_noun
+    return false unless one_noun.start_with?(other_noun) || other_noun.start_with?(one_noun)
+    return true unless adjectives
 
     one_adjectives.empty? || other_adjectives.empty? || !(one_adjectives & other_adjectives).empty?
+  end
+
+  # The words of a container setting, as DR reads them: downcased, DR's dot
+  # form ("travel.pack") read as words, and a leading "my" and article
+  # dropped.
+  #
+  # @param setting [String, nil]
+  # @return [Array<String>]
+  def container_words(setting)
+    setting.to_s.downcase.strip.sub(/\Amy\s+/, '').sub(/\A(?:a|an|some)\s+/, '').split(/[\s.]+/).reject(&:empty?)
+  end
+
+  # A container setting's noun, from DRC.get_noun, and the words before it.
+  #
+  # @param setting [String, nil]
+  # @return [Array(String, Array<String>), Array(nil, Array)] the noun and
+  #   its adjectives; a nil noun when get_noun reads none, or one that is
+  #   not a word of the setting
+  def container_noun(setting)
+    words = container_words(setting)
+    noun = DRC.get_noun(words.join(' '))&.downcase
+    index = noun && words.rindex(noun)
+    index ? [noun, words.take(index)] : [nil, []]
+  end
+
+  # The id of the one worn container a setting names, by the rule lich-5's
+  # DRCI.carried_ids uses for worn items (DRCI.worn_ref is built on it, but
+  # is not in a released Lich yet): the item's noun is one of the setting's
+  # words (container_words), and its name holds those words in order, as
+  # whole words, ignoring case. So "duffel bag" finds a "deep black camlet
+  # duffel bag set with a crimson windsteel medallion" (noun bag), and
+  # "backp" finds no backpack, since a noun must be a whole word of it.
+  #
+  # @param setting [String, nil]
+  # @return [String, nil] the id; nil when no worn item matches, or more
+  #   than one does
+  def worn_container_id(setting)
+    ids = container_ids(GameObj.inv, setting, &:name)
+    ids.size == 1 ? ids.first : nil
+  end
+
+  # The distinct ids of the items a container setting names, by
+  # worn_container_id's rule.
+  #
+  # @param items [Array, nil] items with #id and #noun, e.g. GameObj.inv
+  # @param setting [String, nil]
+  # @yieldparam item [Object] one of items
+  # @yieldreturn [String, nil] the name to look for the setting's words in
+  # @return [Array<String>]
+  def container_ids(items, setting)
+    words = container_words(setting)
+    return [] if words.empty?
+
+    pattern = /(?<![\w'-])#{words.map { |word| Regexp.escape(word) }.join('\s+')}(?![\w'-])/i
+    Array(items).filter_map do |item|
+      id = item&.id.to_s
+      next if id.empty? || !words.include?(item.noun.to_s.downcase)
+
+      id if yield(item).to_s.match?(pattern)
+    end.uniq
   end
 
   # A resumed Dorhum task may start with a base item in hand, left there when

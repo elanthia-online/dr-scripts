@@ -2626,7 +2626,64 @@ RSpec.describe TaskMaster do
             expect(world[:bag]).to eq({ 'bronze ingot' => 2 })
           end
           expect(messages.size).to eq(6)
-          expect(messages).to all(include('has the same noun as your crafting_container (duffel bag)', 'nothing is swept'))
+          expect(messages).to all(include('may be your crafting_container (duffel bag)', 'nothing is swept'))
+        end
+
+        # DR takes a shortened noun for the whole one, so "backp" and
+        # "backpack" are one bag (crafting_container: backp is
+        # profiles/Samples/WarriorMage/Kyrtoth-setup.yaml). Their last words
+        # differ, which used to sweep the crafting bag and bin the player's
+        # own ingots.
+        it 'leaves alone a container whose noun is shortened from crafting_container\'s, or the other way round' do
+          messages = swept_messages
+          [%w[backp backpack], %w[backpack backp]].each do |bag, from|
+            world = stock_world({}, others: { from => { 'bronze ingot' => 2, 'steel ingot' => 1 } })
+            sweeper(from, bag: bag).send(:bin_stray_ingots)
+            expect(world[:sent]).to eq([]), "swept #{from} with crafting_container #{bag}"
+            expect(world[:others][from]).to eq({ 'bronze ingot' => 2, 'steel ingot' => 1 })
+          end
+          expect(messages).to all(include('nothing is swept'))
+        end
+
+        it 'still leaves alone a container that a shortened noun may name, with more than one worn bag it could be' do
+          $worn_items = [OpenStruct.new(name: 'silk backpack', noun: 'backpack', id: '501'), OpenStruct.new(name: 'rugged white backpack', noun: 'backpack', id: '502')]
+          world = stock_world({}, others: { 'backpack' => { 'bronze ingot' => 2 } })
+          sweeper('backpack', bag: 'backp').send(:bin_stray_ingots)
+          expect(world[:sent]).to eq([])
+        end
+
+        it 'sweeps a worn container of the same noun that is not the crafting bag: two packs with ids of their own' do
+          $worn_items = [OpenStruct.new(name: "scuffed traveler's pack", noun: 'pack', id: '1570759'),
+                         OpenStruct.new(name: "darkened bitterweave scavenger's pack", noun: 'pack', id: '195238')]
+          world = stock_world({}, others: { "scavenger's pack" => { 'bronze ingot' => 2, 'steel ingot' => 1 } })
+          sweeper("scavenger's pack", bag: "traveler's pack").send(:bin_stray_ingots)
+          expect(world[:sent]).to include("get my bronze ingot from my scavenger's pack", "get my steel ingot from my scavenger's pack")
+          expect(world[:others]["scavenger's pack"]).to eq({ 'bronze ingot' => 0, 'steel ingot' => 0 })
+        end
+
+        # The crafting bag's name ends in a medallion, not its noun: the
+        # worn container a setting names is found by its noun and the
+        # setting's words in its name, wherever they are.
+        it 'tells the crafting bag from another worn bag by id, though neither name ends in "bag"' do
+          $worn_items = [OpenStruct.new(name: 'deep black camlet duffel bag set with a crimson windsteel medallion', noun: 'bag', id: '997'),
+                         OpenStruct.new(name: 'dark watersilk bag bearing a detailed cambrinth medallion', noun: 'bag', id: '1144457')]
+          world = stock_world({ 'bronze ingot' => 2 }, others: { 'watersilk bag' => { 'bronze ingot' => 3 } })
+          sweeper('watersilk bag').send(:bin_stray_ingots)
+          expect(world[:others]['watersilk bag']).to eq({ 'bronze ingot' => 0 })
+          expect(world[:bag]).to eq({ 'bronze ingot' => 2 })
+        end
+
+        it 'leaves alone every container while crafting_container is unset, as it could be any of them' do
+          world = stock_world({}, others: { 'backpack' => { 'bronze ingot' => 2 } })
+          sweeper('backpack', bag: nil).send(:bin_stray_ingots)
+          expect(world[:sent]).to eq([])
+        end
+
+        it 'leaves alone a second name for the worn crafting bag' do
+          $worn_items = [OpenStruct.new(name: 'deep black camlet duffel bag set with a crimson windsteel medallion', noun: 'bag', id: '997')]
+          world = stock_world({ 'bronze ingot' => 2 }, others: { 'camlet duffel bag' => { 'bronze ingot' => 2 } })
+          sweeper('camlet duffel bag').send(:bin_stray_ingots)
+          expect(world[:sent]).to eq([])
         end
 
         it 'stops the whole sweep at an ingot the bin refuses, puts it back where it came from, and tries again next time' do
@@ -5054,6 +5111,25 @@ RSpec.describe TaskMaster do
         it "takes #{crafting.inspect} and #{loot.inspect} for #{same ? 'the same bag' : 'two bags'}" do
           expect(dorhum.same_container?(crafting, loot)).to be(same)
         end
+      end
+
+      # crafting_container: backp (profiles/Samples/WarriorMage/
+      # Kyrtoth-setup.yaml) with task_loot_bag unset, so 'backpack': DR takes
+      # "backp" for the backpack, though the last words differ.
+      it 'stops when one name is a shortened noun of the other, as with crafting_container backp and the default loot bag' do
+        expect { dorhum(bag: 'backp', lootbag: 'backpack').hand_in_bag }.to raise_error(SystemExit)
+        expect { dorhum(bag: 'backpack', lootbag: 'backp').hand_in_bag }.to raise_error(SystemExit)
+      end
+
+      it 'stops when both names find the one worn bag, whose name ends in a medallion' do
+        $worn_items = [OpenStruct.new(name: 'deep black camlet duffel bag set with a crimson windsteel medallion', noun: 'bag', id: '997')]
+        expect { dorhum(bag: 'duffel bag', lootbag: 'camlet duffel bag').hand_in_bag }.to raise_error(SystemExit)
+      end
+
+      it 'goes on when the two names find two worn bags, even sharing an adjective' do
+        $worn_items = [OpenStruct.new(name: 'battered black duffel bag', noun: 'bag', id: '387369'),
+                       OpenStruct.new(name: 'black spidersilk bag woven to resemble a cocoon fortified by tomiek spiderwebs', noun: 'bag', id: '194112')]
+        expect(dorhum(bag: 'black duffel bag', lootbag: 'black spidersilk bag').hand_in_bag).to eq('black spidersilk bag')
       end
 
       it 'lets a loot bag of its own through' do
