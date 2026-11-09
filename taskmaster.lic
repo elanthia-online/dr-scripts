@@ -35,7 +35,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.10.5'
+  VERSION = '2026.11.10.6'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -1265,10 +1265,14 @@ class TaskMaster
   # inside the listed one is a line of its own like any other item:
   # INVENTORY does not list what is in it. An empty container answers
   # "There's nothing inside a woven sack!" (Hollow Eve 2026). Any other
-  # reply, none included, is not read as either.
+  # reply, none included, is not read as either. A closed container ends
+  # its line with " (closed)": "a heavy bronze waterproof trunk (closed)"
+  # (Poltu trunk task, Hollow Eve 2026). That is cut off, as lich-5's
+  # DRCI.get_inventory_by_type does, since DRC.get_noun reads no noun off a line
+  # ending in ")" and the trunk would not count as made.
   #
   # @param ref [String] the container: "#<id>", or a name
-  # @return [Array<String>, nil] the item lines, tags and indent stripped; [] for an empty container; nil when neither reply came, or
+  # @return [Array<String>, nil] the item lines, tags, indent and " (closed)" stripped; [] for an empty container; nil when neither reply came, or
   #   the list came with no item line in it (a reply that can't be read)
   def inventory_listing(ref)
     lines = Array(Lich::Util.issue_command("inventory #{ref}", INVENTORY_REPLY)).map { |line| line.gsub(/<[^>]+>/, '').rstrip }
@@ -1278,7 +1282,7 @@ class TaskMaster
 
     items = lines.drop(start + 1)
                  .take_while { |line| !line.match?(INVENTORY_LIST_END) }
-                 .filter_map { |line| line.strip if line.start_with?('  ') }
+                 .filter_map { |line| line.strip.sub(INVENTORY_CLOSED, '') if line.start_with?('  ') }
     items.empty? ? nil : items
   end
 
@@ -4756,6 +4760,9 @@ class TaskMaster
   # The line INVENTORY ends a container's list with, tags stripped: "[Use
   # <d cmd='inventory help'>INVENTORY HELP</d> for more options.]".
   INVENTORY_LIST_END = /^\[Use INVENTORY HELP/
+  # The mark INVENTORY puts after a closed container's name, cut off its
+  # item line (inventory_listing).
+  INVENTORY_CLOSED = /\s+\(closed\)\z/
   # Seconds to wait for another script to free a hand before the one retry.
   UNPACK_FREE_HAND_WAIT = 20
 

@@ -2949,6 +2949,18 @@ RSpec.describe TaskMaster do
           expect(listing(lines)).to eq(['a leather pouch'])
         end
 
+        # The Poltu trunk task (Hollow Eve 2026, taskmaster 2026.11.10.4):
+        # the trunk forge made was listed closed in the haversack. Mailicyian's
+        # "inventory lootbelt" (2026-11-10 12:35:45 NZDT) marked every locked
+        # box the same way; LOOK IN and RUMMAGE of the belt did not. The "battered
+        # box" line is made up, for a "(closed)" that does not end the line.
+        it 'cuts " (closed)" off the end of a closed container\'s line, and off no other' do
+          lines = [sack[0], '  a heavy bronze waterproof trunk (closed)', '  a reinforced pine trunk (closed)', '  a piece of hhr\'lav\'geluhh bark', '  some waterproof trunk instructions',
+                   '  a weighty almanac bound in rich purple leather and a golden closed-eye clasp', '  a battered box (closed) with a dent', sack.last]
+          expect(listing(lines)).to eq(['a heavy bronze waterproof trunk', 'a reinforced pine trunk', "a piece of hhr'lav'geluhh bark", 'some waterproof trunk instructions',
+                                        'a weighty almanac bound in rich purple leather and a golden closed-eye clasp', 'a battered box (closed) with a dent'])
+        end
+
         it 'gives none for an empty container' do
           expect(listing(["There's nothing inside a woven sack!"])).to eq([])
         end
@@ -3668,6 +3680,34 @@ RSpec.describe TaskMaster do
       it 'forges every item while there is metal' do
         expect(forge(3, 3)).to eq([3, 3])
         expect(DRC).to have_received(:message).with('3 daggers completed')
+      end
+
+      # The Poltu trunk task (Hollow Eve 2026, taskmaster 2026.11.10.4):
+      # forge left the trunk in hand, taskmaster put it in the bag, and
+      # INVENTORY listed it as "a heavy bronze waterproof trunk (closed)".
+      # get_noun reads no noun off that line, so the first run was judged to
+      # have made none: "Made 0 of 3 trunks", and no more runs.
+      it 'counts a trunk INVENTORY lists as closed as made, and forges the rest' do
+        tm = build(crafting_room: 16_936)
+        allow(DRCT).to receive(:walk_to)
+        allow(DRCC).to receive(:clean_anvil?).and_return(true)
+        bagged = 0
+        held = false
+        runs = 0
+        allow(DRC).to receive(:wait_for_script_to_complete) do
+          runs += 1
+          held = true
+        end
+        inventory_replies('inventory duffel bag' => ->(*) { inventoried(Array.new(bagged, 'a heavy bronze waterproof trunk (closed)') + ['some waterproof trunk instructions']) })
+        allow(DRC).to receive(:bput) do |command, *|
+          next '' unless command == 'put my trunk in my duffel bag' && held
+
+          held = false
+          bagged += 1
+          'You put your trunk in your heavy silk duffel bag.'
+        end
+        expect([tm.forge_item('trunk', 3, 'bronze'), runs]).to eq([3, 3])
+        expect(DRC).to have_received(:message).with('3 trunks completed')
       end
     end
 
@@ -5274,6 +5314,14 @@ RSpec.describe TaskMaster do
         %w[#4261860 #4261861 #4261862].each { |ref| expect(DRCI).to have_received(:put_away_item?).with(ref, "traveler's.pack") }
         expect(DRCI).to have_received(:dispose_trash).with('#4261859', 'bucket', 'tap')
         expect(DRCI).not_to have_received(:put_away_item?).with('#4261859', anything)
+      end
+
+      it 'takes a closed container out by its noun, and bins the empty sack' do
+        tm = unpacker
+        sent = unpack_world(tm, [['a heavy bronze waterproof trunk (closed)', 'trunk', '4261866']])
+        expect(sent).to eq(['get trunk from #4261859'])
+        expect(DRCI).to have_received(:put_away_item?).with('#4261866', "traveler's.pack")
+        expect(DRCI).to have_received(:dispose_trash).with('#4261859', 'bucket', 'tap')
       end
 
       it 'takes two items of one noun out with a get each (Kythkani\'s coin lines)' do
