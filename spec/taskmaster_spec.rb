@@ -2843,7 +2843,7 @@ RSpec.describe TaskMaster do
 
         it 'sorts an item of the noun by its noun, wherever the noun is in its name' do
           expect(sorted('wand', 'a sturdy ironwood wand wrapped in braided lengths of sinew', 'a wand'))
-            .to eq({ of_kind: ['a sturdy ironwood wand wrapped in braided lengths of sinew', 'a wand'], unsure: [] })
+            .to eq({ of_kind: ['a sturdy ironwood wand wrapped in braided lengths of sinew', 'a wand'], unsure: [], unread: [] })
         end
 
         it "needs the kind's other words as whole words" do
@@ -2853,13 +2853,21 @@ RSpec.describe TaskMaster do
 
         it 'puts an item that holds the words, but whose noun reads as another, apart as unsure' do
           expect(sorted('rock', 'a rock marble deed', 'a deed for a large anjisis rock', 'a smooth rock'))
-            .to eq({ of_kind: ['a smooth rock'], unsure: ['a rock marble deed', 'a deed for a large anjisis rock'] })
-          expect(sorted('decay sigil-scroll', 'an intricate decay sigil-scroll comprised of broad strokes')[:unsure]).to eq(['an intricate decay sigil-scroll comprised of broad strokes'])
+            .to eq({ of_kind: ['a smooth rock'], unsure: ['a rock marble deed', 'a deed for a large anjisis rock'], unread: [] })
+          expect(sorted('decay sigil-scroll', 'an intricate decay sigil-scroll comprised of broad strokes'))
+            .to eq({ of_kind: [], unsure: ['an intricate decay sigil-scroll comprised of broad strokes'], unread: [] })
+        end
+
+        # The one name in noun-corpus.tsv that get_noun reads no noun off
+        # (noun="building", a room object, used here only for its name).
+        it 'lists an unsure item with no noun read off it as unread too' do
+          expect(sorted('building', 'burned out skeleton of a ruined building', 'a ruined building'))
+            .to eq({ of_kind: ['a ruined building'], unsure: ['burned out skeleton of a ruined building'], unread: ['burned out skeleton of a ruined building'] })
         end
 
         it 'sorts nothing out of no reply' do
-          expect(sorted('rock')).to eq({ of_kind: [], unsure: [] })
-          expect(build.send(:sort_listed, nil, 'rock')).to eq({ of_kind: [], unsure: [] })
+          expect(sorted('rock')).to eq({ of_kind: [], unsure: [], unread: [] })
+          expect(build.send(:sort_listed, nil, 'rock')).to eq({ of_kind: [], unsure: [], unread: [] })
         end
       end
 
@@ -5997,15 +6005,36 @@ RSpec.describe TaskMaster do
                                                       'The hand-in would give those first. Move them out of backpack, then start again.')
         end
 
-        # Its noun reads as "deed" (a deed for a large anjisis rock is a real
-        # deed, noun-corpus.tsv), but get_noun misses some flavor (it reads
-        # "strokes" off a sigil-scroll), so an item that holds the noun
-        # stops the run, named, rather than risk giving or binning a rock.
-        it 'stops, naming them, for items that hold "rock" but whose noun reads as another' do
-          expect { check('rock', 'a rock marble deed', 'a deed for a large anjisis rock') }.to raise_error(SystemExit)
+        # Each holds the task's noun but reads as another, as its noun= in
+        # noun-corpus.tsv says ("deed", "instructions"; the rock marble deed
+        # is the Dorhum reward count_listed names). The hand-in's GET of a
+        # rock, shell or wand would not take them, so a player who keeps
+        # them in task_loot_bag is not stopped. get_noun read every rock,
+        # shell and wand logged in November 2026 as its noun, so no real
+        # one is waved through this way.
+        it 'carries on past items that hold the noun but whose noun reads as another' do
+          { 'rock' => ['a rock marble deed', 'a deed for a large anjisis rock'], 'shell' => ['some glow shell instructions'], 'wand' => ['some virga wand instructions'] }.each do |noun, names|
+            expect { check(noun, *names) }.not_to raise_error, "#{noun}: #{names.inspect}"
+          end
 
-          expect(DRC).to have_received(:message).with(a_string_ending_with('Move them out of backpack, then start again. Counted as rocks, since taskmaster can\'t tell that they are not: ' \
-                                                                           '"a rock marble deed", "a deed for a large anjisis rock".'))
+          expect(DRC).not_to have_received(:message)
+        end
+
+        it 'counts a rock next to a rock marble deed, and only the rock' do
+          expect { check('rock', 'a rock marble deed', 'a smooth rock') }.to raise_error(SystemExit)
+
+          expect(DRC).to have_received(:message).with('backpack already holds 1 rock that this task has not made or could not hand in: left from another task, not taken at the hand-in, or your own. ' \
+                                                      'The hand-in would give those first. Move them out of backpack, then start again.')
+        end
+
+        # An item no noun can be read off may be one of the noun, so it
+        # stops the run, named. The one such name in noun-corpus.tsv (a
+        # room object, used here only for its name) stands in for it.
+        it 'stops, naming it, for an item that holds the noun but has no noun read off it' do
+          expect { check('building', 'burned out skeleton of a ruined building') }.to raise_error(SystemExit)
+
+          expect(DRC).to have_received(:message).with(a_string_ending_with('Move them out of backpack, then start again. Counted as buildings, since taskmaster can\'t tell that it is not: ' \
+                                                                           '"burned out skeleton of a ruined building".'))
         end
 
         it 'does not count an item that only holds part of the noun, or none of it' do
@@ -6970,18 +6999,31 @@ RSpec.describe TaskMaster do
           expect(game.sent).to eq(['inventory duffel bag', 'count #7301'])
         end
 
-        # "junliar potion" is a real potion (noun-corpus.tsv, noun="potion").
-        # Instructions for another potion (a made-up name: no log shows one)
-        # hold the noun and read as "instructions". Only the task's own are
-        # told apart, by their whole name.
-        it "stops for another remedy's instructions of the noun, but not for the task's own" do
-          tm = maker(task_product: 'landsickness potion')
+        # Both hold "draught" and read as another noun, as their noun= in
+        # noun-corpus.tsv says ("instructions", "holster"): remedy and the
+        # hand-in, which take the draught by its noun, would not take them.
+        it 'does not count items that hold the noun but whose noun reads as another' do
+          tm = maker(task_product: 'deep-sea draught')
           game, = shop_world(kit)
-          game.script('inventory duffel bag', *bag_listed('some landsickness potion instructions', 'some healing potion instructions'))
+          game.script('inventory duffel bag', *bag_listed('some deep-sea draught instructions', 'a cracked black leather draught holster set with a vivid fire whirl ruby', 'some deep-sea draught'))
 
-          expect { tm.remedy_doses_on_hand(potion_recipe) }.to raise_error(SystemExit)
+          expect(tm.send(:remedy_stacks_in_bag, draught_recipe)).to eq(1)
 
-          expect(DRC).to have_received(:message).with(a_string_ending_with('"some healing potion instructions".'))
+          expect(DRC).not_to have_received(:message)
+        end
+
+        # No item logged in November 2026 that holds a remedy's noun reads as
+        # no noun, so get_noun is made to read none off this real one.
+        it 'stops, naming it, for an item that holds the noun but has no noun read off it' do
+          tm = maker(task_product: 'deep-sea draught')
+          game, = shop_world(kit)
+          holster = 'a cracked black leather draught holster set with a vivid fire whirl ruby'
+          game.script('inventory duffel bag', *bag_listed(holster, 'some deep-sea draught'))
+          allow(DRC).to(receive(:get_noun).and_wrap_original { |real, name| name == holster ? nil : real.call(name) })
+
+          expect { tm.send(:remedy_stacks_in_bag, draught_recipe) }.to raise_error(SystemExit)
+
+          expect(DRC).to have_received(:message).with(a_string_ending_with("Stopping before buying anything. Counted as draughts, since taskmaster can't tell that it is not: \"#{holster}\"."))
         end
 
         it 'stops before buying anything when the instructions have fewer uses than crafts' do

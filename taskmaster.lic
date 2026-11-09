@@ -35,7 +35,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.09.5'
+  VERSION = '2026.11.10.1'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -1195,15 +1195,17 @@ class TaskMaster
   # decay sigil-scroll comprised of broad strokes" is an unsure
   # sigil-scroll too, as get_noun reads "strokes" off it: lich-5's
   # FLAVOR_TEXT_PATTERN has no "comprised of" (a gap to fill there, not
-  # with another rule here). Each caller decides what an unsure line counts
-  # as.
+  # with another rule here). The unsure lines get_noun reads no noun off at
+  # all are also listed as unread. Each caller decides what an unsure or
+  # unread line counts as.
   #
   # @param lines [Array<String>, nil] inventory_listing's item lines
   # @param name [String] e.g. 'rock', 'decay sigil-scroll'
   # @return [Hash{Symbol => Array<String>}] the :of_kind and :unsure
-  #   lines; none when get_noun reads no noun off the name
+  #   lines, and :unread, the unsure lines with no noun read off them; none
+  #   when get_noun reads no noun off the name
   def sort_listed(lines, name)
-    sorted = { of_kind: [], unsure: [] }
+    sorted = { of_kind: [], unsure: [], unread: [] }
     noun = DRC.get_noun(name)&.downcase
     return sorted if noun.to_s.empty?
 
@@ -1211,7 +1213,9 @@ class TaskMaster
     Array(lines).each do |line|
       next unless (words - name_words(line)).empty?
 
-      sorted[DRC.get_noun(line)&.downcase == noun ? :of_kind : :unsure] << line.strip
+      read = DRC.get_noun(line)&.downcase
+      sorted[read == noun ? :of_kind : :unsure] << line.strip
+      sorted[:unread] << line.strip if read.nil?
     end
     sorted
   end
@@ -1227,13 +1231,13 @@ class TaskMaster
     sort_listed(lines, name)[:of_kind].size
   end
 
-  # A note that names the items a guard counted as of a noun, though their
-  # noun could not be read as it (sort_listed's unsure lines).
+  # A note that names the items a guard counted as of a noun, though no
+  # noun could be read off them (sort_listed's unread lines).
   #
   # @param noun [String]
   # @param lines [Array<String>]
   # @return [String] '' for none, else a sentence with a leading space
-  def unsure_note(noun, lines)
+  def unread_note(noun, lines)
     return '' if lines.empty?
 
     " Counted as #{noun}s, since taskmaster can't tell that #{lines.size == 1 ? 'it is' : 'they are'} not: #{lines.map { |line| "\"#{line}\"" }.join(', ')}."
@@ -1246,11 +1250,15 @@ class TaskMaster
   # before buying anything rather than hand those in. A resume runs it right
   # after handing in the finished items it found; dorhum then skips it.
   # task_loot_bag is read with INVENTORY (container_listing), and items go
-  # by their noun (sort_listed). An item whose name holds the noun but whose
-  # noun can't be read as it (unsure) counts too, and is named:
-  # it may be one the hand-in would give, so the run stops rather than give
-  # or bin the player's item. An INVENTORY that goes unanswered counts as
-  # none, as an unanswered RUMMAGE did before.
+  # by their noun (sort_listed). The hand-in GETs by noun, so an item whose
+  # name holds the noun but whose noun reads as another ("a rock marble
+  # deed", "some glow shell instructions") is not one it would give, and
+  # does not count. One with no noun read off it at all (unread) counts,
+  # and is named: it may be one the hand-in would give, so the run stops
+  # rather than give or bin the player's item. get_noun read the noun of
+  # every rock, shell and wand logged in November 2026 right, so no real
+  # one is let through as another noun. An INVENTORY that goes unanswered
+  # counts as none, as an unanswered RUMMAGE did before.
   #
   # @param noun [String] the finished items' noun
   # @return [void]
@@ -1258,11 +1266,11 @@ class TaskMaster
   def check_loot_bag_clear(noun)
     sorted = sort_listed(container_listing(@lootbag), noun)
     @loot_bag_checked = true
-    unsure = sorted[:unsure]
-    held = sorted[:of_kind].size + unsure.size
+    unread = sorted[:unread]
+    held = sorted[:of_kind].size + unread.size
     return if held.zero?
 
-    DRC.message("#{@lootbag} already holds #{held} #{noun}#{held == 1 ? '' : 's'} that this task has not made or could not hand in: left from another task, not taken at the hand-in, or your own. The hand-in would give those first. Move them out of #{@lootbag}, then start again.#{unsure_note(noun, unsure)}")
+    DRC.message("#{@lootbag} already holds #{held} #{noun}#{held == 1 ? '' : 's'} that this task has not made or could not hand in: left from another task, not taken at the hand-in, or your own. The hand-in would give those first. Move them out of #{@lootbag}, then start again.#{unread_note(noun, unread)}")
     exit
   end
 
@@ -2611,11 +2619,13 @@ class TaskMaster
   # potion when the remedy is landsickness potion) stops the run: remedy
   # and the hand-in work the remedy by its noun, so it could be crafted
   # into, combined or handed in. So does an item whose name holds the noun
-  # but whose noun can't be read as it (unsure in sort_listed),
-  # as it may be one of the noun; it is named. The task's own instructions
-  # ("some gill glop instructions", noun "instructions") are not of the
-  # noun and do not count: they are told by their whole name, the remedy's
-  # and "instructions". An INVENTORY with no answer is asked once more;
+  # but with no noun read off it at all (unread in sort_listed), as it may
+  # be one of the noun; it is named. One whose noun reads as another is not
+  # one they would take, and does not count: the task's own instructions
+  # ("some gill glop instructions", noun "instructions"), or "a cracked
+  # black leather draught holster set with a vivid fire whirl ruby". get_noun
+  # read the noun of every glop, moisturizer, potion and draught logged in
+  # November 2026 right. An INVENTORY with no answer is asked once more;
   # unanswered twice it stops the run, since taking it for an empty bag
   # would craft doses already made, or leave them out of the hand-in. On
   # the stop the hands are emptied, but for the remedy's vessel, which may
@@ -2632,13 +2642,12 @@ class TaskMaster
     stop_stock("Could not look for #{recipe[:product]} in your #{@bag}: INVENTORY went unanswered twice.") if lines.nil?
     ours = count_listed(lines, recipe[:product])
     sorted = sort_listed(lines, noun)
-    instructions = "#{recipe[:product]} instructions"
-    unsure = sorted[:unsure].reject { |line| line.sub(/\A(?:a|an|some|the)\s+/i, '').casecmp?(instructions) }
-    others = sorted[:of_kind].size - ours + unsure.size
+    unread = sorted[:unread]
+    others = sorted[:of_kind].size - ours + unread.size
     return ours if others.zero?
 
     DRCI.stow_hands unless held_vessel(recipe)
-    DRC.message("Your #{@bag} holds #{others} #{noun}#{others == 1 ? '' : 's'} that #{others == 1 ? 'is' : 'are'} not #{recipe[:product]}. remedy and the hand-in find the #{recipe[:product]} by its noun, so they could take #{others == 1 ? 'it' : 'them'} instead. Move #{others == 1 ? 'it' : 'them'} out of your #{@bag}, then start again. Stopping before buying anything.#{unsure_note(noun, unsure)}")
+    DRC.message("Your #{@bag} holds #{others} #{noun}#{others == 1 ? '' : 's'} that #{others == 1 ? 'is' : 'are'} not #{recipe[:product]}. remedy and the hand-in find the #{recipe[:product]} by its noun, so they could take #{others == 1 ? 'it' : 'them'} instead. Move #{others == 1 ? 'it' : 'them'} out of your #{@bag}, then start again. Stopping before buying anything.#{unread_note(noun, unread)}")
     exit
   end
 
