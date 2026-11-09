@@ -603,9 +603,9 @@ class Bescort
 
     # if you're on the mer'kresh side, check for money (no bank in m'riss.  you're screwed without funds)
     if (Room.current.id == 6555)
-      if DRCM.wealth("Mer'Kresh") < 120 # enough to go over and back 2x
-        echo('Get money you slob!')
-        return unless get_fare?(300, "Mer'Kresh", 6555)
+      on_hand = DRCM.wealth("Mer'Kresh")
+      if on_hand < 120 # enough to go over and back 2x
+        return unless get_fare?(300, "Mer'Kresh", 6555, on_hand)
       end
     end
 
@@ -1386,14 +1386,14 @@ class Bescort
     case mode
     when 'aesry'
       manual_go2(12_862)
-      if DRCM.wealth('Shard') < DRStats.circle * 50
-        echo('Get money you slob!')
-        return unless get_fare?(DRStats.circle * 50, 'Shard', 12_862)
+      on_hand = DRCM.wealth('Shard')
+      if on_hand < DRStats.circle * 50
+        return unless get_fare?(DRStats.circle * 50, 'Shard', 12_862, on_hand)
       end
     when 'shard'
-      if DRCM.wealth('Aesry') < DRStats.circle * 50
-        echo('Get money you slob!')
-        return unless get_fare?(DRStats.circle * 50, 'Aesry', 12_942)
+      on_hand = DRCM.wealth('Aesry')
+      if on_hand < DRStats.circle * 50
+        return unless get_fare?(DRStats.circle * 50, 'Aesry', 12_942, on_hand)
       end
       manual_go2(12_942)
     end
@@ -1427,14 +1427,14 @@ class Bescort
     case mode
     when 'mriss'
       manual_go2(8793)
-      if DRCM.wealth('Therenborough') < DRStats.circle * 50
-        echo('Get money you slob!')
-        return unless get_fare?(DRStats.circle * 50, 'Therenborough', 8793)
+      on_hand = DRCM.wealth('Therenborough')
+      if on_hand < DRStats.circle * 50
+        return unless get_fare?(DRStats.circle * 50, 'Therenborough', 8793, on_hand)
       end
     when 'langenfirth'
-      if DRCM.wealth("Mer'Kresh") < DRStats.circle * 50
-        echo('Get money you slob!')
-        return unless get_fare?(DRStats.circle * 50, "Mer'Kresh", 8794)
+      on_hand = DRCM.wealth("Mer'Kresh")
+      if on_hand < DRStats.circle * 50
+        return unless get_fare?(DRStats.circle * 50, "Mer'Kresh", 8794, on_hand)
       end
       manual_go2(8794)
     end
@@ -2033,9 +2033,8 @@ class Bescort
       return
     end
 
-    if UserVars.citizenship != 'Zoluren' && DRCM.wealth('Crossing') < 35
-      echo('Get money you slob!')
-      return unless Room.current.id == 1904 ? get_fare?(35, 'Leth Deriel', 1904) : get_fare?(70, 'Crossing', 957)
+    if UserVars.citizenship != 'Zoluren' && (on_hand = DRCM.wealth('Crossing')) < 35
+      return unless Room.current.id == 1904 ? get_fare?(35, 'Leth Deriel', 1904, on_hand) : get_fare?(70, 'Crossing', 957, on_hand)
     end
 
     hide? unless DRRoom.room_objs.find { |x| x =~ /the ferry/ }
@@ -2062,9 +2061,13 @@ class Bescort
       return
     end
 
-    if DRCM.wealth('Shard') < 31
-      echo('Get money you slob!')
-      return unless Room.current.id == 3986 ? get_fare?(62, 'Hibarnhvidar', 3986) : false
+    on_hand = DRCM.wealth('Shard')
+    if on_hand < 31
+      unless Room.current.id == 3986
+        echo('Get money you slob!')
+        return
+      end
+      return unless get_fare?(62, 'Hibarnhvidar', 3986, on_hand)
     end
 
     hide? unless DRRoom.room_objs.find { |x| x =~ /Damaris. Kiss|Evening Star/ }
@@ -2091,10 +2094,10 @@ class Bescort
       return
     end
 
-    if DRCM.wealth('Riverhaven') < 300
-      echo('Get money you slob!')
+    on_hand = DRCM.wealth('Riverhaven')
+    if on_hand < 300
       room = Room.current.id
-      return unless room == 3434 ? get_fare?(300, 'Therenborough', room) : get_fare?(300, 'Riverhaven', room)
+      return unless room == 3434 ? get_fare?(300, 'Therenborough', room, on_hand) : get_fare?(300, 'Riverhaven', room, on_hand)
     end
 
     hide? unless DRRoom.room_objs.find { |x| x =~ /the barge/ }
@@ -2124,9 +2127,9 @@ class Bescort
       return
     end
 
-    if DRCM.wealth('Riverhaven') < 300
-      echo('Get money you slob!')
-      return unless Room.current.id == 452 ? get_fare?(300, 'Riverhaven', 452) : get_fare?(300, 'Throne City', 3084)
+    on_hand = DRCM.wealth('Riverhaven')
+    if on_hand < 300
+      return unless Room.current.id == 452 ? get_fare?(300, 'Riverhaven', 452, on_hand) : get_fare?(300, 'Throne City', 3084, on_hand)
     end
 
     if DRRoom.room_objs.find { |x| x =~ /the barge Imperial Glory/ }
@@ -2254,8 +2257,10 @@ class Bescort
     waitfor 'Your simple world explodes into a torrent of color'
   end
 
-  def get_fare?(amount, town, room)
-    return false unless @settings.bescort_fare_handling
+  # on_hand: the coins the caller's WEALTH check just found, so the first
+  # shortfall message needs no second WEALTH.
+  def get_fare?(amount, town, room, on_hand = nil)
+    return wait_for_fare?(amount, town, room, on_hand) unless @settings.bescort_fare_handling
 
     echo 'GETTING MONEY, YOU SLOB.'
     echo "Heading to #{town} for public transportation fare"
@@ -2273,6 +2278,56 @@ class Bescort
     echo "Put some fare money in the #{town} bank!" unless succeeded
     manual_go2(room)
     succeeded
+  end
+
+  # Without bescort_fare_handling, pause and tell the player how to fetch the
+  # fare themselves: the nearest bank, what to withdraw, and the room to come
+  # back to. go2 waits on bescort, so the trip carries on after the unpause.
+  # Re-checks on every unpause until the player is back in the room with the
+  # fare on hand.
+  def wait_for_fare?(amount, town, room, on_hand = nil)
+    currency = DRCM.hometown_currency(town)
+    bank = get_data('town')[town]['deposit']['id']
+    loop do
+      on_hand ||= DRCM.wealth(town)
+      return true if on_hand >= amount && Room.current.id == room
+
+      if on_hand >= amount
+        DRC.message("You have the fare. Return to #{room_label(room)}, then ;unpause bescort")
+      else
+        withdraw = DRCM.minimize_coins(amount - on_hand).map { |coins| "withdraw #{coins}" }.join(', ')
+        DRC.message("Not enough #{currency} for the fare: you need #{amount} copper #{currency} and are carrying #{on_hand}. bescort is paused.")
+        DRC.message("  1. Go to the bank: #{room_label(bank)}. go2 is still waiting on this trip, so use ;force go2 #{bank}")
+        DRC.message("  2. #{withdraw}")
+        DRC.message("  3. Return to #{room_label(room)}, then ;unpause bescort")
+        DRC.message('  Set bescort_fare_handling: true in your yaml to have bescort do this for you.')
+      end
+      return false unless paused_for_fare?
+
+      on_hand = nil
+    end
+  end
+
+  # Pauses until the player unpauses bescort. Returns false, unpaused, if the
+  # go2 that started this leg is killed meanwhile, so a paused bescort is not
+  # left behind to refuse the next trip. Script.current, Script.running? and
+  # pause_script all block while paused; Script#paused?, Script.running and
+  # pause do not, so the wait loop uses only those.
+  def paused_for_fare?
+    me = Script.current
+    go2 = Script.running.find { |script| script.name == 'go2' }
+    me.pause
+    pause 1 while me.paused? && (go2.nil? || Script.running.include?(go2))
+    return true unless me.paused?
+
+    me.unpause
+    DRC.message('go2 has stopped, so bescort is stopping too.')
+    false
+  end
+
+  def room_label(id)
+    title = Map[id]&.title&.first.to_s.delete('[]')
+    title.empty? ? "room #{id}" : "#{title} (room #{id})"
   end
 
   def hide?
