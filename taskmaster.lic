@@ -35,7 +35,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.09.2'
+  VERSION = '2026.11.09.3'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -66,7 +66,7 @@ class TaskMaster
       { name: 'finish', regex: /^finish/, optional: true, description: 'Finishes a task you\'re already on' },
       { name: 'find', regex: /^find/i, optional: true, description: 'Seeks out the taskmaster, then exits' },
       { name: 'tools', regex: /^tools/i, optional: true, description: 'Spits out a list of the tools you need for a given npc\'s tasks' },
-      { name: 'repeat', regex: /^repeat/i, optional: true, description: 'Repeat tasks for a given taskmaster' }
+      { name: 'repeat', regex: /^repeat/i, optional: true, description: 'Repeat tasks for a given taskmaster (one already open is finished first, then it asks for the next)' }
     ],
     [
       { name: 'reset_output', regex: /^reset_output/i, optional: true, description: 'Clears prize window' },
@@ -232,9 +232,9 @@ class TaskMaster
     exit
   end
 
-  # resume_task exits once the task is handed in. When the task was another
-  # taskmaster's and had to be cancelled, this returns and the run carries
-  # on asking its own taskmaster for a task.
+  # resume_task exits once the task is handed in, with or without repeat. When
+  # the task was another taskmaster's and had to be cancelled, this returns
+  # and the run carries on asking its own taskmaster for a task.
   #
   # @return [void]
   # @raise [SystemExit] from resume_task
@@ -253,22 +253,32 @@ class TaskMaster
   end
 
   # One task, or with repeat or cycle one after another until the wrap-up
-  # call. cycle picks a new taskmaster after each task.
+  # call. cycle picks a new taskmaster after each task. A task already open
+  # when it asks is finished by get_task (resume_task); with repeat or cycle
+  # that counts as the iteration's task, and the loop goes on to its usual
+  # checks and asks again, where a single task run ends there.
   #
   # @param args [OpenStruct] parsed arguments; reads cycle and repeat
   # @return [void]
-  # @raise [SystemExit] from get_task (a task already in progress is finished
-  #   by resume_task) or complete_task (nothing left to hand in, or the
-  #   taskmaster can't be found)
+  # @raise [SystemExit] from get_task: in any mode when resume_task stops
+  #   (not on a task, another taskmaster's task, a worker or hand-in stop),
+  #   and without repeat or cycle once the task in progress is handed in;
+  #   or from complete_task (nothing left to hand in, or the taskmaster
+  #   can't be found)
   def run_tasks(args)
     reconcile_hands
+    looping = args.repeat || args.cycle ? true : false
     loop do
       @dispose, @remainder = [false, false]
       prepare_for_task
-      item, count, volume_per_item, base, type = get_task
-      tool_pickup if !@self_repair && DRCI.exists?("rangu ticket") # picks up any tools that you dropped off previous and stows them appropriately
-      send(@npc.to_sym, item, count, volume_per_item, base, type)
-      complete_task(item, count)
+      # nil: a task already open was finished and handed in by get_task.
+      task = get_task(exit_after_resume: !looping)
+      if task
+        item, count, volume_per_item, base, type = task
+        tool_pickup if !@self_repair && DRCI.exists?("rangu ticket") # picks up any tools that you dropped off previous and stows them appropriately
+        send(@npc.to_sym, item, count, volume_per_item, base, type)
+        complete_task(item, count)
+      end
       break if Flags['wrap-up']
 
       if args.cycle
@@ -281,10 +291,15 @@ class TaskMaster
   end
 
   # Zasele tasks until the wrap-up call, restocking (and repairing) only when
-  # the stock runs short, then exits.
+  # the stock runs short, then exits. A task already open when it asks is
+  # finished by get_task (resume_task, which works it from the carried stock
+  # with marathon_tailor too), and the loop then goes on to the wrap-up
+  # check and asks again.
   #
   # @return [void]
-  # @raise [SystemExit] after the wrap-up call
+  # @raise [SystemExit] after the wrap-up call; or from get_task when
+  #   resume_task stops (not on a task, another taskmaster's task, a worker
+  #   or hand-in stop) or from complete_task
   def run_marathon
     @npc = 'zasele'
     reconcile_hands
@@ -292,19 +307,38 @@ class TaskMaster
     tool_pickup if !@self_repair && DRCI.exists?("rangu ticket")
     loop do
       prepare_for_task
-      item, count, volume_per_item, base, type = get_task
-      unless check_stock(count * volume_per_item, type, base)
-        repair(@settings.outfitting_tools, @settings.outfitting_belt) unless @no_repair
-        restock
-        tool_pickup if !@self_repair && DRCI.exists?("rangu ticket")
-        find_npc(@rooms, @npc)
+      # nil: a task already open was finished and handed in by get_task.
+      task = get_task(exit_after_resume: false)
+      if task
+        item, count, volume_per_item, base, type = task
+        marathon_tailor(item, count, volume_per_item, base, type)
+        complete_task(item, count)
       end
-      tailor_item(item, count, base, type)
-      complete_task(item, count)
       break if Flags['wrap-up']
     end
     tool_pickup if @pickup_tools && DRCI.exists?("rangu ticket")
     exit
+  end
+
+  # Works one of Zasele's tasks in marathon, from the stock restock carries
+  # from task to task: restocks (and repairs) first only when it runs short.
+  # Unlike the zasele worker it buys no stock for the task and bins nothing
+  # after it, since the leftover is the carried stack the next task uses.
+  #
+  # @param item [String] item noun from the task journal
+  # @param count [Integer] how many items to make
+  # @param volume_per_item [Integer] yards per item
+  # @param base [String] stock base: 'cloth', 'leather' or 'yarn'
+  # @param type [String] stock name, e.g. 'burlap'
+  # @return [void]
+  def marathon_tailor(item, count, volume_per_item, base, type)
+    unless check_stock(count * volume_per_item, type, base)
+      repair(@settings.outfitting_tools, @settings.outfitting_belt) unless @no_repair
+      restock
+      tool_pickup if !@self_repair && DRCI.exists?("rangu ticket")
+      find_npc(@rooms, @npc)
+    end
+    tailor_item(item, count, base, type)
   end
 
   # Cleans up what a crash or disconnect left in hand before starting: a
@@ -2837,16 +2871,27 @@ class TaskMaster
   # reconnect: hand in any finished items already in the bag, make sure the
   # instructions have a use for every item still owed (asking the taskmaster
   # only when they don't, since replacements are limited), then make and hand
-  # in the rest.
+  # in the rest. A finish run, and a run that does one task, end here; a
+  # run that goes on to further tasks (repeat, cycle, marathon) has it
+  # return instead, so its loop asks for the next. In marathon the items are
+  # made from the carried stock (marathon_tailor), not with the zasele
+  # worker, which would buy stock for the task and bin the carried stack
+  # with its leftovers.
   #
-  # @return [void]
-  # @raise [SystemExit] when not on a task, when the banked items finish it,
-  #   or after the last item is handed in
+  # @param exit_when_done [Boolean] whether to end the script once the task
+  #   is handed in (true for finish and single task runs); false returns
+  # @return [void] only with exit_when_done false, once the task is handed in
+  # @raise [SystemExit] when not on a task; when the journal shows nothing
+  #   owed but nothing could be handed in (the task stays open, so a run
+  #   that went on would only be told so again); from check_task_giver, the
+  #   worker or complete_task when they stop; and with exit_when_done when
+  #   the banked items finish it or after the last item is handed in
   # @raise [UncaughtThrowError] never: with task_cancel_foreign_tasks, a
   #   task for another taskmaster is cancelled and FOREIGN_TASK_CANCELLED
   #   thrown, caught in get_task and finish_task_in_progress
-  def resume_task
+  def resume_task(exit_when_done: true)
     @dispose, @remainder = [false, false]
+    @task_handed_in = false
     item, owed = read_task
     unless item
       DRC.message("You are not on a task with #{@npc}.")
@@ -2855,7 +2900,17 @@ class TaskMaster
     check_task_giver
     set_aside_held_base(item)
     owed = turn_in_banked(item, owed)
-    exit if owed.zero?
+    if owed.zero?
+      # read_task counts nothing owed once the journal shows every item
+      # returned, and turn_in_banked then returns 0 without a hand-in when
+      # there is nothing to give: the task is still open.
+      unless @task_handed_in
+        DRC.message("Your task journal shows nothing more owed to #{@npc.capitalize}, but nothing could be handed in, so the task is still open. Stopping.")
+        exit
+      end
+      exit if exit_when_done
+      return
+    end
 
     # Before new instructions or a bank trip: anything of the task's noun
     # still in the loot bag now was not taken at the hand-in.
@@ -2868,9 +2923,13 @@ class TaskMaster
     refresh_haste
     top_up_copper
     tool_pickup if !@self_repair && DRCI.exists?("rangu ticket")
-    send(@npc.to_sym, item, count, volume_per_item, base, type)
+    if @marathon
+      marathon_tailor(item, count, volume_per_item, base, type)
+    else
+      send(@npc.to_sym, item, count, volume_per_item, base, type)
+    end
     complete_task(item, count)
-    exit
+    exit if exit_when_done
   end
 
   # The task in progress may be another taskmaster's (";taskmaster zasele"
@@ -3217,16 +3276,26 @@ class TaskMaster
 
   # Asks the taskmaster for a task until one is offered, waiting out
   # cooldowns (including the one after a cancelled task), and returns what
-  # finish reads from it. An ongoing task is resumed instead; another
-  # taskmaster's that had to be cancelled sends the loop round to ask again.
+  # finish reads from it. An ongoing task is finished and handed in instead
+  # (resume_task), which ends the script unless exit_after_resume is false,
+  # when this returns nil so the caller's loop goes on to its end-of-task
+  # checks and asks again. Another taskmaster's task that had to be
+  # cancelled sends this round to ask its own taskmaster again.
   # A while loop, not Kernel#loop: loop would swallow a StopIteration raised
   # inside it and return nil, where the old recursion let it propagate.
   #
-  # @return [Array(String, Integer, Integer, String, String), Array(String, Integer, String, String, String)]
-  #   what {#finish} returns
-  # @raise [SystemExit] from finish (not on a task) or resume_task, or after
+  # @param exit_after_resume [Boolean] whether a task already in progress
+  #   ends the script once handed in (single task runs); false for runs that
+  #   go on to further tasks (repeat, cycle, marathon)
+  # @return [Array(String, Integer, Integer, String, String), Array(String, Integer, String, String, String), nil]
+  #   what {#finish} returns for a newly accepted task; nil once a task
+  #   already in progress was handed in (only with exit_after_resume false)
+  # @raise [SystemExit] from finish (not on a task); from resume_task in
+  #   any mode when it stops (not on a task, another taskmaster's task
+  #   without task_cancel_foreign_tasks, a worker or hand-in stop) and, with
+  #   exit_after_resume, once the task in progress is handed in; or after
   #   MAX_UNKNOWN_TASK_REPLIES replies in a row it does not know
-  def get_task
+  def get_task(exit_after_resume: true)
     unknown_replies = 0
     while true
       find_npc(@rooms, @npc)
@@ -3236,7 +3305,11 @@ class TaskMaster
       when /if you agree to (his|her) terms/, /To whom are you speaking/
         next
       when /You are already on a task/
-        catch(FOREIGN_TASK_CANCELLED) { return resume_task }
+        catch(FOREIGN_TASK_CANCELLED) do
+          resume_task(exit_when_done: exit_after_resume)
+          # Handed in, and the run goes on: its loop asks for the next task.
+          return nil
+        end
         # Another taskmaster's task, cancelled: ask our own taskmaster again.
         next
       when /utterly ignoring you/, /give you a chance a little later/, TASK_UNRELIABLE
@@ -3984,11 +4057,13 @@ class TaskMaster
   # The task is done: its instructions can go, and the next task may ask for
   # replacements again. Instructions are kept until here, so a run that could
   # not make the items leaves them for the resume instead of asking the
-  # taskmaster for another set.
+  # taskmaster for another set. Notes the hand-in in @task_handed_in, which
+  # resume_task reads to tell a finished task from one with nothing to give.
   #
   # @param item [String] the task item's noun
   # @return [void]
   def task_handed_in(item)
+    @task_handed_in = true
     @remedy_hand_in = nil
     DRCT.dispose("#{item} instructions", nil, @worn_trashcan, @worn_trashcan_verb)
     forget_replacement
