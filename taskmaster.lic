@@ -35,7 +35,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.10.3'
+  VERSION = '2026.11.10.4'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -4704,27 +4704,35 @@ class TaskMaster
   UNPACK_FREE_HAND_WAIT = 20
 
   # Moves a keeper out of its reward sack into the loot bag and bins the
-  # empty sack (task_unpack_keepers). Every sack seen held a single item whose
-  # description ends in its noun ("a large tyrium bar"), so the item is taken
-  # by that noun from the sack's own id; the id the game gives it in hand is
-  # then used for the put. The sack is only binned once INVENTORY shows it
-  # empty, so nothing is ever thrown away unseen, and it is binned by its id.
+  # empty sack (task_unpack_keepers). The items are read off one INVENTORY
+  # of the sack's id (inventory_listing), a line each, not off the LOOK
+  # description, whose one sentence lists them all: from "a large coralite
+  # lump, a huge piece of amber and a small lilac amethyst" (Lukedo,
+  # 2026-11-05) its last word took only the amethyst. Each of the sack's own
+  # item lines is taken by lich-5's DRC.get_noun of it, one get per line, so
+  # two items of one noun both come out (unpack_item). A container in the
+  # sack is one line (INVENTORY does not list what is in it) and comes out
+  # whole, with what it holds. A line get_noun reads no noun off is left, and so is one
+  # whose noun the game finds nothing in the sack by (get_noun reads "as"
+  # off "frosty observer manifested as an array of jagged icicles"): the
+  # next line is still got, and the sack is kept with what is left. A get
+  # that brings nothing new to hand otherwise, a free hand refused twice,
+  # or a put that fails stops the unpack. The sack is only binned once
+  # INVENTORY shows it empty, so nothing is ever thrown away unseen, and it
+  # is binned by its id. The description is not read; the caller passes it
+  # as before.
   #
-  # @param description [String] the sack contents, LOOK prefix stripped
+  # @param _description [String] the sack contents, LOOK prefix stripped
   # @return [Boolean] true when the item is in the loot bag and the sack is
   #   binned; false leaves the sack in hand (with whatever is still in it,
   #   or empty when it could not be binned) for the caller to keep as before
-  def unpack_keeper?(description)
+  def unpack_keeper?(_description)
     sack_id = held_id('sack')
-    noun = description.to_s.split.last
-    return false unless sack_id && noun
+    lines = sack_id && inventory_listing("##{sack_id}")
+    return false if lines.nil? || lines.empty?
 
-    item_id = take_from_sack(noun, sack_id)
-    return false unless item_id
-
-    unless DRCI.put_away_item?("##{item_id}", @lootbag)
-      DRC.bput("put ##{item_id} in ##{sack_id}", 'You put', 'What were you referring to')
-      return false
+    lines.filter_map { |line| DRC.get_noun(line) }.each do |noun|
+      return false if unpack_item(noun, sack_id) == :stuck
     end
     return false unless inventory_listing("##{sack_id}") == []
 
@@ -4733,21 +4741,50 @@ class TaskMaster
     true
   end
 
-  # Gets the item by noun from the sack with that id, retrying once when
-  # another script is holding the free hand.
+  # Takes one item out of the sack by noun (take_from_sack) and puts it in
+  # the loot bag by the id it has in hand, or back in the sack when the
+  # loot bag won't take it.
   #
   # @param noun [String]
   # @param sack_id [String]
-  # @return [String, nil] the id of the item now in hand, or nil
+  # @return [Symbol] :bagged when it is in the loot bag; :not_found when the
+  #   game found nothing in the sack by that noun, so nothing moved; :stuck
+  #   when the get or the put failed any other way
+  def unpack_item(noun, sack_id)
+    item_id = take_from_sack(noun, sack_id)
+    return :not_found if item_id == :not_found
+    return :stuck unless item_id
+    return :bagged if DRCI.put_away_item?("##{item_id}", @lootbag)
+
+    DRC.bput("put ##{item_id} in ##{sack_id}", 'You put', 'What were you referring to')
+    :stuck
+  end
+
+  # Gets the item by noun from the sack with that id, retrying once when
+  # another script is holding the free hand. The item is the one newly in
+  # hand, whatever noun the game gives it, as the noun asked for is read
+  # off its name by get_noun: get_noun's "robe" gets a "shadowy black
+  # nightsilk robe pinned with a trio of panther claws", whose noun is
+  # "robes".
+  #
+  # @param noun [String]
+  # @param sack_id [String]
+  # @return [String, Symbol, nil] the id of the item now in hand;
+  #   :not_found when the game found nothing by that noun
+  #   (UNPACK_GET_FAILURES) and no hand changed; nil for anything else (no
+  #   new item in hand after the get, a free hand refused twice, no answer)
   def take_from_sack(noun, sack_id)
+    before = hand_ids
     2.times do |attempt|
       case DRC.bput("get #{noun} from ##{sack_id}", UNPACK_GET_SUCCESS, UNPACK_NEED_FREE_HAND, *UNPACK_GET_FAILURES)
       when UNPACK_GET_SUCCESS
-        return held_id(noun, except: sack_id)
+        return (hand_ids - before - [sack_id]).first
       when UNPACK_NEED_FREE_HAND
         break if attempt.positive?
 
         wait_for_free_hand
+      when *UNPACK_GET_FAILURES
+        return hand_ids == before ? :not_found : nil
       else
         break
       end
