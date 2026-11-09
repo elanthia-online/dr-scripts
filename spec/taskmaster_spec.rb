@@ -5899,6 +5899,24 @@ RSpec.describe TaskMaster do
                                  '** DRCI.get_item?("second moisturizer instructions", "duffel bag")', '>> ask nezhiri for instructions']])
       end
 
+      # The set at 6100:1576 has one use left. With 5 doses a craft
+      # remembered for the task's product, 6 doses are two crafts, so it is
+      # not enough; a yield remembered for another product changes nothing.
+      it "counts the crafts at the doses a craft the journal's product made last time, and at 6 for another product's" do
+        outcomes = [{ 'scale moisturizer' => 5 }, { 'gill glop' => 5 }].map do |remembered|
+          UserVars.taskmaster_replacements = nil
+          UserVars.taskmaster_remedy_yields = remembered
+          tm = nezhiri_tm(task_product: 'scale moisturizer')
+          game, = replay(inventory: { 'scale moisturizer instructions' => 'duffel bag' })
+          $right_hand = nil
+          game.script('read my moisturizer instructions', ReplayGame.log('6100:1576'))
+          game.script('ask nezhiri for instructions', ReplayGame.log('6100:2949'))
+          tm.ensure_instructions('moisturizer', 6)
+          game.sent
+        end
+        expect(outcomes).to eq([['read my moisturizer instructions', 'ask nezhiri for instructions'], ['read my moisturizer instructions']])
+      end
+
       it 'counts the crafts as doses over six, rounded up, and none for no doses' do
         tm = nezhiri_tm
         expect([-3, 0, 1, 6, 7, 12, 13, 18, 19].map { |doses| tm.nezhiri_crafts(doses) }).to eq([0, 0, 1, 1, 2, 2, 3, 3, 4])
@@ -6700,7 +6718,7 @@ RSpec.describe TaskMaster do
             tm = maker
             plans = [[nil, 7], [7, 7], [6, 7], [5, 7], [4, 2], [3, 7], [1, 3]].map do |seen, short|
               tm.instance_variable_set(:@remedy_yield, seen)
-              tm.remedy_top_up_crafts(short)
+              tm.remedy_top_up_crafts(short, 'gill glop')
             end
             expect(plans).to eq([2, 2, 2, 2, 1, 3, 3])
           end
@@ -6944,6 +6962,283 @@ RSpec.describe TaskMaster do
             expect(bought).to eq([3, 1])
             expect([tm.instance_variable_get(:@remedy_yield), tm.instance_variable_get(:@remedy_studies)]).to eq([4, 4])
           end
+
+          # The fewest doses one craft made is remembered per character
+          # (UserVars) and product, and the next task's crafts are planned by
+          # it: 6400's character made 5 a craft (6400:679, 6400:805), so every
+          # repeat task planned at 6 fell short and needed an extra round.
+          describe 'remembering the yield for the next task' do
+            let(:supplies_once) do
+              lambda do |game, herb|
+                game.script('count my first brine', ReplayGame.log('6100:8800')) # ten parts
+                game.script('count my second brine', ReplayGame.log('6100:8793'))
+                game.script('tap my first coal nugget', ReplayGame.log('6100:8910')) # large: 4 rubs
+                game.script("count my first #{herb}", ReplayGame.log('6100:8793'))
+              end
+            end
+
+            it 'stores the fewest doses one craft added, not the last craft nor the average: 6, 4, 6 stores 4' do
+              tm = maker(task_product: 'gill glop')
+              game, commons = shop_world(kit)
+              game.script('rummage /C glop in my duffel bag', rummaged_none('glop'))
+              bought = bought_crafts(tm)
+              crafts_adding(game, commons, [6, 4, 6])
+              allow(tm).to receive(:repair)
+
+              tm.nezhiri('glop', 16, glop.merge(uses: 17))
+
+              expect(bought).to eq([3])
+              expect(UserVars.taskmaster_remedy_yields).to eq('gill glop' => 4)
+            end
+
+            # 6400's shape with the smallest craft last: the last craft's own
+            # gain must count before the yield is stored.
+            it 'stores the last craft\'s gain when it is the fewest: 6, 6, 4 stores 4' do
+              UserVars.taskmaster_remedy_yields = { 'gill glop' => 6 }
+              tm = maker(task_product: 'gill glop')
+              game, commons = shop_world(kit)
+              game.script('rummage /C glop in my duffel bag', rummaged_none('glop'))
+              bought = bought_crafts(tm)
+              runs = crafts_adding(game, commons, [6, 6, 4])
+              allow(tm).to receive(:repair)
+
+              tm.nezhiri('glop', 16, glop.merge(uses: 17))
+
+              expect(bought).to eq([3])
+              expect(remedy_runs(runs)).to eq(3)
+              expect(UserVars.taskmaster_remedy_yields).to eq('gill glop' => 4)
+            end
+
+            # The yield is stored after each craft, so a stop inside the
+            # crafts (here the game will not combine craft 2's stack,
+            # 6100:9229) still leaves craft 1's 5 stored over the 6.
+            it 'stores the doses the crafts made so far when a later craft stops the run' do
+              UserVars.taskmaster_remedy_yields = { 'gill glop' => 6 }
+              tm = maker(task_product: 'gill glop')
+              game, commons = shop_world(kit)
+              allow(tm).to receive(:buy_remedy_supplies)
+              runs = remedy_makes(commons, 'gill glop', %w[7001 7002])
+              game.script('rummage /C glop in my duffel bag', rummaged_none('glop'))
+              game.script('count #7001', ReplayGame.log('6100:28265')) # 5 doses
+              game.script('combine #7001 with #7002', ReplayGame.log('6100:9229'))
+
+              expect { tm.nezhiri('glop', 13, glop) }.to raise_error(SystemExit)
+
+              expect(remedy_runs(runs)).to eq(2)
+              expect(DRC).to have_received(:message).with('Could not combine the gill glop (You must be holding both). Stopping.')
+              expect(UserVars.taskmaster_remedy_yields).to eq('gill glop' => 5)
+            end
+
+            # 6400 again, with its 5 a craft remembered: three crafts planned
+            # at the start, one purchase and no extra round. The second
+            # COMBINE and the third COUNT are past 6400's end: 6100's lines
+            # stand in.
+            it 'plans 3 crafts for 12 doses with 5 a craft remembered, and makes no extra round when they make 5 each (6400)' do
+              UserVars.taskmaster_remedy_yields = { 'scale moisturizer' => 5 }
+              tm = maker(task_product: 'scale moisturizer')
+              game, commons = shop_world(kit, shop: :model)
+              game.script('rummage /C moisturizer in my duffel bag', rummaged_none('moisturizer'))
+              supplies_once.call(game, 'red flowers')
+              runs = remedy_makes(commons, 'scale moisturizer', %w[7002 7004 7006])
+              game.script('count #7002', ReplayGame.log('6400:683'))
+              game.script('combine #7002 with #7004', ReplayGame.log('6400:811'), after: merges(commons, 'scale moisturizer', '7002', '7004', into: '7005'))
+              game.script('count #7005', ReplayGame.log('6400:813'))
+              game.script('combine #7005 with #7006', ReplayGame.log('6100:9368'), after: merges(commons, 'scale moisturizer', '7005', '7006', into: '7007'))
+              game.script('count #7007', ReplayGame.log('6100:6040')) # 15 doses
+              allow(tm).to receive(:repair)
+
+              tm.nezhiri('moisturizer', 12, moisturizer)
+
+              expect(DRC).to have_received(:message).with('12 doses of scale moisturizer owed, 0 on hand: 3 crafts to make (5 doses a craft last time).')
+              expect(remedy_runs(runs)).to eq(3)
+              expect(commons.calls.select { |name, *| name == 'DRCT.order_item' }).to eq([['DRCT.order_item', 8862, 13]] * 3)
+              expect(commons.calls.select { |name, *| name == 'DRCM.ensure_copper_on_hand' }).to eq([['DRCM.ensure_copper_on_hand', (3 * 343) + 7500, 'Crossing']])
+              expect(DRC).not_to have_received(:message).with(/more craft|short of the|uses? left/)
+              expect(tm.instance_variable_get(:@remedy_doses)).to eq(15)
+              expect(UserVars.taskmaster_remedy_yields).to eq('scale moisturizer' => 5)
+              expect(tm).to have_received(:repair).once
+              expect(game.diagnostics).to eq([])
+            end
+
+            # Replaced, not the smallest ever: a character whose crafts now
+            # make 6 plans at 6 again.
+            it 'replaces a remembered 5 with the 6 a craft this task made, leaving the other products alone' do
+              UserVars.taskmaster_remedy_yields = { 'gill glop' => 5, 'scale moisturizer' => 4 }
+              tm = maker(task_product: 'gill glop')
+              game, commons = shop_world(kit)
+              game.script('rummage /C glop in my duffel bag', rummaged_none('glop'))
+              bought = bought_crafts(tm)
+              runs = crafts_adding(game, commons, [6, 6])
+              allow(tm).to receive(:repair)
+
+              tm.nezhiri('glop', 12, glop)
+
+              expect(DRC).to have_received(:message).with('12 doses of gill glop owed, 0 on hand: 3 crafts to make (5 doses a craft last time).')
+              expect(bought).to eq([3]) # planned at 5; the third craft is not made once the 12 are
+              expect(remedy_runs(runs)).to eq(2)
+              expect(UserVars.taskmaster_remedy_yields).to eq('gill glop' => 6, 'scale moisturizer' => 4)
+              expect([tm.remedy_planned_yield('gill glop'), tm.nezhiri_crafts(12, tm.remedy_planned_yield('gill glop'))]).to eq([6, 2])
+            end
+
+            it 'leaves the remembered yield alone when the doses on hand cover the task and nothing is crafted' do
+              UserVars.taskmaster_remedy_yields = { 'gill glop' => 4 }
+              tm = maker(task_product: 'gill glop')
+              game, = shop_world(kit + [['gill glop', 'duffel bag', '7101']])
+              game.script('rummage /C glop in my duffel bag', rummaged('glop', 'some gill glop'))
+              game.script('count #7101', ReplayGame.log('6100:9539')) # 18 doses
+              bought = bought_crafts(tm)
+              allow(tm).to receive(:repair)
+
+              tm.nezhiri('glop', 13, glop)
+
+              expect(DRC).to have_received(:message).with('13 doses of gill glop owed, 18 on hand: 0 crafts to make.')
+              expect(bought).to eq([])
+              expect(UserVars.taskmaster_remedy_yields).to eq('gill glop' => 4)
+              expect(tm).not_to have_received(:repair)
+            end
+
+            # remedy stopped before it got the mortar: the run stops on craft
+            # 1 with no doses added, and the yield from the task before stays.
+            it 'leaves the remembered yield alone when the first craft stops before adding any doses' do
+              UserVars.taskmaster_remedy_yields = { 'gill glop' => 5 }
+              tm = maker(task_product: 'gill glop')
+              game, commons = shop_world(kit)
+              runs = remedy_makes(commons, 'gill glop', [])
+              game.script('rummage /C glop in my duffel bag', rummaged_none('glop'))
+              game.script('count my first brine', ReplayGame.log('6100:8800'))
+              game.script('count my second brine', ReplayGame.log('6100:8793'))
+              game.script('count my first georin', ReplayGame.log('6100:4595'))
+              game.script('count my second georin', ReplayGame.log('6100:8793'))
+              game.script('tap my first coal nugget', ReplayGame.log('6100:8910'))
+              2.times { game.script('order 7', ReplayGame.log('6100:8888')).script('order 7', ReplayGame.log('6100:8890')) }
+
+              expect { tm.nezhiri('glop', 13, glop) }.to raise_error(SystemExit)
+
+              expect(remedy_runs(runs)).to eq(1)
+              expect(DRC).to have_received(:message).with(/\Aremedy did not leave any gill glop in your hands \(craft 1 of 3\)/)
+              expect(UserVars.taskmaster_remedy_yields).to eq('gill glop' => 5)
+            end
+
+            # The finish path's 4 doses carried, and two crafts that add none.
+            it 'leaves the remembered yield alone when crafts are made but add no doses' do
+              UserVars.taskmaster_remedy_yields = { 'gill glop' => 4 }
+              tm = maker(task_product: 'gill glop')
+              game, commons = shop_world(kit + [['gill glop', 'duffel bag', '7101']])
+              game.script('rummage /C glop in my duffel bag', rummaged('glop', 'some gill glop'))
+              game.script('count #7101', ReplayGame.log('6100:10519')) # 4 doses
+              bought_crafts(tm)
+              runs = crafts_adding(game, commons, [0, 0], on_hand: ['7101', 4])
+              allow(tm).to receive(:repair)
+
+              expect { tm.nezhiri('glop', 12, glop) }.to raise_error(SystemExit)
+
+              expect(DRC).to have_received(:message).with('12 doses of gill glop owed, 4 on hand: 2 crafts to make (4 doses a craft last time).')
+              expect(remedy_runs(runs)).to eq(2)
+              expect(UserVars.taskmaster_remedy_yields).to eq('gill glop' => 4)
+            end
+
+            # A stop after the crafts (here the extra round adds nothing)
+            # still leaves this task's own fewest stored, replacing the 6.
+            it 'stores the fewest doses a craft added even when the task then stops short' do
+              UserVars.taskmaster_remedy_yields = { 'gill glop' => 6 }
+              tm = maker(task_product: 'gill glop')
+              game, commons = shop_world(kit)
+              game.script('rummage /C glop in my duffel bag', rummaged_none('glop'))
+              bought = bought_crafts(tm)
+              crafts_adding(game, commons, [5, 4, 4, 0])
+              allow(tm).to receive(:repair)
+
+              expect { tm.nezhiri('glop', 15, glop.merge(uses: 16)) }.to raise_error(SystemExit)
+
+              expect(bought).to eq([3, 1])
+              expect(DRC).to have_received(:message).with(/short of the 15 owed/)
+              expect(UserVars.taskmaster_remedy_yields).to eq('gill glop' => 4)
+            end
+
+            # Nothing in the logs shows a craft making more than 6, so a
+            # stored 7 (or 9, set by hand) still plans at 6, with no note.
+            it 'plans at no more than 6 doses a craft whatever is remembered, and says nothing of a yield of 6 or more' do
+              UserVars.taskmaster_remedy_yields = { 'gill glop' => 9 }
+              tm = maker(task_product: 'gill glop')
+              game, commons = shop_world(kit)
+              game.script('rummage /C glop in my duffel bag', rummaged_none('glop'))
+              bought = bought_crafts(tm)
+              crafts_adding(game, commons, [6, 6])
+              allow(tm).to receive(:repair)
+
+              tm.nezhiri('glop', 12, glop)
+
+              expect(DRC).to have_received(:message).with('12 doses of gill glop owed, 0 on hand: 2 crafts to make.')
+              expect(bought).to eq([2])
+              expect(UserVars.taskmaster_remedy_yields).to eq('gill glop' => 6)
+            end
+
+            it 'plans at 6 when nothing usable is remembered: unset, not a Hash, another product, or not a positive whole number' do
+              tm = maker
+              stored = [nil, 'junk', [5], { 'scale moisturizer' => 3 }, { 'gill glop' => 0 }, { 'gill glop' => -2 }, { 'gill glop' => '5' },
+                        { 'gill glop' => 4.5 }, { 'gill glop' => nil }, { 'gill glop' => 7 }, { 'gill glop' => 6 }, { 'gill glop' => 1 }, { 'gill glop' => 5 }]
+              plans = stored.map do |value|
+                UserVars.taskmaster_remedy_yields = value
+                tm.remedy_planned_yield('gill glop')
+              end
+              expect(plans).to eq([6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 1, 5])
+            end
+
+            it 'looks the product up whatever its case, and an unknown product (nil) plans at 6' do
+              UserVars.taskmaster_remedy_yields = { 'scale moisturizer' => 4 }
+              tm = maker
+              expect([tm.remedy_planned_yield('Scale Moisturizer'), tm.remedy_planned_yield('scale moisturizer'), tm.remedy_planned_yield(nil),
+                      tm.remedy_planned_yield('gill glop')]).to eq([4, 4, 6, 6])
+            end
+
+            it 'replaces a stored value that is not a Hash, and stores the product in lower case' do
+              tm = maker(remedy_yield: 5)
+              UserVars.taskmaster_remedy_yields = %w[not a hash]
+              tm.remember_remedy_yield('Scale Moisturizer')
+              expect(UserVars.taskmaster_remedy_yields).to eq('scale moisturizer' => 5)
+            end
+
+            it 'stores nothing, and creates no Hash, while this run has no yield' do
+              tm = maker(remedy_yield: nil)
+              tm.remember_remedy_yield('gill glop')
+              expect(UserVars.taskmaster_remedy_yields).to be_nil
+              tm.instance_variable_set(:@remedy_yield, 0)
+              tm.remember_remedy_yield('gill glop')
+              expect(UserVars.taskmaster_remedy_yields).to be_nil
+            end
+
+            # Extra crafts plan by this run's fewest when there is one (it is
+            # fresher than the task before's), else as the first round did.
+            it "plans extra crafts at this run's fewest over the remembered one, and at the remembered one only when this run has none" do
+              tm = maker
+              plans = [[5, 4, 10], [6, 3, 7], [4, 5, 9], [nil, 4, 10], [nil, 9, 7], [nil, nil, 7], [8, 3, 7]].map do |seen, remembered, short|
+                UserVars.taskmaster_remedy_yields = remembered && { 'gill glop' => remembered }
+                tm.instance_variable_set(:@remedy_yield, seen)
+                tm.remedy_top_up_crafts(short, 'gill glop')
+              end
+              expect(plans).to eq([2, 2, 3, 3, 2, 2, 2])
+            end
+
+            # Remembered 4, so 4 crafts for 15; they make 5, 5, 1 and 1: the
+            # extra round plans the 3 short at this run's 1 a craft (3
+            # crafts), not at the 4 remembered (1 craft).
+            it "plans the extra round at this run's fewest when it is below the remembered yield" do
+              UserVars.taskmaster_remedy_yields = { 'gill glop' => 4 }
+              tm = maker(task_product: 'gill glop')
+              game, commons = shop_world(kit)
+              game.script('rummage /C glop in my duffel bag', rummaged_none('glop'))
+              bought = bought_crafts(tm)
+              crafts_adding(game, commons, [5, 5, 1, 1, 1, 1, 1])
+              allow(tm).to receive(:repair)
+
+              tm.nezhiri('glop', 15, glop.merge(uses: 16))
+
+              expect(DRC).to have_received(:message).with('15 doses of gill glop owed, 0 on hand: 4 crafts to make (4 doses a craft last time).')
+              expect(DRC).to have_received(:message).with('12 of 15 doses of gill glop made: 3 more crafts to make.')
+              expect(bought).to eq([4, 3])
+              expect(UserVars.taskmaster_remedy_yields).to eq('gill glop' => 1)
+            end
+          end
         end
       end
 
@@ -7159,6 +7454,35 @@ RSpec.describe TaskMaster do
           expect(game.sent).to eq(['task', 'rummage /C draught in my duffel bag', 'count #7101'])
           expect(tm).not_to have_received(:find_npc) # not looked for with nothing to give
           expect(commons.location_of('#7101')).to eq('duffel bag')
+        end
+
+        # The same finish with 4 doses a craft remembered for deep-sea
+        # draught: the 9 doses still to make are 3 crafts, so the carried set
+        # with 2 uses (enough at 6 a craft) is put back and Nezhiri asked
+        # for another, rather than taken and found short by nezhiri.
+        it 'sizes the instruction uses a finish needs at the remembered doses a craft' do
+          [[{ 'deep-sea draught' => 4 }, true], [nil, false]].each do |remembered, asks|
+            UserVars.taskmaster_replacements = nil
+            UserVars.taskmaster_remedy_yields = remembered
+            tm = maker(npc: 'nezhiri')
+            game, = shop_world(kit + [['deep-sea draught', 'duffel bag', '7101'], ['deep-sea draught instructions', 'duffel bag']])
+            $right_hand = nil
+            transcript('2026-11-06_6100_leftover_draught').script(game, commands: /\Atask\z/, skip: [11169])
+            game.script('rummage /C draught in my duffel bag', rummaged('draught', 'some deep-sea draught'))
+            game.script('count #7101', ReplayGame.log('6100:10519'))
+            game.script('read my draught instructions',
+                        ReplayGame.code('These instructions appear to be very fragile and will wear out quickly when studied.  They have only 2 uses remaining.',
+                                        from: 'INSTRUCTION_USES, in the shape of 6100:1576'))
+            game.script('ask nezhiri for instructions',
+                        ReplayGame.code('Potion Peddler Nezhiri hands you some deep-sea draught instructions.', from: '6100:2949, for the draught'))
+            allow(tm).to receive(:read_instructions).and_return(['draught', 13, draught_recipe])
+            %i[refresh_haste top_up_copper nezhiri complete_task find_npc].each { |step| allow(tm).to receive(step) }
+
+            expect { tm.resume_task }.to raise_error(SystemExit)
+
+            expect(game.sent.include?('ask nezhiri for instructions')).to eq(asks)
+            expect(UserVars.taskmaster_replacements).to eq(asks ? { 'nezhiri' => 'draught' } : nil)
+          end
         end
 
         # ;taskmaster nezhiri repeat: a gill glop task is cut from 18 to 13,
