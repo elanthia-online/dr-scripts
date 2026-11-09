@@ -24,7 +24,7 @@
   alchemy_tools: [bowl, mixing stick, mortar, pestle, sieve] # Nezhiri's tasks use the mortar and pestle or the bowl and mixing stick (whichever her remedy needs) and the sieve; the two used go to Rangu after each task (task_no_repair / task_self_repair as usual)
   alchemy_belt: # the toolbelt the alchemy tools are tied to, if any
   alchemy_room: <room number> # Nezhiri's remedies are crafted here; unset, in the Crossing alchemy supplies (8862), where the herbs are bought
-  ## Nezhiri's tasks: taskmaster buys brewer's brine on Andreshlew (room 51102), then in Crossing the herbs (one 25-piece stack per craft), a coal nugget when the ones carried have too few rubs left for the crafts (TAP shows the size: tiny lasts one craft, small two, and so on), and water and alcohol when none is on hand, so remedy never shops elsewhere. task_hometown is not needed for her. crafting_container holds the brine, the herbs and her remedies: doses left from earlier tasks count toward the next, every stack is combined into one, and the hand-in cuts it to the doses she asked for, putting the rest back. It plans one craft per 6 doses still owed, but a craft can make fewer: when the crafts planned fall short it makes enough more crafts for the doses still owed, counting each at the fewest doses one craft made this run (never more than 6), buying their supplies first, up to 2 such rounds. It stops when a round adds no doses, or when the instruction sets carried (all of them, read again) have too few uses left for the extra crafts (ask Nezhiri for another copy, then ;taskmaster nezhiri finish); still short after that, it stops and ;taskmaster nezhiri finish makes the rest. Keep no other item with the remedy's noun (another potion, say) in crafting_container: a task stops before buying anything if it finds one. A remedy run that stops part way (or a crash) leaves the mortar or bowl in hand: a run or a finish looks in it, and carries an unfinished remedy on once with remedy's continue form (buying brine or a coal nugget first when none is left, then crafting where it crafts), takes a finished one out as a made stack, puts a herb back in crafting_container, and puts an empty vessel away; anything else, or a continue run that again ends without the remedy, stops with the vessel in hand. A vessel left on the ground is not looked for. remedy.lic must handle the brine prompt (with a remedy that does not, each craft stops part way, the continue run stops at the same prompt, and the task stops) ##
+  ## Nezhiri's tasks: taskmaster buys brewer's brine on Andreshlew (room 51102), then in Crossing the herbs (one 25-piece stack per craft), a coal nugget when the ones carried have too few rubs left for the crafts (TAP shows the size: tiny lasts one craft, small two, and so on), and water and alcohol when none is on hand, so remedy never shops elsewhere. task_hometown is not needed for her. crafting_container holds the brine, the herbs and her remedies: doses left from earlier tasks count toward the next, every stack is combined into one, and the hand-in cuts it to the doses she asked for, putting the rest back. It plans one craft per 6 doses still owed, but a craft can make fewer, and how many has differed between characters (the cause is unknown): so it remembers, for each remedy, the fewest doses one craft made the last time you crafted it (UserVars.taskmaster_remedy_yields, kept per character across runs; each run whose crafts add doses replaces it, and a finish counts as such a run), and plans the next task's crafts at that many doses each, never more than 6. Crafting stops once the doses owed are made, so crafts planned for a yield since outgrown are not made: the herbs, brine and coal bought for them stay in crafting_container and the next task's purchases count them. Extra doses made are not lost either: they stay in crafting_container and count toward the next task. When the crafts planned fall short it makes enough more crafts for the doses still owed, counting each at the fewest doses one craft made this run (never more than 6), buying their supplies first, up to 2 such rounds. To forget the remembered yields, ;e UserVars.taskmaster_remedy_yields = nil. It stops when a round adds no doses, or when the instruction sets carried (all of them, read again) have too few uses left for the extra crafts (ask Nezhiri for another copy, then ;taskmaster nezhiri finish); still short after that, it stops and ;taskmaster nezhiri finish makes the rest. Keep no other item with the remedy's noun (another potion, say) in crafting_container: a task stops before buying anything if it finds one. A remedy run that stops part way (or a crash) leaves the mortar or bowl in hand: a run or a finish looks in it, and carries an unfinished remedy on once with remedy's continue form (buying brine or a coal nugget first when none is left, then crafting where it crafts), takes a finished one out as a made stack, puts a herb back in crafting_container, and puts an empty vessel away; anything else, or a continue run that again ends without the remedy, stops with the vessel in hand. A vessel left on the ground is not looked for. remedy.lic must handle the brine prompt (with a remedy that does not, each craft stops part way, the continue run stops at the same prompt, and the task stops) ##
   enchanting_room: <room number> # Dorhum's tasks enchant in task_crafting_room, else here; with neither, where they stand if you carry a brazier, else at a Crossing brazier room. Outside tasks, enchanting uses enchanting_room as before
   ## Dorhum's tasks need task_loot_bag set to a container other than crafting_container: his finished items keep the base item's noun (a spongestone is still a rock) and wait there apart from the unworked ones. A task stops before buying anything if task_loot_bag already holds that noun, since the hand-in would give those first ##
   ## For Dorhum's tasks make task_crafting_room a room of your own (a private forge): each finished item is picked up off the floor by its noun, so another rock or shell lying there could be taken instead. A rented room's notice is read before enchanting and the rental renewed when under ten minutes are left ##
@@ -35,7 +35,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.09.1'
+  VERSION = '2026.11.09.2'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -1708,7 +1708,14 @@ class TaskMaster
   # Crafts can make fewer: in log 6400 two scale moisturizer crafts, each from a
   # full 25-piece stack (6400:550, 6400:716), made 5 each (6400:679,
   # 6400:805), and a 2026-11 report had 13 doses from the crafts planned
-  # for 15. Extra crafts make up a shortfall (top_up_remedies).
+  # for 15. Extra crafts make up a shortfall (top_up_remedies). The yield
+  # has differed between characters (5 a craft in log 6400, while another
+  # player's moisturizer stacks counted 6, 6101:3613,
+  # 6101:3696; the cause is unknown), so each character's fewest
+  # doses a craft made the last time it crafted a product is remembered
+  # (remember_remedy_yield), and the next task plans by it
+  # (remedy_planned_yield). This stays the most a craft is ever planned at:
+  # no log shows a craft making more.
   NEZHIRI_DOSES_PER_CRAFT = 6
   # Rounds of extra crafts a task makes when the crafts planned make fewer
   # doses than owed (top_up_remedies). Each round plans its crafts at the
@@ -1789,7 +1796,8 @@ class TaskMaster
 
   # Crafts needed to make some doses of a Nezhiri remedy: one study of the
   # instructions each, NEZHIRI_DOSES_PER_CRAFT doses each, or per_craft
-  # each when a run has seen crafts make fewer (top_up_remedies).
+  # each when crafts are known to make fewer (remedy_planned_yield,
+  # remedy_top_up_crafts).
   #
   # @param doses [Integer] doses still to make
   # @param per_craft [Integer] doses one craft is counted on to make
@@ -1881,8 +1889,14 @@ class TaskMaster
   # into one, and leaves the mortar and pestle (or bowl and stick) with
   # Rangu. The hand-in (give_item) makes the stack the size she asked for.
   # With the doses already on hand it buys and crafts nothing. The crafts
-  # are planned at NEZHIRI_DOSES_PER_CRAFT doses each; when they make fewer
-  # than owed, top_up_remedies buys for and makes extra crafts, up to
+  # are planned at the fewest doses one craft made the last time this
+  # character crafted the product, never more than NEZHIRI_DOSES_PER_CRAFT
+  # (remedy_planned_yield), and the plan message says so when that is
+  # fewer. Crafts planned for a yield since outgrown are not made
+  # (brew_remedies stops once the doses owed are made); their herbs, brine
+  # and coal stay in the crafting bag, where the next task's purchases
+  # count them (buy_remedy_supplies). When they make fewer than owed,
+  # top_up_remedies buys for and makes extra crafts, up to
   # NEZHIRI_TOP_UP_ROUNDS rounds of them, before the tools go to Rangu. The
   # remedy's vessel left in hand by a remedy run that stopped is looked in
   # first (clear_held_vessel), and an unfinished remedy in it carried on; so
@@ -1891,7 +1905,8 @@ class TaskMaster
   # made before the finish count once.
   #
   # Notes the instructions studied this run in @remedy_studies and the
-  # fewest doses one craft made in @remedy_yield (brew_remedies).
+  # fewest doses one craft made in @remedy_yield, which brew_remedies
+  # remembers for the next task (remember_remedy_yield).
   #
   # @param item [String] the remedy's noun, e.g. 'glop'
   # @param doses [Integer] doses owed
@@ -1907,8 +1922,10 @@ class TaskMaster
     @remedy_studies = 0
     @remedy_yield = nil
     on_hand = remedy_doses_on_hand(recipe)
-    crafts = nezhiri_crafts(doses - on_hand)
-    DRC.message("#{doses} doses of #{recipe[:product]} owed, #{on_hand} on hand: #{crafts} craft#{crafts == 1 ? '' : 's'} to make.")
+    per_craft = remedy_planned_yield(recipe[:product])
+    crafts = nezhiri_crafts(doses - on_hand, per_craft)
+    last_time = crafts.positive? && per_craft < NEZHIRI_DOSES_PER_CRAFT ? " (#{per_craft} doses a craft last time)" : ''
+    DRC.message("#{doses} doses of #{recipe[:product]} owed, #{on_hand} on hand: #{crafts} craft#{crafts == 1 ? '' : 's'} to make#{last_time}.")
     return if crafts.zero?
 
     check_remedy_uses(item, recipe, crafts)
@@ -1959,7 +1976,7 @@ class TaskMaster
         stop_short_of_remedy(owed, "#{NEZHIRI_TOP_UP_ROUNDS} round#{NEZHIRI_TOP_UP_ROUNDS == 1 ? '' : 's'} of extra crafts did not make up the doses. ")
       end
       rounds += 1
-      crafts = remedy_top_up_crafts(owed - @remedy_doses.to_i)
+      crafts = remedy_top_up_crafts(owed - @remedy_doses.to_i, recipe[:product])
       DRC.message("#{@remedy_doses.to_i} of #{owed} doses of #{recipe[:product]} made: #{crafts} more craft#{crafts == 1 ? '' : 's'} to make.")
       check_remedy_uses(item, recipe, crafts, spent: @remedy_studies.to_i)
       added = brew_remedy_round(recipe, owed, crafts)
@@ -1968,13 +1985,77 @@ class TaskMaster
 
   # Extra crafts for a shortfall: planned at the fewest doses one craft
   # made this run (@remedy_yield), never at more than
-  # NEZHIRI_DOSES_PER_CRAFT, so never fewer crafts than the plan at the
-  # start would make. With no craft seen, NEZHIRI_DOSES_PER_CRAFT.
+  # NEZHIRI_DOSES_PER_CRAFT. This run's yield is used even when the one
+  # remembered from the last task is smaller: it was made this run, by the
+  # character as it is now, so it is the fresher of the two, and the
+  # remembered one is replaced by it anyway (remember_remedy_yield). With no craft seen this run (a top-up only
+  # follows a round that added doses, so this is a fallback) it plans as
+  # the first round did, at remedy_planned_yield.
   #
   # @param short [Integer] doses still owed
+  # @param product [String] the remedy's whole name, e.g. 'scale moisturizer'
   # @return [Integer] crafts
-  def remedy_top_up_crafts(short)
-    nezhiri_crafts(short, [@remedy_yield || NEZHIRI_DOSES_PER_CRAFT, NEZHIRI_DOSES_PER_CRAFT].min)
+  def remedy_top_up_crafts(short, product)
+    per_craft = @remedy_yield ? [@remedy_yield, NEZHIRI_DOSES_PER_CRAFT].min : remedy_planned_yield(product)
+    nezhiri_crafts(short, per_craft)
+  end
+
+  # Doses one craft of a product is planned to make: the fewest one craft
+  # made the last time this character crafted it (remembered_remedy_yield),
+  # never more than NEZHIRI_DOSES_PER_CRAFT, since no log shows a craft
+  # making more; with nothing remembered, NEZHIRI_DOSES_PER_CRAFT. Planning
+  # at a yield the character has since outgrown buys supplies for crafts
+  # that are not made (brew_remedies stops once the doses owed are made):
+  # the herbs, brine and coal stay in the crafting bag, and the next task's
+  # purchases count them (buy_remedy_supplies; the herbs only for the same
+  # remedy).
+  #
+  # @param product [String, nil] the remedy's whole name
+  # @return [Integer] doses a craft, 1 to NEZHIRI_DOSES_PER_CRAFT
+  def remedy_planned_yield(product)
+    [remembered_remedy_yield(product) || NEZHIRI_DOSES_PER_CRAFT, NEZHIRI_DOSES_PER_CRAFT].min
+  end
+
+  # The fewest doses one craft of a product made in the last run that
+  # crafted it, as remember_remedy_yield stored it. Anything stored that is
+  # not a Hash of positive whole numbers (unset, or changed by hand) counts
+  # as nothing remembered.
+  #
+  # @param product [String, nil] the remedy's whole name, any case
+  # @return [Integer, nil] the doses, nil when none is remembered
+  def remembered_remedy_yield(product)
+    yields = UserVars.taskmaster_remedy_yields
+    return nil unless yields.is_a?(Hash)
+
+    doses = yields[product.to_s.downcase]
+    doses if doses.is_a?(Integer) && doses.positive?
+  end
+
+  # Stores this run's fewest doses one craft of the product made
+  # (@remedy_yield) for the next task's plan, replacing what was stored:
+  # the latest yield, not the smallest ever, so a character whose crafts
+  # come to make more plans by that. It is stored after each craft that
+  # added doses (brew_remedies), not once at the end: @remedy_yield starts
+  # each run at nil and only falls, so what is stored once the crafts stop
+  # is this run's own fewest, however the run ends after them (a top-up
+  # stop, a stop for instruction uses or a purchase, a later craft that
+  # fails, a crash). A run whose crafts added nothing leaves it alone.
+  #
+  # A finish (resume_task) is a run of its own, so its crafts replace what
+  # an earlier run of the same task stored, rather than joining it: nothing
+  # names the task across runs (the journal's product and count repeat from
+  # task to task), and the finish's crafts are the latest seen.
+  #
+  # @param product [String] the remedy's whole name, any case
+  # @return [void]
+  # @note UserVars.taskmaster_remedy_yields persists across runs, per
+  #   character. A value that is not a Hash is replaced by a new one.
+  def remember_remedy_yield(product)
+    return unless @remedy_yield.to_i.positive?
+
+    yields = UserVars.taskmaster_remedy_yields
+    yields = {} unless yields.is_a?(Hash)
+    UserVars.taskmaster_remedy_yields = yields.merge(product.to_s.downcase => @remedy_yield)
   end
 
   # Stops a task whose crafts made fewer doses than owed, saying how to
@@ -2551,7 +2632,8 @@ class TaskMaster
   # doses made are said and returned, and nezhiri makes up the rest
   # (top_up_remedies). Notes the stack in @remedy_stack and its doses in
   # @remedy_doses, counts each craft's study in @remedy_studies, and keeps
-  # the fewest doses one craft added in @remedy_yield.
+  # the fewest doses one craft added in @remedy_yield, remembered for the
+  # next task after each craft (remember_remedy_yield).
   #
   # @param recipe [Hash] the task's recipe
   # @param owed [Integer] doses owed
@@ -2574,6 +2656,7 @@ class TaskMaster
       @remedy_stack = stack
       @remedy_doses = doses
       note_remedy_yield(doses - before)
+      remember_remedy_yield(product)
       break if doses >= owed
     end
     DRC.message("#{doses} doses of #{product} made and combined into one.")
@@ -2957,11 +3040,16 @@ class TaskMaster
   # asked", 2026-11-07). Sets written for someone else are thrown away on
   # the way.
   #
-  # Nezhiri counts doses, and one study makes NEZHIRI_DOSES_PER_CRAFT of
-  # them, so her sets need a use per craft still to make, not per dose. Her
-  # task's set has one use more than the doses (13 for 12), a replacement
-  # exactly the doses owed (12 for 12): after a craft or two the uses fall
-  # below the doses while plenty are left for the crafts.
+  # Nezhiri counts doses, and one study makes up to NEZHIRI_DOSES_PER_CRAFT
+  # of them, so her sets need a use per craft still to make, not per dose.
+  # The crafts are counted as nezhiri will plan them, at the doses a craft
+  # this character made last time for the journal's product
+  # (remedy_planned_yield of @task_product, which read_task set): counted
+  # at 6 a craft, a set with too few uses for the crafts planned at 5 would
+  # be taken, and check_remedy_uses would then read every set again, or
+  # stop. Her task's set has one use more than the doses (13 for 12), a
+  # replacement exactly the doses owed (12 for 12): after a craft or two the
+  # uses fall below the doses while plenty are left for the crafts.
   #
   # @param item [String] item noun
   # @param owed [Integer] items still to make, one study each (for Nezhiri,
@@ -2969,7 +3057,7 @@ class TaskMaster
   # @return [void]
   def ensure_instructions(item, owed)
     name = "#{item} instructions"
-    uses_needed = @npc == 'nezhiri' ? nezhiri_crafts(owed) : owed
+    uses_needed = @npc == 'nezhiri' ? nezhiri_crafts(owed, remedy_planned_yield(@task_product)) : owed
     # A craft that stopped after its study leaves the set in hand, where the
     # gets below would never look.
     DRCC.stow_crafting_item(name, @bag, nil) if DRCI.in_hands?(name)
