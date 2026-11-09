@@ -35,7 +35,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.10.2'
+  VERSION = '2026.11.10.3'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -510,13 +510,6 @@ class TaskMaster
   # @return [Array<Object>] the hands' GameObjs (name, noun, id)
   def held_objects
     [GameObj.right_hand, GameObj.left_hand].compact.reject { |obj| obj.name.to_s == 'Empty' }
-  end
-
-  # What is in either hand, right first.
-  #
-  # @return [Array<String>] the hands' text, empty hands left out
-  def held_items
-    [DRC.right_hand, DRC.left_hand].compact
   end
 
   # A new task is offered about 30 seconds after a turn-in, so the poll
@@ -2551,13 +2544,14 @@ class TaskMaster
   # mortar." (6105:616). The new id in hand decides, not the reply.
   VESSEL_GET_REPLIES = [/^You get /, /^What were you referring to/, /^I could not find/, /^You need a free hand/].freeze
 
-  # The remedy's vessel (a mortar or a bowl) when a hand holds it.
+  # The remedy's vessel (a mortar or a bowl) when a hand holds it, by the
+  # noun GameObj gives the hand, never by how its name ends: a "rustic
+  # mortar of unpolished soapstone" is a mortar.
   #
   # @param recipe [Hash] the task's recipe; reads :vessel
   # @return [OpenStruct, nil] the hand's object, or nil
   def held_vessel(recipe)
-    vessel = /\b#{Regexp.escape(recipe[:vessel])}\z/i
-    [GameObj.right_hand, GameObj.left_hand].find { |obj| obj&.name.to_s.match?(vessel) }
+    [GameObj.right_hand, GameObj.left_hand].find { |obj| obj&.noun.to_s.casecmp?(recipe[:vessel]) }
   end
 
   # remedy, when it stops part way, leaves the vessel in hand with the
@@ -2764,15 +2758,31 @@ class TaskMaster
     exit
   end
 
-  # The ids of the stacks of a remedy in hand (not an unfinished one): the
-  # hand's name ends in the remedy's name ("gill glop").
+  # The ids of the stacks of a remedy in hand: the hand's GameObj noun is
+  # the remedy's (NEZHIRI_ITEMS' :noun, "glop" for gill glop; lich-5's
+  # DRC.get_noun of the name for a product not listed there), and the
+  # remedy's other words ("gill") are whole words of the hand's name, so a
+  # healing potion is not taken for landsickness potion. A remedy whose
+  # name gives no noun has none in hand.
+  #
+  # Whether a held stack is unfinished is not read: the hand text never
+  # says so (the game shows a "coil of unfinished burlap reinforced rope"
+  # in hand as "reinforced rope"), and an unfinished remedy stays in its
+  # vessel ("In the stone mortar you see some unfinished scale
+  # moisturizer.", 6101:3436), where clear_held_vessel looks for it; remedy
+  # only takes the finished one out.
   #
   # @param product [String] e.g. 'gill glop'
   # @return [Array<String>] right hand first
   def held_remedy_ids(product)
-    name = /(?:\A|\s)#{Regexp.escape(product)}\z/i
+    noun = (NEZHIRI_ITEMS.dig(product.to_s.downcase, :noun) || DRC.get_noun(product)).to_s.downcase
+    return [] if noun.empty?
+
+    kind = name_words(product) - [noun]
     [GameObj.right_hand, GameObj.left_hand].filter_map do |obj|
-      obj.id if obj&.id && obj.name.to_s.match?(name) && !obj.name.to_s.match?(/\bunfinished\b/i)
+      next unless obj&.id && obj.noun.to_s.casecmp?(noun)
+
+      obj.id if (kind - name_words(obj.name)).empty?
     end
   end
 
@@ -4084,7 +4094,7 @@ class TaskMaster
   # stays there). Items in the bag count by their noun (count_listed): the
   # "netting instructions" sew and forge stow in the same bag do not, so a
   # run that makes the last item and uses up the instructions still counts
-  # as one made. A held item counts when its hand text ends in the noun.
+  # as one made. Held items count by held_finished.
   #
   # An INVENTORY that goes unanswered is asked once more, and is not a
   # count of none.
@@ -4096,8 +4106,29 @@ class TaskMaster
     lines = container_listing(@bag) if lines.nil?
     return nil if lines.nil?
 
-    held = held_items.count { |name| name =~ /\b#{Regexp.escape(item)}$/i && name !~ /\bunfinished\b/i }
-    count_listed(lines, item) + held
+    count_listed(lines, item) + held_finished(item)
+  end
+
+  # How many finished items of the noun the hands hold. A hand counts when
+  # GameObj gives it that noun, so a "lumpy bundle bound by a braided
+  # bundling rope" is no rope, and its full name from GLANCE
+  # (glanced_hands) does not say "unfinished": the hand text never does,
+  # as the game shows a "coil of unfinished burlap reinforced rope" in hand
+  # as "reinforced rope". GLANCE is only sent when a hand holds the noun.
+  # When it goes unanswered, or names something without the noun in that
+  # hand, the held item is not counted, so a run is never taken as having
+  # made an item on a guess.
+  #
+  # @param item [String] item noun
+  # @return [Integer]
+  def held_finished(item)
+    hands = { right: GameObj.right_hand, left: GameObj.left_hand }.select { |_, obj| obj&.noun.to_s.casecmp?(item) }
+    return 0 if hands.empty?
+
+    glanced = glanced_hands
+    return 0 unless glanced
+
+    hands.count { |hand, _| names_noun?(glanced[hand], item) && !name_words(glanced[hand]).include?('unfinished') }
   end
 
   # Pins and thread are checked once for the whole task, so each sew run can

@@ -3542,34 +3542,77 @@ RSpec.describe TaskMaster do
 
       context 'with what the run left in hand' do
         # One sew run that leaves `left` in the right hand and nothing new in
-        # the bag; returns how many tailor_item says it made and the launches.
-        def run_leaving(left, count: 2)
+        # the bag; returns how many tailor_item says it made, the launches and
+        # the commands sent. `left` is [hand text, noun, full name]: GameObj
+        # has the short hand text and the game's noun ("reinforced netting",
+        # netting), only GLANCE the full name, so only GLANCE says
+        # "unfinished". glance: GLANCE's reply instead of the game's.
+        def run_leaving(left, count: 2, glance: nil)
           tm = build(settings: { outfitting_belt: { 'name' => 'toolbelt', 'items' => [] } }, crafting_room: 16_936)
           allow(tm).to receive(:get_data).and_return(tailoring)
           allow(DRCT).to receive(:walk_to)
           allow(DRCC).to receive(:check_consumables)
           inventory_replies('inventory duffel bag' => inventoried(['some netting instructions']))
+          text, noun, full = left
           right = nil
-          allow(DRC).to receive(:right_hand) { right }
+          empty = OpenStruct.new(name: 'Empty', noun: nil, id: nil)
+          allow(GameObj).to receive(:right_hand) { right ? OpenStruct.new(name: text, noun: noun, id: '758810') : empty }
+          allow(GameObj).to receive(:left_hand).and_return(empty)
+          allow(DRC).to receive(:right_hand) { right && text }
           allow(DRC).to receive(:left_hand).and_return(nil)
+          sent = []
+          allow(DRC).to receive(:bput) do |command, *|
+            sent << command
+            next 'Roundtime' unless command == 'glance'
+
+            glance || "You glance down to see #{full} in your right hand and nothing in your left hand."
+          end
           launches = 0
           allow(DRC).to receive(:wait_for_script_to_complete) do
             launches += 1
-            right = left if launches == 1
+            right = true if launches == 1
           end
-          [tm.tailor_item('netting', count, 'cloth', 'burlap'), launches]
+          [tm.tailor_item('netting', count, 'cloth', 'burlap'), launches, sent]
         end
 
         it 'counts a finished netting the bag would not take, still in hand, as made' do
-          expect(run_leaving('burlap netting')).to eq([1, 2])
+          expect(run_leaving(['reinforced netting', 'netting', 'some burlap reinforced netting']).first(2)).to eq([1, 2])
         end
 
-        it 'does not count an unfinished netting in hand as made' do
-          expect(run_leaving('unfinished burlap netting')).to eq([0, 1])
+        it 'does not count an unfinished netting in hand as made, though its hand text is the finished one\'s' do
+          expect(run_leaving(['reinforced netting', 'netting', 'some unfinished burlap reinforced netting']).first(2)).to eq([0, 1])
         end
 
         it 'does not count a held item whose name only contains the noun' do
-          expect(run_leaving('netting needles')).to eq([0, 1])
+          made, launches, sent = run_leaving(['netting instructions', 'instructions', 'some netting instructions'])
+          expect([made, launches]).to eq([0, 1])
+          expect(sent).not_to include('glance')
+        end
+
+        it 'goes by the noun GameObj gives the hand, not the last word of its name' do
+          tm = build
+          inventory_replies('inventory duffel bag' => inventoried([]))
+          bundle = OpenStruct.new(name: 'lumpy bundle bound by a braided bundling rope', noun: 'bundle', id: '758811')
+          allow(GameObj).to receive(:right_hand).and_return(bundle)
+          allow(GameObj).to receive(:left_hand).and_return(OpenStruct.new(name: 'Empty', noun: nil, id: nil))
+          allow(DRC).to receive(:right_hand).and_return('lumpy rope') # lich-5 DRC.right_hand: first and last word
+          allow(DRC).to receive(:bput).and_return('You glance down to see a lumpy bundle bound by a braided bundling rope in your right hand and nothing in your left hand.')
+          expect(tm.finished_count('rope')).to eq(0)
+          expect(tm.finished_count('bundle')).to eq(1)
+        end
+
+        # Real GLANCE replies (2026-09 logs) that do not show the netting in
+        # the right hand GameObj gives it: the hands empty, or only
+        # something else in the left one.
+        ['You glance down at your empty hands.',
+         'You glance down to see some burnt incense in your left hand.'].each do |reply|
+          it "does not count a held item of the noun when GLANCE answers \"#{reply}\"" do
+            expect(run_leaving(['reinforced netting', 'netting', 'some burlap reinforced netting'], glance: reply).first(2)).to eq([0, 1])
+          end
+        end
+
+        it 'does not count a held item of the noun when GLANCE goes unanswered' do
+          expect(run_leaving(['reinforced netting', 'netting', 'some burlap reinforced netting'], glance: '').first(2)).to eq([0, 1])
         end
       end
 
@@ -8443,6 +8486,54 @@ RSpec.describe TaskMaster do
       # run that left no remedy in hand. remedy is stubbed: each run leaves
       # in hand what the logged runs left (the remedy made, or the vessel
       # with the unfinished remedy in it after a stop).
+      # The hands as GameObj gives them, by the game's noun; the names are
+      # the full names noun-corpus.tsv logged for each noun.
+      describe '#held_vessel and #held_remedy_ids' do
+        def holding_objs(right, left = nil)
+          empty = OpenStruct.new(name: 'Empty', noun: nil, id: nil)
+          allow(GameObj).to receive(:right_hand).and_return(right || empty)
+          allow(GameObj).to receive(:left_hand).and_return(left || empty)
+        end
+
+        it 'finds a held mortar or bowl by its noun, whatever its name ends in' do
+          tm = maker
+          [['rustic mortar of unpolished soapstone', 'mortar', glop_recipe],
+           ['white granite mortar shaped like an open-top monkey skull', 'mortar', glop_recipe],
+           ['ceramic mixing bowl with auburn glazing', 'bowl', draught_recipe]].each do |name, noun, recipe|
+            vessel = OpenStruct.new(name: name, noun: noun, id: '6001')
+            holding_objs(nil, vessel)
+            expect(tm.held_vessel(recipe)).to eq(vessel)
+          end
+        end
+
+        it 'does not take a pipe with a bowl at the end of its name for the bowl' do
+          holding_objs(OpenStruct.new(name: 'felwood pipe with a purple tulip-shaped bowl', noun: 'pipe', id: '6002'))
+          expect(maker.held_vessel(draught_recipe)).to be_nil
+        end
+
+        it 'takes held stacks of the remedy by their noun and the rest of its name' do
+          holding_objs(OpenStruct.new(name: 'gill glop', noun: 'glop', id: '7001'), OpenStruct.new(name: 'gill glop', noun: 'glop', id: '7002'))
+          expect(maker.held_remedy_ids('gill glop')).to eq(%w[7001 7002])
+          holding_objs(OpenStruct.new(name: 'deep-sea draught', noun: 'draught', id: '7003'))
+          expect(maker.held_remedy_ids('deep-sea draught')).to eq(['7003'])
+        end
+
+        it 'does not take another remedy of the same noun, or the instructions' do
+          holding_objs(OpenStruct.new(name: 'healing potion', noun: 'potion', id: '7004'), OpenStruct.new(name: 'landsickness potion', noun: 'potion', id: '7005'))
+          expect(maker.held_remedy_ids('landsickness potion')).to eq(['7005'])
+          holding_objs(OpenStruct.new(name: 'gill glop instructions', noun: 'instructions', id: '7006'))
+          expect(maker.held_remedy_ids('gill glop')).to eq([])
+        end
+
+        it 'takes the remedy\'s noun from NEZHIRI_ITEMS, not from its name' do
+          tm = maker
+          allow(DRC).to receive(:get_noun).and_return('gill') # a misread NEZHIRI_ITEMS' noun makes moot
+          holding_objs(OpenStruct.new(name: 'gill glop', noun: 'glop', id: '7001'))
+          expect(tm.held_remedy_ids('gill glop')).to eq(['7001'])
+          expect(DRC).not_to have_received(:get_noun)
+        end
+      end
+
       describe 'a mortar or bowl left in hand' do
         let(:mortar) { 'polished belzune stone mortar' }
         let(:bowl) { "khor'vela medicine bowl" }
