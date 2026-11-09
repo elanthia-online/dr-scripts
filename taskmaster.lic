@@ -362,7 +362,7 @@ class TaskMaster
   def reconcile_hands
     waitrt?
     DRC.fix_standing
-    sort_sack(nil) if held_objects.any? { |obj| obj.noun == 'sack' && name_words(obj.name).include?('woven') }
+    sort_sack(nil) if held_objects.any? { |obj| obj.name == REWARD_SACK_NAME }
     return unless @npc == 'zasele'
 
     held = hands_in_full
@@ -4779,14 +4779,14 @@ class TaskMaster
   # as before.
   #
   # @param _description [String] the sack contents, LOOK prefix stripped
-  # @param sack_id [String, nil] the reward sack's id (sort_sack's
-  #   reward_sack_id), never found by noun: another sack in hand (a pet
-  #   sack) is not the reward
+  # @param sack_id [String] the reward sack's id (sort_sack's
+  #   reward_sack_id, never nil here), never found by noun: another sack in
+  #   hand (a pet sack) is not the reward
   # @return [Boolean] true when the item is in the loot bag and the sack is
   #   binned; false leaves the sack in hand (with whatever is still in it,
   #   or empty when it could not be binned) for the caller to keep as before
   def unpack_keeper?(_description, sack_id)
-    lines = sack_id && inventory_listing("##{sack_id}")
+    lines = inventory_listing("##{sack_id}")
     return false if lines.nil? || lines.empty?
 
     lines.filter_map { |line| DRC.get_noun(line) }.each do |noun|

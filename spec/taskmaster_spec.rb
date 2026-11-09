@@ -1098,10 +1098,14 @@ RSpec.describe TaskMaster do
       expect(launched).to eq([['sew', %w[resume outfit]]])
     end
 
-    it 'sorts a reward sack held at start, by its noun and the word woven' do
+    it 'sorts a reward sack held at start, by the name sort_sack takes a reward sack by' do
       tm, = reconcile(right: held('woven sack', 'sack', '4261859', 'a woven sack'), left: nil)
       expect(tm).to have_received(:sort_sack)
       tm, = reconcile(right: held('leather sack', 'sack', '4261860', 'a leather sack'), left: nil)
+      expect(tm).not_to have_received(:sort_sack)
+      # A pet sack (the one in sort_sack's pet-sack examples) is woven too,
+      # but it is no reward sack, and sort_sack would find none to sort.
+      tm, = reconcile(right: held('soft woven sack with a golden piglet charm', 'sack', '57001234', 'a soft woven sack with a golden piglet charm'), left: nil)
       expect(tm).not_to have_received(:sort_sack)
     end
 
@@ -5434,6 +5438,30 @@ RSpec.describe TaskMaster do
         tm = unpacker(task_unpack_keepers: false)
         unpack(tm)
         expect(DRC).not_to have_received(:bput).with(/\Aget bar/, any_args)
+        expect(DRCI).to have_received(:put_away_item?).with('#63768227', "traveler's.pack")
+        expect(DRCI).not_to have_received(:dispose_trash)
+      end
+
+      it 'unpacks the reward sack by its id, never the pet sack held in the other hand' do
+        tm = unpacker
+        pet = OpenStruct.new(noun: 'sack', name: 'soft woven sack with a golden piglet charm', id: '57001234')
+        allow(GameObj).to receive(:right_hand).and_return(pet)
+        allow(GameObj).to receive(:left_hand).and_return(sack)
+        allow(DRC).to receive(:left_hand).and_return('sack')
+        allow(DRC).to receive(:right_hand).and_return('sack')
+        allow(tm).to receive(:pause)
+        stub_const("#{described_class}::UNPACK_FREE_HAND_WAIT", 0)
+        game('look in #63768227' => 'In the woven sack you see a large tyrium bar.',
+             'get '              => 'You need a free hand to pick that up.')
+        inventory_replies('inventory #63768227' => inventoried(['a large tyrium bar'], container: 'woven sack', noun: 'sack', id: '63768227'),
+                          'inventory #57001234' => inventoried(['a foul-smelling field pig'], container: 'soft woven sack', noun: 'sack', id: '57001234'))
+        allow(DRCI).to receive(:put_away_item?).and_return(true)
+        allow(DRCI).to receive(:dispose_trash).and_return(true)
+        UserVars.taskmaster_sacks = { 'zasele' => [] }
+        tm.sort_sack('netting')
+        expect(Lich::Util).to have_received(:issue_command).with('inventory #63768227', any_args)
+        expect(Lich::Util).not_to have_received(:issue_command).with('inventory #57001234', any_args)
+        expect(DRC).not_to have_received(:bput).with(/57001234/, any_args)
         expect(DRCI).to have_received(:put_away_item?).with('#63768227', "traveler's.pack")
         expect(DRCI).not_to have_received(:dispose_trash)
       end
