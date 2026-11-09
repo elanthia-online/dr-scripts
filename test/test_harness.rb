@@ -478,7 +478,7 @@ module Harness
     # @return [OpenStruct] the left hand's name, noun and id
     def self.left_hand
       item = Harness.left_hand || 'Empty'
-      OpenStruct.new({ name: item, noun: item, id: hand_id(:left, Harness.left_hand) })
+      OpenStruct.new({ name: item, noun: hand_noun(item), id: hand_id(:left, Harness.left_hand) })
     end
 
     # The id GameObj shows for what a hand holds: its own id from
@@ -495,6 +495,16 @@ module Harness
       ($hand_ids || {})[name]
     end
 
+    # The noun GameObj shows for what a hand holds: the game's own noun,
+    # which a spec gives through $hand_nouns, `{ name => noun }`; else
+    # the noun lich-5's DRC.get_noun takes from the name.
+    #
+    # @param name [String] the held item's name
+    # @return [String, nil]
+    def self.hand_noun(name)
+      ($hand_nouns || {})[name] || Harness._noun(name)
+    end
+
     def self.left_hand=(val)
       Harness.left_hand(val)
     end
@@ -502,7 +512,7 @@ module Harness
     # @return [OpenStruct] the right hand's name, noun and id
     def self.right_hand
       item = Harness.right_hand || 'Empty'
-      OpenStruct.new({ name: item, noun: item, id: hand_id(:right, Harness.right_hand) })
+      OpenStruct.new({ name: item, noun: hand_noun(item), id: hand_id(:right, Harness.right_hand) })
     end
 
     def self.right_hand=(val)
@@ -520,6 +530,14 @@ module Harness
     #   contents GameObj knows; specs set $containers, reset_data empties it
     def self.containers
       $containers || {}
+    end
+
+    # @return [Array<OpenStruct>, nil] the room's objects as GameObj.loot
+    #   lists them (name, noun, id, from the links in the room's object
+    #   list, in the order listed); empty when the room objects come without
+    #   links. Specs set $room_loot; reset_data empties it.
+    def self.loot
+      $room_loot
     end
   end
 
@@ -1044,11 +1062,14 @@ module Harness
     $right_hand = nil
     # Held item full name => the game's id GameObj shows for it.
     $hand_ids = {}
+    # Held item full name => the game's noun GameObj shows for it.
+    $hand_nouns = {}
     # Hand (:right, :left) => [name, id] of the item it holds, for items
     # whose name another item shares (GameObj.hand_id).
     $hand_item_ids = {}
     $worn_items = []
     $containers = {}
+    $room_loot = []
 
     Flags._reset
     DRSpells._reset

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
+require 'yaml'
 
 # Test suite for sorter.lic
 #
@@ -108,6 +109,25 @@ RSpec.describe 'sorter.lic helpers' do
       expect { SorterHelpers.categorize_item('broadsword', corrupt_data) }.not_to raise_error
       expect(SorterHelpers.categorize_item('broadsword', corrupt_data)).to eq('gear - weapon')
       expect(SorterHelpers.categorize_item('unknown item', corrupt_data)).to eq('other')
+    end
+
+    # lich-5 #2299 makes DRC.remove_flavor_text strip "for a ..." as flavor, so
+    # the strap below reads as "a waist strap" (noun "strap") instead of its
+    # whole name. data/base-sorting.yaml's entry for it must match either way.
+    context 'with the waist strap entry of data/base-sorting.yaml' do
+      let(:sorting) { YAML.load_file(File.expand_path('../data/base-sorting.yaml', __dir__)) }
+      let(:strap) { 'a waist strap for a crafting instruction book' }
+
+      it 'files it under crafting - general while lich-5 keeps its whole name' do
+        expect(SorterHelpers.categorize_item(strap, sorting)).to eq('crafting - general')
+      end
+
+      it 'files it under crafting - general once lich-5 strips "for a crafting instruction book"' do
+        allow(DRC).to receive(:remove_flavor_text).with(strap).and_return('a waist strap')
+        allow(DRC).to receive(:get_noun).with(strap).and_return('strap')
+
+        expect(SorterHelpers.categorize_item(strap, sorting)).to eq('crafting - general')
+      end
     end
   end
 
