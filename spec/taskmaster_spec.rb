@@ -5584,7 +5584,8 @@ RSpec.describe TaskMaster do
   # spec/fixtures/taskmaster/log_lines.json). Every game reply is a logged
   # line, ReplayGame.log, or a whole logged window from a transcript; the few
   # lines no log has are ReplayGame.code and say where they come from. The
-  # commands were sent by the logging player's client script.
+  # commands were sent by the logging player's client script. Cite key 6400
+  # is a task run by taskmaster itself.
   describe "Nezhiri's alchemy tasks" do
     # The real stock table, so the order numbers and prices are the ones
     # taskmaster reads in game (get_data('crafting')['stock']).
@@ -5962,7 +5963,7 @@ RSpec.describe TaskMaster do
     # player's client script never sent (its replies are code-derived, in the
     # wording taskmaster's rummage reads). remedy itself is not run: a stub
     # leaves the product in hand with an id of its own, as remedy leaves it
-    # (6 uses each time, as every logged craft counted). The ids are made up
+    # (6 uses each time, as every craft in 6100..6106 counted). The ids are made up
     # (code-derived): the logs carry none. Commands taskmaster words by id
     # ("count #7001") are answered with the logged reply to the client
     # script's wording ("count my glop").
@@ -6058,9 +6059,10 @@ RSpec.describe TaskMaster do
       def shop_world(inventory, shop: :game)
         game = ReplayGame.new(send_budget: 200).install(self)
         commons = ReplayCommons.new(game: game, inventory: inventory, shop: shop, container_gets: true, buys: { 'brine' => "brewer's brine" },
-                                    orders: { 7 => 'dried georin', 9 => 'crushed junliar', 1 => 'water', 2 => 'grain alcohol', [8775, 2] => 'massive coal nugget' },
+                                    orders: { 7 => 'dried georin', 9 => 'crushed junliar', 13 => 'dried red flowers', 1 => 'water', 2 => 'grain alcohol',
+                                              [8775, 2] => 'massive coal nugget' },
                                     ids: { 'dried georin' => '8101', 'crushed junliar' => '8102', 'water' => '8103', 'grain alcohol' => '8104',
-                                           'massive coal nugget' => '8105' }).install(self)
+                                           'massive coal nugget' => '8105', 'dried red flowers' => '8106' }).install(self)
         DRRoom.npcs = ['Nezhiri']
         [game, commons]
       end
@@ -6251,6 +6253,52 @@ RSpec.describe TaskMaster do
         let(:moisturizer) { moisturizer_recipe.merge(uses: 13) }
         let(:glop) { glop_recipe.merge(uses: 14) }
 
+        # Sets of the remedy's instructions in the crafting bag, each given
+        # as its uses left, or :foreign for one written for someone else
+        # (which the trash takes), as the game keeps them: a GET takes the
+        # set in front, or by ordinal the one that many places in, and a set
+        # put back goes in front (2026-11-07, as in ensure_instructions'
+        # specs). Each READ is scripted, in the order the sets are read.
+        # Other items are left to the commons model. Returns the bag.
+        def instruction_sets(game, commons, noun, sets)
+          name = "#{noun} instructions"
+          world = { bag: sets.dup, hand: nil }
+          sets.each do |uses|
+            reply = if uses == :foreign
+                      ReplayGame.code("You can't read the ink printed on the #{name}.  They were written by or for someone else.", from: 'FOREIGN_INSTRUCTIONS, the reply ensure_instructions reads')
+                    elsif uses == 1
+                      ReplayGame.log('6100:1576')
+                    else
+                      ReplayGame.code("These instructions appear to be very fragile and will wear out quickly when studied.  They have only #{uses} uses remaining.", from: 'INSTRUCTION_USES, in the shape of 6100:1576')
+                    end
+            game.script("read my #{name}", reply)
+          end
+          allow(DRCI).to receive(:get_item?) do |item, container|
+            ordinal = item[/\A(\w+) #{noun} instructions\z/, 1]
+            next commons.get_item?(item, container) unless item == name || ordinal
+
+            index = ordinal ? $ORDINALS.index(ordinal) : 0
+            next false if world[:hand] || index.nil? || index >= world[:bag].size
+
+            world[:hand] = world[:bag].delete_at(index)
+            true
+          end
+          allow(DRCC).to receive(:stow_crafting_item) do |item, bag, belt|
+            next commons.stow_crafting_item(item, bag, belt) unless item == name
+
+            world[:bag].unshift(world[:hand]) if world[:hand]
+            world[:hand] = nil
+            true
+          end
+          allow(DRCI).to receive(:dispose_trash) do |item, *|
+            next false unless item == name && world[:hand]
+
+            world[:hand] = nil
+            true
+          end
+          world[:bag]
+        end
+
         it 'buys and crafts nothing when the doses on hand cover the task, and the hand-in cuts them down (6100:11038, 11180-11187)' do
           tm = maker(task_product: 'deep-sea draught')
           game, commons = shop_world(kit + [['deep-sea draught', 'duffel bag', '7105']])
@@ -6273,6 +6321,7 @@ RSpec.describe TaskMaster do
           expect(runs).to be_empty
           expect(commons.calls.map(&:first)).not_to include('DRCM.ensure_copper_on_hand', 'DRCI.count_item_parts', 'DRCT.walk_to', 'DRCC.get_crafting_item')
           expect(DRC).to have_received(:message).with('13 doses of deep-sea draught owed, 16 on hand: 0 crafts to make.')
+          expect(DRC).not_to have_received(:message).with(/more craft|short of the/)
           expect([game.clock, game.diagnostics]).to eq([0.0, []])
         end
 
@@ -6314,12 +6363,15 @@ RSpec.describe TaskMaster do
           tm = maker(task_product: 'scale moisturizer')
           game, commons = shop_world(kit)
           game.script('rummage /C moisturizer in my duffel bag', rummaged_none('moisturizer'))
+          bag = instruction_sets(game, commons, 'moisturizer', [1])
 
           expect { tm.nezhiri('moisturizer', 12, moisturizer.merge(uses: 1)) }.to raise_error(SystemExit)
 
           expect(commons.calls.map(&:first)).not_to include('DRCI.count_item_parts', 'DRCM.ensure_copper_on_hand')
+          expect(game.sent.grep(/\Aread /)).to eq(['read my moisturizer instructions'])
+          expect(bag).to eq([1])
           expect(DRC).to have_received(:message)
-            .with('The moisturizer instructions have 1 use left, and 2 crafts are needed. Ask Nezhiri for another copy (ASK NEZHIRI FOR INSTRUCTIONS), then run ;taskmaster nezhiri finish. Stopping before buying anything.')
+            .with('The moisturizer instructions you carry have 1 use left, and 2 crafts are needed. Ask Nezhiri for another copy (ASK NEZHIRI FOR INSTRUCTIONS), then run ;taskmaster nezhiri finish. Stopping before buying anything.')
         end
 
         # Found by a mutation sweep: no example had exactly as many uses as
@@ -6342,7 +6394,7 @@ RSpec.describe TaskMaster do
           game.script('combine #7001 with #7002', ReplayGame.log('6100:9368'), after: merges(commons, 'gill glop', '7001', '7002', into: '7003'))
           game.script('count #7003', ReplayGame.log('6100:9371'))
 
-          tm.brew_remedies(glop_recipe, 12, 2)
+          expect(tm.brew_remedies(glop_recipe, 12, 2)).to eq(12)
 
           expect(runs.count { |name, _| name == 'remedy' }).to eq(2)
           expect(game.sent).to eq(['count #7001', 'combine #7001 with #7002', 'count #7003'])
@@ -6382,6 +6434,7 @@ RSpec.describe TaskMaster do
           game.script('count my first georin', ReplayGame.log('6100:4595'))
           game.script('count my second georin', ReplayGame.log('6100:8793'))
           allow(tm).to receive(:brew_remedies)
+          allow(tm).to receive(:top_up_remedies)
           allow(tm).to receive(:repair)
 
           tm.nezhiri('glop', 13, glop)
@@ -6408,6 +6461,7 @@ RSpec.describe TaskMaster do
             nil
           end
           allow(tm).to receive(:brew_remedies)
+          allow(tm).to receive(:top_up_remedies)
           allow(tm).to receive(:repair)
 
           tm.nezhiri('glop', 13, glop)
@@ -6502,18 +6556,394 @@ RSpec.describe TaskMaster do
           expect(commons.calls.map(&:first)).not_to include('DRCC.get_crafting_item') # no repair after a stop
         end
 
-        it 'stops after the crafts planned when they make fewer doses than owed, and says how to make the rest' do
-          tm = maker(task_product: 'gill glop')
-          game, commons = shop_world(kit)
-          allow(tm).to receive(:buy_remedy_supplies)
-          remedy_makes(commons, 'gill glop', %w[7001])
-          game.script('rummage /C glop in my duffel bag', rummaged_none('glop'))
-          game.script('count #7001', ReplayGame.log('6100:28265')) # 5 doses of gill glop, fewer than the 6 a craft made in every log
+        describe 'crafts that make fewer doses than owed' do
+          # COUNT of a stack the logs never showed at this size, in the shape
+          # of the logged ones.
+          def counted(doses)
+            log = { 3 => '6100:6051', 4 => '6100:10519', 5 => '6100:28265', 6 => '6100:9223', 12 => '6100:9371', 13 => '6100:9692', 15 => '6100:6040', 18 => '6100:9539' }[doses]
+            log ? ReplayGame.log(log) : ReplayGame.code("You count out #{doses} uses remaining.", from: 'REMEDY_COUNT, in the shape of 6100:9223')
+          end
 
-          expect { tm.nezhiri('glop', 6, glop) }.to raise_error(SystemExit)
+          # remedy, stubbed to leave a new stack in hand each run, and the
+          # game's COMBINE and COUNT replies for those stacks: each craft adds
+          # the next of `gains` to the stack. The new stacks are 7002, 7004
+          # and so on; each COMBINE makes the new stack's id plus one. With
+          # on_hand ([id, doses]) the first craft is combined into that stack.
+          # Returns the remedy runs.
+          def crafts_adding(game, commons, gains, on_hand: nil)
+            made_ids = (1..gains.size).map { |n| (7000 + (2 * n)).to_s }
+            runs = remedy_makes(commons, 'gill glop', made_ids.dup)
+            stack, total = on_hand || [nil, 0]
+            gains.zip(made_ids).each do |gain, made|
+              total += gain
+              if stack
+                into = (made.to_i + 1).to_s
+                game.script("combine ##{stack} with ##{made}", ReplayGame.log('6100:9368'), after: merges(commons, 'gill glop', stack, made, into: into))
+                stack = into
+              else
+                stack = made
+              end
+              game.script("count ##{stack}", counted(total))
+            end
+            runs
+          end
 
-          expect(DRC).to have_received(:message).with('That is short of the 6 doses owed. Run ;taskmaster nezhiri finish to make the rest. Stopping.')
-          expect(commons.inventory.map(&:to_a)).to include(['gill glop', 'duffel bag', '7001'])
+          def remedy_runs(runs)
+            runs.count { |name, _| name == 'remedy' }
+          end
+
+          # Each round's crafts, as bought: buy_remedy_supplies is checked on
+          # its own above, so here it only records the crafts it was asked for.
+          def bought_crafts(tm)
+            bought = []
+            allow(tm).to receive(:buy_remedy_supplies) { |_recipe, crafts| bought << crafts }
+            bought
+          end
+
+          # The report's task (15 owed, 13 made by the crafts planned for
+          # them): one more craft, planned at the 4 doses the smallest craft
+          # made, bought through the real purchases (brine, coal and herbs
+          # counted again for it), crafted where the crafts are made, and
+          # combined into the same stack.
+          it 'makes one more craft when three make 13 of the 15 owed, buying for it alone, then hands the tools to Rangu' do
+            tm = maker(task_product: 'gill glop')
+            game, commons = shop_world(kit, shop: :model)
+            game.script('rummage /C glop in my duffel bag', rummaged_none('glop'))
+            2.times do
+              game.script('count my first brine', ReplayGame.log('6100:8800')) # ten parts
+              game.script('count my second brine', ReplayGame.log('6100:8793'))
+              game.script('tap my first coal nugget', ReplayGame.log('6100:8910')) # large: 4 rubs
+              game.script('count my first georin', ReplayGame.log('6100:8793'))
+            end
+            runs = crafts_adding(game, commons, [5, 4, 4, 6])
+            allow(tm).to receive(:repair)
+
+            tm.nezhiri('glop', 15, glop.merge(uses: 16))
+
+            expect(remedy_runs(runs)).to eq(4)
+            expect(commons.calls.select { |name, *| name == 'DRCT.order_item' }).to eq([['DRCT.order_item', 8862, 7]] * 4)
+            expect(commons.calls.select { |name, *| name == 'DRCM.ensure_copper_on_hand' })
+              .to eq([['DRCM.ensure_copper_on_hand', (3 * 437) + 7500, 'Crossing'], ['DRCM.ensure_copper_on_hand', 437 + 7500, 'Crossing']])
+            expect(commons.calls.select { |name, *| name == 'DRCT.walk_to' }.count { |call| call[1] == 7896 }).to eq(2)
+            expect(DRC).to have_received(:message).with('13 of 15 doses of gill glop made: 1 more craft to make.').ordered
+            expect(DRC).to have_received(:message).with('19 doses of gill glop made and combined into one.').ordered
+            expect(tm.instance_variable_get(:@remedy_doses)).to eq(19)
+            expect(commons.location_of('#7009')).to eq('duffel bag')
+            expect(tm).to have_received(:repair).once
+            expect(DRC).not_to have_received(:message).with(/short of the/)
+            expect(game.diagnostics).to eq([])
+          end
+
+          # 6400: 12 doses of scale moisturizer owed, none on hand, a new set
+          # of instructions with 13 uses (6400:313). The two crafts planned
+          # made 5 each (6400:683, combined at 6400:811 into 10, 6400:813),
+          # where taskmaster 2026.11.08.2 stopped (6400:816-817). Now one
+          # extra craft, planned at 5 doses, makes the 15 that cover the 12.
+          # The extra craft's COMBINE and COUNT of 15 are past the end of
+          # 6400: 6100's lines stand in.
+          it 'makes one extra craft when two make 5 doses each of the 12 owed, as in 6400' do
+            tm = maker(task_product: 'scale moisturizer')
+            game, commons = shop_world(kit, shop: :model)
+            game.script('rummage /C moisturizer in my duffel bag', rummaged_none('moisturizer'))
+            2.times do
+              game.script('count my first brine', ReplayGame.log('6100:8800')) # ten parts
+              game.script('count my second brine', ReplayGame.log('6100:8793'))
+              game.script('tap my first coal nugget', ReplayGame.log('6100:8910')) # large: 4 rubs
+              game.script('count my first red flowers', ReplayGame.log('6100:8793'))
+            end
+            runs = remedy_makes(commons, 'scale moisturizer', %w[7002 7004 7006])
+            game.script('count #7002', ReplayGame.log('6400:683'))
+            game.script('combine #7002 with #7004', ReplayGame.log('6400:811'), after: merges(commons, 'scale moisturizer', '7002', '7004', into: '7005'))
+            game.script('count #7005', ReplayGame.log('6400:813'))
+            game.script('combine #7005 with #7006', ReplayGame.log('6100:9368'), after: merges(commons, 'scale moisturizer', '7005', '7006', into: '7007'))
+            game.script('count #7007', ReplayGame.log('6100:6040')) # 15 doses
+            allow(tm).to receive(:repair)
+
+            tm.nezhiri('moisturizer', 12, moisturizer)
+
+            expect(remedy_runs(runs)).to eq(3)
+            expect(game.sent.grep(/\A(?:count|combine) #/))
+              .to eq(['count #7002', 'combine #7002 with #7004', 'count #7005', 'combine #7005 with #7006', 'count #7007'])
+            expect(commons.calls.select { |name, *| name == 'DRCT.order_item' }).to eq([['DRCT.order_item', 8862, 13]] * 3)
+            expect(commons.calls.select { |name, *| name == 'DRCM.ensure_copper_on_hand' })
+              .to eq([['DRCM.ensure_copper_on_hand', (2 * 343) + 7500, 'Crossing'], ['DRCM.ensure_copper_on_hand', 343 + 7500, 'Crossing']])
+            expect(DRC).to have_received(:message).with('12 doses of scale moisturizer owed, 0 on hand: 2 crafts to make.').ordered
+            expect(DRC).to have_received(:message).with('10 doses of scale moisturizer made and combined into one.').ordered
+            expect(DRC).to have_received(:message).with('10 of 12 doses of scale moisturizer made: 1 more craft to make.').ordered
+            expect(DRC).to have_received(:message).with('15 doses of scale moisturizer made and combined into one.').ordered
+            expect([tm.instance_variable_get(:@remedy_doses), tm.instance_variable_get(:@remedy_yield), tm.instance_variable_get(:@remedy_studies)]).to eq([15, 5, 3])
+            expect(commons.location_of('#7007')).to eq('duffel bag')
+            expect(game.sent.grep(/\Aread /)).to eq([]) # 13 uses less the 2 studies cover the extra craft
+            expect(tm).to have_received(:repair).once
+            expect(DRC).not_to have_received(:message).with(/short of the|uses? left/)
+            expect(game.diagnostics).to eq([])
+          end
+
+          it 'plans the extra crafts at the fewest doses a craft made: 3 a craft leaves 7 of 16 short, so three more' do
+            tm = maker(task_product: 'gill glop')
+            game, commons = shop_world(kit)
+            game.script('rummage /C glop in my duffel bag', rummaged_none('glop'))
+            bought = bought_crafts(tm)
+            runs = crafts_adding(game, commons, [3, 3, 3, 3, 3, 3])
+            allow(tm).to receive(:repair)
+
+            tm.nezhiri('glop', 16, glop.merge(uses: 17))
+
+            expect(bought).to eq([3, 3])
+            expect(remedy_runs(runs)).to eq(6)
+            expect(DRC).to have_received(:message).with('9 of 16 doses of gill glop made: 3 more crafts to make.')
+            expect(tm.instance_variable_get(:@remedy_doses)).to eq(18)
+            expect(tm).to have_received(:repair).once
+          end
+
+          it 'never plans a craft at more than 6 doses, nor at none, and plans by the fewest seen' do
+            tm = maker
+            plans = [[nil, 7], [7, 7], [6, 7], [5, 7], [4, 2], [3, 7], [1, 3]].map do |seen, short|
+              tm.instance_variable_set(:@remedy_yield, seen)
+              tm.remedy_top_up_crafts(short)
+            end
+            expect(plans).to eq([2, 2, 2, 2, 1, 3, 3])
+          end
+
+          it 'keeps the fewest doses a craft added, passing over a craft that added none' do
+            tm = maker(remedy_yield: nil)
+            [5, 0, 4, 6, -1].each { |gain| tm.note_remedy_yield(gain) }
+            expect(tm.instance_variable_get(:@remedy_yield)).to eq(4)
+          end
+
+          # The finish path: the 4 doses carried count once, toward the
+          # doses owed and not as a craft's.
+          it 'counts the doses carried once: 4 carried and two crafts of 3 leave 6 of 16 short, two more crafts' do
+            tm = maker(task_product: 'gill glop')
+            game, commons = shop_world(kit + [['gill glop', 'duffel bag', '7101']])
+            game.script('rummage /C glop in my duffel bag', rummaged('glop', 'some gill glop'))
+            game.script('count #7101', ReplayGame.log('6100:10519')) # 4 doses
+            bought = bought_crafts(tm)
+            runs = crafts_adding(game, commons, [3, 3, 3, 3], on_hand: ['7101', 4])
+            allow(tm).to receive(:repair)
+
+            tm.nezhiri('glop', 16, glop.merge(uses: 4))
+
+            expect(DRC).to have_received(:message).with('16 doses of gill glop owed, 4 on hand: 2 crafts to make.')
+            expect(DRC).to have_received(:message).with('10 of 16 doses of gill glop made: 2 more crafts to make.')
+            expect(bought).to eq([2, 2])
+            expect(remedy_runs(runs)).to eq(4)
+            expect(tm.instance_variable_get(:@remedy_doses)).to eq(16)
+          end
+
+          it 'makes no extra craft when the crafts planned make exactly the doses owed' do
+            tm = maker(task_product: 'gill glop')
+            game, commons = shop_world(kit)
+            game.script('rummage /C glop in my duffel bag', rummaged_none('glop'))
+            bought = bought_crafts(tm)
+            runs = crafts_adding(game, commons, [6, 6])
+            allow(tm).to receive(:repair)
+
+            tm.nezhiri('glop', 12, glop)
+
+            expect(bought).to eq([2])
+            expect(remedy_runs(runs)).to eq(2)
+            expect(DRC).not_to have_received(:message).with(/more craft|short of the/)
+            expect(tm).to have_received(:repair).once
+          end
+
+          it 'stops, the stack in the bag and no tools to Rangu, when the extra crafts add no doses' do
+            tm = maker(task_product: 'gill glop')
+            game, commons = shop_world(kit)
+            game.script('rummage /C glop in my duffel bag', rummaged_none('glop'))
+            bought = bought_crafts(tm)
+            runs = crafts_adding(game, commons, [5, 4, 4, 0])
+            allow(tm).to receive(:repair)
+
+            expect { tm.nezhiri('glop', 15, glop.merge(uses: 16)) }.to raise_error(SystemExit)
+
+            expect(bought).to eq([3, 1])
+            expect(remedy_runs(runs)).to eq(4)
+            expect(DRC).to have_received(:message)
+              .with('The last crafts added no doses, so more of them would not help. 13 doses made is short of the 15 owed. Run ;taskmaster nezhiri finish to make the rest. Stopping.')
+            expect(commons.location_of('#7009')).to eq('duffel bag')
+            expect(tm).not_to have_received(:repair)
+          end
+
+          # Two rounds of extra crafts, each adding a dose: still short, so
+          # the run stops rather than buy a third round.
+          it 'stops after two rounds of extra crafts that leave the doses short, buying no third' do
+            tm = maker(task_product: 'gill glop')
+            game, commons = shop_world(kit)
+            game.script('rummage /C glop in my duffel bag', rummaged_none('glop'))
+            bought = bought_crafts(tm)
+            runs = crafts_adding(game, commons, [5, 5, 1] + [1, 0, 0, 0] + [1, 0, 0])
+            allow(tm).to receive(:repair)
+
+            expect { tm.nezhiri('glop', 15, glop.merge(uses: 20)) }.to raise_error(SystemExit)
+
+            expect(bought).to eq([3, 4, 3])
+            expect(remedy_runs(runs)).to eq(10)
+            expect(DRC).to have_received(:message).with('11 of 15 doses of gill glop made: 4 more crafts to make.')
+            expect(DRC).to have_received(:message).with('12 of 15 doses of gill glop made: 3 more crafts to make.')
+            expect(DRC).to have_received(:message)
+              .with('2 rounds of extra crafts did not make up the doses. 13 doses made is short of the 15 owed. Run ;taskmaster nezhiri finish to make the rest. Stopping.')
+            expect(tm.instance_variable_get(:@remedy_studies)).to eq(10)
+            expect(tm).not_to have_received(:repair)
+          end
+
+          # The uses are read once, at the start: the 3 crafts planned spent
+          # the 3 uses (the game tossed the set at its last), and no other
+          # set is carried, so the extra one has none.
+          it 'stops before buying for the extra crafts when the studies this run spent the uses and no other set is carried' do
+            tm = maker(task_product: 'gill glop')
+            game, commons = shop_world(kit)
+            game.script('rummage /C glop in my duffel bag', rummaged_none('glop'))
+            instruction_sets(game, commons, 'glop', [])
+            bought = bought_crafts(tm)
+            runs = crafts_adding(game, commons, [5, 4, 4])
+            allow(tm).to receive(:repair)
+
+            expect { tm.nezhiri('glop', 15, glop.merge(uses: 3)) }.to raise_error(SystemExit)
+
+            expect(bought).to eq([3])
+            expect(remedy_runs(runs)).to eq(3)
+            expect(DRCI).to have_received(:get_item?).with('glop instructions', 'duffel bag')
+            expect(commons.calls.select { |name, *| name == 'DRCT.walk_to' }.count { |call| call[1] == 7896 }).to eq(1)
+            expect(DRC).to have_received(:message)
+              .with('The glop instructions you carry have 0 uses left, and 1 more craft is needed. The 13 doses made so far stay in your duffel bag. ' \
+                    'Ask Nezhiri for another copy (ASK NEZHIRI FOR INSTRUCTIONS), then run ;taskmaster nezhiri finish. Stopping before buying anything more.')
+            expect(commons.location_of('#7007')).to eq('duffel bag')
+            expect(tm).not_to have_received(:repair)
+          end
+
+          # A finish takes the first set with a use for each craft planned
+          # (ensure_instructions); a top-up then counts the sets behind it,
+          # which remedy studies once the game tosses the first.
+          it 'goes on to the extra craft when the uses read at the start are spent but another set carried has a use for it' do
+            tm = maker(task_product: 'gill glop')
+            game, commons = shop_world(kit)
+            game.script('rummage /C glop in my duffel bag', rummaged_none('glop'))
+            bag = instruction_sets(game, commons, 'glop', [1])
+            bought = bought_crafts(tm)
+            runs = crafts_adding(game, commons, [5, 4, 4, 6])
+            allow(tm).to receive(:repair)
+
+            tm.nezhiri('glop', 15, glop.merge(uses: 3))
+
+            expect(bought).to eq([3, 1])
+            expect(remedy_runs(runs)).to eq(4)
+            expect(game.sent.grep(/\Aread /)).to eq(['read my glop instructions'])
+            expect(bag).to eq([1])
+            expect(DRC).not_to have_received(:message).with(/uses? left/)
+            expect(tm).to have_received(:repair).once
+          end
+
+          it 'adds up the uses of every set carried, binning a foreign one, and stops before buying when they are still too few' do
+            tm = maker(task_product: 'gill glop', worn_trashcan: 'bucket', worn_trashcan_verb: 'drop')
+            game, commons = shop_world(kit)
+            game.script('rummage /C glop in my duffel bag', rummaged_none('glop'))
+            bag = instruction_sets(game, commons, 'glop', [1, :foreign, 1])
+            bought = bought_crafts(tm)
+            runs = crafts_adding(game, commons, [3, 3, 3])
+            allow(tm).to receive(:repair)
+
+            expect { tm.nezhiri('glop', 16, glop.merge(uses: 3)) }.to raise_error(SystemExit)
+
+            expect(bought).to eq([3])
+            expect(remedy_runs(runs)).to eq(3)
+            expect(game.sent.grep(/\Aread /)).to eq(['read my glop instructions'] * 3)
+            expect(DRCI).to have_received(:dispose_trash).with('glop instructions', 'bucket', 'drop').once
+            # The binned set leaves the bag, so the ordinal does not move on for it.
+            expect(DRCI).to have_received(:get_item?).with('second glop instructions', 'duffel bag').twice
+            expect(DRCI).to have_received(:get_item?).with('third glop instructions', 'duffel bag').once
+            expect(bag).to eq([1, 1])
+            expect(DRC).to have_received(:message)
+              .with('The glop instructions you carry have 2 uses left, and 3 more crafts are needed. The 9 doses made so far stay in your duffel bag. ' \
+                    'Ask Nezhiri for another copy (ASK NEZHIRI FOR INSTRUCTIONS), then run ;taskmaster nezhiri finish. Stopping before buying anything more.')
+            expect(tm).not_to have_received(:repair)
+          end
+
+          # 6, 6 and 1 make 13 of 18: five more crafts planned at 1 a craft,
+          # but the first of them makes 6, which covers the doses owed.
+          it 'stops the extra crafts as soon as the doses cover the task' do
+            tm = maker(task_product: 'gill glop')
+            game, commons = shop_world(kit)
+            game.script('rummage /C glop in my duffel bag', rummaged_none('glop'))
+            bought = bought_crafts(tm)
+            runs = crafts_adding(game, commons, [6, 6, 1, 6, 6])
+            allow(tm).to receive(:repair)
+
+            tm.nezhiri('glop', 18, glop.merge(uses: 19))
+
+            expect(bought).to eq([3, 5])
+            expect(remedy_runs(runs)).to eq(4)
+            expect(DRC).to have_received(:message).with('13 of 18 doses of gill glop made: 5 more crafts to make.')
+            expect(DRC).to have_received(:message).with('19 doses of gill glop made and combined into one.')
+            expect(tm.instance_variable_get(:@remedy_doses)).to eq(19)
+            expect(tm.instance_variable_get(:@remedy_studies)).to eq(4)
+            expect(tm).to have_received(:repair).once
+          end
+
+          # The finish path: the planned crafts leave the 4 doses carried at 4.
+          it 'stops, buying no extra crafts and no tools to Rangu, when the crafts planned add no doses' do
+            tm = maker(task_product: 'gill glop')
+            game, commons = shop_world(kit + [['gill glop', 'duffel bag', '7101']])
+            game.script('rummage /C glop in my duffel bag', rummaged('glop', 'some gill glop'))
+            game.script('count #7101', ReplayGame.log('6100:10519')) # 4 doses
+            bought = bought_crafts(tm)
+            runs = crafts_adding(game, commons, [0, 0], on_hand: ['7101', 4])
+            allow(tm).to receive(:repair)
+
+            expect { tm.nezhiri('glop', 12, glop) }.to raise_error(SystemExit)
+
+            expect(bought).to eq([2])
+            expect(remedy_runs(runs)).to eq(2)
+            expect(DRC).not_to have_received(:message).with(/more craft/)
+            expect(DRC).to have_received(:message)
+              .with('The last crafts added no doses, so more of them would not help. 4 doses made is short of the 12 owed. Run ;taskmaster nezhiri finish to make the rest. Stopping.')
+            expect(tm).not_to have_received(:repair)
+          end
+
+          it 'goes on to the extra craft when the set has exactly one use left for it' do
+            tm = maker(task_product: 'gill glop')
+            game, commons = shop_world(kit)
+            game.script('rummage /C glop in my duffel bag', rummaged_none('glop'))
+            bought = bought_crafts(tm)
+            runs = crafts_adding(game, commons, [5, 4, 4, 6])
+            allow(tm).to receive(:repair)
+
+            tm.nezhiri('glop', 15, glop.merge(uses: 4))
+
+            expect(bought).to eq([3, 1])
+            expect(remedy_runs(runs)).to eq(4)
+            expect(DRC).not_to have_received(:message).with(/uses? left/)
+          end
+
+          it 'checks no uses for the extra crafts when none were read off the set' do
+            tm = maker(task_product: 'gill glop')
+            game, commons = shop_world(kit)
+            game.script('rummage /C glop in my duffel bag', rummaged_none('glop'))
+            bought = bought_crafts(tm)
+            crafts_adding(game, commons, [5, 4, 4, 6])
+            allow(tm).to receive(:repair)
+
+            tm.nezhiri('glop', 15, glop.merge(uses: nil))
+
+            expect(bought).to eq([3, 1])
+            expect(tm).to have_received(:repair).once
+          end
+
+          # run_tasks works one task after another on the same instance: the
+          # yield and studies of the task before must not carry into the next.
+          it 'starts each task with no yield or studies from the task before' do
+            tm = maker(task_product: 'gill glop', remedy_yield: 1, remedy_studies: 9)
+            game, commons = shop_world(kit)
+            game.script('rummage /C glop in my duffel bag', rummaged_none('glop'))
+            bought = bought_crafts(tm)
+            crafts_adding(game, commons, [5, 4, 4, 6])
+            allow(tm).to receive(:repair)
+
+            tm.nezhiri('glop', 15, glop.merge(uses: 4))
+
+            expect(bought).to eq([3, 1])
+            expect([tm.instance_variable_get(:@remedy_yield), tm.instance_variable_get(:@remedy_studies)]).to eq([4, 4])
+          end
         end
       end
 
@@ -7118,6 +7548,7 @@ RSpec.describe TaskMaster do
               nil
             end
             allow(tm).to receive(:brew_remedies)
+            allow(tm).to receive(:top_up_remedies)
             allow(tm).to receive(:repair)
 
             tm.nezhiri('potion', 15, potion_recipe.merge(uses: 16))
