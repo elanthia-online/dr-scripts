@@ -35,7 +35,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.10.1'
+  VERSION = '2026.11.10.2'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -349,54 +349,167 @@ class TaskMaster
   # and is left alone. Knitting is not resumed: the work sits on the needles
   # and does not show in the hand.
   #
+  # The hand text never says which: the game shows a "coil of unfinished
+  # burlap reinforced rope" in hand as "reinforced rope", without
+  # "unfinished" or the stock (glanced_hands). So the full names come from
+  # one GLANCE, and the piece is resumed by its GameObj noun and then
+  # judged, binned or bagged by its id; a finished piece the bag will not
+  # take stays in hand, with a message. When GLANCE gives no full name for
+  # a held item, or one that does not match what GameObj shows in that
+  # hand, the hands are left alone, with a message.
+  #
   # @return [void]
   def reconcile_hands
     waitrt?
     DRC.fix_standing
-    sort_sack(nil) if held_items.any? { |held| held =~ /\bwoven sack\b/ }
+    sort_sack(nil) if held_objects.any? { |obj| obj.noun == 'sack' && name_words(obj.name).include?('woven') }
     return unless @npc == 'zasele'
 
-    unfinished = held_items.grep(/\bunfinished\b/)
-    piece = unfinished.find { |held| task_piece?(held) }
-    (unfinished - [piece]).each do |held|
-      DRC.message("Leaving your #{held} alone: taskmaster only finishes the burlap, rat-pelt and wool pieces from its own tasks.")
+    held = hands_in_full
+    return unless held
+
+    unfinished = held.select { |_, name| name.match?(/\bunfinished\b/) }
+    piece, = unfinished.find { |_, name| task_piece?(name) }
+    unfinished.each do |obj, name|
+      DRC.message("Leaving your #{name} alone: taskmaster only finishes the burlap, rat-pelt and wool pieces from its own tasks.") unless obj.equal?(piece)
     end
     return unless piece
 
-    noun = piece.split.last
-    DRC.wait_for_script_to_complete('sew', ['resume', noun])
-    # Judge the result by the hand text: DRCI.in_hands?(noun) also matches
-    # the unfinished piece, since the noun is the same.
-    if held_items.any? { |held| task_piece?(held) }
-      discard_unfinished(noun)
-    elsif held_items.any? { |held| held =~ /\b#{Regexp.escape(noun)}\b/i }
-      DRCC.stow_crafting_item(noun, @bag, nil)
+    id = piece.id
+    DRC.wait_for_script_to_complete('sew', ['resume', piece.noun])
+    # Judge the result by the piece's own id: the finished item keeps it.
+    # sew may have put it away, when no hand holds that id any more.
+    held = hands_in_full
+    return unless held
+
+    _, name = held.find { |obj, _| obj.id == id }
+    return unless name
+
+    if task_piece?(name)
+      discard_unfinished(id, name)
+    elsif !DRCI.put_away_item?("##{id}", @bag)
+      DRC.message("Your #{@bag} would not take your finished #{name}, so it is still in your hands. Put it in your #{@bag} for the turn-in.")
     end
+  end
+
+  # What each hand holds, by GameObj (id, noun) and by its full name from
+  # GLANCE (glanced_hands). A held item counts only when it has an id and a
+  # noun, and the full name GLANCE gave for its hand holds that noun
+  # (names_noun?), so a hand that changed between the two is not taken for
+  # the other. With both hands empty no GLANCE is sent.
+  #
+  # @return [Array<Array(Object, String)>, nil] [GameObj, full name] for
+  #   each held item, right first (empty when nothing is held); nil, with a
+  #   message, when any held item could not be read that way (the hands are
+  #   then left alone)
+  def hands_in_full
+    return [] if held_objects.empty?
+
+    glanced = glanced_hands
+    return unread_hands(nil) unless glanced
+
+    held = []
+    { right: GameObj.right_hand, left: GameObj.left_hand }.each do |hand, obj|
+      obj = nil if obj && obj.name.to_s == 'Empty'
+      name = glanced[hand]
+      next if obj.nil? && name.nil?
+      return unread_hands(obj&.name || name) unless obj&.id && obj.noun && names_noun?(name, obj.noun)
+
+      held << [obj, name]
+    end
+    held
+  end
+
+  # Whether a full name holds a noun as whole words, in order: "aged ball
+  # and chain" holds the game's noun "ball and chain", and "coil of
+  # unfinished burlap reinforced rope" holds "rope". Where in the name the
+  # noun stands is not read.
+  #
+  # @param name [String, nil] an item's full name
+  # @param noun [String] the game's noun for it (GameObj)
+  # @return [Boolean] false for a nil name or an empty noun
+  def names_noun?(name, noun)
+    noun_words = name_words(noun)
+    !noun_words.empty? && name_words(name).each_cons(noun_words.size).include?(noun_words)
+  end
+
+  # Says the hands are left alone, as hands_in_full could not read them.
+  #
+  # @param what [String, nil] what a hand holds, if known
+  # @return [nil]
+  def unread_hands(what)
+    DRC.message("Could not tell whether #{what ? "the #{what} in your hands" : 'what you hold'} is an unfinished task piece (GLANCE did not name it, or named something else), so your hands are left alone.")
+    nil
+  end
+
+  # The reply GLANCE gives about the hands, naming each held item in full:
+  # "You glance down to see a light pernach with a tempered head in your
+  # right hand and nothing in your left hand.", "You glance down to see a
+  # firestained kuwinite codex gilded with Gorbesh iconography in your left
+  # hand." or "You glance down at your empty hands." (2026-09 logs). The
+  # hand text GameObj and DRC.right_hand give is far shorter: the
+  # game's own short form ("reinforced rope"), which lich-5's DRC.right_hand
+  # cuts further to its first and last word.
+  HANDS_GLANCED = /^You glance down (?:to see .* in your (?:right|left) hand|at your empty hands)\.$/
+
+  # The full name of what each hand holds, from one GLANCE, article
+  # dropped. GLANCE only looks: TAP would name a held item too, but it
+  # activates some, as wand-watcher's default "activate verb" shows.
+  #
+  # @return [Hash{Symbol => String, nil}, nil] :right and :left, nil for an
+  #   empty hand; nil when GLANCE gave none of its replies
+  def glanced_hands
+    reply = DRC.bput('glance', HANDS_GLANCED, /^You glance down .*/)
+    return nil unless reply.match?(HANDS_GLANCED)
+
+    seen = reply[/\AYou glance down to see (.*) in your (?:right|left) hand\.\z/, 1]
+    hands = { right: nil, left: nil }
+    return hands unless seen
+
+    if reply.match?(/ in your right hand and .* in your left hand\.\z/)
+      hands[:right], hands[:left] = seen.split(' in your right hand and ', 2)
+    else
+      hands[reply.match?(/ in your right hand\.\z/) ? :right : :left] = seen
+    end
+    hands.transform_values { |name| name == 'nothing' ? nil : name&.sub(/\A(?:a|an|some|the)\s+/i, '') }
   end
 
   # An unfinished piece of the cloth, leather or yarn taskmaster buys for
   # Zasele's tasks (burlap, rat-pelt, wool).
   #
-  # @param held [String] a hand's text, e.g. "coil of unfinished burlap reinforced rope"
+  # @param name [String] a held item's full name, e.g. "coil of unfinished
+  #   burlap reinforced rope" (glanced_hands; the hand text lacks both words)
   # @return [Boolean]
-  def task_piece?(held)
+  def task_piece?(name)
     materials = @stackmap.values_at('cloth', 'leather', 'yarn').map(&:first)
-    held.match?(/\bunfinished\b/) && held.match?(/\b(?:#{Regexp.union(materials)})\b/)
+    name.match?(/\bunfinished\b/) && name.match?(/\b(?:#{Regexp.union(materials)})\b/)
   end
 
-  # sew could not finish the piece. Throws it away so it never reaches the
-  # crafting bag, where the turn-in would pick it up, and stows any tool sew
-  # left in hand so the next task starts with free hands. Not exiting: the
-  # next start would try the same resume and stop again.
+  # sew could not finish the piece. Throws it away by its id so it never
+  # reaches the crafting bag, where the turn-in would pick it up, and stows
+  # whatever else sew left in hand (a tool) so the next task starts with
+  # free hands. The id is checked to be in a hand first, since lich-5's
+  # dispose_trash would GET an item it does not hold. Not exiting: the next
+  # start would try the same resume and stop again.
   #
-  # @param noun [String] the unfinished item's noun
+  # @param id [String] the unfinished piece's id
+  # @param name [String] its full name, for the message
   # @return [void]
-  def discard_unfinished(noun)
-    DRC.message("sew could not finish your unfinished #{noun}. Throwing it away and starting a new task.")
-    DRCI.dispose_trash(noun, @worn_trashcan, @worn_trashcan_verb)
-    held_items.reject { |held| held =~ /\bunfinished\b/ }.each do |held|
-      DRCC.stow_crafting_item(held, @bag, @settings.outfitting_belt)
+  def discard_unfinished(id, name)
+    return unless hand_ids.include?(id)
+
+    DRC.message("sew could not finish your #{name}. Throwing it away and starting a new task.")
+    DRCI.dispose_trash("##{id}", @worn_trashcan, @worn_trashcan_verb)
+    held_objects.reject { |obj| obj.id == id }.each do |obj|
+      DRCC.stow_crafting_item(obj.name, @bag, @settings.outfitting_belt)
     end
+  end
+
+  # What GameObj shows in either hand, right first, empty hands left out.
+  #
+  # @return [Array<Object>] the hands' GameObjs (name, noun, id)
+  def held_objects
+    [GameObj.right_hand, GameObj.left_hand].compact.reject { |obj| obj.name.to_s == 'Empty' }
   end
 
   # What is in either hand, right first.
