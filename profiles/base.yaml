@@ -3095,6 +3095,14 @@ task_cancel_foreign_tasks: false
 # arguments separated by spaces (e.g. 'buff crafting'). Empty runs nothing.
 task_before_scripts: []
 
+# Setting for taskmaster - Commands to send (with move) once you are in task_crafting_room, before crafting there.
+# For a room the mapper can't path through, e.g. ['go door'] into an instanced room behind a door. Empty sends nothing.
+task_crafting_room_enter: []
+
+# Setting for taskmaster - Commands to send (with move) when crafting in task_crafting_room is done, before taskmaster
+# walks anywhere else, even when the run stops part way, e.g. ['go door']. Empty sends nothing.
+task_crafting_room_exit: []
+
 # Settings for task-forage (completing foraging tasks for Mags and similar NPCs, primarily for Trading experience)
 task_forage_settings:
   # Where foraged items should be temporarily stored

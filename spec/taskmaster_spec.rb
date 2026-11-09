@@ -2957,6 +2957,96 @@ RSpec.describe TaskMaster do
       end
     end
 
+    describe '#in_crafting_room' do
+      # Runs the block in a task_crafting_room that has enter and exit commands;
+      # `moves` says which of them move can send (the rest fail). Returns the
+      # steps in order.
+      def in_room(enter: ['go door'], leave: ['go door'], crafting_room: 937, fail: [])
+        tm = build(crafting_room: crafting_room, crafting_room_enter: enter, crafting_room_exit: leave)
+        steps = []
+        allow(tm).to receive(:move) do |command|
+          steps << [:move, command]
+          !fail.include?(command)
+        end
+        yield(tm, steps)
+        steps
+      end
+
+      it 'sends the enter commands, runs the block, then sends the exit commands' do
+        steps = in_room { |tm, steps| tm.in_crafting_room { steps << :craft } }
+        expect(steps).to eq([[:move, 'go door'], :craft, [:move, 'go door']])
+      end
+
+      it 'returns what the block returns' do
+        in_room { |tm, _| expect(tm.in_crafting_room { 7 }).to eq(7) }
+      end
+
+      it 'only runs the block without task_crafting_room, sending nothing' do
+        steps = in_room(crafting_room: nil) { |tm, steps| tm.in_crafting_room { steps << :craft } }
+        expect(steps).to eq([:craft])
+      end
+
+      it 'sends nothing for a room with no enter or exit commands' do
+        steps = in_room(enter: nil, leave: nil) { |tm, steps| tm.in_crafting_room { steps << :craft } }
+        expect(steps).to eq([:craft])
+      end
+
+      it 'sends several commands in order and skips blank ones' do
+        steps = in_room(enter: ['open gate', '', nil, 'go dock'], leave: ['  ', 'out']) { |tm, steps| tm.in_crafting_room { steps << :craft } }
+        expect(steps).to eq([[:move, 'open gate'], [:move, 'go dock'], :craft, [:move, 'out']])
+      end
+
+      it 'sends the exit commands when the block stops the run' do
+        steps = in_room { |tm, steps| expect { tm.in_crafting_room { steps << :craft; exit } }.to raise_error(SystemExit) }
+        expect(steps).to eq([[:move, 'go door'], :craft, [:move, 'go door']])
+      end
+
+      it 'sends the exit commands when the block raises' do
+        steps = in_room { |tm, _steps| expect { tm.in_crafting_room { raise 'boom' } }.to raise_error('boom') }
+        expect(steps.last).to eq([:move, 'go door'])
+      end
+
+      it 'stops before crafting, sending no exit, when an enter command does not work' do
+        steps = in_room(fail: ['go door']) do |tm, steps|
+          expect { tm.in_crafting_room { steps << :craft } }.to raise_error(SystemExit)
+        end
+        expect(steps).to eq([[:move, 'go door']])
+        expect(DRC).to have_received(:message).with("task_crafting_room: 'go door' did not work trying to enter the crafting room; stopping.")
+      end
+
+      it 'only says so when an exit command does not work, and sends the rest' do
+        steps = in_room(enter: ['open door'], leave: ['go door', 'out'], fail: ['go door']) { |tm, steps| tm.in_crafting_room { steps << :craft } }
+        expect(steps).to eq([[:move, 'open door'], :craft, [:move, 'go door'], [:move, 'out']])
+        expect(DRC).to have_received(:message).with("task_crafting_room: 'go door' did not work trying to leave the crafting room.")
+      end
+
+      it 'has empty enter and exit lists in base.yaml' do
+        expect(base_yaml['task_crafting_room_enter']).to eq([])
+        expect(base_yaml['task_crafting_room_exit']).to eq([])
+      end
+
+      it 'is not used for enchanting_room, only task_crafting_room' do
+        tm = build(crafting_room: nil, settings: { enchanting_room: 2222 }, crafting_room_enter: ['go door'], crafting_room_exit: ['go door'])
+        expect(tm).not_to receive(:move)
+        tm.in_crafting_room { :enchanting }
+      end
+
+      it 'wraps the crafting itself in forge_item and tailor_item, after the walks and supply checks' do
+        tm = build(settings: { outfitting_belt: { 'name' => 'toolbelt', 'items' => [] } }, crafting_room: 16_936, crafting_room_enter: ['go door'], crafting_room_exit: ['go door'])
+        steps = []
+        allow(tm).to receive(:get_data).and_return({ 'tailoring' => { 'Crossing' => { 'tool-room' => 16666, 'stock-room' => 16667 } } })
+        allow(tm).to receive(:move) { |command| steps << [:move, command] }
+        allow(DRCT).to receive(:walk_to) { |room| steps << [:walk, room] }
+        allow(DRCC).to receive(:check_consumables) { |name, *| steps << [:check, name] }
+        allow(DRCC).to receive(:clean_anvil?) { steps << :clean }
+        allow(tm).to receive(:craft_each) { |script, *| steps << [:craft, script] }
+        tm.tailor_item('netting', 2, 'cloth', 'burlap')
+        tm.forge_item('dagger', 2, 'bronze')
+        expect(steps).to eq([[:walk, 16_936], [:check, 'pins'], [:check, 'cotton thread'], [:move, 'go door'], [:craft, 'sew'], [:move, 'go door'],
+                             [:walk, 16_936], [:move, 'go door'], :clean, [:craft, 'forge'], [:move, 'go door']])
+      end
+    end
+
     describe '#forge_item' do
       # Runs the real forge_item in the task_crafting_room with metal for
       # `metal` daggers; each forge run that has metal leaves a dagger the
@@ -5369,6 +5459,21 @@ RSpec.describe TaskMaster do
 
         expect(steps).to eq([[:tools, %w[burin rod], 'enchanting'], [:sigils, %w[congruence decay], 8], [:fount, 14_754, 1, 3, 8, 'duffel bag', [], nil], [:rocks, 8],
                              :room, [:enchant, 'spongestone', 'rock', 8], [:repair, %w[brazier burin], nil]])
+      end
+
+      it 'enchants between the crafting room enter and exit commands, and repairs after leaving' do
+        tm = dorhum(crafting_room: 937, crafting_room_enter: ['go door'], crafting_room_exit: ['go door'], settings: { enchanting_tools: %w[brazier burin], enchanting_belt: nil })
+        steps = []
+        %i[ensure_tools buy_sigils forage_rocks].each { |step| allow(tm).to receive(step) }
+        allow(DRCC).to receive(:fount)
+        allow(tm).to receive(:go_to_enchanting_room) { steps << :room }
+        allow(tm).to receive(:move) { |command| steps << [:move, command] }
+        allow(tm).to receive(:enchant_items) { steps << :enchant }
+        allow(tm).to receive(:repair) { steps << :repair }
+
+        tm.dorhum('spongestone', 8, %w[congruence decay])
+
+        expect(steps).to eq([:room, [:move, 'go door'], :enchant, [:move, 'go door'], :repair])
       end
 
       it "stops before buying anything when task_loot_bag already holds the task's noun" do
