@@ -35,7 +35,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.09'
+  VERSION = '2026.11.09.1'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -417,9 +417,10 @@ class TaskMaster
     @unpack_keepers = @settings.task_unpack_keepers
   end
 
-  # An empty look is never a keeper. sort_sack never asks about one: it
-  # keeps a sack whose LOOK it could not read, and only sorts a sack it
-  # holds, so a missing sack cannot fill the loot bag in junk-list mode.
+  # An empty look is never a keeper. sort_sack never asks about one: it bins
+  # a sack LOOK shows empty, keeps one whose LOOK it could not read, and only
+  # sorts a sack it holds, so neither an empty nor a missing sack can fill
+  # the loot bag in junk-list mode.
   #
   # @param contents [String, nil] the LOOK IN reply for the reward sack
   # @return [Boolean] true to keep the sack
@@ -4003,6 +4004,12 @@ class TaskMaster
   # Seconds to wait for the reward sack to show in a hand, as the hand update
   # can trail the "hands you a woven sack" line.
   REWARD_SACK_WAIT = 3
+  # LOOK IN replies for the reward sack: its contents ("In the woven sack you
+  # see a large iron nugget.", Hollow Eve 2026 logs), or the reply an empty
+  # container gives (VESSEL_EMPTY). Anything else, a timeout or a line about
+  # some other item, leaves the contents unseen.
+  SACK_LOOK_CONTENTS = /^In the .* you see.*/
+  SACK_LOOK_EMPTY = VESSEL_EMPTY
 
   # Sorts the reward sack: gems go to the gem pouch and coins are picked up,
   # then a keeper goes into the loot bag (with a Slack message if asked)
@@ -4013,8 +4020,9 @@ class TaskMaster
   # hand. A bare "sack" reaches the first sack the game finds, so a lagged
   # second sort of a sack already binned (Hollow Eve 2026: Catheroine,
   # 2026-11-06 00:31) looked in, and then fetched and binned, a pet sack from
-  # the duffel bag. With no reward sack in hand there is nothing to sort;
-  # one whose LOOK cannot be read is kept, as its contents were never seen.
+  # the duffel bag. With no reward sack in hand there is nothing to sort. A
+  # sack LOOK shows empty is binned; one whose LOOK gives neither reply is
+  # kept, as its contents were never seen.
   #
   # @param _item [String, nil] unused
   # @return [void]
@@ -4030,8 +4038,13 @@ class TaskMaster
     SACK_COIN_GETS_MAX.times do
       break unless DRC.bput("get coin from #{sack}", SACK_COIN_TAKEN, SACK_NO_COIN).match?(SACK_COIN_TAKEN)
     end
-    result = DRC.bput("look in #{sack}", /^In the .* you see.*/)
-    if result.to_s.strip.empty?
+    result = DRC.bput("look in #{sack}", SACK_LOOK_CONTENTS, SACK_LOOK_EMPTY)
+    if result.match?(SACK_LOOK_EMPTY)
+      DRC.message('Nothing special: the reward sack is empty.')
+      DRCI.dispose_trash(sack, @worn_trashcan, @worn_trashcan_verb)
+      return
+    end
+    unless result.match?(SACK_LOOK_CONTENTS)
       DRC.message('Could not read the reward sack; keeping it unopened.')
       DRCI.put_away_item?(sack, @lootbag)
       return

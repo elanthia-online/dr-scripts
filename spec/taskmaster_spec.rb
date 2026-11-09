@@ -4192,7 +4192,7 @@ RSpec.describe TaskMaster do
 
       def sort(tm, contents)
         allow(DRC).to receive(:bput).and_return('You pick up')
-        allow(DRC).to receive(:bput).with('look in #63768227', anything).and_return("In the woven sack you see #{contents}.")
+        allow(DRC).to receive(:bput).with('look in #63768227', any_args).and_return("In the woven sack you see #{contents}.")
         allow(DRCI).to receive(:put_away_item?)
         allow(DRCI).to receive(:dispose_trash)
         UserVars.taskmaster_sacks = { 'zasele' => [] }
@@ -4333,6 +4333,24 @@ RSpec.describe TaskMaster do
           expect(DRCI).not_to have_received(:dispose_trash)
           expect(DRC).to have_received(:message).with('Could not read the reward sack; keeping it unopened.')
           expect(DRC).not_to have_received(:message).with(/\ANothing special/)
+          expect(UserVars.taskmaster_sacks['zasele']).to be_empty
+        end
+
+        # Review of #8041 (mrhoribu): an empty container answers LOOK IN with
+        # VESSEL_EMPTY, which is a read, not a timeout.
+        it 'bins, by its id, a sack LOOK shows empty, without keeping or logging it' do
+          allow(DRC).to receive(:bput) do |command, *patterns|
+            line = command == 'look in #63768227' ? 'There is nothing in there.' : ''
+            patterns.flatten.filter_map { |pt| line[pt.is_a?(Regexp) ? pt : /#{pt}/] }.first || ''
+          end
+          allow(DRCI).to receive(:put_away_item?)
+          allow(DRCI).to receive(:dispose_trash)
+          UserVars.taskmaster_sacks = { 'zasele' => [] }
+          filtered(task_junk_list: ['dye']).sort_sack('rope')
+          expect(DRCI).to have_received(:dispose_trash).with('#63768227', nil, nil)
+          expect(DRCI).not_to have_received(:put_away_item?)
+          expect(DRC).to have_received(:message).with('Nothing special: the reward sack is empty.')
+          expect(DRC).not_to have_received(:message).with(/keeper|keeping/)
           expect(UserVars.taskmaster_sacks['zasele']).to be_empty
         end
 
