@@ -29,7 +29,7 @@
 #   ;forge resume weaponsmithing hammer
 #
 # @example Craft and log to forging logbook
-#   ;forge log weaponsmithing 4 "steel throwing hammer" steel hammer
+#   ;forge weaponsmithing 4 "steel throwing hammer" steel hammer log
 #
 # @see https://elanthipedia.play.net/Lich_script_repository#forge
 #
@@ -42,21 +42,21 @@ class Forge
   # @return [Array<Array<Hash>>]
   ARG_DEFINITIONS = [
     [
-      { name: 'finish', options: %w[hold log stow trash], optional: true, description: 'What to do with the finished item (default: hold).' },
       { name: 'book_type', display: 'book type', options: %w[blacksmithing armorsmithing weaponsmithing], description: 'What smithing type is this item.' },
       { name: 'chapter', regex: /\d+/i, variable: true, description: 'Chapter containing the item.' },
       { name: 'recipe_name', display: 'recipe name', regex: /^[A-z\s\-\']+$/i, variable: true, description: 'Name of the recipe, wrap in double quotes if this is multiple words.' },
       { name: 'metal', regex: /\w+/i, variable: true, description: 'Type of metal ingot to use.' },
       { name: 'noun', regex: /\w+/i, variable: true, description: 'name of item being crafted' },
+      { name: 'finish', options: %w[hold log stow trash], optional: true, description: 'What to do with the finished item (default: hold). Goes after the noun.' },
       { name: 'skip', regex: /skip/i, optional: true, description: 'Optional setting to skip restocking consumables if low (oil)' },
       { name: 'here', regex: /^here$/i, optional: true, description: 'Forge in the current room instead of walking to the private forge (use_private_forge)' },
       { name: 'debug', regex: /debug/i, optional: true, description: 'displays debug information' }
     ],
     [
-      { name: 'finish', options: %w[hold log stow trash], optional: true, description: 'What to do with the finished item (default: hold).' },
       { name: 'instructions', regex: /instructions/i, description: 'Instructions if using instructions' },
       { name: 'metal', regex: /\w+/i, variable: true, description: 'Type of metal ingot to use.' },
       { name: 'noun', regex: /\w+/i, variable: true, description: 'Noun of item being crafted' },
+      { name: 'finish', options: %w[hold log stow trash], optional: true, description: 'What to do with the finished item (default: hold). Goes after the noun.' },
       { name: 'skip', regex: /skip/i, optional: true, description: 'Optional setting to skip restocking consumables if low (oil)' },
       { name: 'here', regex: /^here$/i, optional: true, description: 'Forge in the current room instead of walking to the private forge (use_private_forge)' },
       { name: 'debug', regex: /debug/i, optional: true, description: 'displays debug information' }
@@ -375,13 +375,13 @@ class Forge
   # @note Exits on validation failures or missing required settings
   #
   # @example Argument pattern 1: Book recipe
-  #   ;forge [finish] <book_type> <chapter> <recipe_name> <metal> <noun> [skip] [debug]
+  #   ;forge <book_type> <chapter> <recipe_name> <metal> <noun> [finish] [skip] [here] [debug]
   #
   # @example Argument pattern 2: Instructions
-  #   ;forge [finish] instructions <metal> <noun> [skip] [debug]
+  #   ;forge instructions <metal> <noun> [finish] [skip] [here] [debug]
   #
   # @example Argument pattern 3: Enhancement
-  #   ;forge [finish] <enhancement> <noun> [skip] [debug]
+  #   ;forge <enhancement> <noun> [skip] [here] [debug]
   #
   # @example Argument pattern 4: Resume
   #   ;forge resume <book_type> <noun> [debug]
