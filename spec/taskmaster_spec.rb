@@ -5020,10 +5020,13 @@ RSpec.describe TaskMaster do
 
       # Plays a sack holding `contents` through sort_sack. get_replies are the
       # replies to successive `get <noun> from #<sack>`; a get answered with
-      # got_bar puts the bar in the left hand. inventory is what INVENTORY of
+      # got_bar puts the bar in the left hand, and putting the bar away
+      # empties it. listing is the items the first INVENTORY of the sack
+      # lists, the one item LOOK shows by default; nil makes that INVENTORY
+      # return `inventory` too. inventory is what every later INVENTORY of
       # the sack returns (issue_command's lines; a String is one line).
       # disposed is what dispose_trash returns.
-      def unpack(tm, contents: 'a large tyrium bar', get_replies: [got_bar], inventory: sack_empty, put_ok: true, disposed: true)
+      def unpack(tm, contents: 'a large tyrium bar', listing: [contents], get_replies: [got_bar], inventory: sack_empty, put_ok: true, disposed: true)
         hands = { right: sack, left: empty_hand }
         allow(GameObj).to receive(:right_hand) { hands[:right] }
         allow(GameObj).to receive(:left_hand) { hands[:left] }
@@ -5038,18 +5041,162 @@ RSpec.describe TaskMaster do
                reply
              end,
              'put #63768234 in #63768227' => 'You put your bar in your woven sack.')
-        inventory_replies('inventory #63768227' => Array(inventory))
-        allow(DRCI).to receive(:put_away_item?) { |item, _bag| item == '#63768234' ? put_ok : true }
+        listed = listing.nil?
+        inventory_replies('inventory #63768227' => lambda do |*|
+          next Array(inventory) if listed
+
+          listed = true
+          inventoried(listing, container: 'woven sack', noun: 'sack', id: '63768227')
+        end)
+        allow(DRCI).to receive(:put_away_item?) do |item, _bag|
+          next true unless item == '#63768234'
+
+          hands[:left] = empty_hand if put_ok
+          put_ok
+        end
         allow(DRCI).to receive(:dispose_trash).and_return(disposed)
         UserVars.taskmaster_sacks = { 'zasele' => [] }
         tm.sort_sack('netting')
+      end
+
+      # A keeper sack the game holds, item by item: `items` are [INVENTORY
+      # line, the game's noun, id]. A get by a word takes the first item
+      # left whose noun starts with it, as DR matches a noun by its start,
+      # into the free left hand; putting it in the loot bag empties the
+      # hand. INVENTORY lists what is left. Returns the commands sent.
+      def unpack_world(tm, items, sack_id: '4261859')
+        held_sack = OpenStruct.new(noun: 'sack', id: sack_id)
+        left = items.map(&:dup)
+        hands = { right: held_sack, left: empty_hand }
+        allow(GameObj).to receive(:right_hand) { hands[:right] }
+        allow(GameObj).to receive(:left_hand) { hands[:left] }
+        allow(DRC).to receive(:left_hand) { hands[:left]&.noun }
+        allow(DRC).to receive(:right_hand) { hands[:right]&.noun }
+        allow(tm).to receive(:pause)
+        sent = []
+        listed = left.map(&:first).join(', ').sub(/, ([^,]*)\z/, ' and \\1')
+        game('look in my sack'       => "In the woven sack you see #{listed}.",
+             'get coin from my sack' => 'What were you referring to?',
+             'get '                  => lambda do |command, *|
+               sent << command
+               word = command[/\Aget (\S+) from ##{sack_id}\z/, 1]
+               item = word && left.find { |_, noun, _| noun.start_with?(word) }
+               next 'What were you referring to?' unless item
+
+               left.delete(item)
+               hands[:left] = OpenStruct.new(noun: item[1], id: item[2])
+               "You get #{item[0]} from inside your woven sack."
+             end)
+        inventory_replies("inventory ##{sack_id}" => lambda do |*|
+          inventoried(left.map(&:first), container: 'woven sack', noun: 'sack', id: sack_id)
+        end)
+        allow(DRCI).to receive(:put_away_item?) do |item, _bag|
+          hands[:left] = empty_hand if item == "##{hands[:left].id}"
+          true
+        end
+        allow(DRCI).to receive(:dispose_trash).and_return(true)
+        UserVars.taskmaster_sacks = { 'zasele' => [] }
+        tm.sort_sack('netting')
+        sent
+      end
+
+      # Lukedo's keeper sack (2026-11-05 10:14:26): LOOK showed "a large
+      # coralite lump, a huge piece of amber and a small lilac amethyst",
+      # and the amethyst came out as #4261862; the other two ids are made
+      # up. lich-5's DRC.get_noun reads lump, amber and amethyst off the
+      # lines, each the game's noun (noun-corpus.tsv).
+      let(:lukedo_sack) do
+        [['a large coralite lump', 'lump', '4261860'], ['a huge piece of amber', 'amber', '4261861'], ['a small lilac amethyst', 'amethyst', '4261862']]
+      end
+
+      it 'takes every item of a sack holding several out, one get per INVENTORY line, and bins the empty sack' do
+        tm = unpacker
+        sent = unpack_world(tm, lukedo_sack)
+        expect(sent).to eq(['get lump from #4261859', 'get amber from #4261859', 'get amethyst from #4261859'])
+        %w[#4261860 #4261861 #4261862].each { |ref| expect(DRCI).to have_received(:put_away_item?).with(ref, "traveler's.pack") }
+        expect(DRCI).to have_received(:dispose_trash).with('#4261859', 'bucket', 'tap')
+        expect(DRCI).not_to have_received(:put_away_item?).with('sack', anything)
+      end
+
+      it 'takes two items of one noun out with a get each (Kythkani\'s coin lines)' do
+        tm = unpacker
+        sent = unpack_world(tm, [['some copper coins', 'coins', '5001'], ['some bronze coins', 'coins', '5002']])
+        expect(sent).to eq(['get coins from #4261859'] * 2)
+        expect(DRCI).to have_received(:dispose_trash).with('#4261859', 'bucket', 'tap')
+      end
+
+      it 'takes an item by the noun get_noun reads off its INVENTORY line, not the line\'s last word' do
+        tm = unpacker
+        # A real name (2026-11-09) that also defeats DRC.list_to_array: the
+        # " and a " inside it reads as a second item.
+        sent = unpack_world(tm, [['a weighty almanac bound in rich purple leather and a golden closed-eye clasp', 'almanac', '4261864']])
+        expect(sent).to eq(['get almanac from #4261859'])
+        expect(DRCI).to have_received(:put_away_item?).with('#4261864', "traveler's.pack")
+        expect(DRCI).to have_received(:dispose_trash).with('#4261859', 'bucket', 'tap')
+      end
+
+      it 'puts away the item newly in hand when the game\'s noun only starts with the noun get_noun reads' do
+        tm = unpacker
+        # noun-corpus.tsv: get_noun reads "robe" off this name, whose noun is
+        # "robes"; DR's prefix match gets it.
+        sent = unpack_world(tm, [['a shadowy black nightsilk robe pinned with a trio of panther claws', 'robes', '4261865']])
+        expect(sent).to eq(['get robe from #4261859'])
+        expect(DRCI).to have_received(:put_away_item?).with('#4261865', "traveler's.pack")
+        expect(DRCI).to have_received(:dispose_trash).with('#4261859', 'bucket', 'tap')
+        expect(DRCI).not_to have_received(:put_away_item?).with('sack', anything)
+      end
+
+      it 'goes on to the next line after a get the game finds nothing by, and keeps the sack with that item' do
+        tm = unpacker
+        # noun-corpus.tsv names; get_noun reads "as" off the observer, whose
+        # noun is "observer".
+        sent = unpack_world(tm, [['a frosty observer manifested as an array of jagged icicles', 'observer', '4261866'],
+                                 ['a sparkling white cloak lined with matching satin', 'cloak', '4261867'],
+                                 ["a shadesatin astral traveler's haversack with moonsilver stars", 'haversack', '4261868']])
+        expect(sent).to eq(['get as from #4261859', 'get cloak from #4261859', 'get haversack from #4261859'])
+        %w[#4261867 #4261868].each { |ref| expect(DRCI).to have_received(:put_away_item?).with(ref, "traveler's.pack") }
+        expect(DRCI).to have_received(:put_away_item?).with('sack', "traveler's.pack")
+        expect(DRCI).not_to have_received(:dispose_trash)
+      end
+
+      it 'keeps the sack, with what is left in it, when get_noun reads a noun off a line the game does not answer to' do
+        tm = unpacker
+        # get_noun reads "feet" off this line (Kythkani's toolbelt, 2026-11-09).
+        sent = unpack_world(tm, [['a large coralite lump', 'lump', '4261860'], ['a small uthamar brazier supported by twisted Sunderstone feet', 'brazier', '4261863']])
+        expect(sent).to eq(['get lump from #4261859', 'get feet from #4261859'])
+        expect(DRCI).to have_received(:put_away_item?).with('#4261860', "traveler's.pack")
+        expect(DRCI).to have_received(:put_away_item?).with('sack', "traveler's.pack")
+        expect(DRCI).not_to have_received(:dispose_trash)
+      end
+
+      it 'leaves a line get_noun reads no noun off in the sack, and keeps the sack' do
+        tm = unpacker
+        allow(DRC).to receive(:get_noun).and_call_original
+        allow(DRC).to receive(:get_noun).with('a huge piece of amber').and_return(nil) # no logged line gives none
+        sent = unpack_world(tm, lukedo_sack)
+        expect(sent).to eq(['get lump from #4261859', 'get amethyst from #4261859'])
+        expect(DRCI).to have_received(:put_away_item?).with('sack', "traveler's.pack")
+        expect(DRCI).not_to have_received(:dispose_trash)
+      end
+
+      { 'goes unanswered'        => '',
+        'lists no item line'     => ['Inside a woven sack, you see:', '', "[Use <d cmd='inventory help'>INVENTORY HELP</d> for more options.]"],
+        'says the sack is empty' => "There's nothing inside a woven sack!" }.each do |what, reply|
+        it "keeps the sack, getting nothing, when the first INVENTORY of it #{what}" do
+          tm = unpacker
+          unpack(tm, listing: nil, inventory: reply)
+          expect(DRC).not_to have_received(:bput).with(/\Aget (?!coin)/, any_args)
+          expect(DRCI).to have_received(:put_away_item?).with('sack', "traveler's.pack")
+          expect(DRCI).not_to have_received(:dispose_trash)
+        end
       end
 
       it 'takes the item out by noun from the sack id, puts it away by its own id, and bins the empty sack by its id' do
         tm = unpacker
         unpack(tm)
         expect(DRC).to have_received(:bput).with('get bar from #63768227', any_args)
-        expect(Lich::Util).to have_received(:issue_command).with('inventory #63768227', any_args)
+        # Once for the items, once to see the sack empty.
+        expect(Lich::Util).to have_received(:issue_command).with('inventory #63768227', any_args).twice
         expect(DRCI).to have_received(:put_away_item?).with('#63768234', "traveler's.pack")
         expect(DRCI).to have_received(:dispose_trash).with('#63768227', 'bucket', 'tap')
         expect(DRCI).not_to have_received(:put_away_item?).with('sack', anything)
@@ -5085,7 +5232,8 @@ RSpec.describe TaskMaster do
 
       it 'keeps the whole sack when the noun does not match the item' do
         tm = unpacker
-        unpack(tm, contents: '3 haledroth shards', get_replies: ['What were you referring to?'])
+        unpack(tm, contents: 'some haledroth shards', get_replies: ['What were you referring to?'],
+                   inventory: inventoried(['some haledroth shards'], container: 'woven sack', noun: 'sack', id: '63768227'))
         expect(DRC).to have_received(:bput).with('get shards from #63768227', any_args)
         expect(DRCI).to have_received(:put_away_item?).with('sack', "traveler's.pack")
         expect(DRCI).not_to have_received(:dispose_trash)
