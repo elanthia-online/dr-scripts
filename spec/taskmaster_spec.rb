@@ -1009,102 +1009,241 @@ RSpec.describe TaskMaster do
   describe '#reconcile_hands' do
     let(:outfitting_belt) { { 'name' => 'tailor belt', 'items' => ['sewing needles', 'scissors'] } }
 
-    # Hands as the game described them after Hollow Eve 2025 disconnects.
-    # after_sew: the hands once sew has run, which is how the result is judged.
-    def reconcile(right:, left:, npc: 'zasele', after_sew: nil)
+    # A held item as the game shows it. GameObj, and so DRC.right_hand, has
+    # only the short hand text, as in <left exist="758800" noun="rope">
+    # reinforced rope</left> for a "coil of unfinished burlap reinforced
+    # rope", and "leather straps" for "some wide unfinished rat-pelt leather
+    # straps": neither says "unfinished" or the stock. Only GLANCE names it in
+    # full. The hand texts of pieces no log shows in hand follow the logged
+    # ones (adjective and noun).
+    def held(text, noun, id, full)
+      OpenStruct.new(name: text, noun: noun, id: id, full: full)
+    end
+
+    let(:rope_piece) { held('reinforced rope', 'rope', '758800', 'a coil of unfinished burlap reinforced rope') }
+    let(:rope) { held('reinforced rope', 'rope', '758800', 'a coil of burlap reinforced rope') }
+    let(:straps_piece) { held('leather straps', 'straps', '758801', 'some wide unfinished rat-pelt leather straps') }
+    let(:outfit_piece) { held('knitted outfit', 'outfit', '758802', 'an unfinished knitted wool outfit') }
+    let(:netting_piece) { held('reinforced netting', 'netting', '758803', 'some unfinished burlap reinforced netting') }
+    let(:needles) { held('sewing needles', 'needles', '600001', 'some slender agonite sewing needles') }
+    let(:scissors) { held('serrated scissors', 'scissors', '600002', 'some loimic serrated scissors') }
+
+    # Hands after a disconnect, and after_sew: the hands once sew has run,
+    # which is how the result is judged. GLANCE answers as the game does
+    # (glanced_hands), from each hand's full name; glance: another reply,
+    # or a list of them, one per GLANCE, nil for the game's own.
+    # put_ok is what putting the finished piece in the bag returns.
+    # Returns the instance, the scripts launched and the commands sent.
+    def reconcile(right:, left:, npc: 'zasele', after_sew: nil, glance: nil, disposed: true, put_ok: true)
       tm = build(settings: { outfitting_belt: outfitting_belt }, npc: npc, worn_trashcan: nil, worn_trashcan_verb: nil)
       hands = { right: right, left: left }
-      allow(DRC).to receive(:right_hand) { hands[:right] }
-      allow(DRC).to receive(:left_hand) { hands[:left] }
+      empty = OpenStruct.new(name: 'Empty', noun: nil, id: nil)
+      allow(GameObj).to receive(:right_hand) { hands[:right] || empty }
+      allow(GameObj).to receive(:left_hand) { hands[:left] || empty }
+      allow(DRC).to receive(:right_hand) { hands[:right]&.name }
+      allow(DRC).to receive(:left_hand) { hands[:left]&.name }
       allow(tm).to receive(:sort_sack)
+      sent = []
+      glances = glance.is_a?(Array) ? glance.dup : nil
+      allow(DRC).to receive(:bput) do |command, *|
+        sent << command
+        next '' unless command == 'glance'
+
+        reply = glances ? glances.shift : glance
+        next reply if reply
+
+        r, l = hands.values_at(:right, :left).map { |obj| obj&.full }
+        if r.nil? && l.nil?
+          'You glance down at your empty hands.'
+        elsif l.nil? && hands[:left].nil?
+          "You glance down to see #{r} in your right hand and nothing in your left hand."
+        elsif r.nil? && hands[:right].nil?
+          "You glance down to see #{l} in your left hand."
+        else
+          "You glance down to see #{r} in your right hand and #{l} in your left hand."
+        end
+      end
       launched = []
       allow(DRC).to receive(:wait_for_script_to_complete) do |name, args|
         launched << [name, args]
         hands.merge!(after_sew) if after_sew
       end
-      # As lich-5 matches a noun string (DRC::Item.from_text + short_regex):
-      # no adjective, so the noun alone, /\bnetting/i.
-      allow(DRCI).to receive(:in_hands?) { |noun| hands.values.compact.any? { |held| held =~ /\b#{noun}/i } }
-      allow(DRCI).to receive(:dispose_trash)
+      allow(DRCI).to receive(:dispose_trash) do |ref, *|
+        next false unless disposed
+
+        hands.each_key { |hand| hands[hand] = nil if hands[hand] && "##{hands[hand].id}" == ref }
+        true
+      end
+      allow(DRCI).to receive(:put_away_item?).and_return(put_ok)
       allow(DRCC).to receive(:stow_crafting_item)
       tm.reconcile_hands
-      [tm, launched]
+      [tm, launched, sent]
     end
 
-    it 'finishes an unfinished sewn item with sew resume and bags it' do
-      _, launched = reconcile(right: 'loimic serrated scissors', left: 'coil of unfinished burlap reinforced rope',
-                              after_sew: { right: nil, left: 'coil of burlap reinforced rope' })
+    it 'finishes an unfinished sewn item with sew resume and bags it by its id' do
+      _, launched, sent = reconcile(right: scissors, left: rope_piece, after_sew: { left: rope })
       expect(launched).to eq([['sew', %w[resume rope]]])
-      expect(DRCC).to have_received(:stow_crafting_item).with('rope', 'duffel bag', nil)
+      expect(DRCI).to have_received(:put_away_item?).with('#758800', 'duffel bag')
       expect(DRCI).not_to have_received(:dispose_trash)
+      expect(sent).to eq(%w[glance glance])
     end
 
-    it 'finds the unfinished item in either hand' do
-      _, launched = reconcile(right: 'wide unfinished rat-pelt leather straps', left: nil)
+    it 'finds the unfinished item in either hand, though the hand text is only "leather straps"' do
+      _, launched, = reconcile(right: straps_piece, left: nil)
       expect(launched).to eq([['sew', %w[resume straps]]])
     end
 
     it 'resumes an unfinished piece made from the wool it buys for knitting tasks too' do
-      _, launched = reconcile(right: 'unfinished wool knitted hat', left: nil)
-      expect(launched).to eq([['sew', %w[resume hat]]])
+      _, launched, = reconcile(right: nil, left: outfit_piece)
+      expect(launched).to eq([['sew', %w[resume outfit]]])
     end
 
-    it 'sorts a reward sack held at start' do
-      tm, = reconcile(right: 'woven sack', left: nil)
+    it 'sorts a reward sack held at start, by its noun and the word woven' do
+      tm, = reconcile(right: held('woven sack', 'sack', '4261859', 'a woven sack'), left: nil)
       expect(tm).to have_received(:sort_sack)
+      tm, = reconcile(right: held('leather sack', 'sack', '4261860', 'a leather sack'), left: nil)
+      expect(tm).not_to have_received(:sort_sack)
     end
 
     it 'leaves finished items, tools and empty hands alone' do
-      _, launched = reconcile(right: 'slender agonite sewing needles', left: 'burlap reinforced netting')
+      _, launched, = reconcile(right: needles, left: held('reinforced netting', 'netting', '758804', 'some burlap reinforced netting'))
       expect(launched).to be_empty
-      _, launched = reconcile(right: nil, left: nil)
+      _, launched, = reconcile(right: nil, left: nil)
       expect(launched).to be_empty
+      expect(DRCI).not_to have_received(:dispose_trash)
+      expect(DRCI).not_to have_received(:put_away_item?)
+      expect(DRCC).not_to have_received(:stow_crafting_item)
     end
 
     it 'does not try to resume knitting, whose work does not show in the hand' do
-      _, launched = reconcile(right: 'polished loimic knitting needles', left: nil)
+      _, launched, = reconcile(right: held('knitting needles', 'needles', '600003', 'some polished loimic knitting needles'), left: nil)
       expect(launched).to be_empty
     end
 
-    it 'only resumes tailoring, never another taskmaster\'s unfinished item' do
-      _, launched = reconcile(right: 'unfinished bronze dagger', left: nil, npc: 'poltu')
+    it 'only resumes tailoring, never another taskmaster\'s unfinished item, and does not GLANCE for one' do
+      _, launched, sent = reconcile(right: held('steel dagger', 'dagger', '700001', 'an unfinished steel dagger'), left: nil, npc: 'poltu')
       expect(launched).to be_empty
+      expect(sent).to be_empty
     end
 
-    it 'throws away an item sew could not finish, stows the tool and carries on' do
+    it 'throws away an item sew could not finish by its id, stows the tool and carries on' do
       expect do
-        reconcile(right: 'unfinished burlap reinforced netting', left: nil,
-                  after_sew: { right: 'unfinished burlap reinforced netting', left: 'slender agonite sewing needles' })
+        reconcile(right: netting_piece, left: nil, after_sew: { left: needles })
       end.not_to raise_error
-      expect(DRCC).not_to have_received(:stow_crafting_item).with('netting', anything, anything)
-      expect(DRCI).to have_received(:dispose_trash).with('netting', nil, nil)
-      expect(DRCC).to have_received(:stow_crafting_item).with('slender agonite sewing needles', 'duffel bag', outfitting_belt)
-      expect(DRC).to have_received(:message).with(/could not finish/)
+      expect(DRCI).to have_received(:dispose_trash).with('#758803', nil, nil)
+      expect(DRCI).not_to have_received(:put_away_item?)
+      expect(DRCC).to have_received(:stow_crafting_item).with('sewing needles', 'duffel bag', outfitting_belt)
+      expect(DRCC).not_to have_received(:stow_crafting_item).with('reinforced netting', anything, anything)
+      expect(DRC).to have_received(:message).with('sew could not finish your unfinished burlap reinforced netting. Throwing it away and starting a new task.')
+    end
+
+    it 'never bags an unfinished piece the trash would not take' do
+      reconcile(right: netting_piece, left: nil, after_sew: { left: needles }, disposed: false)
+      expect(DRCI).to have_received(:dispose_trash).with('#758803', nil, nil)
+      expect(DRCI).not_to have_received(:put_away_item?)
+      expect(DRCC).not_to have_received(:stow_crafting_item).with('reinforced netting', anything, anything)
+    end
+
+    it 'never throws away by an id no hand holds, as dispose_trash would GET it from wherever it is' do
+      tm = build(settings: { outfitting_belt: outfitting_belt }, worn_trashcan: nil, worn_trashcan_verb: nil)
+      allow(GameObj).to receive(:right_hand).and_return(needles)
+      allow(GameObj).to receive(:left_hand).and_return(OpenStruct.new(name: 'Empty', noun: nil, id: nil))
+      allow(DRCI).to receive(:dispose_trash)
+      allow(DRCC).to receive(:stow_crafting_item)
+      tm.discard_unfinished('758803', 'unfinished burlap reinforced netting')
+      expect(DRCI).not_to have_received(:dispose_trash)
+      expect(DRCC).not_to have_received(:stow_crafting_item)
     end
 
     it 'bags nothing when the item left the hands during sew' do
-      reconcile(right: 'wide unfinished rat-pelt leather straps', left: nil, after_sew: { right: nil, left: nil })
+      reconcile(right: straps_piece, left: nil, after_sew: { right: nil, left: nil })
       expect(DRCC).not_to have_received(:stow_crafting_item)
+      expect(DRCI).not_to have_received(:put_away_item?)
+      expect(DRCI).not_to have_received(:dispose_trash)
+    end
+
+    it 'judges the piece by its id, not by another item in hand of its noun' do
+      other_rope = held('reinforced rope', 'rope', '758899', 'a coil of burlap reinforced rope')
+      reconcile(right: nil, left: straps_piece, after_sew: { left: nil, right: other_rope })
+      expect(DRCI).not_to have_received(:put_away_item?)
       expect(DRCI).not_to have_received(:dispose_trash)
     end
 
     it 'leaves an unfinished item not made from the task stock alone, and says so' do
-      ['unfinished bronze dagger', 'unfinished silk shirt'].each do |held|
-        _, launched = reconcile(right: held, left: nil)
+      [[held('steel dagger', 'dagger', '700001', 'an unfinished steel dagger'), 'unfinished steel dagger'],
+       [held('silk shirt', 'shirt', '700002', 'an unfinished silk shirt'), 'unfinished silk shirt']].each do |obj, name|
+        _, launched, = reconcile(right: obj, left: nil)
         expect(launched).to be_empty
         expect(DRCI).not_to have_received(:dispose_trash)
         expect(DRCC).not_to have_received(:stow_crafting_item)
-        expect(DRC).to have_received(:message).with(/Leaving your #{held} alone/)
+        expect(DRC).to have_received(:message).with(/\ALeaving your #{name} alone/)
       end
     end
 
     it 'resumes the task piece and leaves the player\'s own unfinished item in the other hand' do
-      _, launched = reconcile(right: 'unfinished silk shirt', left: 'coil of unfinished burlap reinforced rope',
-                              after_sew: { left: 'coil of burlap reinforced rope' })
+      shirt = held('silk shirt', 'shirt', '700002', 'an unfinished silk shirt')
+      _, launched, = reconcile(right: shirt, left: rope_piece, after_sew: { left: rope })
       expect(launched).to eq([['sew', %w[resume rope]]])
-      expect(DRCC).to have_received(:stow_crafting_item).with('rope', 'duffel bag', nil)
+      expect(DRCI).to have_received(:put_away_item?).with('#758800', 'duffel bag')
+      expect(DRCI).not_to have_received(:put_away_item?).with('#700002', anything)
       expect(DRCI).not_to have_received(:dispose_trash)
-      expect(DRCC).not_to have_received(:stow_crafting_item).with(/shirt/, anything, anything)
+    end
+
+    it 'leaves the hands alone, and says so, when GLANCE does not answer' do
+      _, launched, = reconcile(right: rope_piece, left: nil, glance: '')
+      expect(launched).to be_empty
+      expect(DRC).to have_received(:message).with(/Could not tell whether what you hold is an unfinished task piece/)
+    end
+
+    it 'leaves the hands alone when GLANCE names something other than GameObj shows in that hand' do
+      _, launched, = reconcile(right: rope_piece, left: nil,
+                               glance: 'You glance down to see some wide unfinished rat-pelt leather straps in your right hand and nothing in your left hand.')
+      expect(launched).to be_empty
+      expect(DRC).to have_received(:message).with(/Could not tell whether the reinforced rope in your hands/)
+    end
+
+    it 'leaves the hands alone when a held item has no id' do
+      _, launched, = reconcile(right: held('reinforced rope', 'rope', nil, 'a coil of unfinished burlap reinforced rope'), left: nil)
+      expect(launched).to be_empty
+      expect(DRCI).not_to have_received(:dispose_trash)
+    end
+
+    it 'resumes the piece by the noun GameObj gives it, not the last word of its full name' do
+      # No log shows a task piece whose name goes on past its noun; this
+      # one does, so the GameObj noun and the name's last word differ.
+      buckled = held('leather straps', 'straps', '758805', 'some wide unfinished rat-pelt leather straps with a brass buckle')
+      _, launched, = reconcile(right: buckled, left: nil, after_sew: { right: held('leather straps', 'straps', '758805', 'some wide rat-pelt leather straps with a brass buckle') })
+      expect(launched).to eq([['sew', %w[resume straps]]])
+      expect(DRCI).to have_received(:put_away_item?).with('#758805', 'duffel bag')
+    end
+
+    it 'reads a held item whose game noun is several words, and resumes the piece in the other hand' do
+      # noun-corpus.tsv: "aged ball and chain", the game's noun "ball and chain".
+      chain = held('ball and chain', 'ball and chain', '700010', 'an aged ball and chain')
+      _, launched, = reconcile(right: rope_piece, left: chain, after_sew: { right: rope })
+      expect(launched).to eq([['sew', %w[resume rope]]])
+      expect(DRCI).to have_received(:put_away_item?).with('#758800', 'duffel bag')
+      expect(DRC).not_to have_received(:message).with(/Could not tell/)
+    end
+
+    it 'sends no GLANCE when both hands are empty' do
+      _, launched, sent = reconcile(right: nil, left: nil)
+      expect(launched).to be_empty
+      expect(sent).to be_empty
+    end
+
+    it 'says so, leaving the finished piece in hand, when the bag will not take it' do
+      reconcile(right: rope_piece, left: nil, after_sew: { right: rope }, put_ok: false)
+      expect(DRCI).to have_received(:put_away_item?).with('#758800', 'duffel bag')
+      expect(DRC).to have_received(:message).with('Your duffel bag would not take your finished coil of burlap reinforced rope, so it is still in your hands. Put it in your duffel bag for the turn-in.')
+      expect(DRCI).not_to have_received(:dispose_trash)
+    end
+
+    it 'leaves the piece in hand, binning and bagging nothing, when GLANCE goes unanswered after sew' do
+      _, launched, = reconcile(right: rope_piece, left: nil, after_sew: { right: rope_piece }, glance: [nil, ''])
+      expect(launched).to eq([['sew', %w[resume rope]]])
+      expect(DRCI).not_to have_received(:dispose_trash)
+      expect(DRCI).not_to have_received(:put_away_item?)
     end
   end
 
