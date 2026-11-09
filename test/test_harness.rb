@@ -521,6 +521,14 @@ module Harness
     def self.containers
       $containers || {}
     end
+
+    # @return [Array<OpenStruct>, nil] the room's objects as GameObj.loot
+    #   lists them (name, noun, id, from the links in the room's object
+    #   list, in the order listed); empty when the room objects come without
+    #   links. Specs set $room_loot; reset_data empties it.
+    def self.loot
+      $room_loot
+    end
   end
 
   class Flags
@@ -1049,6 +1057,7 @@ module Harness
     $hand_item_ids = {}
     $worn_items = []
     $containers = {}
+    $room_loot = []
 
     Flags._reset
     DRSpells._reset
