@@ -1346,7 +1346,12 @@ class Bescort
   # waiting on it) forever.
   MAMMOTH_WAIT_TIMEOUT = 20 * 60
 
-  def take_mammoth(mode)
+  # Times take_mammoth tries JOIN before giving up. Each failed JOIN waits for
+  # the next arrival, so this also caps the total wait when an arrival never
+  # lets us join.
+  MAMMOTH_JOIN_ATTEMPTS = 3
+
+  def take_mammoth(mode, attempt = 1)
     case mode
     when 'fang'
       id_to_mammoth = { 2239 => 'tall', 11_130 => 'sea' }
@@ -1359,22 +1364,33 @@ class Bescort
       dock = 8301
       mammoth_type = 'sea'
     end
-    manual_go2(dock) if dock
-    unless dock && Room.current.id == dock
+    unless dock
+      DRC.message("No mammoth dock to walk to for '#{mode}' from room #{Room.current.id.inspect}. Not joining a mammoth.")
+      exit
+    end
+    manual_go2(dock)
+    unless Room.current.id == dock
       DRC.message("Couldn't reach the mammoth dock (room #{dock}); stopped in room #{Room.current.id.inspect}. Not joining a mammoth here.")
       exit
     end
-    case DRC.bput("join #{mammoth_type} mammoth", 'What were you referring to', 'You join the Merelew driver')
+    case (result = DRC.bput("join #{mammoth_type} mammoth", 'What were you referring to', 'You join the Merelew driver'))
     when /What were you referring to/
+      if attempt >= MAMMOTH_JOIN_ATTEMPTS
+        DRC.message("Tried to join the #{mammoth_type} mammoth #{attempt} times at room #{dock} without getting on. Giving up.")
+        exit
+      end
       unless matchtimeout(MAMMOTH_WAIT_TIMEOUT, '^[^"]*?The waves along the waterline increase drastically', '^[^"]*?A watery trumpeting sound heralds the swift approach')
         DRC.message("No #{mammoth_type} mammoth reached room #{dock} in #{MAMMOTH_WAIT_TIMEOUT / 60} minutes. Giving up.")
         exit
       end
-      take_mammoth(mode)
+      take_mammoth(mode, attempt + 1)
     when /You join the Merelew driver/
       return if matchtimeout(MAMMOTH_WAIT_TIMEOUT, '^[^"]*?The burly beast trumpets a series of watery blasts', 'Here we are, ladies and gentlemen')
 
       DRC.message("The #{mammoth_type} mammoth hasn't reached the shore after #{MAMMOTH_WAIT_TIMEOUT / 60} minutes. Giving up; you may still be aboard.")
+      exit
+    else
+      DRC.message("Unexpected reply to 'join #{mammoth_type} mammoth': #{result.inspect}. Not waiting for a mammoth.")
       exit
     end
   end

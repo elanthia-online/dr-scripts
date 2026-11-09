@@ -593,6 +593,29 @@ RSpec.describe Bescort do
             expect { bescort.send(:take_mammoth, 'fang') }.to raise_error(SystemExit)
             expect(bescort).not_to have_received(:manual_go2)
             expect(DRC).not_to have_received(:bput).with(/join .* mammoth/, any_args)
+            expect(DRC).to have_received(:message).with("No mammoth dock to walk to for 'fang' from room nil. Not joining a mammoth.")
+          end
+        end
+
+        context 'when every arriving mammoth still cannot be joined' do
+          it "stops after #{described_class::MAMMOTH_JOIN_ATTEMPTS} tries instead of waiting through arrival after arrival" do
+            matchtimeout_reads([arrive] * 10)
+            allow(DRC).to receive(:bput).with('join tall mammoth', any_args).and_return('What were you referring to')
+            expect { bescort.send(:take_mammoth, 'acen') }.to raise_error(SystemExit)
+            expect(DRC).to have_received(:bput).with('join tall mammoth', any_args).exactly(described_class::MAMMOTH_JOIN_ATTEMPTS).times
+            expect(DRC).to have_received(:message).with(/Tried to join the tall mammoth 3 times at room 8301/)
+          end
+        end
+
+        context 'when JOIN gets neither expected reply' do
+          ['', 'You are too busy to do that.'].each do |reply|
+            it "says so and stops instead of ending silently (#{reply.inspect})" do
+              matchtimeout_reads([arrive, shore])
+              allow(DRC).to receive(:bput).with('join tall mammoth', any_args).and_return(reply)
+              expect { bescort.send(:take_mammoth, 'acen') }.to raise_error(SystemExit)
+              expect(DRC).to have_received(:message).with(/Unexpected reply to 'join tall mammoth'/)
+              expect(bescort).not_to have_received(:matchtimeout)
+            end
           end
         end
 
