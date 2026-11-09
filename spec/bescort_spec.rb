@@ -430,6 +430,24 @@ RSpec.describe Bescort do
       ended_on
     end
 
+    # Lich's matchtimeout: the same case-insensitive regex as waitfor, but it
+    # returns false once the time is up. Here the time is up when the queued
+    # lines run out. Returns the lines that ended a wait (false for a timeout)
+    # and records each wait's seconds.
+    def matchtimeout_reads(lines, seconds: [])
+      ended_on = []
+      queue = lines.dup
+      allow(bescort).to receive(:matchtimeout) do |secs, *strings|
+        seconds << secs
+        regex = /#{strings.flatten.join('|')}/i
+        line = queue.shift until queue.empty? || line&.match?(regex)
+        result = line&.match?(regex) ? line : false
+        ended_on << result
+        result
+      end
+      ended_on
+    end
+
     # Lich's DRC.bput: Strings become case-insensitive regexes, and the first line
     # that matches any of them, in order, returns the matched text.
     def bput_reads(command, lines)
@@ -497,22 +515,92 @@ RSpec.describe Bescort do
         expect(ended_on).to eq([arrive, dock])
       end
 
-      it 'stays on the mammoth until it trumpets at the shore' do
-        real = 'The burly beast trumpets a series of watery blasts as it nears the shore.'
-        ended_on = waitfor_reads(player_text_lines(real) + [real])
-        allow(DRC).to receive(:bput).with('join tall mammoth', any_args).and_return('You join the Merelew driver')
-        bescort.send(:take_mammoth, 'acen')
-        expect(ended_on).to eq([real])
-      end
+      describe '#take_mammoth' do
+        let(:arrive) { 'A watery trumpeting sound heralds the swift approach of a mammoth.' }
+        let(:shore) { 'The burly beast trumpets a series of watery blasts as it nears the shore.' }
 
-      it 'waits for the mammoth to arrive before joining again' do
-        arrive = 'A watery trumpeting sound heralds the swift approach of a mammoth.'
-        shore = 'The burly beast trumpets a series of watery blasts as it nears the shore.'
-        ended_on = waitfor_reads(player_text_lines(arrive) + [arrive] + player_text_lines(shore) + [shore])
-        allow(DRC).to receive(:bput).with('join tall mammoth', any_args)
-                                    .and_return('What were you referring to', 'You join the Merelew driver')
-        bescort.send(:take_mammoth, 'acen')
-        expect(ended_on).to eq([arrive, shore])
+        before { at_room(8301) }
+
+        it 'stays on the mammoth until it trumpets at the shore' do
+          ended_on = matchtimeout_reads(player_text_lines(shore) + [shore])
+          allow(DRC).to receive(:bput).with('join tall mammoth', any_args).and_return('You join the Merelew driver')
+          bescort.send(:take_mammoth, 'acen')
+          expect(ended_on).to eq([shore])
+        end
+
+        it 'waits for the mammoth to arrive before joining again' do
+          ended_on = matchtimeout_reads(player_text_lines(arrive) + [arrive] + player_text_lines(shore) + [shore])
+          allow(DRC).to receive(:bput).with('join tall mammoth', any_args)
+                                      .and_return('What were you referring to', 'You join the Merelew driver')
+          bescort.send(:take_mammoth, 'acen')
+          expect(ended_on).to eq([arrive, shore])
+        end
+
+        it 'caps both waits at MAMMOTH_WAIT_TIMEOUT seconds' do
+          seconds = []
+          matchtimeout_reads([arrive, shore], seconds: seconds)
+          allow(DRC).to receive(:bput).with('join tall mammoth', any_args)
+                                      .and_return('What were you referring to', 'You join the Merelew driver')
+          bescort.send(:take_mammoth, 'acen')
+          expect(seconds).to eq([described_class::MAMMOTH_WAIT_TIMEOUT] * 2)
+        end
+
+        it 'joins the sea mammoth at the Fang Cove dock for ratha' do
+          matchtimeout_reads([shore])
+          allow(DRC).to receive(:bput).with('join sea mammoth', any_args).and_return('You join the Merelew driver')
+          bescort.send(:take_mammoth, 'ratha')
+          expect(bescort).to have_received(:manual_go2).with(8301)
+          expect(DRC).to have_received(:bput).with('join sea mammoth', any_args)
+        end
+
+        it 'walks to the closest mainland dock for fang and checks it is there' do
+          allow(DRCT).to receive(:sort_destinations).with([2239, 11_130]).and_return([11_130, 2239])
+          at_room(11_130)
+          matchtimeout_reads([shore])
+          allow(DRC).to receive(:bput).with('join sea mammoth', any_args).and_return('You join the Merelew driver')
+          bescort.send(:take_mammoth, 'fang')
+          expect(bescort).to have_received(:manual_go2).with(11_130)
+        end
+
+        context 'when the walk to the dock ends somewhere else' do
+          # A go2 restarted from a stale room can start bescort while the
+          # character is really elsewhere; the walk then stops short.
+          before { at_room(16_667) }
+
+          it 'stops without trying to join a mammoth there' do
+            expect { bescort.send(:take_mammoth, 'acen') }.to raise_error(SystemExit)
+            expect(DRC).not_to have_received(:bput).with(/join .* mammoth/, any_args)
+            expect(DRC).to have_received(:message).with(/Couldn't reach the mammoth dock \(room 8301\); stopped in room 16667/)
+          end
+        end
+
+        context 'when Lich does not know the room after the walk' do
+          before { at_room(nil) }
+
+          it 'stops without trying to join' do
+            expect { bescort.send(:take_mammoth, 'acen') }.to raise_error(SystemExit)
+            expect(DRC).not_to have_received(:bput).with(/join .* mammoth/, any_args)
+          end
+        end
+
+        context 'when no mammoth arrives in time' do
+          it 'gives up instead of waiting forever, and does not try again' do
+            matchtimeout_reads(player_text_lines(arrive))
+            allow(DRC).to receive(:bput).with('join tall mammoth', any_args).and_return('What were you referring to')
+            expect { bescort.send(:take_mammoth, 'acen') }.to raise_error(SystemExit)
+            expect(DRC).to have_received(:bput).with('join tall mammoth', any_args).once
+            expect(DRC).to have_received(:message).with(/No tall mammoth reached room 8301 in 20 minutes/)
+          end
+        end
+
+        context 'when the mammoth never reaches the shore' do
+          it 'gives up aboard instead of waiting forever' do
+            matchtimeout_reads(player_text_lines(shore))
+            allow(DRC).to receive(:bput).with('join tall mammoth', any_args).and_return('You join the Merelew driver')
+            expect { bescort.send(:take_mammoth, 'acen') }.to raise_error(SystemExit)
+            expect(DRC).to have_received(:message).with(/hasn't reached the shore after 20 minutes/)
+          end
+        end
       end
 
       it 'waits for the Riverhaven ferry, then stays aboard until it ties off' do
