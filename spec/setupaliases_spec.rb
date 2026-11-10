@@ -56,6 +56,35 @@ RSpec.describe 'setupaliases.lic' do
     target.sub(/\A;eq? /, '').gsub('\\?', argument)
   end
 
+  # The client line alias.lic sends when the player types "<trigger> <typed>",
+  # modelled on its global-alias branch (scripts repo, scripts/alias.lic): with
+  # nothing typed every \? is dropped; on a ;e line a quoted "\?" becomes the
+  # typed text as a Ruby string literal; anywhere else \? is replaced as is.
+  def expand_alias(target, typed)
+    return target.gsub('\\?', '') if typed.empty?
+    return target.gsub('"\\?"', typed.inspect) if target.match?(/^;e.*"\\\?"/)
+
+    target.gsub('\\?', typed)
+  end
+
+  # What Lich::Util::Update.request receives when the client line runs: lich-5
+  # routes ";lich5-update <args>" to request(args) (client_commands/builtins.rb),
+  # and a ;e or ;eq line runs its Ruby.
+  def update_request_for(line)
+    requests = []
+    update = class_double('Lich::Util::Update').as_stubbed_const
+    allow(update).to receive(:request) { |args| requests << args }
+
+    case line
+    when /\A;lich5-update\s+(.*)\z/ then update.request(Regexp.last_match(1))
+    when /\A;eq? (.*)\z/m then Object.new.instance_eval(Regexp.last_match(1))
+    else raise "not an update or exec line: #{line.inspect}"
+    end
+
+    expect(requests.length).to eq(1)
+    requests.first
+  end
+
   describe 'every alias' do
     before { run_script }
 
@@ -89,11 +118,37 @@ RSpec.describe 'setupaliases.lic' do
     it 'dad runs the same dr-scripts sync, because core has no data-only sync' do
       expect(aliases['dad']).to eq(aliases['das'])
     end
+  end
 
-    # Without the repo prefix, --script= fetches from the core scripts repo,
-    # and it rejects names without .lic, so both are added here.
-    it 'ds updates one named dr-scripts script, adding the .lic suffix' do
-      expect(aliases['ds']).to eq(';lich5-update --script=dr-scripts:\\?.lic')
+  # Without the repo prefix, --script= fetches from the core scripts repo, and
+  # it rejects names without .lic. The pre-#7407 get_script accepted the name
+  # with or without .lic, so ds keeps accepting both.
+  describe 'ds <name>' do
+    before { run_script }
+
+    def ds_request(typed)
+      update_request_for(expand_alias(aliases['ds'], typed))
+    end
+
+    it 'updates the named dr-scripts script when typed without .lic' do
+      expect(ds_request('hunting-buddy')).to eq('--script=dr-scripts:hunting-buddy.lic')
+    end
+
+    it 'does not double the suffix when typed with .lic' do
+      expect(ds_request('hunting-buddy.lic')).to eq('--script=dr-scripts:hunting-buddy.lic')
+    end
+
+    it 'ignores spaces around the name' do
+      expect(ds_request(' hunting-buddy.lic ')).to eq('--script=dr-scripts:hunting-buddy.lic')
+    end
+
+    it 'passes a name holding quotes through as text, not as Ruby' do
+      expect(ds_request(%q(hunting'"buddy))).to eq(%q(--script=dr-scripts:hunting'"buddy.lic))
+    end
+
+    # lich5-update answers ".lic not found in DR Scripts repository".
+    it 'asks for a script named .lic when no name is given' do
+      expect(ds_request('')).to eq('--script=dr-scripts:.lic')
     end
   end
 

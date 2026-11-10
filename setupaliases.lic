@@ -28,8 +28,9 @@ aliases_to_add = [
 
   # Checks every dr-scripts script, base data file and base profile for updates
   ['das', "#{$clean_lich_char}lich5-update --sync=dr-scripts"],
-  # Updates one dr-scripts script; give the name without .lic, e.g. 'ds hunting-buddy'
-  ['ds', "#{$clean_lich_char}lich5-update --script=dr-scripts:\\?.lic"],
+  # Updates one dr-scripts script, e.g. 'ds hunting-buddy' or 'ds hunting-buddy.lic'.
+  # Runs as Ruby so .lic is added only when missing; alias.lic hands the name over as a quoted string.
+  ['ds', "#{$clean_lich_char}eq Lich::Util::Update.request('--script=dr-scripts:' + \"\\?\".strip.delete_suffix('.lic') + '.lic')"],
   # Updates the dr-scripts data files (core has no data-only sync, so this also syncs scripts and profiles)
   ['dad', "#{$clean_lich_char}lich5-update --sync=dr-scripts"],
 
