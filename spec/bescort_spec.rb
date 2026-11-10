@@ -649,6 +649,55 @@ RSpec.describe Bescort do
         expect(bescort).to have_received(:move).with('go dock').once
       end
 
+      # Verbatim from a live North Road -> Riverhaven ride (2026-11-10): the game
+      # quotes the ferry's name both on the dock and aboard. The departure calls
+      # come first and must not end either wait.
+      it 'boards the Riverhaven ferry and stays aboard when both lines quote its name' do
+        arrive = 'The ferry "His Daring Exploit" pulls up to the dock.'
+        dock = 'The ferry "His Daring Exploit" reaches the dock and its crew ties the ferry off.'
+        departure = ['A great clanging bell rings out and a hearty voice calls, "Next departure in one minute!"',
+                     %(A great clanging bell peals three times, and a booming voice cries, "All ashore who's going ashore!"),
+                     'You hear a shrill whistle and a voice call out, "Cast off!"',
+                     'You feel the ferry shudder slightly as it shoves off.',
+                     'You are nearing the docks.']
+        ended_on = waitfor_reads(player_text_lines(arrive) + [arrive] + departure + player_text_lines(dock) + [dock])
+        allow(DRC).to receive(:bput).with('go ferry', any_args).and_return('I could not find what you were referring to', 'You hand him your lirums and climb aboard')
+        bescort.send(:take_rh_ferry, true)
+        expect(ended_on).to eq([arrive, dock])
+        expect(DRC).to have_received(:bput).with('go ferry', any_args).twice
+        expect(bescort).to have_received(:move).with('go dock').once
+      end
+
+      # Southbound from the same session: Tenuk waited on the Riverhaven dock and
+      # rode back on the other ferry.
+      it 'boards at Riverhaven and steps off at North Road with the quoted lines' do
+        arrive = 'The ferry "Her Opulence" pulls up to the dock.'
+        dock = 'The ferry "His Daring Exploit" reaches the dock and its crew ties the ferry off.'
+        ended_on = waitfor_reads([%(You can see the ferry "Her Opulence" approaching the dock.), arrive, 'You are nearing the docks.', dock])
+        allow(DRC).to receive(:bput).with('go ferry', any_args).and_return('I could not find what you were referring to', 'You hand him your lirums and climb aboard')
+        bescort.send(:take_rh_ferry, false)
+        expect(bescort).to have_received(:manual_go2).with(470).at_least(:once)
+        expect(bescort).not_to have_received(:manual_go2).with(1385)
+        expect(ended_on).to eq([arrive, dock])
+        expect(bescort).to have_received(:move).with('go dock').once
+      end
+
+      it 'stays aboard when only a player repeats the quoted tie-off line' do
+        dock = 'The ferry "His Daring Exploit" reaches the dock and its crew ties the ferry off.'
+        waitfor_reads(player_text_lines(dock))
+        allow(DRC).to receive(:bput).with('go ferry', any_args).and_return('You hand him your lirums and climb aboard')
+        expect { bescort.send(:take_rh_ferry, true) }.to raise_error(RuntimeError, 'waitfor would wait forever')
+        expect(bescort).not_to have_received(:move).with('go dock')
+      end
+
+      it 'does not board when only a player repeats the quoted dock line' do
+        arrive = 'The ferry "His Daring Exploit" pulls up to the dock.'
+        waitfor_reads(player_text_lines(arrive) + player_text_lines("The ferry \"#{arrive}"))
+        allow(DRC).to receive(:bput).with('go ferry', any_args).and_return('not here')
+        expect { bescort.send(:take_rh_ferry, true) }.to raise_error(RuntimeError, 'waitfor would wait forever')
+        expect(DRC).to have_received(:bput).with('go ferry', any_args).once
+      end
+
       it 'waits for the gondola, then stays in the cab until it stops' do
         arrive = 'The gondola stops on the platform and the door silently swings open.'
         stop = 'With a soft bump, the gondola comes to a stop at its destination.'
@@ -1301,6 +1350,44 @@ RSpec.describe Bescort do
       expect(bescort.send(:get_fare?, 3150, 'Aesry', dock)).to be true
       expect(me.pauses).to eq(0)
       expect(bescort).to have_received(:manual_go2).with(bank)
+    end
+  end
+
+  describe '#manual_go2' do
+    let(:riverbank) { double('room', id: 1384, wayto: { '1385' => 'north' }) }
+    let(:ferry_dock) { double('room', id: 1385, wayto: { '470' => 'ferry', '1384' => 'south' }) }
+
+    before do
+      stub_const('StringProc', Class.new) unless defined?(StringProc)
+      allow(bescort).to receive(:move)
+      allow(Map).to receive(:[]).with(1385).and_return(ferry_dock)
+    end
+
+    it 'walks into the goal room once when the path ends with it' do
+      here = riverbank
+      allow(Room).to receive(:current) { here }
+      allow(bescort).to receive(:move) { |dir| here = ferry_dock if dir == 'north' }
+      allow(Map).to receive(:findpath).with(1384, ferry_dock).and_return([1385])
+      bescort.send(:manual_go2, 1385)
+      expect(bescort).to have_received(:move).with('north').once
+      expect(bescort).not_to have_received(:move).with(nil)
+    end
+
+    it 'still takes the last step when the path stops one room short' do
+      here = riverbank
+      allow(Room).to receive(:current) { here }
+      allow(bescort).to receive(:move) { |dir| here = ferry_dock if dir == 'north' }
+      allow(Map).to receive(:findpath).with(1384, ferry_dock).and_return([])
+      bescort.send(:manual_go2, 1385)
+      expect(bescort).to have_received(:move).with('north').once
+    end
+
+    it 'does nothing when already in the goal room' do
+      allow(Room).to receive(:current).and_return(ferry_dock)
+      allow(Map).to receive(:findpath)
+      bescort.send(:manual_go2, 1385)
+      expect(Map).not_to have_received(:findpath)
+      expect(bescort).not_to have_received(:move)
     end
   end
 end

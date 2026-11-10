@@ -764,7 +764,9 @@ class Bescort
 
     path = Map.findpath(Room.current.id, Map[goal_room])
     path.each { |step| do_map_move(Room.current.wayto[step.to_s]) }
-    do_map_move(Room.current.wayto[goal_room.to_s])
+    # Lich's findpath now ends with the goal room itself, so the walk above usually
+    # arrives there; only step in when it stopped one short (older Lich dropped the goal).
+    do_map_move(Room.current.wayto[goal_room.to_s]) unless Room.current.id == goal_room
   end
 
   def search
@@ -1493,6 +1495,14 @@ class Bescort
     take_balloon(mode)
   end
 
+  # The game quotes ferry names in its dock lines, e.g.
+  #   The ferry "His Daring Exploit" pulls up to the dock.
+  #   The ferry "His Daring Exploit" reaches the dock and its crew ties the ferry off.
+  # A '^[^"]*?' guard alone never matches those, so each wait also takes the
+  # quoted form, anchored to the start of the line so player speech can't fake it.
+  FERRY_ARRIVES = ['^[^"]*?pulls into the dock', '^[^"]*?pulls up to the dock', '^The ferry "[^"]+" pulls (?:into|up to) the dock'].freeze
+  FERRY_TIED_OFF = ['^[^"]*?reaches the dock and its crew ties the ferry off', '^The ferry "[^"]+" reaches the dock and its crew ties the ferry off'].freeze
+
   def take_rh_ferry(north)
     if north
       manual_go2(1385)
@@ -1502,11 +1512,11 @@ class Bescort
     case DRC.bput('go ferry', 'You .* climb aboard', 'Come back when you can afford the fare', 'not here', 'I could not find what you were referring to', 'stuck here until the next one arrives')
     when /not here/, /I could not find what you were referring to/i, /stuck here until the next one arrives/
       hide?
-      waitfor '^[^"]*?pulls into the dock', '^[^"]*?pulls up to the dock'
+      waitfor(*FERRY_ARRIVES)
       take_rh_ferry(north)
     when /climb aboard/
       hide?
-      waitfor '^[^"]*?reaches the dock and its crew ties the ferry off'
+      waitfor(*FERRY_TIED_OFF)
       move('go dock')
     end
   end
@@ -2083,7 +2093,7 @@ class Bescort
     case DRC.bput('go ferry', 'The Captain gives you a little nod', 'You hand him', 'The ferry has just pulled away from the dock', 'There is no ferry here to go aboard', 'Come back when you can afford the fare')
     when 'You hand him', 'The Captain gives you a little nod'
       hide?
-      waitfor '^[^"]*?reaches the dock and its crew ties the ferry off'
+      waitfor(*FERRY_TIED_OFF)
       pause 0.5
       move 'go dock' unless [1904, 957].include?(Room.current.id)
     when 'The ferry has just pulled away from the dock', 'There is no ferry here to go aboard'
