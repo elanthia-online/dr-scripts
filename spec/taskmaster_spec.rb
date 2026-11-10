@@ -2174,6 +2174,63 @@ RSpec.describe TaskMaster do
           expect(tm.instance_variable_get(:@npc)).to eq('zasele')
         end
 
+        # Cithrin, 2026-11-11 08:27:20: TASK waited out 15 seconds on this
+        # entry and the run said "You are not on a task with zasele.", 305
+        # times from 06:43:20.
+        let(:mags_journal) { 'The firewood peddler Mags in The Crossing wants you to retrieve 9 nuloe stems.' }
+
+        it "stops on a forage task from a taskmaster it doesn't do, naming it, instead of saying there is no task" do
+          tm = reader(npc: 'zasele')
+          game('task' => mags_journal)
+          expect(tm).not_to receive(:turn_in_banked)
+
+          expect { tm.resume_task }.to raise_error(SystemExit)
+
+          expect(tm.instance_variable_get(:@task_giver)).to eq('mags')
+          expect(DRC).to have_received(:message)
+            .with('You are on a task for Mags, not Zasele. Mags is not a taskmaster this script does, so finish it yourself, or cancel it with ASK MAGS FOR TASK CANCEL (taskmasters then refuse you for about ten minutes). Or set task_cancel_foreign_tasks to have taskmaster cancel such tasks itself.')
+          expect(DRC).not_to have_received(:message).with(/You are not on a task/)
+        end
+
+        it 'names a taskmaster this script does from its "from ..." entry' do
+          tm = reader(npc: 'zasele')
+          game('task' => 'Mechanic Bradyn from the metal spider wants you to craft some wares for his efforts.  You think 3 more will satisfy his request.')
+
+          expect { tm.read_task }.to raise_error(SystemExit)
+
+          expect(DRC).to have_received(:message).with(a_string_starting_with('You are on a task for Bradyn, not Zasele. Finish it with ;taskmaster bradyn'))
+        end
+
+        it 'with task_cancel_foreign_tasks, cancels the forage task and goes back to its own taskmaster' do
+          tm = reader(npc: 'zasele', cancel_foreign_tasks: true)
+          game('task' => mags_journal)
+          allow(tm).to receive(:pause)
+          expect(tm).to receive(:cancel_task).with('mags', nil)
+
+          expect { tm.resume_task }.to throw_symbol(TaskMaster::FOREIGN_TASK_CANCELLED)
+        end
+
+        it 'stops on an entry in that form for its own taskmaster, quoting it, instead of saying there is no task' do
+          tm = reader(npc: 'bradyn')
+          game('task' => 'Mechanic Bradyn from the metal spider wants you to craft some wares for his efforts.')
+
+          expect { tm.read_task }.to raise_error(SystemExit)
+
+          expect(DRC).to have_received(:message).with(a_string_starting_with("Your task journal shows a task for Bradyn that taskmaster can't read (\"Mechanic Bradyn from the metal spider wants you to "))
+          expect(DRC).not_to have_received(:message).with(/You are not on a task/)
+        end
+
+        it 'never takes chatter with "wants you to" for an entry' do
+          ['[General][Reynne] "that\'s what he wants you to think"',
+           'Shavay says to Navesi, "That\'s what he wants you to think."',
+           '[DRPrime]-DR:Miteo: "that\'s just what big TDP wants you to think."'].each do |line|
+            expect(line).not_to match(TaskMaster::FOREIGN_TASK_ENTRY)
+          end
+          expect(mags_journal[TaskMaster::FOREIGN_TASK_ENTRY, :giver]).to eq('Mags')
+          # bput returns the matched text: the whole entry line.
+          expect(mags_journal[TaskMaster::FOREIGN_TASK_ENTRY]).to eq(mags_journal)
+        end
+
         it 'keeps the taskmaster it was started for when the journal names none' do
           tm = reader(npc: 'zasele')
           game('task' => journal('a coil of reinforced cloth rope', 3))
@@ -6101,6 +6158,28 @@ RSpec.describe TaskMaster do
         expect(cancelled).to match(build.cancel_reply('dorhum', TaskMaster::TASK_CANCELLED))
         expect(confirm).to match(build.cancel_reply('dorhum', TaskMaster::TASK_CANCEL_CONFIRM))
         expect(no_task).to match(build.cancel_reply('dorhum', TaskMaster::TASK_CANCEL_NONE))
+      end
+
+      it 'asks its own taskmaster to end a task from one it does not do, and takes her "will notify" reply as done' do
+        tm = zasele_run
+        UserVars.taskmaster_replacements = { 'zasele' => 'rope' }
+        replies = ['Seamstress Zasele looks at you and says, "You wish to end your current task?  If so, ask me again within fifteen seconds."',
+                   'Seamstress Zasele says, "Very well, I will notify the firewood peddler Mags that you no longer desire to pursue your task."']
+        game('ask zasele for task cancel' => ->(*) { replies.shift })
+
+        expect { tm.cancel_task('mags', nil) }.not_to raise_error
+
+        expect(tm).to have_received(:find_npc).with(anything, 'zasele')
+        expect(DRC).to have_received(:bput).with('ask zasele for task cancel', any_args).twice
+        expect(DRC).not_to have_received(:bput).with('ask mags for task cancel', any_args)
+        expect(DRCT).not_to have_received(:dispose)
+        expect(DRC).to have_received(:message).with('You are on a task for Mags, not Zasele: cancelling it, asking Zasele (task_cancel_foreign_tasks).')
+      end
+
+      it 'takes the "will notify" reply from the taskmaster asked for her own taskmaster too' do
+        line = 'The firewood peddler Mags says, "Very well, I will notify Seamstress Zasele that you no longer desire to pursue your task."'
+        expect(line).to match(build.cancel_reply('mags', TaskMaster::TASK_CANCELLED_FOR_ANOTHER))
+        expect('Mallory says, "I will notify Zasele that you no longer desire to pursue your task."').not_to match(build.cancel_reply('zasele', TaskMaster::TASK_CANCELLED_FOR_ANOTHER))
       end
 
       it 'takes "You do not currently have a task" as done' do

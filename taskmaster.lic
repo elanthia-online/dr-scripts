@@ -35,7 +35,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.11.3'
+  VERSION = '2026.11.11.4'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -1989,6 +1989,15 @@ class TaskMaster
   TASKMASTERS = %w[poltu bradyn zasele dorhum nezhiri].freeze
   # TASK reply when not on a task.
   NOT_ON_TASK = /^You are not currently on a task/
+  # Any other taskmaster's journal entry: a title, the taskmaster's name, "in"
+  # or "from" a place, then what they want. "The firewood peddler Mags in The
+  # Crossing wants you to retrieve 9 nuloe stems." (Cithrin, 2026-11-11
+  # 08:27:20), "Mechanic Bradyn from the metal spider wants you to craft some
+  # wares ..." TASK_JOURNAL reads neither, so without this TASK waited out
+  # its 15 seconds and the run said it was on no task, every relaunch, and
+  # never reached check_task_giver (Cithrin, 305 runs from 06:43:20).
+  # Matches to the end of the line, since bput returns only the matched text.
+  FOREIGN_TASK_ENTRY = /^(?:[\w'-]+ ){0,3}?(?<giver>[A-Z][\w'-]*) (?:in|from) .+? wants you to .*/
   # The materials line of READ INSTRUCTIONS: the stock and its volume, or
   # the size of rock for stone.
   INSTRUCTION_MATERIALS = /(cloth|bone|stone|yarn|wood|leather|metal).* \(((\d+) .*|boulder|large rock|small rock|stone|pebble)\)/
@@ -2018,9 +2027,9 @@ class TaskMaster
   #
   # @return [Array(String, Integer), nil] item noun and how many are owed
   def read_task
-    entry = DRC.bput("task", TASK_JOURNAL, NOT_ON_TASK)
+    entry = DRC.bput("task", TASK_JOURNAL, FOREIGN_TASK_ENTRY, NOT_ON_TASK)
     match = TASK_JOURNAL.match(entry)
-    return nil unless match
+    return read_foreign_task(entry) unless match
 
     @task_giver = match[1]&.downcase
     item = match[2].split.last
@@ -2029,6 +2038,27 @@ class TaskMaster
     remaining = [match[3].to_i - match[4].to_i, 0].max
     DRC.message(@npc == 'nezhiri' ? "Making #{remaining} doses of #{@task_product}" : "Making #{remaining} #{item}s")
     return item, remaining
+  end
+
+  # A journal entry TASK_JOURNAL can't read: when it names a taskmaster
+  # (FOREIGN_TASK_ENTRY), notes it in @task_giver and hands over to
+  # check_task_giver, which stops saying whose task it is, or with
+  # task_cancel_foreign_tasks cancels it. An entry in that form for this
+  # script's own taskmaster stops, quoting it: the run can't work a task it
+  # can't read, and "not on a task" would send the player looking for none.
+  #
+  # @param entry [String] what TASK answered
+  # @return [nil] when the entry names no taskmaster
+  # @raise [SystemExit] from check_task_giver, or for an own task it can't read
+  def read_foreign_task(entry)
+    foreign = FOREIGN_TASK_ENTRY.match(entry)
+    return nil unless foreign
+
+    @task_giver = foreign[:giver].downcase
+    @task_item = nil
+    check_task_giver
+    DRC.message("Your task journal shows a task for #{@npc.capitalize} that taskmaster can't read (\"#{entry.strip}\"). Finish it by hand, or cancel it with ASK #{@npc.upcase} FOR TASK CANCEL. Stopping.")
+    exit
   end
 
   # The article the journal and the instructions put before an item's name:
@@ -3383,6 +3413,10 @@ class TaskMaster
   TASK_CANCEL_CONFIRM = 'ask me again within fifteen seconds'
   TASK_CANCELLED = 'I see that you no longer wish to assist me'
   TASK_CANCEL_NONE = 'You do not currently have a task'
+  # A taskmaster ending another taskmaster's task: "Very well, I will notify
+  # Seamstress Zasele that you no longer desire to pursue your task." (Mags,
+  # Cithrin 2026-11-11 06:21:06).
+  TASK_CANCELLED_FOR_ANOTHER = 'that you no longer desire to pursue your task'
   # How long taskmasters call you unreliable after a cancel: about ten
   # minutes, the figure players go by, and what Mahtra's log shows (cancel
   # 18:45:30, refused until 18:54:47, offered a task at 18:56:00).
@@ -3413,18 +3447,24 @@ class TaskMaster
   # @return [void]
   # @raise [SystemExit] when the cancel does not go through
   def cancel_task(giver, item)
-    DRC.message("You are on a task for #{giver.capitalize}, not #{@npc.capitalize}: cancelling it (task_cancel_foreign_tasks).")
+    # A taskmaster this script doesn't do can't be found in @rooms, but any
+    # taskmaster ends the task in progress, whoever gave it: Mags ended a
+    # Zasele task with "Very well, I will notify Seamstress Zasele that you
+    # no longer desire to pursue your task." (Cithrin, 2026-11-11 06:21:06).
+    asker = TASKMASTERS.include?(giver) ? giver : @npc
+    via = asker == giver ? '' : ", asking #{asker.capitalize}"
+    DRC.message("You are on a task for #{giver.capitalize}, not #{@npc.capitalize}: cancelling it#{via} (task_cancel_foreign_tasks).")
     put_hands_away
-    find_npc(@rooms, giver)
-    confirm, cancelled, none = [TASK_CANCEL_CONFIRM, TASK_CANCELLED, TASK_CANCEL_NONE].map { |text| cancel_reply(giver, text) }
+    find_npc(@rooms, asker)
+    confirm, cancelled, cancelled_for, none = [TASK_CANCEL_CONFIRM, TASK_CANCELLED, TASK_CANCELLED_FOR_ANOTHER, TASK_CANCEL_NONE].map { |text| cancel_reply(asker, text) }
     asks = 0
     reply = ''
     while asks < 2
       asks += 1
-      reply = DRC.bput("ask #{giver} for task cancel", confirm, cancelled, none)
+      reply = DRC.bput("ask #{asker} for task cancel", confirm, cancelled, cancelled_for, none)
       break unless reply.match?(confirm)
     end
-    unless reply.match?(cancelled) || reply.match?(none)
+    unless reply.match?(cancelled) || reply.match?(cancelled_for) || reply.match?(none)
       DRC.message("Could not cancel #{giver.capitalize}'s task#{reply.empty? ? '' : " (#{reply})"}. Stopping.")
       exit
     end
@@ -3435,12 +3475,12 @@ class TaskMaster
   # @param giver [String] the taskmaster
   # @param text [String] one of the TASK_CANCEL_* replies
   # @return [Regexp] the reply, said by the taskmaster: the line starts with
-  #   its name (after a title of one or two words, such as "Researcher" or
-  #   "Potion Peddler"), then "says," or "looks at you and says," before the
+  #   its name (after a title of up to three words, such as "Researcher",
+  #   "Potion Peddler" or "The firewood peddler"), then "says," or "looks at you and says," before the
   #   quote, as every logged reply does. So "Mallory looks at Researcher
   #   Dorhum and says, ..." does not count.
   def cancel_reply(giver, text)
-    /^(?:[\w'-]+ ){0,2}#{Regexp.escape(giver)} (?:looks at you and )?says, "[^"]*#{Regexp.escape(text)}/i
+    /^(?:[\w'-]+ ){0,3}#{Regexp.escape(giver)} (?:looks at you and )?says, "[^"]*#{Regexp.escape(text)}/i
   end
 
   # Hands in finished items already in the bag and returns how many are still
