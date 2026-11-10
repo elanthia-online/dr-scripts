@@ -310,7 +310,11 @@ class Sew
 
   # Replies to COMBINE of two pieces held. "You must be holding both" and
   # "Those items cannot be combined." are refusals (taskmaster, Hollow Eve
-  # 2026-11-04).
+  # 2026-11-04). A combine leaves one stack under a new id: Defileous held
+  # burlap cloth #27484547 (left) and #27484586 (right); after "You combine
+  # the bolts of cloth together." the right hand was empty and the left held
+  # #27484597 (2026-11-11 08:52:14). Yarn and leather pieces combine and
+  # count in yards the same way as cloth.
   COMBINE_REPLIES = [/^You combine/, /^You must be holding both.*/, /^Those items cannot be combined.*/].freeze
 
   # Makes sure the material in hand is enough for one item before the
