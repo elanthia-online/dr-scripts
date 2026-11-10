@@ -79,6 +79,45 @@ RSpec.describe Forge do
         expect(%w[there hereby]).to all(satisfy { |word| word !~ here })
       end
 
+      # lich-5's ArgParser takes a form's required arguments from the front,
+      # in order, and only then finds its optional ones anywhere after them
+      # (test/arg_parser_model.rb). The help lists each form's arguments in
+      # the order they are defined, so an optional one listed before a
+      # required one reads as a place it can never go: the help said
+      # ";forge [finish] instructions <metal> <noun>", and a player typing
+      # "stow" first got DON'T MATCH ANY PATTERN every time.
+      it 'lists every optional argument after all the required ones, the order they are taken in' do
+        patterns.each do |pattern|
+          flags = pattern.map { |arg| arg[:optional] ? 1 : 0 }
+          expect(flags).to eq(flags.sort), "#{pattern.map { |arg| arg[:name] }.join(' ')} lists an optional argument first"
+        end
+      end
+
+      context 'with the arguments a player typed (2026-11-10)' do
+        def parsed(line)
+          ArgParserModel.parse(patterns, ArgParserModel.script_vars(line).drop(1))
+        end
+
+        it 'takes a finish after the noun, with skip, here and debug in any order after it' do
+          expect(parsed('instructions bronze trunk stow here').to_h).to eq(instructions: 'instructions', metal: 'bronze', noun: 'trunk', finish: 'stow', here: 'here')
+          expect(parsed('instructions bronze trunk here debug skip stow').to_h)
+            .to eq(instructions: 'instructions', metal: 'bronze', noun: 'trunk', finish: 'stow', skip: 'skip', here: 'here', debug: 'debug')
+          expect(parsed('weaponsmithing 4 "steel throwing hammer" steel hammer log').to_h)
+            .to eq(book_type: 'weaponsmithing', chapter: '4', recipe_name: 'steel throwing hammer', metal: 'steel', noun: 'hammer', finish: 'log')
+        end
+
+        it 'still reads the instructions run taskmaster starts, which names no finish' do
+          expect(parsed(ArgParserModel.caller_vars(['instructions', 'bronze', 'trunk', 'skip']).first).to_h)
+            .to eq(instructions: 'instructions', metal: 'bronze', noun: 'trunk', skip: 'skip')
+        end
+
+        it 'still rejects a finish typed first, as the parser always has' do
+          ['stow instructions bronze trunk here', 'hold trunk instructions bronze trunk', 'log weaponsmithing 4 "steel throwing hammer" steel hammer'].each do |line|
+            expect { parsed(line) }.to raise_error(SystemExit)
+          end
+        end
+      end
+
       it "keeps 'skip' optional in the same patterns" do
         patterns.first(3).each do |pattern|
           expect(pattern.find { |arg| arg[:name] == 'skip' }).to include(optional: true)
