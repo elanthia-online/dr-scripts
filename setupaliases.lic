@@ -26,12 +26,12 @@ aliases_to_add = [
   ['t2noshut', "#{$clean_lich_char}eq $T2.noshutdown"],
   ['t2reload', "#{$clean_lich_char}eq $T2.reload_settings(\\?)"],
 
-  # Force checks all scripts in the repo for updates
-  ['das', "#{$clean_lich_char}eq force_refresh_scripts"],
-  # Force updates one script from the repo
-  ['ds', "#{$clean_lich_char}eq get_script('\\?')"],
-  # Force updates data files from the repo
-  ['dad', "#{$clean_lich_char}eq setup_data"],
+  # Checks every dr-scripts script, base data file and base profile for updates
+  ['das', "#{$clean_lich_char}lich5-update --sync=dr-scripts"],
+  # Updates one dr-scripts script; give the name without .lic, e.g. 'ds hunting-buddy'
+  ['ds', "#{$clean_lich_char}lich5-update --script=dr-scripts:\\?.lic"],
+  # Updates the dr-scripts data files (core has no data-only sync, so this also syncs scripts and profiles)
+  ['dad', "#{$clean_lich_char}lich5-update --sync=dr-scripts"],
 
   # find room, searches for a room description matching provided text
   ['fr', "#{$clean_lich_char}e echo Room.list.find{|room| room.description.find{|item| item =~ /\\?/i}}"],
@@ -55,7 +55,7 @@ aliases_to_add = [
   # Once reloaded, use mme to update it with your personal overrides
   ['dm', "#{$clean_lich_char}repos download-mapdb"],
   ['rm', "#{$clean_lich_char}e Map.reload"],
-  ['mme', "#{$clean_lich_char}eq make_map_edits"],
+  ['mme', "#{$clean_lich_char}eq Map.apply_wayto_overrides"],
 
   # List all hunting zones from base-hunting alphabetically by name
   ['hz', "#{$clean_lich_char}e get_data('hunting').hunting_zones.sort.each{ |x| echo x }"],
