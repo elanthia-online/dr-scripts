@@ -2333,7 +2333,7 @@ RSpec.describe Sew do
     let(:analyze) { 'analyze my rucksack' }
 
     def give_up_message(command)
-      "sew: No recognized response to '#{command}', or to ANALYZE after it, in #{Sew::MAX_UNMATCHED} tries. Cannot continue crafting."
+      "sew: No reply sew could act on to '#{command}', or to ANALYZE after it, in #{Sew::MAX_UNMATCHED} tries. Cannot continue crafting."
     end
 
     # Feeds the replies in order (as bput returns them: the matched text,
@@ -2356,7 +2356,8 @@ RSpec.describe Sew do
     before(:each) do
       sew.instance_variable_set(:@cube, nil)
       allow(DRCA).to receive(:crafting_magic_routine)
-      allow(DRCI).to receive(:in_hands?).with('knitting needles').and_return(false)
+      allow(GameObj).to receive(:right_hand).and_return(OpenStruct.new(name: 'Empty', noun: nil, id: nil))
+      allow(GameObj).to receive(:left_hand).and_return(OpenStruct.new(name: 'Empty', noun: nil, id: nil))
       allow(sew).to receive(:magic_cleanup)
       allow(sew).to receive(:swap_tool)
       allow(sew).to receive(:finish).and_raise(SystemExit)
@@ -2393,7 +2394,8 @@ RSpec.describe Sew do
     end
 
     it 'analyzes the knitting needles while knitting' do
-      allow(DRCI).to receive(:in_hands?).with('knitting needles').and_return(true)
+      allow(GameObj).to receive(:right_hand).and_return(OpenStruct.new(name: 'knitting needles', noun: 'needles', id: '1'))
+      allow(GameObj).to receive(:left_hand).and_return(OpenStruct.new(name: 'Empty', noun: nil, id: nil))
 
       run_work('knit my needles', '', 'Now the needles must be turned', 'You need a larger amount of material to continue crafting')
 
@@ -2424,7 +2426,70 @@ RSpec.describe Sew do
       run_work('push my rucksack with my sewing needles',
                '', 'scissor cuts', 'scissor cuts', '', 'scissor cuts', 'scissor cuts', '', 'You need a larger amount of material to continue crafting')
 
-      expect(Lich::Messaging).not_to have_received(:msg).with('bold', a_string_starting_with('sew: No recognized response'))
+      expect(Lich::Messaging).not_to have_received(:msg).with('bold', a_string_starting_with('sew: No reply sew could act on'))
+    end
+
+    # Review of #8067 (mrhoribu): crafted needles have three-word names, and
+    # DRC.right_hand shortens "smooth knitting needles" to "smooth needles"
+    # (data/base-recipes.yaml), so DRCI.in_hands?('knitting needles') is
+    # false mid-knit and the ANALYZE went to the item instead.
+    it 'analyzes the knitting needles while knitting, whatever the needles are called' do
+      sew.instance_variable_set(:@home_tool, 'knitting needles')
+
+      run_work('knit my needles', '', 'Now the needles must be turned', 'You need a larger amount of material to continue crafting')
+
+      expect(sent[1]).to eq('analyze my knitting needles')
+    end
+
+    it 'knows knitting needles in hand by their whole name, as a resume finds them' do
+      allow(GameObj).to receive(:right_hand).and_return(OpenStruct.new(name: 'smooth knitting needles', noun: 'needles', id: '1'))
+      allow(GameObj).to receive(:left_hand).and_return(OpenStruct.new(name: 'Empty', noun: nil, id: nil))
+
+      expect(sew.send(:analyze_command)).to eq('analyze my knitting needles')
+    end
+
+    it 'does not take sewing needles for knitting needles' do
+      sew.instance_variable_set(:@home_tool, 'sewing needles')
+      allow(GameObj).to receive(:right_hand).and_return(OpenStruct.new(name: 'slender agonite sewing needles capped with tiny tidal bloodstones', noun: 'needles', id: '1'))
+      allow(GameObj).to receive(:left_hand).and_return(OpenStruct.new(name: 'burlap reinforced netting', noun: 'netting', id: '2'))
+
+      expect(sew.send(:analyze_command)).to eq(analyze)
+    end
+
+    # Review of #8067 (mrhoribu): an ANALYZE that finds nothing to analyze
+    # ("I could not find what you were referring to.") was taken as a reply
+    # sew knows, so the count started again and ANALYZE, INV ATFEET and the
+    # lift went round without end.
+    it 'counts an ANALYZE that finds nothing as a miss, so it cannot go round forever' do
+      allow(sew).to receive(:list_at_feet)
+      allow(sew).to receive(:lift_or_stow_feet)
+
+      run_work('push my rucksack with my sewing needles', '', 'I could not find what you were', 'What were you referring')
+
+      expect(sent).to eq(['push my rucksack with my sewing needles', analyze, analyze])
+      expect(sew).not_to have_received(:list_at_feet)
+      expect(Lich::Messaging).to have_received(:msg).with('bold', give_up_message('push my rucksack with my sewing needles'))
+    end
+
+    it 'stops the same way when the first cut gets a reply sew does not know and there is no item yet to analyze' do
+      allow(sew).to receive(:list_at_feet)
+      allow(sew).to receive(:lift_or_stow_feet)
+
+      run_work('cut my burlap cloth with my scissors', '', 'I could not find what you were', 'I could not find what you were')
+
+      expect(sent.count(analyze)).to eq(Sew::MAX_UNMATCHED - 1)
+      expect(Lich::Messaging).to have_received(:msg).with('bold', give_up_message('cut my burlap cloth with my scissors'))
+    end
+
+    it 'still treats "I could not find" to a crafting command as a missing tool or item' do
+      allow(sew).to receive(:list_at_feet)
+      allow(sew).to receive(:lift_or_stow_feet)
+      allow(DRCC).to receive(:check_consumables)
+
+      run_work('poke my rucksack with my pins', 'I could not find what you were', 'You need a larger amount of material to continue crafting')
+
+      expect(sew).to have_received(:list_at_feet)
+      expect(DRCC).to have_received(:check_consumables).with('pins', 1, 5, 'duffel bag', [], nil)
     end
 
     it 'keeps MAX_UNMATCHED above one so a missed reply gets an ANALYZE' do
