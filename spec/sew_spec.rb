@@ -1056,6 +1056,72 @@ RSpec.describe Sew do
   end
 
   # ===========================================================================
+  # #start_item -- a completion left over from an earlier run
+  # ===========================================================================
+  describe '#start_item' do
+    before do
+      stub_const('Flags', Class.new do
+        @data = {}
+
+        def self.[]=(key, val)
+          @data[key] = val
+        end
+
+        def self.[](key)
+          @data[key]
+        end
+
+        def self.reset(key)
+          @data[key] = nil
+        end
+      end)
+      sew.instance_variable_set(:@noun, 'netting')
+      sew.instance_variable_set(:@home_tool, 'sewing needles')
+      sew.instance_variable_set(:@home_command, 'push my netting with my needles')
+      allow(DRCA).to receive(:crafting_magic_routine)
+      allow(sew).to receive(:assemble_part)
+      allow(sew).to receive(:swap_tool)
+      allow(sew).to receive(:finish)
+    end
+
+    # Mahtra, 2026-11-06 00:30:57 NZDT: a stopped sew's backlogged push ended
+    # with "Applying the final touches, you complete working on some burlap
+    # reinforced netting." while taskmaster's next sew was starting. That
+    # run's first cut ("Roundtime: 8 sec.") then went to finish, and a
+    # netting cut once was stowed as done.
+    it 'does not take a completion seen before the first cut as this item being done' do
+      allow(sew).to receive(:prep) do
+        Flags['sew-done'] = ['Applying the final touches, you complete working on some burlap reinforced netting.']
+        'cut my burlap cloth with my scissors'
+      end
+      sent = []
+      stop = Class.new(StandardError)
+      allow(DRC).to receive(:bput) do |command, *|
+        sent << command
+        raise stop if sent.size > 1
+
+        'Roundtime: 8 sec.'
+      end
+
+      expect { sew.start_item }.to raise_error(stop)
+
+      expect(sew).not_to have_received(:finish)
+      expect(sent).to eq(['cut my burlap cloth with my scissors', 'push my netting with my needles'])
+    end
+
+    it "still finishes on this item's own completion" do
+      allow(sew).to receive(:prep).and_return('push my netting with my needles')
+      allow(DRC).to receive(:bput) do |*|
+        Flags['sew-done'] = ['Applying the final touches, you complete working on some burlap reinforced netting.']
+        'Roundtime: 5 sec.'
+      end
+      allow(sew).to receive(:finish) { raise 'finished' }
+
+      expect { sew.start_item }.to raise_error('finished')
+    end
+  end
+
+  # ===========================================================================
   # #assemble_part -- nil hand safety
   # ===========================================================================
   describe '#assemble_part' do
@@ -2263,19 +2329,26 @@ RSpec.describe Sew do
   # ===========================================================================
   describe '#work unrecognized replies' do
     let(:sent) { [] }
-    let(:give_up_message) do
-      "sew: No recognized response to 'put thread on my sewing needles' after #{Sew::MAX_UNMATCHED} tries. Cannot continue crafting."
+    let(:timeouts) { [] }
+    let(:analyze) { 'analyze my rucksack' }
+
+    def give_up_message(command)
+      "sew: No reply sew could act on to '#{command}', or to ANALYZE after it, in #{Sew::MAX_UNMATCHED} tries. Cannot continue crafting."
     end
 
     # Feeds the replies in order (as bput returns them: the matched text,
-    # or '' on a timeout) and records each command sent. Runs out of
-    # replies with an exit so a broken guard cannot hang the suite.
+    # or '' on a timeout) and records each command sent and the timeout it
+    # was given (nil for bput's default). A reply may be a lambda, run when
+    # it is due. Runs out of replies with an exit so a broken guard cannot
+    # hang the suite.
     def run_work(command, *replies)
-      allow(DRC).to receive(:bput) do |cmd, *|
+      allow(DRC).to receive(:bput) do |cmd, *matchers|
         sent << cmd
+        timeouts << (matchers.first.is_a?(Hash) ? matchers.first['timeout'] : nil)
         raise 'too many bput calls' if replies.empty?
 
-        replies.shift
+        reply = replies.shift
+        reply.respond_to?(:call) ? reply.call : reply
       end
       expect { sew.send(:work, command) }.to raise_error(SystemExit)
     end
@@ -2283,36 +2356,143 @@ RSpec.describe Sew do
     before(:each) do
       sew.instance_variable_set(:@cube, nil)
       allow(DRCA).to receive(:crafting_magic_routine)
+      allow(GameObj).to receive(:right_hand).and_return(OpenStruct.new(name: 'Empty', noun: nil, id: nil))
+      allow(GameObj).to receive(:left_hand).and_return(OpenStruct.new(name: 'Empty', noun: nil, id: nil))
       allow(sew).to receive(:magic_cleanup)
       allow(sew).to receive(:swap_tool)
+      allow(sew).to receive(:finish).and_raise(SystemExit)
       allow(sew).to receive(:exit).and_raise(SystemExit)
       allow(Lich::Messaging).to receive(:msg)
     end
 
-    it 'gives up after MAX_UNMATCHED empty replies in a row' do
+    # Mahtra, 2026-11-06 00:29:13-00:30:57 NZDT: three pushes went unanswered
+    # through a lag, sew gave up, and the backlog then finished the netting
+    # with nobody left to stow it.
+    it 'never resends the crafting command that went unanswered: it ANALYZEs instead, waiting longer' do
+      run_work('push my rucksack with my sewing needles', '', 'pushing it with a needle and thread', 'You need a larger amount of material to continue crafting')
+
+      expect(sent).to eq(['push my rucksack with my sewing needles', analyze, 'push my rucksack with my sewing needles'])
+      expect(timeouts).to eq([nil, Sew::ANALYZE_TIMEOUT, nil])
+    end
+
+    it "goes on from where ANALYZE says the item stands, here the pins" do
+      sew.instance_variable_set(:@pin_pokes, 0)
+      run_work('push my rucksack with my sewing needles', '', 'is in need of pinning to help arrange the material for further sewing', 'You need a larger amount of material to continue crafting')
+
+      expect(sew).to have_received(:swap_tool).with('pins', true)
+      expect(sent.last).to eq('poke my rucksack with my pins')
+    end
+
+    it 'finishes, with no ANALYZE, when the item was finished while the reply was held up' do
+      run_work('push my rucksack with my sewing needles', lambda {
+        Flags['sew-done'] = ['Applying the final touches, you complete working on some burlap reinforced netting.']
+        ''
+      })
+
+      expect(sew).to have_received(:finish)
+      expect(sent).to eq(['push my rucksack with my sewing needles'])
+    end
+
+    it 'analyzes the knitting needles while knitting' do
+      allow(GameObj).to receive(:right_hand).and_return(OpenStruct.new(name: 'knitting needles', noun: 'needles', id: '1'))
+      allow(GameObj).to receive(:left_hand).and_return(OpenStruct.new(name: 'Empty', noun: nil, id: nil))
+
+      run_work('knit my needles', '', 'Now the needles must be turned', 'You need a larger amount of material to continue crafting')
+
+      expect(sent).to eq(['knit my needles', 'analyze my knitting needles', 'turn my needles'])
+    end
+
+    it 'gives up after MAX_UNMATCHED misses, naming the command that stalled' do
       run_work('put thread on my sewing needles', '', '', '')
 
-      expect(sent).to eq(['put thread on my sewing needles'] * 3)
-      expect(Lich::Messaging).to have_received(:msg).with('bold', give_up_message)
+      expect(sent).to eq(['put thread on my sewing needles', analyze, analyze])
+      expect(Lich::Messaging).to have_received(:msg).with('bold', give_up_message('put thread on my sewing needles'))
       expect(sew).to have_received(:magic_cleanup)
     end
 
-    it 'keeps retrying while under the limit' do
-      run_work('push my rucksack with my sewing needles', '', '', 'You need a larger amount of material to continue crafting')
+    it 'cannot cycle forever between a command sew never knows and ANALYZE' do
+      # ANALYZE always ends with a Roundtime, which sends the home command
+      # again; its reply is never one sew knows.
+      sew.instance_variable_set(:@home_command, 'push my rucksack with my sewing needles')
+      replies = ['', 'Roundtime: 4 sec.', '', 'Roundtime: 4 sec.', '', 'Roundtime: 4 sec.', '']
 
-      expect(sent).to eq(['push my rucksack with my sewing needles'] * 3)
-      expect(Lich::Messaging).not_to have_received(:msg).with('bold', a_string_starting_with('sew: No recognized response'))
+      run_work('push my rucksack with my sewing needles', *replies)
+
+      expect(sent.count(analyze)).to eq(Sew::MAX_UNMATCHED - 1)
+      expect(Lich::Messaging).to have_received(:msg).with('bold', give_up_message('push my rucksack with my sewing needles'))
     end
 
-    it 'resets the count after a recognized reply' do
+    it 'starts the count again once a crafting command gets a reply it knows' do
       run_work('push my rucksack with my sewing needles',
-               '', '', 'scissor cuts', '', '', 'You need a larger amount of material to continue crafting')
+               '', 'scissor cuts', 'scissor cuts', '', 'scissor cuts', 'scissor cuts', '', 'You need a larger amount of material to continue crafting')
 
-      expect(sent.length).to eq(6)
-      expect(Lich::Messaging).not_to have_received(:msg).with('bold', a_string_starting_with('sew: No recognized response'))
+      expect(Lich::Messaging).not_to have_received(:msg).with('bold', a_string_starting_with('sew: No reply sew could act on'))
     end
 
-    it 'keeps MAX_UNMATCHED above one so a single late reply is retried' do
+    # Review of #8067 (mrhoribu): crafted needles have three-word names, and
+    # DRC.right_hand shortens "smooth knitting needles" to "smooth needles"
+    # (data/base-recipes.yaml), so DRCI.in_hands?('knitting needles') is
+    # false mid-knit and the ANALYZE went to the item instead.
+    it 'analyzes the knitting needles while knitting, whatever the needles are called' do
+      sew.instance_variable_set(:@home_tool, 'knitting needles')
+
+      run_work('knit my needles', '', 'Now the needles must be turned', 'You need a larger amount of material to continue crafting')
+
+      expect(sent[1]).to eq('analyze my knitting needles')
+    end
+
+    it 'knows knitting needles in hand by their whole name, as a resume finds them' do
+      allow(GameObj).to receive(:right_hand).and_return(OpenStruct.new(name: 'smooth knitting needles', noun: 'needles', id: '1'))
+      allow(GameObj).to receive(:left_hand).and_return(OpenStruct.new(name: 'Empty', noun: nil, id: nil))
+
+      expect(sew.send(:analyze_command)).to eq('analyze my knitting needles')
+    end
+
+    it 'does not take sewing needles for knitting needles' do
+      sew.instance_variable_set(:@home_tool, 'sewing needles')
+      allow(GameObj).to receive(:right_hand).and_return(OpenStruct.new(name: 'slender agonite sewing needles capped with tiny tidal bloodstones', noun: 'needles', id: '1'))
+      allow(GameObj).to receive(:left_hand).and_return(OpenStruct.new(name: 'burlap reinforced netting', noun: 'netting', id: '2'))
+
+      expect(sew.send(:analyze_command)).to eq(analyze)
+    end
+
+    # Review of #8067 (mrhoribu): an ANALYZE that finds nothing to analyze
+    # ("I could not find what you were referring to.") was taken as a reply
+    # sew knows, so the count started again and ANALYZE, INV ATFEET and the
+    # lift went round without end.
+    it 'counts an ANALYZE that finds nothing as a miss, so it cannot go round forever' do
+      allow(sew).to receive(:list_at_feet)
+      allow(sew).to receive(:lift_or_stow_feet)
+
+      run_work('push my rucksack with my sewing needles', '', 'I could not find what you were', 'What were you referring')
+
+      expect(sent).to eq(['push my rucksack with my sewing needles', analyze, analyze])
+      expect(sew).not_to have_received(:list_at_feet)
+      expect(Lich::Messaging).to have_received(:msg).with('bold', give_up_message('push my rucksack with my sewing needles'))
+    end
+
+    it 'stops the same way when the first cut gets a reply sew does not know and there is no item yet to analyze' do
+      allow(sew).to receive(:list_at_feet)
+      allow(sew).to receive(:lift_or_stow_feet)
+
+      run_work('cut my burlap cloth with my scissors', '', 'I could not find what you were', 'I could not find what you were')
+
+      expect(sent.count(analyze)).to eq(Sew::MAX_UNMATCHED - 1)
+      expect(Lich::Messaging).to have_received(:msg).with('bold', give_up_message('cut my burlap cloth with my scissors'))
+    end
+
+    it 'still treats "I could not find" to a crafting command as a missing tool or item' do
+      allow(sew).to receive(:list_at_feet)
+      allow(sew).to receive(:lift_or_stow_feet)
+      allow(DRCC).to receive(:check_consumables)
+
+      run_work('poke my rucksack with my pins', 'I could not find what you were', 'You need a larger amount of material to continue crafting')
+
+      expect(sew).to have_received(:list_at_feet)
+      expect(DRCC).to have_received(:check_consumables).with('pins', 1, 5, 'duffel bag', [], nil)
+    end
+
+    it 'keeps MAX_UNMATCHED above one so a missed reply gets an ANALYZE' do
       expect(Sew::MAX_UNMATCHED).to be > 1
     end
   end
