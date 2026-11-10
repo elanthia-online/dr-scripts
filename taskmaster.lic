@@ -35,7 +35,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.11.1'
+  VERSION = '2026.11.11.2'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -4555,8 +4555,8 @@ class TaskMaster
 
   # With task_bin_leftover_stock, after a Zasele task is handed in, bins
   # every piece of her stock in the crafting bag into the worn trash can,
-  # each by the id of the piece in hand, then uses the trash can's verb
-  # twice. Without the setting or a worn trash can it bins nothing, so
+  # each by the id of the piece in hand, then flushes it (flush_binned_stock).
+  # Without the setting or a worn trash can it bins nothing, so
   # nothing is ever dropped, and trash keeps taking leftover stock to the bin
   # room. A piece the trash can refuses goes back in the bag and ends that
   # stock's loop. When a piece may be left in hand, or the hands are full,
@@ -4566,17 +4566,71 @@ class TaskMaster
   def bin_task_stock
     return 0 unless bins_task_stock?
 
-    binned = 0
+    refs = []
     TASK_STOCK_BASES.each do |base|
-      count, stop = bin_stock("#{@stackmap[base].first} #{base}", base)
-      binned += count
+      _count, stop = bin_stock("#{@stackmap[base].first} #{base}", base, refs)
       break if stop
     end
-    return binned unless binned.positive?
+    return 0 if refs.empty?
 
-    2.times { DRC.bput("#{@worn_trashcan_verb} my #{@worn_trashcan}", /You drum/, /THUD/, /What were you/, /^You /) } if @worn_trashcan_verb
-    DRC.message("Binned #{binned} piece(s) of leftover task stock")
-    binned
+    flushed = flush_binned_stock(refs)
+    DRC.message(flushed ? "Binned #{refs.size} piece(s) of leftover task stock" : "Threw away #{refs.size} piece(s) of leftover task stock (the #{@worn_trashcan} did not flush; see above)")
+    refs.size
+  end
+
+  # Flushes the worn trash can after bin_task_stock put +refs+ in it, and
+  # records the pieces as thrown away (DRCI.note_thrown_away, when DRCI has
+  # it), so nothing fetches them again by id. With a lich-5 whose DRCI
+  # confirms the flush (DRCI.flush_worn_trashcan), a trash can that doesn't
+  # flush is not left holding them: a worn bucket would throw every piece
+  # out onto the floor about five minutes later, wherever the character is
+  # by then (Hollow Eve, 2026-11-10, when TAP did nothing for 90 minutes and
+  # sew took a binned scrap of yarn back by its id). Each piece is taken
+  # back out by its id and given to DRCI.dispose_trash, which tries the
+  # trash can once more and then the room's trash or the floor, saying what
+  # it does. An older DRCI only gets the verb twice, as before.
+  #
+  # @param refs [Array<String>] "#id" of each piece put in the trash can
+  # @return [Boolean] false when the trash can did not flush
+  def flush_binned_stock(refs)
+    refs.each { |ref| DRCI.note_thrown_away(ref) } if DRCI.respond_to?(:note_thrown_away)
+    return true unless @worn_trashcan_verb
+
+    unless DRCI.respond_to?(:flush_worn_trashcan)
+      2.times { DRC.bput("#{@worn_trashcan_verb} my #{@worn_trashcan}", /You drum/, /THUD/, /What were you/, /^You /) }
+      return true
+    end
+
+    flush = DRCI.flush_worn_trashcan(@worn_trashcan, @worn_trashcan_verb)
+    return true if %i[flushed unconfirmed].include?(flush)
+
+    room = XMLData.room_title.to_s.gsub(/\A\[+|\]+\z/, '')
+    DRC.message("Your #{@worn_trashcan} did not flush (#{flush}). Left there, the #{refs.size} piece(s) of leftover stock would be thrown out " \
+                "onto the floor in about 5 minutes, wherever you are by then. Taking each back out to throw away here (#{room}): the " \
+                "#{@worn_trashcan} once more, then the room's trash, otherwise the floor.")
+    refs.each { |ref| rebin_unflushed_piece(ref) }
+    false
+  end
+
+  # Takes one piece the worn trash can didn't flush back out by its id and
+  # gives it to DRCI.dispose_trash with the worn trash can, which confirms
+  # the flush and, failing that, uses the room's trash or drops it here,
+  # saying so. Says so itself when the piece can't be taken back or thrown
+  # away.
+  #
+  # @param ref [String] "#id" of the piece
+  # @return [void]
+  def rebin_unflushed_piece(ref)
+    got = DRC.bput("get #{ref}", /^You get/, /^You pick up/, /^What were you referring to/, /^I could not find/, /free hand/)
+    return if got.match?(/^What were you referring to|^I could not find/)
+
+    unless got.match?(/^You (get|pick up)/) && hand_ids.include?(ref.delete_prefix('#'))
+      DRC.message("Could not take #{ref} back out of your #{@worn_trashcan} (#{got.empty? ? 'no reply' : got}). It will be thrown out onto the floor in about 5 minutes, wherever you are by then.")
+      return
+    end
+    return if DRCI.dispose_trash(ref, @worn_trashcan, @worn_trashcan_verb)
+
+    DRC.message("Could not throw away #{ref} here; it is still in your hand.")
   end
 
   # Bins the pieces of one stock from the crafting bag into the worn trash
@@ -4586,9 +4640,10 @@ class TaskMaster
   #
   # @param stock [String] e.g. 'burlap cloth'
   # @param noun [String] the stock's noun, e.g. 'cloth'
+  # @param refs [Array<String>] collects "#id" of each piece binned
   # @return [Array(Integer, Boolean)] pieces binned, and whether to stop
   #   binning other stock (a piece may be left in hand, or the hands are full)
-  def bin_stock(stock, noun)
+  def bin_stock(stock, noun, refs = [])
     binned = 0
     TASK_STOCK_BIN_CAP.times do
       ref = take_stock_piece(stock, noun)
@@ -4597,6 +4652,7 @@ class TaskMaster
       landed = DRCI.put_away_item?(ref, @worn_trashcan) || left_hands?(ref)
       return [binned, !put_back_stock(ref, stock)] unless landed
 
+      refs << ref
       binned += 1
     end
     [binned, false]
