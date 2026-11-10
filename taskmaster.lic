@@ -35,7 +35,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.10.6'
+  VERSION = '2026.11.10.7'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -4029,7 +4029,11 @@ class TaskMaster
   end
 
   # Sews or knits each item with the sew script, in the tailoring room or
-  # task_crafting_room (marathon sews where it stands).
+  # task_crafting_room (marathon sews where it stands). Pins and thread are
+  # checked before the walk, while still near the Crossing shops that sell
+  # them: checked in a far task_crafting_room (a rented Andreshlew outfitting
+  # room), a short spool sent the character all the way back to the Crossing
+  # stock room and back again (2026-11-10 report).
   #
   # @param item [String] item noun
   # @param count [Integer] how many
@@ -4037,12 +4041,12 @@ class TaskMaster
   # @param type [String] stock name
   # @return [Integer] how many were made (craft_each stops on a run that made none)
   def tailor_item(item, count, base, type)
+    check_sewing_consumables(count) unless base == 'yarn'
     unless @crafting_room
       DRCT.walk_to(14886) unless @marathon
     else
       DRCT.walk_to(@crafting_room)
     end
-    check_sewing_consumables(count) unless base == 'yarn'
     craft_each('sew', item, count) do
       DRC.wait_for_script_to_complete('sew', ['stow', 'instructions', type, item, base == 'yarn' ? 'knit' : nil, 'skip'])
     end
