@@ -35,7 +35,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.10.8'
+  VERSION = '2026.11.11.1'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -3537,7 +3537,7 @@ class TaskMaster
   def request_replacement(item, needed: nil, most: nil)
     UserVars.taskmaster_replacements ||= {}
     if UserVars.taskmaster_replacements[@npc] == item
-      DRC.message("Already asked #{@npc} for #{item} instructions on this task, and #{carried_uses(needed, most)}. Stopping instead of asking again; check why the #{item}s aren't being made.")
+      DRC.message("Already asked #{@npc} for #{item} instructions on this task, and #{carried_uses(needed, most)}. Stopping instead of asking again; #{replacement_stop_reason(item)}.")
       exit
     end
     reply = get_instructions(item)
@@ -3549,6 +3549,19 @@ class TaskMaster
     said = reply.empty? ? 'no answer' : "\"#{reply}\""
     DRC.message("Asked #{@npc} for #{item} instructions, but none were handed over (#{said}). That does not count as this task's one replacement. Stopping; the next run asks again.")
     exit
+  end
+
+  # Why the "Already asked" stop came, for its message. In a remake
+  # (remake_not_good_enough) the uses went on items the taskmaster turned
+  # down, so the message says that instead of sending the player to find out
+  # why the items aren't being made.
+  #
+  # @param item [String] the task item's noun
+  # @return [String]
+  def replacement_stop_reason(item)
+    return "check why the #{item}s aren't being made" unless @not_good_enough_remakes.to_i.positive?
+
+    "#{@npc.capitalize} turned #{item}s down as not made well enough, and their remakes need more instruction uses than you carry"
   end
 
   # What the sets carried had, for the "Already asked" stop.
@@ -4453,7 +4466,15 @@ class TaskMaster
   # Times one task's items are made again after the taskmaster turned some
   # down as not made well enough, before the run stops: a character whose
   # items keep coming out below what the taskmaster takes would otherwise
-  # craft and bin them until the stock ran out.
+  # craft and bin them until the stock ran out. The instructions are often
+  # the tighter bound: each item this task made took a study, the task's set
+  # has one use to spare, and the one replacement a task may ask for has
+  # only as many uses as are still owed (request_replacement). So binning
+  # this task's own items usually stops the run at "Already asked" before
+  # this cap. The cap is for the remakes that need no more uses than are
+  # carried, such as items left over from an earlier task (Mahtra's
+  # unfinished netting, 2026-11-10, took no study of the task it was handed
+  # in for).
   MAX_NOT_GOOD_ENOUGH_REMAKES = 2
 
   # The hand-in ran out of items after the taskmaster turned some down as

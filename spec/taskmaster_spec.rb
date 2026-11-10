@@ -2062,8 +2062,8 @@ RSpec.describe TaskMaster do
       # Plays a resume: the journal says how many are owed, the bag holds some
       # finished items and maybe instructions with a number of uses left.
       # Returns what happened, in order.
-      def resume(owed:, target: owed, banked: 0, uses: nil, foreign: false)
-        tm = reader
+      def resume(owed:, target: owed, banked: 0, uses: nil, foreign: false, ivars: {})
+        tm = reader(**ivars)
         bag_items = banked
         given = 0
         events = []
@@ -2189,6 +2189,18 @@ RSpec.describe TaskMaster do
           expect(events).not_to include([:make, 'rope', 3])
           expect(DRC).to have_received(:message)
             .with("Already asked zasele for rope instructions on this task, and no set you carry has the 3 uses still needed (you carry none with a use left). Stopping instead of asking again; check why the ropes aren't being made.")
+        end
+
+        # A remake after Zasele turned items down (remake_not_good_enough)
+        # runs out of uses this way: each binned item had taken a study. The
+        # stop names the refusal rather than sending the player to find out
+        # why nothing is being made.
+        it 'says the uses went on items the taskmaster turned down, in a remake' do
+          UserVars.taskmaster_replacements = { 'zasele' => 'rope' }
+          events = resume(owed: 3, uses: nil, ivars: { not_good_enough_remakes: 1 })
+          expect(events).not_to include(:asked_for_instructions)
+          expect(DRC).to have_received(:message)
+            .with("Already asked zasele for rope instructions on this task, and no set you carry has the 3 uses still needed (you carry none with a use left). Stopping instead of asking again; Zasele turned ropes down as not made well enough, and their remakes need more instruction uses than you carry.")
         end
 
         it 'still asks when the earlier request was for a different item' do
