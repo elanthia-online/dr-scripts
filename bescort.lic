@@ -1346,14 +1346,6 @@ class Bescort
   # above a normal crossing, not a timing: without it a wait started in the
   # wrong room, or for a mammoth that never comes, held bescort (and the go2
   # waiting on it) forever.
-  # The game quotes ferry names in its dock lines, e.g.
-  #   The ferry "His Daring Exploit" pulls up to the dock.
-  #   The ferry "His Daring Exploit" reaches the dock and its crew ties the ferry off.
-  # A '^[^"]*?' guard alone never matches those, so each wait also takes the
-  # quoted form, anchored to the start of the line so player speech can't fake it.
-  FERRY_ARRIVES = ['^[^"]*?pulls into the dock', '^[^"]*?pulls up to the dock', '^The ferry "[^"]+" pulls (?:into|up to) the dock'].freeze
-  FERRY_TIED_OFF = ['^[^"]*?reaches the dock and its crew ties the ferry off', '^The ferry "[^"]+" reaches the dock and its crew ties the ferry off'].freeze
-
   MAMMOTH_WAIT_TIMEOUT = 20 * 60
 
   # Times take_mammoth tries JOIN before giving up. Each failed JOIN waits for
@@ -1502,6 +1494,14 @@ class Bescort
     waitfor 'JOIN GNOMISH BALLOON'
     take_balloon(mode)
   end
+
+  # The game quotes ferry names in its dock lines, e.g.
+  #   The ferry "His Daring Exploit" pulls up to the dock.
+  #   The ferry "His Daring Exploit" reaches the dock and its crew ties the ferry off.
+  # A '^[^"]*?' guard alone never matches those, so each wait also takes the
+  # quoted form, anchored to the start of the line so player speech can't fake it.
+  FERRY_ARRIVES = ['^[^"]*?pulls into the dock', '^[^"]*?pulls up to the dock', '^The ferry "[^"]+" pulls (?:into|up to) the dock'].freeze
+  FERRY_TIED_OFF = ['^[^"]*?reaches the dock and its crew ties the ferry off', '^The ferry "[^"]+" reaches the dock and its crew ties the ferry off'].freeze
 
   def take_rh_ferry(north)
     if north
