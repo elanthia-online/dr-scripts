@@ -2062,8 +2062,8 @@ RSpec.describe TaskMaster do
       # Plays a resume: the journal says how many are owed, the bag holds some
       # finished items and maybe instructions with a number of uses left.
       # Returns what happened, in order.
-      def resume(owed:, target: owed, banked: 0, uses: nil, foreign: false)
-        tm = reader
+      def resume(owed:, target: owed, banked: 0, uses: nil, foreign: false, ivars: {})
+        tm = reader(**ivars)
         bag_items = banked
         given = 0
         events = []
@@ -2189,6 +2189,18 @@ RSpec.describe TaskMaster do
           expect(events).not_to include([:make, 'rope', 3])
           expect(DRC).to have_received(:message)
             .with("Already asked zasele for rope instructions on this task, and no set you carry has the 3 uses still needed (you carry none with a use left). Stopping instead of asking again; check why the ropes aren't being made.")
+        end
+
+        # A remake after Zasele turned items down (remake_not_good_enough)
+        # runs out of uses this way: each binned item had taken a study. The
+        # stop names the refusal rather than sending the player to find out
+        # why nothing is being made.
+        it 'says the uses went on items the taskmaster turned down, in a remake' do
+          UserVars.taskmaster_replacements = { 'zasele' => 'rope' }
+          events = resume(owed: 3, uses: nil, ivars: { not_good_enough_remakes: 1 })
+          expect(events).not_to include(:asked_for_instructions)
+          expect(DRC).to have_received(:message)
+            .with("Already asked zasele for rope instructions on this task, and no set you carry has the 3 uses still needed (you carry none with a use left). Stopping instead of asking again; Zasele turned ropes down as not made well enough, and their remakes need more instruction uses than you carry.")
         end
 
         it 'still asks when the earlier request was for a different item' do
@@ -4472,6 +4484,241 @@ RSpec.describe TaskMaster do
         tm.give_item('rope')
 
         expect(tm.instance_variable_get(:@not_now_waited)).to eq(0)
+      end
+    end
+
+    describe 'an item Zasele says is not made well enough' do
+      # Mahtra, 2026-11-10 22:21:10 NZDT: an unfinished netting a lagged sew
+      # left in the duffel bag on 2026-11-06 sat first in the bag, so every
+      # hand-in took it, Zasele turned it down, and the task stopped.
+      let(:not_good_enough) do
+        'Seamstress Zasele inspects the reinforced netting and frowns uncomfortably.  She writes, "I\'m sorry, but this could be done better.  ' \
+          'Perhaps consider materials that are easier for you to work with or simply practice more.  This must be well-crafted or better to be useful to those I assist."'
+      end
+      let(:silly) { "Don't be silly." }
+      let(:empty_hand) { OpenStruct.new(name: 'Empty', noun: nil, id: nil) }
+
+      def netting(id, finished: true)
+        OpenStruct.new(name: "#{finished ? '' : 'unfinished '}burlap reinforced netting", noun: 'netting', id: id.to_s, finished: finished)
+      end
+
+      # The duffel bag, first item first (a GET takes the first), the hands,
+      # and Zasele. As on the log, the named GIVE gets "Don't be silly." and
+      # the bare GIVE ZASELE hands over the right hand. She takes a finished
+      # netting (owed counts down, the last one brings the sack) and turns
+      # an unfinished one down, leaving it in hand. DRCI.dispose_trash with
+      # a "#id" bins the held item of that id. Returns :sent, :handed,
+      # :binned and :bag.
+      def zasele_world(bag:, owed:, trash_works: true)
+        world = { sent: [], handed: [], binned: [], bag: bag, hands: { right: nil, left: nil }, owed: owed }
+        allow(GameObj).to receive(:right_hand) { world[:hands][:right] || empty_hand }
+        allow(GameObj).to receive(:left_hand) { world[:hands][:left] || empty_hand }
+        allow(DRCI).to receive(:in_hands?) { |noun| world[:hands].values.compact.any? { |obj| obj.noun == noun } }
+        allow(DRCI).to receive(:get_item?).with('netting', 'duffel bag') do
+          next false if world[:bag].empty?
+
+          world[:hands][:right] = world[:bag].shift
+          true
+        end
+        allow(DRCI).to receive(:dispose_trash) do |ref, *|
+          held = world[:hands].keys.find { |side| world[:hands][side] && "##{world[:hands][side].id}" == ref }
+          next false unless trash_works && held
+
+          world[:binned] << world[:hands][held]
+          world[:hands][held] = nil
+          true
+        end
+        allow(DRCC).to receive(:stow_crafting_item) do |*|
+          world[:bag].unshift(world[:hands][:right]) if world[:hands][:right]
+          world[:hands][:right] = nil
+        end
+        allow(DRC).to receive(:bput) do |command, *_|
+          world[:sent] << command
+          case command
+          when 'give my netting to zasele'
+            silly
+          when 'give zasele'
+            held = world[:hands][:right]
+            if held.nil?
+              "What is it you're trying to give?"
+            elsif !held.finished
+              not_good_enough
+            else
+              world[:handed] << held
+              world[:hands][:right] = nil
+              world[:owed] -= 1
+              world[:owed].zero? ? 'Zasele hands you a woven sack.' : more_needed(world[:owed])
+            end
+          else
+            ''
+          end
+        end
+        world
+      end
+
+      def hander(**ivars)
+        tm = build(worn_trashcan: 'bucket', worn_trashcan_verb: 'tap', **ivars)
+        allow(tm).to receive(:find_npc)
+        allow(tm).to receive(:pause)
+        allow(tm).to receive(:sort_sack)
+        allow(tm).to receive(:fput)
+        allow(tm).to receive(:bin_task_stock)
+        allow(DRCT).to receive(:dispose)
+        tm
+      end
+
+      describe 'GIVE_NOT_GOOD_ENOUGH' do
+        it "matches Zasele's refusal as logged" do
+          expect(not_good_enough).to match(TaskMaster::GIVE_NOT_GOOD_ENOUGH)
+        end
+
+        it 'is one of the replies every GIVE waits for, so the refusal does not wait out 15 seconds' do
+          expect(TaskMaster::GIVE_REPLIES).to include(TaskMaster::GIVE_NOT_GOOD_ENOUGH)
+        end
+
+        it 'does not match a player saying the words' do
+          expect(%(Gervin says, "I'm sorry, but this could be done better.")).not_to match(TaskMaster::GIVE_NOT_GOOD_ENOUGH)
+          expect(%(Gervin whispers, "Zasele inspects the netting.  She writes, \\"I'm sorry, but this could be done better.\\"")).not_to match(TaskMaster::GIVE_NOT_GOOD_ENOUGH)
+        end
+
+        it 'does not match an acceptance' do
+          expect('Seamstress Zasele takes your reinforced netting and inspects the craftsmanship.  She holds up a sign that simply reads, "Acceptable."').not_to match(TaskMaster::GIVE_NOT_GOOD_ENOUGH)
+        end
+      end
+
+      describe '#turn_in_banked' do
+        it "bins the unfinished netting by its id and hands in the good ones behind it, as Mahtra's hand-in should have" do
+          tm = hander
+          bad = netting(25_785_999, finished: false)
+          good = [netting(1), netting(2), netting(3)]
+          world = zasele_world(bag: [bad, *good], owed: 7)
+
+          expect(tm.turn_in_banked('netting', 7)).to eq(4)
+
+          expect(world[:binned]).to eq([bad])
+          expect(world[:handed]).to eq(good)
+          expect(DRCI).to have_received(:dispose_trash).with('#25785999', 'bucket', 'tap').once
+          expect(world[:sent].count('give zasele')).to eq(4)
+          expect(DRCC).not_to have_received(:stow_crafting_item)
+          expect(DRC).to have_received(:message).with('Zasele said a netting was not made well enough, so it went in the trash.')
+        end
+
+        it 'leaves the binned one owed, so the resume makes it again' do
+          tm = hander
+          world = zasele_world(bag: [netting(9, finished: false)], owed: 2)
+
+          expect(tm.turn_in_banked('netting', 2)).to eq(2)
+
+          expect(world[:handed]).to be_empty
+          expect(world[:binned].size).to eq(1)
+        end
+      end
+
+      describe '#complete_task' do
+        it 'bins a rejected netting and finishes the task with the good ones, with no remake' do
+          tm = hander
+          allow(tm).to receive(:resume_task)
+          world = zasele_world(bag: [netting(9, finished: false), netting(1), netting(2)], owed: 2)
+
+          tm.complete_task('netting', 2)
+
+          expect(world[:binned].map(&:id)).to eq(['9'])
+          expect(world[:handed].map(&:id)).to eq(%w[1 2])
+          expect(tm).to have_received(:sort_sack).with('netting').once
+          expect(tm).not_to have_received(:resume_task)
+        end
+
+        it 'makes the task again once the bag runs out after a netting was binned, instead of stopping' do
+          tm = hander
+          allow(tm).to receive(:resume_task)
+          world = zasele_world(bag: [netting(1), netting(9, finished: false)], owed: 2)
+
+          expect { tm.complete_task('netting', 2) }.not_to raise_error
+
+          expect(tm).to have_received(:resume_task).with(exit_when_done: false).once
+          expect(world[:binned].map(&:id)).to eq(['9'])
+          # The remake's own hand-in sorts the sack; this one has none.
+          expect(tm).not_to have_received(:sort_sack)
+          expect(DRC).to have_received(:message).with('Zasele turned down 1 netting as not made well enough, and it went in the trash. Making the task\'s nettings again.')
+          expect(DRC).not_to have_received(:message).with(/Could not get another netting/)
+        end
+
+        it 'counts every netting binned in the hand-in' do
+          tm = hander
+          allow(tm).to receive(:resume_task)
+          zasele_world(bag: [netting(8, finished: false), netting(9, finished: false)], owed: 2)
+
+          tm.complete_task('netting', 2)
+
+          expect(DRC).to have_received(:message).with('Zasele turned down 2 nettings as not made well enough, and they went in the trash. Making the task\'s nettings again.')
+        end
+
+        it 'stops after MAX_NOT_GOOD_ENOUGH_REMAKES remakes that keep coming out not good enough, rather than crafting and binning forever' do
+          tm = hander
+          world = zasele_world(bag: [netting(100, finished: false)], owed: 1)
+          remakes = 0
+          allow(tm).to receive(:resume_task) do
+            remakes += 1
+            raise 'remade past the cap' if remakes > TaskMaster::MAX_NOT_GOOD_ENOUGH_REMAKES
+
+            world[:bag] << netting(100 + remakes, finished: false)
+            tm.complete_task('netting', 1)
+          end
+
+          expect { tm.complete_task('netting', 1) }.to raise_error(SystemExit)
+
+          expect(remakes).to eq(TaskMaster::MAX_NOT_GOOD_ENOUGH_REMAKES)
+          expect(world[:binned].size).to eq(TaskMaster::MAX_NOT_GOOD_ENOUGH_REMAKES + 1)
+          expect(DRC).to have_received(:message).with(/after #{TaskMaster::MAX_NOT_GOOD_ENOUGH_REMAKES} remakes on this task\. Stopping/)
+        end
+
+        it 'gives each task its own remakes: a hand-in clears the count' do
+          tm = hander(not_good_enough_remakes: TaskMaster::MAX_NOT_GOOD_ENOUGH_REMAKES)
+          zasele_world(bag: [netting(1)], owed: 1)
+
+          tm.complete_task('netting', 1)
+
+          expect(tm.instance_variable_get(:@not_good_enough_remakes)).to eq(0)
+        end
+
+        it 'puts the netting back and stops, never giving it again, when the trash will not take it' do
+          tm = hander
+          allow(tm).to receive(:resume_task)
+          bad = netting(9, finished: false)
+          world = zasele_world(bag: [bad, netting(1)], owed: 2, trash_works: false)
+
+          expect { tm.complete_task('netting', 2) }.to raise_error(SystemExit)
+
+          expect(world[:sent].count('give zasele')).to eq(1)
+          expect(world[:bag].first).to eq(bad)
+          expect(DRC).to have_received(:message).with("Zasele did not take the netting (#{not_good_enough}). Stopping.")
+          expect(tm).not_to have_received(:resume_task)
+        end
+
+        it 'stops, rather than give it again and again, when the trash says yes but the netting is still in hand' do
+          tm = hander
+          allow(tm).to receive(:resume_task)
+          world = zasele_world(bag: [netting(9, finished: false), netting(1)], owed: 2)
+          allow(DRCI).to receive(:dispose_trash).and_return(true)
+
+          expect { tm.complete_task('netting', 2) }.to raise_error(SystemExit)
+
+          expect(world[:sent].count('give zasele')).to eq(1)
+          expect(DRC).to have_received(:message).with("Zasele did not take the netting (#{not_good_enough}). Stopping.")
+        end
+
+        it 'never bins by the noun: with no netting in hand to bin, it stops instead' do
+          tm = hander
+          allow(tm).to receive(:give_item).and_return(not_good_enough)
+          allow(GameObj).to receive(:right_hand).and_return(empty_hand)
+          allow(GameObj).to receive(:left_hand).and_return(empty_hand)
+          allow(DRCI).to receive(:dispose_trash)
+          allow(DRCC).to receive(:stow_crafting_item)
+
+          expect { tm.complete_task('netting', 2) }.to raise_error(SystemExit)
+
+          expect(DRCI).not_to have_received(:dispose_trash)
+        end
       end
     end
 
