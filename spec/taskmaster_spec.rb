@@ -3394,6 +3394,30 @@ RSpec.describe TaskMaster do
         expect(checks.map(&:first)).not_to include('thread')
       end
 
+      # 2026-11-10 report: with task_crafting_room a rented Andreshlew
+      # outfitting room, the thread was checked only after the walk there,
+      # so a short spool meant a round trip to the Crossing stock room.
+      it 'checks pins and thread before walking to task_crafting_room, while still by the Crossing shops' do
+        tm = build(settings: { outfitting_belt: { 'name' => 'toolbelt', 'items' => [] } }, crafting_room: 16_936)
+        allow(tm).to receive(:get_data).and_return(tailoring)
+        order = []
+        allow(DRCC).to receive(:check_consumables) { |name, *| order << [:check, name] }
+        allow(DRCT).to receive(:walk_to) { |room| order << [:walk, room] }
+        allow(tm).to receive(:craft_each).and_return(0)
+        tm.tailor_item('straps', 8, 'leather', 'rat')
+        expect(order).to eq([[:check, 'pins'], [:check, 'cotton thread'], [:walk, 16_936]])
+      end
+
+      it 'walks to task_crafting_room without a consumable check when knitting' do
+        tm = build(settings: { outfitting_belt: { 'name' => 'toolbelt', 'items' => [] } }, crafting_room: 16_936)
+        allow(DRCC).to receive(:check_consumables)
+        allow(DRCT).to receive(:walk_to)
+        allow(tm).to receive(:craft_each).and_return(0)
+        tm.tailor_item('outfit', 2, 'yarn', 'wool')
+        expect(DRCC).not_to have_received(:check_consumables)
+        expect(DRCT).to have_received(:walk_to).with(16_936)
+      end
+
       it 'tells every sew run to skip its own consumable check' do
         _, launches = tailor('cloth', count: 3)
         expect(launches.size).to eq(3)
