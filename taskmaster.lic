@@ -35,7 +35,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.10.7'
+  VERSION = '2026.11.10.8'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -3380,7 +3380,9 @@ class TaskMaster
   # closed out by task_handed_in). A give that misses a wandering taskmaster is
   # retried (give_item). A reply bput did not know is given again, as in
   # complete_task; after MAX_UNKNOWN_GIVE_REPLIES of them in a row the item
-  # goes back in the bag and the hand-in stops. For Nezhiri the doses on
+  # goes back in the bag and the hand-in stops. One the taskmaster says is
+  # not made well enough goes in the trash (trash_not_good_enough) and the
+  # hand-in goes on; it is still owed, so the caller makes it again. For Nezhiri the doses on
   # hand are handed in only when they cover the task (remedy_hand_in?);
   # otherwise they are counted (@remedy_doses) and the task goes on.
   #
@@ -3409,6 +3411,9 @@ class TaskMaster
         unknown_replies = 0
       when GIVE_NOT_ENCHANTED
         trash_unenchanted(item, Regexp.last_match(0))
+        unknown_replies = 0
+      when GIVE_NOT_GOOD_ENOUGH
+        trash_not_good_enough(item, reply)
         unknown_replies = 0
       else
         unknown_replies += 1
@@ -4200,6 +4205,20 @@ class TaskMaster
   # trying to pull, Pezamus?"'). Giving it again cannot help.
   GIVE_NOT_ENCHANTED = /^Researcher Dorhum examines [^"]*"I don't sense any hint of enchantment on this/
 
+  # The taskmaster turning down an item as not made well enough: 'Seamstress
+  # Zasele inspects the reinforced netting and frowns uncomfortably.  She
+  # writes, "I'm sorry, but this could be done better.  Perhaps consider
+  # materials that are easier for you to work with or simply practice more.
+  # This must be well-crafted or better to be useful to those I assist."'
+  # Every one logged (13 characters, 2026-11-06 to 11-10) was of an
+  # unfinished item a stopped sew had left in the bag, not a finished one of
+  # low quality. Unlisted, each one waited out bput's 15 s, and the item
+  # stayed first in the bag, so every later hand-in gave it again and
+  # stopped. Giving it again cannot help: it goes in the trash
+  # (trash_not_good_enough). The text starts the line after the
+  # taskmaster's name, so a player saying it does not count.
+  GIVE_NOT_GOOD_ENOUGH = /^(?:[\w'-]+ ){1,2}inspects the [^"]*"I'm sorry, but this could be done better\./
+
   # Gives one finished item to the taskmaster and returns the reply, or nil when
   # there is none in hand or in the bag. A give that misses her (she wandered
   # off between the get and the give) leaves the item in hand: find her again
@@ -4253,7 +4272,7 @@ class TaskMaster
   end
 
   # Every reply a GIVE to the taskmaster waits for.
-  GIVE_REPLIES = [TURN_IN_MORE_NEEDED, /hands you a/, GIVE_MISSED, GIVE_NOT_ENCHANTED, GIVE_NOT_NOW, GIVE_WRONG_AMOUNT, GIVE_IGNORED].freeze
+  GIVE_REPLIES = [TURN_IN_MORE_NEEDED, /hands you a/, GIVE_MISSED, GIVE_NOT_ENCHANTED, GIVE_NOT_GOOD_ENOUGH, GIVE_NOT_NOW, GIVE_WRONG_AMOUNT, GIVE_IGNORED].freeze
 
   # Hands the item over the way the game asks after GIVE_NOT_NOW: in the
   # right hand, with GIVE <taskmaster> and no object. A bare GIVE hands over
@@ -4322,18 +4341,26 @@ class TaskMaster
   # Hands in every finished item until the taskmaster gives the reward
   # sack, then sorts it. Nezhiri's "The amount here looks off" makes the
   # stack ready once more for the doses she asked for (remedy_amount_off).
+  # An item the taskmaster says is not made well enough goes in the trash
+  # (trash_not_good_enough) and the hand-in goes on with the next one; when
+  # the items run out after that, the trashed ones are made again
+  # (remake_not_good_enough).
   #
   # @param item [String] item noun
   # @param count [Integer] how many are owed (doses for Nezhiri)
   # @return [void]
-  # @raise [SystemExit] when the items run out first, when the taskmaster
-  #   will not take one (refused_hand_in), or from give_item
+  # @raise [SystemExit] when the items run out first with none trashed,
+  #   when the taskmaster will not take one (refused_hand_in), from
+  #   remake_not_good_enough, or from give_item
   def complete_task(item, count)
     unknown_replies = 0
     retried = false
+    trashed = 0
     loop do
       reply = give_item(item, count)
       unless reply
+        return remake_not_good_enough(item, trashed) if trashed.positive?
+
         DRC.message("Could not get another #{hand_in_noun(item)} to hand in and the task is not finished, stopping.")
         exit
       end
@@ -4352,6 +4379,12 @@ class TaskMaster
       end
       if reply =~ GIVE_NOT_ENCHANTED
         trash_unenchanted(item, reply)
+        unknown_replies = 0
+        next
+      end
+      if reply.match?(GIVE_NOT_GOOD_ENOUGH)
+        trash_not_good_enough(item, reply)
+        trashed += 1
         unknown_replies = 0
         next
       end
@@ -4396,6 +4429,56 @@ class TaskMaster
     DRC.message("#{@npc.capitalize} saw no enchantment on a #{noun}, so it went in the trash.")
   end
 
+  # The taskmaster said the item handed over is not made well enough
+  # (GIVE_NOT_GOOD_ENOUGH), so it can never be handed in. It is still in
+  # hand, and goes in the trash by its id, so another of the noun (a good
+  # one in the bag behind it) is never binned in its place. With no held
+  # item of the noun to bin, when the trash will not take it, or when it is
+  # still in hand after the trash said it went (the next give would hand
+  # the same item over again, with nothing to end the loop), the run stops
+  # (refused_hand_in) rather than give it again.
+  #
+  # @param item [String] the task item's noun
+  # @param reply [String] the taskmaster's refusal
+  # @return [void]
+  # @raise [SystemExit] when it could not be trashed
+  def trash_not_good_enough(item, reply)
+    noun = hand_in_noun(item)
+    id = held_id(noun)
+    binned = id && DRCI.dispose_trash("##{id}", @worn_trashcan, @worn_trashcan_verb) && !hand_ids.include?(id)
+    refused_hand_in(item, reply) unless binned
+    DRC.message("#{@npc.capitalize} said a #{noun} was not made well enough, so it went in the trash.")
+  end
+
+  # Times one task's items are made again after the taskmaster turned some
+  # down as not made well enough, before the run stops: a character whose
+  # items keep coming out below what the taskmaster takes would otherwise
+  # craft and bin them until the stock ran out.
+  MAX_NOT_GOOD_ENOUGH_REMAKES = 2
+
+  # The hand-in ran out of items after the taskmaster turned some down as
+  # not made well enough and they went in the trash: the task is worked
+  # again from the journal (resume_task, without exiting), which makes the
+  # items still owed and hands them in. A remake counts toward
+  # MAX_NOT_GOOD_ENOUGH_REMAKES for the task (task_handed_in clears it), so
+  # the remakes' own hand-in, which comes back here when it trashes more,
+  # stops once the remakes are used up.
+  #
+  # @param item [String] the task item's noun
+  # @param trashed [Integer] how many this hand-in trashed
+  # @return [void] once the remade items are handed in
+  # @raise [SystemExit] once the remakes are used up, or from resume_task
+  def remake_not_good_enough(item, trashed)
+    noun = hand_in_noun(item)
+    @not_good_enough_remakes = @not_good_enough_remakes.to_i + 1
+    if @not_good_enough_remakes > MAX_NOT_GOOD_ENOUGH_REMAKES
+      DRC.message("#{@npc.capitalize} has turned down #{noun}s as not made well enough after #{MAX_NOT_GOOD_ENOUGH_REMAKES} remakes on this task. Stopping: practice more, or use materials that are easier to work with.")
+      exit
+    end
+    DRC.message("#{@npc.capitalize} turned down #{trashed} #{noun}#{trashed == 1 ? '' : 's'} as not made well enough, and #{trashed == 1 ? 'it' : 'they'} went in the trash. Making the task's #{noun}s again.")
+    resume_task(exit_when_done: false)
+  end
+
   # The taskmaster neither took the item nor asked for more, MAX_UNKNOWN_GIVE_REPLIES
   # times in a row: a refusal, or replies bput did not know. The item is
   # still in hand, so it goes back in the bag and the run stops rather than
@@ -4416,12 +4499,14 @@ class TaskMaster
   # replacements again. Instructions are kept until here, so a run that could
   # not make the items leaves them for the resume instead of asking the
   # taskmaster for another set. Notes the hand-in in @task_handed_in, which
-  # resume_task reads to tell a finished task from one with nothing to give.
+  # resume_task reads to tell a finished task from one with nothing to give,
+  # and clears the task's count of remakes (remake_not_good_enough).
   #
   # @param item [String] the task item's noun
   # @return [void]
   def task_handed_in(item)
     @task_handed_in = true
+    @not_good_enough_remakes = 0
     @remedy_hand_in = nil
     DRCT.dispose("#{item} instructions", nil, @worn_trashcan, @worn_trashcan_verb)
     forget_replacement
