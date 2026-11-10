@@ -35,6 +35,10 @@ RSpec.describe Sew do
   # #swap_tool -- nil guards and tool swapping
   # ===========================================================================
   describe '#swap_tool' do
+    # The new tool reaches the hand; the failed get is covered under
+    # 'stopping with the hands put away'.
+    before { allow(DRCI).to receive(:in_hands?).and_return(true) }
+
     context 'when right hand is nil (empty)' do
       before { $right_hand = nil }
 
@@ -1446,7 +1450,8 @@ RSpec.describe Sew do
 
       it 'sends no study when the yarn is gone' do
         sew.instance_variable_set(:@knit, true)
-        replies['get my yarn'] = 'What were you referring to?'
+        sew.instance_variable_set(:@mat_type, 'wool')
+        replies['get my wool yarn'] = 'What were you referring to?'
 
         expect { sew.send(:prep) }.to raise_error(SystemExit)
 
@@ -1532,11 +1537,12 @@ RSpec.describe Sew do
 
         it 'puts the yarn back when the instructions are gone' do
           sew.instance_variable_set(:@knit, true)
+          sew.instance_variable_set(:@mat_type, 'wool')
           replies['get my rucksack instructions'] = 'What were you referring to?'
 
           expect { sew.send(:prep) }.to raise_error(SystemExit)
 
-          expect(sent.last).to eq('put my yarn in my duffel bag')
+          expect(sent.last).to eq('put my wool yarn in my duffel bag')
         end
 
         # No id was seen, so the put-back goes by name and its result says
@@ -1835,10 +1841,10 @@ RSpec.describe Sew do
         end
       end
 
-      it 'gets the cloth, then the instructions, then studies' do
+      it 'gets the cloth, then the instructions, reads them, then studies' do
         sew.send(:prep)
 
-        expect(sent).to eq(['get my burlap cloth', 'get my rucksack instructions', 'study my instructions'])
+        expect(sent).to eq(['get my burlap cloth', 'get my rucksack instructions', 'read my rucksack instructions', 'study my instructions'])
       end
 
       it 'checks an enhancement piece in hand before studying' do
@@ -1960,10 +1966,13 @@ RSpec.describe Sew do
     end
 
     context 'knitting via @knit flag' do
-      before { sew.instance_variable_set(:@knit, true) }
+      before do
+        sew.instance_variable_set(:@knit, true)
+        sew.instance_variable_set(:@mat_type, 'wool')
+      end
 
-      it 'gets yarn from bag' do
-        expect(DRCC).to receive(:get_crafting_item).with('yarn', 'duffel bag', [], nil, true).and_return(true)
+      it 'gets the run\'s yarn from the bag' do
+        expect(DRCC).to receive(:get_crafting_item).with('wool yarn', 'duffel bag', [], nil, true).and_return(true)
 
         sew.send(:prep)
       end
@@ -2896,6 +2905,448 @@ RSpec.describe Sew do
 
     it 'is frozen' do
       expect(Sew::CLOTH).to be_frozen
+    end
+  end
+  # ===========================================================================
+  # Enough material before the study, and the hands put away on a stop
+  # ===========================================================================
+  # Each study spends one of the instructions' uses, so a piece too small
+  # for the item must be caught before it. Lilwea, 2026-11-11 08:32:01:
+  # "[sew]>get #25917288" / "You get some burlap cloth from inside your
+  # traveler's pack.", the study, then at 08:32:12 "You need a larger amount
+  # of material to continue crafting." The READ and COUNT lines are
+  # verbatim from Hollow Eve 2026 logs.
+  #
+  # The model: two hands with ids ($hand_item_ids), the crafting bag's
+  # pieces of material (id => yards, got first to last), the trash, and
+  # replies matched the way DRC.bput matches them (the text the first
+  # matching pattern matched, or '' when none does).
+  describe 'material enough before the study' do
+    let(:sent) { [] }
+    let(:messages) { [] }
+    let(:yards) { { '25917288' => 4 } }
+    let(:bag) { [] }
+    let(:trashed) { [] }
+    let(:read_reply) { '   (1) finished fabric cloth (10 yards)' }
+    let(:combine_reply) { 'You combine the pieces.' }
+    # What COMBINE does in the game, apart from its reply: :right or :left
+    # (the combined stack, under a new id, in that hand) or :refuse.
+    let(:combine_into) { [:right] }
+    let(:swap_stuck) { [false] }
+    let(:count_override) { {} }
+    let(:next_id) { [9_000_000] }
+
+    def hold(hand, name, id)
+      if hand == :left
+        $left_hand = name
+      else
+        $right_hand = name
+      end
+      $hand_item_ids = ($hand_item_ids || {}).merge(hand => [name, id])
+    end
+
+    def empty(hand)
+      hand == :left ? $left_hand = nil : $right_hand = nil
+      $hand_item_ids = ($hand_item_ids || {}).reject { |key, _| key == hand }
+    end
+
+    def held_id(hand)
+      ($hand_item_ids || {})[hand]&.last
+    end
+
+    def hand_of(ref)
+      %i[left right].find { |hand| ref == "##{held_id(hand)}" }
+    end
+
+    def reply_for(command)
+      case command
+      when /\Aread my / then read_reply
+      when /\Acount #(\d+)\z/
+        count_override.fetch(Regexp.last_match(1)) { "You count out #{yards.fetch(Regexp.last_match(1), 0)} yards of material there." }
+      when /\Acombine /
+        return combine_reply if combine_into.first == :refuse
+        if combine_into.first == :vanish
+          empty(:left)
+          empty(:right)
+          return combine_reply
+        end
+        return 'You must be holding both substances to combine them.' unless held_id(:left) && held_id(:right)
+
+        id = (next_id[0] += 1).to_s
+        yards[id] = yards.delete(held_id(:left)).to_i + yards.delete(held_id(:right)).to_i
+        name = $left_hand
+        empty(:left)
+        empty(:right)
+        hold(combine_into.first, name, id)
+        combine_reply
+      when 'swap'
+        return 'You have nothing to swap.' if swap_stuck.first
+        name = $right_hand
+        id = held_id(:right)
+        empty(:right)
+        hold(:left, name, id)
+        'You move some burlap cloth to your left hand.'
+      when 'study my instructions' then 'Roundtime: 8 sec.'
+      else ''
+      end
+    end
+
+    before do
+      sew.instance_variable_set(:@noun, 'netting')
+      sew.instance_variable_set(:@instructions, true)
+      sew.instance_variable_set(:@material_id, '25917288')
+      sew.instance_variable_set(:@material_name, 'burlap cloth')
+      sew.instance_variable_set(:@material_noun, 'cloth')
+      sew.instance_variable_set(:@worn_trashcan, 'bucket')
+      sew.instance_variable_set(:@worn_trashcan_verb, 'tap')
+      hold(:left, 'burlap cloth', '25917288')
+      hold(:right, 'netting instructions', nil)
+      $hand_nouns = { 'burlap cloth' => 'cloth', 'netting instructions' => 'instructions', 'clockwork scissors' => 'scissors' }
+
+      allow(sew).to receive(:exit).and_raise(SystemExit)
+      allow(Lich::Messaging).to receive(:msg) { |_kind, text| messages << text }
+      allow(DRC).to receive(:bput) do |command, *patterns|
+        sent << command
+        line = reply_for(command)
+        patterns.flatten.reject { |pattern| pattern.is_a?(Hash) }
+                .map { |pattern| line.match(pattern.is_a?(Regexp) ? pattern : /#{pattern}/i) }.compact.first.to_a.first || ''
+      end
+      allow(DRCC).to receive(:get_crafting_item) do |name, _bag, _items, _belt, _skip|
+        sent << "get #{name}"
+        if name.end_with?('instructions')
+          hold(:right, 'netting instructions', nil)
+          next true
+        end
+        free = %i[right left].find { |hand| held_id(hand).nil? && (hand == :left ? $left_hand : $right_hand).nil? }
+        id = bag.shift
+        next false unless id && free
+
+        hold(free, name, id)
+        true
+      end
+      allow(DRCC).to receive(:stow_crafting_item) do |name, _bag, _belt|
+        sent << "stow #{name}"
+        hand = $right_hand == name ? :right : (:left if $left_hand == name)
+        empty(hand) if hand
+        true
+      end
+      allow(DRCI).to receive(:put_away_item?) do |ref, container|
+        sent << "put #{ref} in #{container}"
+        hand = hand_of(ref)
+        next false unless hand
+
+        bag << held_id(hand)
+        empty(hand)
+        true
+      end
+      allow(DRCI).to receive(:in_left_hand?) { |item| item.to_s.start_with?('#') ? item == "##{held_id(:left)}" : $left_hand.to_s.include?(item.to_s) }
+      allow(DRCI).to receive(:dispose_trash) do |ref, _can, _verb|
+        sent << "dispose #{ref}"
+        hand = hand_of(ref)
+        next false unless hand
+
+        trashed << held_id(hand)
+        empty(hand)
+        true
+      end
+    end
+
+    def check
+      sew.send(:ensure_enough_material, 'burlap cloth')
+    end
+
+    it 'sends only READ and COUNT when the piece in hand is enough' do
+      yards['25917288'] = 10
+      check
+      expect(sent).to eq(['read my netting instructions', 'count #25917288'])
+      expect($right_hand).to eq('netting instructions')
+    end
+
+    it 'reads the yards off the leather line ("refined leather material")' do
+      sew.instance_variable_set(:@material_name, 'rat leather')
+      sew.instance_variable_set(:@material_noun, 'leather')
+      read_reply.replace('   (1) refined leather material (5 yards)')
+      yards['25917288'] = 5
+      sew.send(:ensure_enough_material, 'rat leather')
+      expect(sent).to eq(['read my netting instructions', 'count #25917288'])
+      expect(messages).to be_empty
+    end
+
+    it 'tops a short piece up with another from the bag, combining them, then gets the instructions back' do
+      bag << '25917300'
+      yards['25917300'] = 50
+      check
+      expect(sent).to eq(['read my netting instructions', 'count #25917288', 'stow netting instructions', 'get burlap cloth',
+                          'combine cloth', 'swap', 'count #9000001', 'get netting instructions'])
+      expect(sew.instance_variable_get(:@material_id)).to eq('9000001')
+      expect(held_id(:left)).to eq('9000001')
+      expect(yards['9000001']).to eq(54)
+      expect(trashed).to be_empty
+    end
+
+    it 'never studies or throws anything away when no more can be had: the piece goes back in the bag by its id' do
+      expect { sew.send(:read_recipe, 'burlap cloth') }.to raise_error(SystemExit)
+      expect(sent).not_to include('study my instructions')
+      expect(sent).not_to include(a_string_starting_with('dispose'))
+      expect(trashed).to be_empty
+      expect(sent).to include('stow netting instructions', 'put #25917288 in duffel bag')
+      expect(bag).to eq(['25917288'])
+      expect(messages.last).to eq('sew: Not enough burlap cloth for the netting, which needs 10 yards. The burlap cloth in hand is 4 yards and there ' \
+                                  'is no more burlap cloth in your duffel bag to add to it. Stopping before the instructions are studied.')
+      expect($left_hand).to be_nil
+      expect($right_hand).to be_nil
+    end
+
+    it 'treats a GET that says it worked but leaves no new piece in hand as no replacement: nothing thrown away' do
+      allow(DRCC).to receive(:get_crafting_item) do |name, *|
+        sent << "get #{name}"
+        true
+      end
+      expect { check }.to raise_error(SystemExit)
+      expect(trashed).to be_empty
+      expect(sent).not_to include('combine cloth')
+      expect(sent).to include('put #25917288 in duffel bag')
+      expect(messages.last).to include('getting more from your duffel bag said it worked, but no new piece of it is in hand')
+      expect(messages.last).not_to include('no more burlap cloth')
+    end
+
+    it 'throws nothing away on a refused combine: both pieces go back in the bag by id and it stops before the study' do
+      combine_into.replace([:refuse])
+      combine_reply.replace('Those items cannot be combined.')
+      bag << '25917300'
+      yards['25917300'] = 60
+      expect { sew.send(:read_recipe, 'burlap cloth') }.to raise_error(SystemExit)
+      expect(sent).not_to include(a_string_starting_with('dispose'))
+      expect(trashed).to be_empty
+      expect(sent).to include('put #25917288 in duffel bag', 'put #25917300 in duffel bag')
+      expect(bag).to contain_exactly('25917288', '25917300')
+      expect(sent).not_to include('study my instructions')
+      expect(messages.last).to eq('sew: Could not combine the burlap cloth pieces (Those items cannot be combined.); the one in hand is 4 yards ' \
+                                  'and the netting needs 10. Stopping before the instructions are studied.')
+    end
+
+    it 'says "no reply" for a refused combine that got none' do
+      combine_into.replace([:refuse])
+      combine_reply.replace('')
+      bag << '25917300'
+      expect { check }.to raise_error(SystemExit)
+      expect(messages.last).to start_with('sew: Could not combine the burlap cloth pieces (no reply); the one in hand is 4 yards')
+    end
+
+    it 'stops, putting every piece back, when the combined stack cannot be moved to the left hand' do
+      swap_stuck.replace([true])
+      bag << '25917300'
+      yards['25917300'] = 60
+      expect { check }.to raise_error(SystemExit)
+      expect(sent).to include('put #9000001 in duffel bag')
+      expect(messages.last).to include('could not be moved to your left hand to work it')
+    end
+
+    it 'stops when no piece of the material is in hand after combining' do
+      combine_into.replace([:vanish])
+      bag << '25917300'
+      expect { check }.to raise_error(SystemExit)
+      expect(messages.last).to include('No piece of burlap cloth is in hand after combining')
+    end
+
+    it 'gets nothing more, and says both hands are full, when the instructions would not go back' do
+      allow(DRCC).to receive(:stow_crafting_item) do |name, *|
+        sent << "stow #{name}"
+        true
+      end
+      bag << '25917300'
+      expect { check }.to raise_error(SystemExit)
+      expect(sent).not_to include('get burlap cloth')
+      expect(messages.last).to include('with both hands full no more could be got from your duffel bag')
+    end
+
+    it 'takes a combine whose reply was missed by the hands, and goes on to study' do
+      combine_reply.replace('')
+      bag << '25917300'
+      yards['25917300'] = 50
+      expect { sew.send(:read_recipe, 'burlap cloth') }.not_to raise_error
+      expect(sew.instance_variable_get(:@material_id)).to eq('9000001')
+      expect(held_id(:left)).to eq('9000001')
+      expect(trashed).to be_empty
+      expect(sent.last).to eq('study my instructions')
+    end
+
+    it 'takes a combined stack that lands in the left hand, with no swap' do
+      combine_into.replace([:left])
+      bag << '25917300'
+      yards['25917300'] = 50
+      check
+      expect(sent).not_to include('swap')
+      expect(held_id(:left)).to eq('9000001')
+      expect(sew.instance_variable_get(:@material_id)).to eq('9000001')
+    end
+
+    it 'stops after MAX_MATERIAL_PIECES pieces, never studying' do
+      7.times { |n| bag << "2591730#{n}" }
+      7.times { |n| yards["2591730#{n}"] = 0 }
+      expect { sew.send(:read_recipe, 'burlap cloth') }.to raise_error(SystemExit)
+      expect(sent.count('combine cloth')).to eq(Sew::MAX_MATERIAL_PIECES - 1)
+      expect(sent).not_to include('study my instructions')
+      expect(messages.last).to include("Combined #{Sew::MAX_MATERIAL_PIECES - 1} more pieces of burlap cloth and the burlap cloth in hand is still only 4 yards")
+      expect(trashed).to be_empty
+    end
+
+    it 'goes ahead as before, saying so, when COUNT gives no yards' do
+      count_override['25917288'] = ''
+      check
+      expect(sent).to eq(['read my netting instructions', 'count #25917288'])
+      expect(messages).to eq(['sew: Could not count the burlap cloth (no reply); going ahead without checking it is enough.'])
+    end
+
+    it 'goes ahead as before, saying so, when READ names no yards for the material' do
+      read_reply.replace('   (1) refined fabric yarn (12 yards)')
+      check
+      expect(sent).to eq(['read my netting instructions'])
+      expect(messages.first).to include('name no yards of burlap cloth')
+    end
+
+    it 'gets the run\'s yarn by its material for knitting ("wool yarn"), never bare "yarn"' do
+      sew.instance_variable_set(:@knit, true)
+      sew.instance_variable_set(:@mat_type, 'wool')
+      sew.instance_variable_set(:@noun, 'outfit')
+      allow(DRCA).to receive(:crafting_magic_routine)
+      allow(sew).to receive(:swap_tool)
+      empty(:left)
+      empty(:right)
+      got = []
+      allow(DRCC).to receive(:get_crafting_item) { |name, *| got << name; true }
+      allow(sew).to receive(:check_hand)
+      allow(sew).to receive(:ensure_enough_material) { |material| got << "check #{material}" }
+      sew.send(:prep)
+      expect(got.first).to eq('wool yarn')
+      expect(got).to include('check wool yarn')
+      expect(got).not_to include('yarn')
+    end
+
+    it 'keeps bare "yarn" for knitting only when the run names no material' do
+      sew.instance_variable_set(:@knit, true)
+      sew.instance_variable_set(:@mat_type, nil)
+      allow(DRCA).to receive(:crafting_magic_routine)
+      allow(sew).to receive(:swap_tool)
+      allow(sew).to receive(:check_hand)
+      allow(sew).to receive(:ensure_enough_material)
+      got = []
+      allow(DRCC).to receive(:get_crafting_item) { |name, *| got << name; true }
+      sew.send(:prep)
+      expect(got.first).to eq('yarn')
+    end
+
+    it 'tops up knitting yarn by the run\'s material' do
+      sew.instance_variable_set(:@noun, 'outfit')
+      sew.instance_variable_set(:@material_name, 'wool yarn')
+      sew.instance_variable_set(:@material_noun, 'yarn')
+      read_reply.replace('   (1) refined fabric yarn (12 yards)')
+      hold(:left, 'wool yarn', '25917288')
+      hold(:right, 'outfit instructions', nil)
+      $hand_nouns['wool yarn'] = 'yarn'
+      bag << '25917300'
+      yards['25917300'] = 20
+      sew.send(:ensure_enough_material, 'wool yarn')
+      expect(sent).to include('get wool yarn')
+      expect(sent).not_to include('get yarn')
+    end
+
+    it 'checks the yarn the same way for a knitted outfit, and studies once it is enough' do
+      sew.instance_variable_set(:@noun, 'outfit')
+      sew.instance_variable_set(:@material_name, 'yarn')
+      sew.instance_variable_set(:@material_noun, 'yarn')
+      read_reply.replace('   (1) refined fabric yarn (12 yards)')
+      hold(:left, 'wool yarn', '25735696')
+      sew.instance_variable_set(:@material_id, '25735696')
+      yards.replace('25735696' => 12)
+      allow(DRCC).to receive(:get_crafting_item) do |name, *|
+        sent << "get #{name}"
+        true
+      end
+      sew.send(:read_recipe, 'yarn')
+      expect(sent).to eq(['get outfit instructions', 'read my outfit instructions', 'count #25735696', 'study my instructions'])
+    end
+
+    it 'stops on a short scrap of yarn before the study (Defileous, 2026-11-10 22:14:36)' do
+      sew.instance_variable_set(:@noun, 'outfit')
+      sew.instance_variable_set(:@material_name, 'yarn')
+      sew.instance_variable_set(:@material_noun, 'yarn')
+      read_reply.replace('   (1) refined fabric yarn (12 yards)')
+      sew.instance_variable_set(:@material_id, '25917288')
+      expect { sew.send(:read_recipe, 'yarn') }.to raise_error(SystemExit)
+      expect(sent).not_to include('study my instructions')
+    end
+
+    describe 'stopping with the hands put away' do
+      before do
+        hold(:right, 'clockwork scissors', '25917287')
+        sew.instance_variable_set(:@cube, nil)
+        sew.instance_variable_set(:@belt, 'tailor belt')
+        allow(DRCA).to receive(:crafting_magic_routine)
+      end
+
+      it 'puts the material back in the bag by its id and the tool on the belt on "You need a larger amount of material"' do
+        allow(DRC).to receive(:bput) do |command, *|
+          sent << command
+          command.start_with?('cut ') ? 'You need a larger amount of material to continue crafting' : ''
+        end
+        expect { sew.send(:work, 'cut my burlap cloth with my scissors') }.to raise_error(SystemExit)
+        expect(sent).to include('put #25917288 in duffel bag', 'stow clockwork scissors')
+        expect(bag).to eq(['25917288'])
+        expect($left_hand).to be_nil
+        expect($right_hand).to be_nil
+        expect(messages).to include('sew: Not enough material to continue crafting netting. Exiting.')
+      end
+
+      it 'leaves the knitting needles in hand while knitting, putting only the yarn back' do
+        sew.instance_variable_set(:@material_name, 'yarn')
+        sew.instance_variable_set(:@material_noun, 'yarn')
+        sew.instance_variable_set(:@home_tool, 'knitting needles')
+        hold(:left, 'wool yarn', '25917288')
+        hold(:right, 'polished loimic knitting needles', '24321517')
+        $hand_nouns.merge!('wool yarn' => 'yarn', 'polished loimic knitting needles' => 'needles')
+        allow(DRC).to receive(:bput) do |command, *|
+          sent << command
+          command.start_with?('knit ') ? 'You need a larger amount of material to continue crafting' : ''
+        end
+        expect { sew.send(:work, 'knit my yarn with my knitting needles') }.to raise_error(SystemExit)
+        expect(sent).to include('put #25917288 in duffel bag')
+        expect(sent).not_to include(a_string_starting_with('stow'))
+        expect($right_hand).to eq('polished loimic knitting needles')
+      end
+
+      it 'sends no put or stow on the stall stop, leaving the hands as they are' do
+        allow(DRC).to receive(:bput) do |command, *|
+          sent << command
+          ''
+        end
+        allow(sew).to receive(:finish)
+        expect { sew.send(:work, 'push my netting with my sewing needles') }.to raise_error(SystemExit)
+        expect(sent).not_to include(a_string_matching(/\A(put|stow) /))
+        expect($left_hand).to eq('burlap cloth')
+        expect($right_hand).to eq('clockwork scissors')
+      end
+
+      it 'leaves a piece already being worked in hand (it is no longer the raw material)' do
+        hold(:left, 'netting', '25917288')
+        $hand_nouns['netting'] = 'netting'
+        sew.send(:put_away_raw_material)
+        expect(sent).to be_empty
+        expect($left_hand).to eq('netting')
+      end
+
+      it 'says so when the material cannot be put back' do
+        allow(DRCI).to receive(:put_away_item?).and_return(false)
+        expect { sew.send(:stop_with_hands_put_away, 'sew: stop.') }.to raise_error(SystemExit)
+        expect(messages).to include('sew: Could not put the burlap cloth (#25917288) back in your duffel bag; it is still in your hand.')
+      end
+
+      it 'puts the material away when a tool cannot be got' do
+        allow(DRCI).to receive(:in_hands?).and_return(false)
+        expect { sew.send(:swap_tool, 'yardstick') }.to raise_error(SystemExit)
+        expect(sent).to include('put #25917288 in duffel bag')
+        expect(messages).to include("sew: Failed to get 'yardstick'. Cannot continue crafting.")
+      end
     end
   end
 end
