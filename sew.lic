@@ -130,7 +130,22 @@ class Sew
     end
 
     check_rental_status
-    work(prep)
+    start_item
+  end
+
+  # Readies a new item (prep) and works it. A completion line still on its
+  # way from an earlier run sets sew-done while this run starts: on
+  # 2026-11-06 a 100-second lag stopped a sew mid-netting, taskmaster started
+  # another, and the stopped run's backlogged commands then finished the old
+  # netting ("Applying the final touches") during the new run's setup. The
+  # new run's first cut then ended in finish, which stowed a netting cut
+  # once as done; the unfinished netting rode in the bag for days, and
+  # Zasele turned it down at each hand-in. So the flag is cleared once prep
+  # is done, right before the first crafting command.
+  def start_item
+    command = prep
+    Flags.reset('sew-done')
+    work(command)
   end
 
   def check_hand(item)

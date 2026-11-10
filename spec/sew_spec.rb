@@ -1056,6 +1056,72 @@ RSpec.describe Sew do
   end
 
   # ===========================================================================
+  # #start_item -- a completion left over from an earlier run
+  # ===========================================================================
+  describe '#start_item' do
+    before do
+      stub_const('Flags', Class.new do
+        @data = {}
+
+        def self.[]=(key, val)
+          @data[key] = val
+        end
+
+        def self.[](key)
+          @data[key]
+        end
+
+        def self.reset(key)
+          @data[key] = nil
+        end
+      end)
+      sew.instance_variable_set(:@noun, 'netting')
+      sew.instance_variable_set(:@home_tool, 'sewing needles')
+      sew.instance_variable_set(:@home_command, 'push my netting with my needles')
+      allow(DRCA).to receive(:crafting_magic_routine)
+      allow(sew).to receive(:assemble_part)
+      allow(sew).to receive(:swap_tool)
+      allow(sew).to receive(:finish)
+    end
+
+    # Mahtra, 2026-11-06 00:30:57 NZDT: a stopped sew's backlogged push ended
+    # with "Applying the final touches, you complete working on some burlap
+    # reinforced netting." while taskmaster's next sew was starting. That
+    # run's first cut ("Roundtime: 8 sec.") then went to finish, and a
+    # netting cut once was stowed as done.
+    it 'does not take a completion seen before the first cut as this item being done' do
+      allow(sew).to receive(:prep) do
+        Flags['sew-done'] = ['Applying the final touches, you complete working on some burlap reinforced netting.']
+        'cut my burlap cloth with my scissors'
+      end
+      sent = []
+      stop = Class.new(StandardError)
+      allow(DRC).to receive(:bput) do |command, *|
+        sent << command
+        raise stop if sent.size > 1
+
+        'Roundtime: 8 sec.'
+      end
+
+      expect { sew.start_item }.to raise_error(stop)
+
+      expect(sew).not_to have_received(:finish)
+      expect(sent).to eq(['cut my burlap cloth with my scissors', 'push my netting with my needles'])
+    end
+
+    it "still finishes on this item's own completion" do
+      allow(sew).to receive(:prep).and_return('push my netting with my needles')
+      allow(DRC).to receive(:bput) do |*|
+        Flags['sew-done'] = ['Applying the final touches, you complete working on some burlap reinforced netting.']
+        'Roundtime: 5 sec.'
+      end
+      allow(sew).to receive(:finish) { raise 'finished' }
+
+      expect { sew.start_item }.to raise_error('finished')
+    end
+  end
+
+  # ===========================================================================
   # #assemble_part -- nil hand safety
   # ===========================================================================
   describe '#assemble_part' do
