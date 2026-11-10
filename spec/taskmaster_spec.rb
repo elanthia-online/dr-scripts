@@ -5113,6 +5113,134 @@ RSpec.describe TaskMaster do
         end
       end
 
+      # A scrap stowed into the pack after sew stopped on it was taken back by
+      # its remembered id (Lilwea, 2026-11-11 08:32:01 "You get some burlap
+      # cloth from inside your traveler's pack."); 22 characters carried such
+      # scraps after 2026-11-10.
+      describe '#bin_stray_stock' do
+        def stray_binner(**ivars)
+          binner(lootbag: "traveler's pack", settings: { task_loot_bag: "traveler's pack" }, **ivars)
+        end
+
+        it 'bins the task stock in task_loot_bag, leaves the crafting bag alone, flushes and says why' do
+          world = stock_world({ 'burlap cloth' => 2 }, others: { "traveler's pack" => { 'burlap cloth' => 1, 'wool yarn' => 1 } })
+          expect(stray_binner.bin_stray_stock('sew made no netting on its last run (0 of 3 made)')).to eq(2)
+          expect(world[:others]["traveler's pack"]).to eq('burlap cloth' => 0, 'wool yarn' => 0)
+          expect(world[:bag]).to eq('burlap cloth' => 2)
+          expect(world[:sent]).to include("get my burlap cloth from my traveler's pack", "get my wool yarn from my traveler's pack", 'tap my bucket')
+          expect(DRC).to have_received(:message).with("sew made no netting on its last run (0 of 3 made): binned 2 piece(s) of task stock left in your traveler's pack, outside the crafting bag, where a GET by a remembered id could take one for the next item.")
+        end
+
+        it 'sends nothing and says nothing when none is there' do
+          world = stock_world({ 'burlap cloth' => 2 }, others: { "traveler's pack" => {} })
+          expect(stray_binner.bin_stray_stock('x')).to eq(0)
+          expect(world[:sent].grep(/\Aput /)).to be_empty
+          expect(DRC).not_to have_received(:message)
+        end
+
+        it 'does nothing without task_bin_leftover_stock, in marathon, or when task_loot_bag is the crafting bag' do
+          world = stock_world({}, others: { "traveler's pack" => { 'burlap cloth' => 1 } })
+          expect(stray_binner(bin_leftover_stock: false).bin_stray_stock('x')).to eq(0)
+          expect(stray_binner(marathon: true).bin_stray_stock('x')).to eq(0)
+          expect(binner(lootbag: 'duffel bag').bin_stray_stock('x')).to eq(0)
+          expect(world[:sent]).to be_empty
+        end
+
+        it 'runs from tailor_item after a counted sew run that made none, not otherwise' do
+          tm = stray_binner
+          allow(tm).to receive(:check_sewing_consumables)
+          allow(DRCT).to receive(:walk_to)
+          allow(tm).to receive(:bin_stray_stock)
+          allow(tm).to receive(:craft_each) do
+            tm.instance_variable_set(:@craft_stalled, true)
+            1
+          end
+
+          expect(tm.tailor_item('netting', 3, 'cloth', 'burlap')).to eq(1)
+          expect(tm).to have_received(:bin_stray_stock).with('sew made no netting on its last run (1 of 3 made)').once
+
+          allow(tm).to receive(:craft_each) do
+            tm.instance_variable_set(:@craft_stalled, false)
+            3
+          end
+          expect(tm.tailor_item('netting', 3, 'cloth', 'burlap')).to eq(3)
+          expect(tm).to have_received(:bin_stray_stock).once
+        end
+
+        it 'does not run when INVENTORY never answered and no sew run was launched' do
+          tm = stray_binner
+          allow(tm).to receive(:check_sewing_consumables)
+          allow(DRCT).to receive(:walk_to)
+          allow(tm).to receive(:finished_count).and_return(nil)
+          allow(tm).to receive(:bin_stray_stock)
+          allow(DRC).to receive(:wait_for_script_to_complete)
+
+          expect(tm.tailor_item('netting', 3, 'cloth', 'burlap')).to eq(0)
+
+          expect(DRC).not_to have_received(:wait_for_script_to_complete)
+          expect(tm).not_to have_received(:bin_stray_stock)
+        end
+
+        it 'puts a piece the trash can refuses back in task_loot_bag, never in the crafting bag' do
+          world = stock_world({}, refuse: true, others: { "traveler's pack" => { 'burlap cloth' => 1 } })
+          expect(stray_binner.bin_stray_stock('x')).to eq(0)
+          expect(world[:sent]).to include("put #2222486 in my traveler's pack")
+          expect(world[:sent]).not_to include('put #2222486 in my duffel bag')
+          expect(world[:others]["traveler's pack"]).to eq('burlap cloth' => 1)
+          expect(world[:bag]).to eq({})
+        end
+
+        it 'puts back, without binning, a piece the GET found that is not named as the stock' do
+          world = stock_world({}, others: { "traveler's pack" => {} })
+          tm = stray_binner
+          allow(tm).to receive(:take_stock_piece).and_return('#7001', nil)
+          allow(GameObj).to receive(:right_hand).and_return(OpenStruct.new(name: 'silk cloth', noun: 'cloth', id: '7001'))
+          allow(DRCI).to receive(:put_away_item?).and_return(true)
+
+          expect(tm.bin_stray_stock('x')).to eq(0)
+
+          expect(DRCI).to have_received(:put_away_item?).with('#7001', "traveler's pack")
+          expect(DRCI).not_to have_received(:put_away_item?).with('#7001', 'bucket')
+          expect(world[:sent]).to be_empty
+        end
+
+        it 'does nothing without task_loot_bag set (never the backpack default)' do
+          world = stock_world({}, others: { 'backpack' => { 'burlap cloth' => 1 } })
+          expect(binner(lootbag: 'backpack').bin_stray_stock('x')).to eq(0)
+          expect(world[:sent]).to be_empty
+        end
+
+        it 'takes task_loot_bag named another way for the crafting bag too' do
+          world = stock_world({ 'burlap cloth' => 1 })
+          expect(binner(lootbag: 'my duffel bag', settings: { task_loot_bag: 'my duffel bag' }).bin_stray_stock('x')).to eq(0)
+          expect(world[:sent]).to be_empty
+        end
+
+        it 'says the pieces were thrown away, not binned, when the trash can did not flush' do
+          stock_world({}, others: { "traveler's pack" => { 'wool yarn' => 1 } })
+          tm = stray_binner
+          allow(tm).to receive(:flush_binned_stock).and_return(false)
+
+          expect(tm.bin_stray_stock('x')).to eq(1)
+
+          expect(DRC).to have_received(:message).with(a_string_starting_with('x: threw away 1 piece(s) of task stock').and(ending_with('(the bucket did not flush; see above).')))
+        end
+
+        it 'runs before the cancel when the instructions run out' do
+          UserVars.taskmaster_replacements = { 'zasele' => 'rope' }
+          tm = stray_binner(cancel_short_tasks: true)
+          allow(tm).to receive(:pause)
+          order = []
+          allow(tm).to receive(:bin_stray_stock) { order << :bin }
+          allow(tm).to receive(:cancel_task) { order << :cancel }
+
+          expect { tm.request_replacement('rope', needed: 3, most: 2) }.to throw_symbol(TaskMaster::FOREIGN_TASK_CANCELLED)
+
+          expect(order).to eq(%i[bin cancel])
+          expect(tm).to have_received(:bin_stray_stock).with('The rope instructions ran out')
+        end
+      end
+
       it 'stops at TASK_STOCK_BIN_CAP pieces per stock' do
         cap = described_class::TASK_STOCK_BIN_CAP
         world = stock_world({ 'burlap cloth' => cap + 5 })
