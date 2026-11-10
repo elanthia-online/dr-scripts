@@ -132,7 +132,7 @@ RSpec.describe TaskMaster do
   # its pieces. others: other containers' pieces by container name, e.g.
   # { 'backpack' => { 'bronze ingot' => 2 } }.
   def stock_world(pieces, worn_leathers: false, refuse: false, bag_full: false, no_floor: false, hands: {}, listed: true, others: {})
-    world = { bag: pieces.dup, hands: { right: nil, left: nil }.merge(hands), floor: [], sent: [], others: others.transform_values(&:dup) }
+    world = { bag: pieces.dup, hands: { right: nil, left: nil }.merge(hands), floor: [], bucket: [], sent: [], others: others.transform_values(&:dup) }
     contents = ->(container) { container == 'duffel bag' ? world[:bag] : world[:others][container] }
     next_id = 2_222_485
     allow(GameObj).to receive(:right_hand) { world[:hands][:right] || OpenStruct.new(name: 'Empty', noun: nil, id: nil) }
@@ -173,6 +173,7 @@ RSpec.describe TaskMaster do
         elsif refuse
           next "There isn't any more room in the #{into.delete_prefix('my ')} for that."
         end
+        world[:bucket] << piece if into == 'my bucket'
         world[:hands][hand] = nil
         container ? "You put your #{piece.noun} in your #{into.delete_prefix('my ')}." : "You drop your #{piece.noun} in a #{into.delete_prefix('my ')}."
       when /\Adrop (#\d+)\z/
@@ -183,6 +184,15 @@ RSpec.describe TaskMaster do
         world[:floor] << world[:hands][hand].name
         world[:hands][hand] = nil
         'You drop some stock.'
+      when /\Aget #(\d+)\z/
+        piece = world[:bucket].find { |obj| obj.id == Regexp.last_match(1) }
+        hand = world[:hands].find { |_, obj| obj.nil? }&.first
+        next 'What were you referring to?' unless piece
+        next 'You need a free hand to pick that up.' unless hand
+
+        world[:bucket].delete(piece)
+        world[:hands][hand] = piece
+        "You get some #{piece.name} from inside your silversteel bucket."
       when 'tap my bucket'
         'You drum your fingers on the bucket rhythmically.'
       else
@@ -4848,6 +4858,110 @@ RSpec.describe TaskMaster do
         expect(world[:hands].values.compact.map(&:id)).to eq(['2222488'])
         expect(world[:sent].last(2)).to eq(['tap my bucket', 'tap my bucket'])
         expect(DRC).to have_received(:message).with('Binned 2 piece(s) of leftover task stock')
+      end
+
+      # With a lich-5 whose DRCI confirms the worn trash can's flush
+      # (DRCI.flush_worn_trashcan, DRCI.note_thrown_away). On 2026-11-10 the
+      # bucket's TAP did nothing for 90 minutes; binned yarn stayed in it and
+      # sew took it back by its remembered id.
+      context 'when DRCI confirms the flush' do
+        let(:no_effect) { 'You tap a portable silversteel bucket with a flared rim that you are wearing.' }
+        let(:thrown) { [] }
+
+        def flush_gives(outcome)
+          allow(DRCI).to receive(:flush_worn_trashcan).with('bucket', 'tap').and_return(outcome)
+          allow(DRCI).to receive(:note_thrown_away) { |ref| thrown << ref }
+          allow(XMLData).to receive(:room_title).and_return('[Andreshlew, Pearl Road]')
+        end
+
+        it 'leaves the flush to DRCI, sends no TAP itself, and records every piece as thrown away' do
+          world = stock_world({ 'burlap cloth' => 2, 'wool yarn' => 1 })
+          flush_gives(:flushed)
+          expect(binner.bin_task_stock).to eq(3)
+          expect(world[:sent]).not_to include('tap my bucket')
+          expect(thrown).to eq(%w[#2222486 #2222487 #2222488])
+          expect(DRC).to have_received(:message).with('Binned 3 piece(s) of leftover task stock')
+        end
+
+        it 'records every piece as thrown away even without a trash can verb, and sends no TAP' do
+          world = stock_world({ 'wool yarn' => 2 })
+          flush_gives(:flushed)
+          expect(binner(worn_trashcan_verb: nil).bin_task_stock).to eq(2)
+          expect(thrown).to eq(%w[#2222486 #2222487])
+          expect(DRCI).not_to have_received(:flush_worn_trashcan)
+          expect(world[:sent]).not_to include(a_string_starting_with('tap'))
+        end
+
+        it 'counts a trash can with no confirming line as flushed, as before' do
+          stock_world({ 'wool yarn' => 1 })
+          flush_gives(:unconfirmed)
+          expect(binner.bin_task_stock).to eq(1)
+          expect(thrown).to eq(['#2222486'])
+          expect(DRC).not_to have_received(:message).with(a_string_including('did not flush'))
+        end
+
+        context 'when the bucket does not flush' do
+          it 'says what it is doing and why, then takes each piece back by its id and gives it to DRCI.dispose_trash' do
+            world = stock_world({ 'burlap cloth' => 1, 'wool yarn' => 1 })
+            flush_gives(no_effect)
+            expect(binner.bin_task_stock).to eq(2)
+            expect(DRC).to have_received(:message).with(a_string_including(
+                                                          "did not flush (#{no_effect})", '2 piece(s) of leftover stock', 'about 5 minutes',
+                                                          'Taking each back out to throw away here (Andreshlew, Pearl Road)', 'otherwise the floor'
+                                                        )).ordered
+            expect(DRC).to have_received(:message).with('Threw away 2 piece(s) of leftover task stock (the bucket did not flush; see above)').ordered
+            expect(world[:sent]).to include('get #2222486', 'get #2222487')
+            expect(DRCI).to have_received(:dispose_trash).with('#2222486', 'bucket', 'tap')
+            expect(DRCI).to have_received(:dispose_trash).with('#2222487', 'bucket', 'tap')
+            expect(world[:hands].values).to all(be_nil)
+            expect(thrown).to eq(%w[#2222486 #2222487])
+          end
+
+          it 'takes back only the pieces it binned, never by name' do
+            world = stock_world({ 'wool yarn' => 2 })
+            flush_gives('no reply')
+            binner.bin_task_stock
+            expect(world[:sent].grep(/\Aget #/)).to eq(['get #2222486', 'get #2222487'])
+            expect(world[:sent]).not_to include(a_string_matching(/\Aget my .* from my bucket/))
+          end
+
+          it 'goes on when a piece is already gone from the bucket' do
+            world = stock_world({ 'wool yarn' => 2 })
+            flush_gives(no_effect)
+            allow(DRCI).to receive(:flush_worn_trashcan) do
+              world[:bucket].reject! { |obj| obj.id == '2222486' }
+              no_effect
+            end
+            expect(binner.bin_task_stock).to eq(2)
+            expect(world[:sent]).to include('get #2222486', 'get #2222487')
+            expect(DRCI).not_to have_received(:dispose_trash).with('#2222486', any_args)
+            expect(DRCI).to have_received(:dispose_trash).with('#2222487', 'bucket', 'tap')
+            expect(DRC).not_to have_received(:message).with(a_string_including('Could not'))
+          end
+
+          it 'says a piece it could not take back will be thrown out where the character is' do
+            world = stock_world({ 'wool yarn' => 1 })
+            flush_gives(no_effect)
+            # Both hands fill before the GET back: "You need a free hand".
+            allow(DRCI).to receive(:flush_worn_trashcan) do
+              world[:hands][:left] = OpenStruct.new(name: 'sewing needles', noun: 'needles', id: '1')
+              world[:hands][:right] = OpenStruct.new(name: 'scissors', noun: 'scissors', id: '2')
+              no_effect
+            end
+            expect(binner.bin_task_stock).to eq(1)
+            expect(world[:bucket].map(&:id)).to eq(['2222486'])
+            expect(DRC).to have_received(:message).with(a_string_including('Could not take #2222486 back out of your bucket', 'free hand', 'about 5 minutes'))
+          end
+
+          it 'says so when a piece it took back cannot be thrown away here' do
+            world = stock_world({ 'wool yarn' => 1 })
+            flush_gives(no_effect)
+            allow(DRCI).to receive(:dispose_trash).and_return(false)
+            expect(binner.bin_task_stock).to eq(1)
+            expect(world[:hands].values.compact.map(&:id)).to eq(['2222486'])
+            expect(DRC).to have_received(:message).with('Could not throw away #2222486 here; it is still in your hand.')
+          end
+        end
       end
 
       it 'stops at TASK_STOCK_BIN_CAP pieces per stock' do
