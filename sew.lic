@@ -28,8 +28,18 @@ class Sew
   RENTAL_RENEWED = /#{LINE_START}\[Your [^\]]*rental has been extended until/
   RENTAL_WARNING = /#{LINE_START}\[You have less than \d+ minutes remaining\.\s+If you wish to renew your rental/
 
-  # Unrecognized replies in a row before #work gives up on a command.
+  # Unrecognized replies before #work gives up: the crafting command's own
+  # miss, then the ANALYZEs sent in its place (#work). A recognized reply to
+  # a crafting command starts the count again; one to an ANALYZE does not,
+  # so a command whose replies sew never knows cannot cycle through ANALYZE
+  # forever.
   MAX_UNMATCHED = 3
+
+  # Seconds #work waits for an ANALYZE's reply after a crafting command got
+  # none. A lag on 2026-11-06 held every reply for about 100 seconds; ANALYZE
+  # is sent once and waited on, not resent every 15 seconds, so no more
+  # commands pile up behind the lag.
+  ANALYZE_TIMEOUT = 90
 
   # The thread the needles take, as the stock room sells it ("100 yards of
   # cotton thread", order 6). Spun spools are thread too ("some heavy silk
@@ -112,13 +122,11 @@ class Sew
       Lich::Messaging.msg('plain', "Resuming work on #{@noun} (finish mode: #{@finish}).")
       if DRCI.in_hands?('knitting needles')
         @home_command = 'knit my needles'
-        command = 'analyze my knitting needles'
       else
         check_hand(@noun) unless DRCI.in_left_hand?(@noun)
         @home_command = "analyze my #{@noun}"
-        command = "analyze my #{@noun}"
       end
-      work(command)
+      work(analyze_command)
     end
     # Before the consumables check: its get needs a free hand too.
     clear_hands
@@ -318,14 +326,34 @@ class Sew
     end
   end
 
+  # ANALYZE of the piece being worked: the knitting needles while knitting,
+  # else the item. Its reply names the next step in words #work already
+  # matches: "The fabric appears ready for more sewing by pushing it with a
+  # needle and thread." (Catheroine, 2026-11-02), "The fabric is in need of
+  # pinning to help arrange the material for further sewing." (Mahtra,
+  # 2026-11-04), and it ends with a Roundtime.
+  def analyze_command
+    DRCI.in_hands?('knitting needles') ? 'analyze my knitting needles' : "analyze my #{@noun}"
+  end
+
+  # Works the item, one command at a time, until a reply ends the run. A
+  # crafting command that gets no reply #work knows is not sent again: it
+  # may only be held up by a lag, and every resend would be done once the
+  # lag clears (on 2026-11-06 three pushes sent into a 100-second lag
+  # finished a netting after sew had given up on it). Instead the run
+  # finishes if the item was finished meanwhile (sew-done), or else sends
+  # ANALYZE, as a resume does, and waits up to ANALYZE_TIMEOUT for it to say
+  # what the item needs next. After MAX_UNMATCHED misses it gives up.
   def work(command)
     DRC.bput("touch my #{@cube}", /^Warm vapor swirls around your head in a misty halo/, /^A thin cloud of vapor manifests with no particular effect./, /^Touch what/, /^You reach out and touch/) if @cube
     unmatched = 0
+    stalled = nil
     loop do
       DRCA.crafting_magic_routine(@settings)
       renew_rental if Flags['sew-rental-warning']
       assemble_part
       result = DRC.bput(command,
+                        *(stalled ? [{ 'timeout' => ANALYZE_TIMEOUT }] : []),
                         'a slip knot in your yarn',
                         'A sufficient quantity of wax exists',
                         'A buildup of wax on .* must now be rubbed',
@@ -371,17 +399,22 @@ class Sew
                         /^You realize that cannot be repaired, and stop/,
                         /^You must be holding the .* to do that/,
                         /^You cannot do that while engaged!/)
-      # bput returns an empty string when no matcher fits. Resending the
-      # same command would loop forever, so give up after a few misses.
+      # bput returns an empty string when no matcher fits.
       if result.empty?
         unmatched += 1
-        next if unmatched < MAX_UNMATCHED
-
-        Lich::Messaging.msg('bold', "sew: No recognized response to '#{command}' after #{MAX_UNMATCHED} tries. Cannot continue crafting.")
-        magic_cleanup
-        exit
+        stalled ||= command
+        waitrt?
+        finish if Flags['sew-done']
+        if unmatched >= MAX_UNMATCHED
+          Lich::Messaging.msg('bold', "sew: No recognized response to '#{stalled}', or to ANALYZE after it, in #{MAX_UNMATCHED} tries. Cannot continue crafting.")
+          magic_cleanup
+          exit
+        end
+        command = analyze_command
+        next
       end
-      unmatched = 0
+      unmatched = 0 unless stalled
+      stalled = nil
 
       case result
       when /You need a larger amount of material to continue crafting/
