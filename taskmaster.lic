@@ -21,6 +21,7 @@
   task_rock_room: 793 # room where Dorhum's spongestone and splashstone tasks forage rocks (none can be had on Andreshlew)
   task_shell_room: 793 # room where Dorhum's glow shell tasks forage shells
   task_cancel_foreign_tasks: true/false # a run never works another taskmaster's task; with this it cancels one it finds open, waits out the 10-minute cooldown a cancel brings, then goes back to its own taskmaster. Off: it stops, saying whose task it is and how to finish or cancel it
+  task_cancel_when_instructions_short: true/false # default true. When the task's one replacement set is spent and the instructions carried still have too few uses, cancel the task (losing the items made for it), wait out the 10-minute cooldown and take a new one. False: stop on every run with "Already asked ..." for a person to look at
   alchemy_tools: [bowl, mixing stick, mortar, pestle, sieve] # Nezhiri's tasks use the mortar and pestle or the bowl and mixing stick (whichever her remedy needs) and the sieve; the two used go to Rangu after each task (task_no_repair / task_self_repair as usual)
   alchemy_belt: # the toolbelt the alchemy tools are tied to, if any
   alchemy_room: <room number> # Nezhiri's remedies are crafted here; unset, in the Crossing alchemy supplies (8862), where the herbs are bought
@@ -35,7 +36,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.11.4'
+  VERSION = '2026.11.11.5'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -109,6 +110,7 @@ class TaskMaster
     @rock_room = @settings.task_rock_room || DEFAULT_ROCK_ROOM
     @shell_room = @settings.task_shell_room || DEFAULT_SHELL_ROOM
     @cancel_foreign_tasks = @settings.task_cancel_foreign_tasks
+    @cancel_short_tasks = @settings.task_cancel_when_instructions_short != false
 
     @stockdata = get_data('crafting')['stock']
     @stackmap = STACKMAP
@@ -188,6 +190,7 @@ class TaskMaster
     elsif args.tools
       list_tools
     elsif args.finish
+      @finish_only = true
       finish_task_in_progress
     elsif args.reset_output
       _respond("<clearStream id='Task Master'/>")
@@ -3318,7 +3321,7 @@ class TaskMaster
   #   the banked items finish it or after the last item is handed in
   # @raise [UncaughtThrowError] never: with task_cancel_foreign_tasks, a
   #   task for another taskmaster is cancelled and FOREIGN_TASK_CANCELLED
-  #   thrown, caught in get_task and finish_task_in_progress
+  #   thrown, caught in get_task and finish_task_in_progress (and, for a remake, remake_not_good_enough)
   def resume_task(exit_when_done: true)
     @dispose, @remainder = [false, false]
     @task_handed_in = false
@@ -3400,9 +3403,11 @@ class TaskMaster
   # Unknown replies in a row to ASK FOR TASK before get_task stops.
   MAX_UNKNOWN_TASK_REPLIES = 3
 
-  # Thrown (and caught in get_task and finish_task_in_progress) once another
-  # taskmaster's task has been cancelled, so the run goes back to asking its
-  # own taskmaster.
+  # Thrown (and caught in get_task, finish_task_in_progress and, for a
+  # remake, remake_not_good_enough) once a task
+  # has been cancelled (another taskmaster's, or this one's when its
+  # instructions ran short: cancel_short_task), so the run goes back to
+  # asking its own taskmaster.
   FOREIGN_TASK_CANCELLED = :taskmaster_foreign_task_cancelled
   # The taskmaster's replies to ASK <taskmaster> FOR TASK CANCEL (Dorhum,
   # 2026-11-03): the first asks to confirm within fifteen seconds, the second
@@ -3444,16 +3449,18 @@ class TaskMaster
   #
   # @param giver [String] the taskmaster whose task it is
   # @param item [String, nil] the task item's noun, for the instructions
+  # @param why [String, nil] the message to give first; nil says whose task
+  #   it is (task_cancel_foreign_tasks)
   # @return [void]
   # @raise [SystemExit] when the cancel does not go through
-  def cancel_task(giver, item)
+  def cancel_task(giver, item, why: nil)
     # A taskmaster this script doesn't do can't be found in @rooms, but any
     # taskmaster ends the task in progress, whoever gave it: Mags ended a
     # Zasele task with "Very well, I will notify Seamstress Zasele that you
     # no longer desire to pursue your task." (Cithrin, 2026-11-11 06:21:06).
     asker = TASKMASTERS.include?(giver) ? giver : @npc
     via = asker == giver ? '' : ", asking #{asker.capitalize}"
-    DRC.message("You are on a task for #{giver.capitalize}, not #{@npc.capitalize}: cancelling it#{via} (task_cancel_foreign_tasks).")
+    DRC.message(why || "You are on a task for #{giver.capitalize}, not #{@npc.capitalize}: cancelling it#{via} (task_cancel_foreign_tasks).")
     put_hands_away
     find_npc(@rooms, asker)
     confirm, cancelled, cancelled_for, none = [TASK_CANCEL_CONFIRM, TASK_CANCELLED, TASK_CANCELLED_FOR_ANOTHER, TASK_CANCEL_NONE].map { |text| cancel_reply(asker, text) }
@@ -3645,7 +3652,9 @@ class TaskMaster
   def request_replacement(item, needed: nil, most: nil)
     UserVars.taskmaster_replacements ||= {}
     if UserVars.taskmaster_replacements[@npc] == item
-      DRC.message("Already asked #{@npc} for #{item} instructions on this task, and #{carried_uses(needed, most)}. Stopping instead of asking again; #{replacement_stop_reason(item)}.")
+      short = "Already asked #{@npc} for #{item} instructions on this task, and #{carried_uses(needed, most)}."
+      cancel_short_task(item, short) if @cancel_short_tasks
+      DRC.message("#{short} Stopping instead of asking again; #{replacement_stop_reason(item)}.")
       exit
     end
     reply = get_instructions(item)
@@ -3657,6 +3666,36 @@ class TaskMaster
     said = reply.empty? ? 'no answer' : "\"#{reply}\""
     DRC.message("Asked #{@npc} for #{item} instructions, but none were handed over (#{said}). That does not count as this task's one replacement. Stopping; the next run asks again.")
     exit
+  end
+
+  # With task_cancel_when_instructions_short (the default), the "Already
+  # asked" stop cancels the task instead, waits out the cooldown a cancel
+  # brings and sends the run back to asking for a new one. Stopping left t2
+  # starting taskmaster again every 12 seconds, each run stopping the same
+  # way, until a person cleared it: about 2,000 runs on each of 22
+  # characters from 2026-11-10 22:17 (Defileous's first,
+  # 2026-11-10_21-07-20.log:14862) to 06:20 the next morning. A cancel
+  # loses the items made for the task and costs about ten minutes.
+  #
+  # @param item [String] the task item's noun
+  # @param short [String] the "Already asked ..." sentence, for the message
+  # @return [void]
+  # In a finish run (;taskmaster <npc> finish) it stops after the cancel
+  # instead of going on to take new tasks.
+  #
+  # @raise [UncaughtThrowError] never: throws FOREIGN_TASK_CANCELLED, caught
+  #   in get_task, finish_task_in_progress and remake_not_good_enough
+  # @raise [SystemExit] when the cancel does not go through, and after the
+  #   cancel in a finish run
+  def cancel_short_task(item, short)
+    cancel_task(@npc, item, why: "#{short} Cancelling the task instead of stopping on every run (task_cancel_when_instructions_short); the #{item}s made for it are lost.")
+    if @finish_only
+      DRC.message("Cancelled the #{@npc.capitalize} task. Not taking a new one: this run was only to finish the task in progress.")
+      exit
+    end
+    DRC.message("Waiting #{CANCEL_COOLDOWN_SECONDS / 60} minutes: after a cancel, taskmasters call you unreliable for about that long.")
+    pause CANCEL_COOLDOWN_SECONDS
+    throw FOREIGN_TASK_CANCELLED
   end
 
   # Why the "Already asked" stop came, for its message. In a remake
@@ -4606,7 +4645,11 @@ class TaskMaster
       exit
     end
     DRC.message("#{@npc.capitalize} turned down #{trashed} #{noun}#{trashed == 1 ? '' : 's'} as not made well enough, and #{trashed == 1 ? 'it' : 'they'} went in the trash. Making the task's #{noun}s again.")
-    resume_task(exit_when_done: false)
+    # The remake can run out of instruction uses and cancel the task
+    # (cancel_short_task). It runs under complete_task, which run_tasks and
+    # run_marathon call outside any catch, so the cancel is caught here: the
+    # task is gone, and the caller's loop asks for the next one.
+    catch(FOREIGN_TASK_CANCELLED) { resume_task(exit_when_done: false) }
   end
 
   # The taskmaster neither took the item nor asked for more, MAX_UNKNOWN_GIVE_REPLIES
