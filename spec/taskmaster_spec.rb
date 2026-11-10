@@ -7535,6 +7535,95 @@ RSpec.describe TaskMaster do
       end
     end
 
+    # After sew stopped on a piece too small to use, repair's DRCI.stow_hands
+    # (task_no_repair) put the scrap and the knitting needles in the pack,
+    # and sew's next GET by the scrap's remembered id took it back from there
+    # (Lilwea, 2026-11-11 08:32:01 "You get some burlap cloth from inside
+    # your traveler's pack.").
+    describe '#put_hands_away' do
+      let(:belt) { { 'name' => "tailor's.toolbelt", 'items' => ['knitting needles', 'clockwork scissors', 'sewing needles'] } }
+      let(:empty) { OpenStruct.new(name: 'Empty', noun: nil, id: nil) }
+
+      def hold(right: nil, left: nil)
+        allow(GameObj).to receive(:right_hand).and_return(right || empty)
+        allow(GameObj).to receive(:left_hand).and_return(left || empty)
+      end
+
+      def obj(name, noun, id)
+        OpenStruct.new(name: name, noun: noun, id: id)
+      end
+
+      before do
+        allow(DRCI).to receive(:put_away_item?).and_return(true)
+        allow(DRCC).to receive(:stow_crafting_item).and_return(true)
+        allow(DRCI).to receive(:stow_hands)
+      end
+
+      it 'puts a raw piece of stock in the crafting bag by its id and ties a belt tool to the belt' do
+        hold(right: obj('polished loimic knitting needles', 'needles', '24321517'), left: obj('wool yarn', 'yarn', '25735696'))
+        build(settings: { outfitting_belt: belt }).put_hands_away
+        expect(DRCI).to have_received(:put_away_item?).with('#25735696', 'duffel bag')
+        expect(DRCC).to have_received(:stow_crafting_item).with('knitting needles', 'duffel bag', belt)
+        expect(DRCI).to have_received(:stow_hands)
+      end
+
+      it 'knows rat-pelt leather and burlap cloth as stock' do
+        hold(right: obj('rat-pelt leather', 'leather', '1'), left: obj('burlap cloth', 'cloth', '2'))
+        build(settings: { outfitting_belt: belt }).put_hands_away
+        expect(DRCI).to have_received(:put_away_item?).with('#1', 'duffel bag')
+        expect(DRCI).to have_received(:put_away_item?).with('#2', 'duffel bag')
+      end
+
+      it 'leaves an unfinished piece to the default container, never the crafting bag' do
+        hold(left: obj('coil of unfinished burlap reinforced rope', 'rope', '3'))
+        build(settings: { outfitting_belt: belt }).put_hands_away
+        expect(DRCI).not_to have_received(:put_away_item?)
+        expect(DRCC).not_to have_received(:stow_crafting_item)
+        expect(DRCI).to have_received(:stow_hands)
+      end
+
+      it 'does not take worn-looking leathers or other cloth for stock' do
+        hold(right: obj('silk cloth', 'cloth', '4'), left: obj('sinuous leathers', 'leathers', '5'))
+        build(settings: { outfitting_belt: belt }).put_hands_away
+        expect(DRCI).not_to have_received(:put_away_item?)
+        expect(DRCI).to have_received(:stow_hands)
+      end
+
+      it 'puts instructions in the crafting bag, never on the belt' do
+        hold(right: obj('reinforced netting instructions', 'instructions', '6'))
+        build(settings: { outfitting_belt: belt }).put_hands_away
+        expect(DRCC).to have_received(:stow_crafting_item).with('instructions', 'duffel bag', nil)
+      end
+
+      it 'leaves a tool the belt does not list to the default container' do
+        hold(right: obj('steel serrated bone saw', 'saw', '7'))
+        build(settings: { outfitting_belt: belt }).put_hands_away
+        expect(DRCC).not_to have_received(:stow_crafting_item)
+        expect(DRCI).to have_received(:stow_hands)
+      end
+
+      it "uses the taskmaster's own belt setting" do
+        forging = { 'name' => 'forging belt', 'items' => ['forging hammer'] }
+        hold(right: obj('ball-peen forging hammer', 'hammer', '8'))
+        build(npc: 'poltu', settings: { forging_belt: forging, outfitting_belt: belt }).put_hands_away
+        expect(DRCC).to have_received(:stow_crafting_item).with('forging hammer', 'duffel bag', forging)
+      end
+
+      it 'still stows with no belt set and empty hands' do
+        hold
+        build.put_hands_away
+        expect(DRCI).not_to have_received(:put_away_item?)
+        expect(DRCI).to have_received(:stow_hands)
+      end
+
+      it 'is what repair uses with task_no_repair, with the belt repair was given' do
+        hold(right: obj('polished loimic knitting needles', 'needles', '9'), left: obj('wool yarn', 'yarn', '10'))
+        build(no_repair: true).repair(['knitting needles'], belt)
+        expect(DRCI).to have_received(:put_away_item?).with('#10', 'duffel bag')
+        expect(DRCC).to have_received(:stow_crafting_item).with('knitting needles', 'duffel bag', belt)
+      end
+    end
+
     # Layer 3: taskmaster makes her remedies. Whole logged tasks are replayed
     # from ask to reward sack: every game reply is a logged line (from a
     # transcript, or ReplayGame.log), except INVENTORY of the crafting bag,
