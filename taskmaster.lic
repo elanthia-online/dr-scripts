@@ -11,7 +11,7 @@
   task_junk_list: list of items to throw away; everything else is kept. When set (non-empty) it replaces task_keep_list, so a prize nobody has listed yet is kept rather than binned
   task_slack_keepers: true/false # send a Slack message (slack_username) for each keeper
   task_unpack_keepers: true/false # put a keeper's item (not its sack) in task_loot_bag and bin the empty sack
-  task_bin_leftover_stock: true/false # after each Zasele task is handed in, bin her leftover stock and offcuts from the crafting bag into worn_trashcan (needs worn_trashcan; not in marathon, which carries its stock between tasks)
+  task_bin_leftover_stock: true/false # after each Zasele task is handed in, bin her leftover stock and offcuts from the crafting bag into worn_trashcan (needs worn_trashcan; not in marathon, which carries its stock between tasks). Also, after a sew run that made none or before a task whose instructions ran out is cancelled, bins burlap cloth, rat leather and wool yarn found in task_loot_bag (only when task_loot_bag is set and is not the crafting bag), your own pieces of those stocks there included
   task_bin_metal_from: <container> # before the first metal task (Poltu, Bradyn) of a run, bin every bronze and steel ingot in this container: a one-time sweep of leftover task metal that forge used to leave in the stow container. Bins your own ingots there too; unset it once it says none are left (until then it tries again before each metal task). Ignored when it may be crafting_container: the same worn container, or a noun the same as its noun or shortened from it
   task_crafting_room: <room number> # Room to craft in. Ensure it meets specifications for tooling required...
   task_before_scripts: ['restock'] # scripts (with any arguments) to run before asking for each task, while the previous task's cooldown runs
@@ -36,7 +36,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.11.6'
+  VERSION = '2026.11.11.7'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -4240,13 +4240,15 @@ class TaskMaster
   # @yield runs the script once
   # @return [Integer] how many were made
   def craft_each(script, item, count)
+    # Cleared before anything can return, so a stall from an earlier call
+    # (a forge or sew run that made none) never speaks for this one.
+    @craft_stalled = false
     start = before = finished_count(item)
     unless start
       DRC.message("Could not count the #{item}s in #{@bag} (no reply to INVENTORY), so no #{script} runs.")
       return 0
     end
     stalled = false
-    @craft_stalled = false
     after = start
     count.times do
       yield
@@ -4737,10 +4739,13 @@ class TaskMaster
     refs.size
   end
 
-  # Bins Zasele's stock left outside the crafting bag, in task_loot_bag (the
-  # container STOW sends things to for these characters), when a run has
-  # shown the problem it causes: sew made fewer items than owed, or the
-  # instructions ran out (cancel_short_task). A scrap stowed there after sew
+  # Bins Zasele's stock left outside the crafting bag, in task_loot_bag, when
+  # a run has shown the problem it causes: a sew run made none (craft_each's
+  # stall), or the instructions ran out (cancel_short_task). It looks only in
+  # task_loot_bag, where STOW put the scraps on the characters this was seen
+  # on: a scrap STOW put in another container is not looked for, since
+  # binning from a container the settings don't name could destroy items the
+  # player keeps there. A scrap stowed there after sew
   # stopped on it was taken back by its remembered id for the next item
   # (Lilwea, 2026-11-11 08:32:01 "You get some burlap cloth from inside your
   # traveler's pack."), studied over and stopped on again, until the task

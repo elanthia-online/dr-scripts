@@ -5181,6 +5181,24 @@ RSpec.describe TaskMaster do
           expect(tm).not_to have_received(:bin_stray_stock)
         end
 
+        it 'does not run when INVENTORY never answered, even after an earlier run in the process stalled' do
+          tm = stray_binner
+          allow(tm).to receive(:check_sewing_consumables)
+          allow(DRCT).to receive(:walk_to)
+          allow(tm).to receive(:bin_stray_stock)
+          allow(DRC).to receive(:wait_for_script_to_complete)
+
+          # an earlier forge run that made none leaves its stall behind
+          allow(tm).to receive(:finished_count).and_return(0)
+          expect(tm.craft_each('forge', 'shovel', 2) {}).to eq(0)
+
+          allow(tm).to receive(:finished_count).and_return(nil)
+          expect(tm.tailor_item('netting', 3, 'cloth', 'burlap')).to eq(0)
+
+          expect(DRC).not_to have_received(:wait_for_script_to_complete)
+          expect(tm).not_to have_received(:bin_stray_stock)
+        end
+
         it 'puts a piece the trash can refuses back in task_loot_bag, never in the crafting bag' do
           world = stock_world({}, refuse: true, others: { "traveler's pack" => { 'burlap cloth' => 1 } })
           expect(stray_binner.bin_stray_stock('x')).to eq(0)
