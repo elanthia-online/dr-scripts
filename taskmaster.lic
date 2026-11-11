@@ -35,7 +35,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.11.2'
+  VERSION = '2026.11.11.3'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -510,6 +510,74 @@ class TaskMaster
   # @return [Array<Object>] the hands' GameObjs (name, noun, id)
   def held_objects
     [GameObj.right_hand, GameObj.left_hand].compact.reject { |obj| obj.name.to_s == 'Empty' }
+  end
+
+  # Each taskmaster's crafting belt setting: where its tools are tied.
+  TASK_BELTS = { 'zasele' => :outfitting_belt, 'poltu' => :forging_belt, 'bradyn' => :engineering_belt,
+                 'dorhum' => :enchanting_belt, 'nezhiri' => :alchemy_belt }.freeze
+
+  # The belt this taskmaster's tools are tied to, from its belt setting.
+  #
+  # @return [Hash, nil] belt settings ('name', 'items'); nil when unset
+  def task_belt
+    key = TASK_BELTS[@npc]
+    key && @settings.public_send(key)
+  end
+
+  # Empties both hands where the crafting scripts look for things again, then
+  # stows anything else as DRCI.stow_hands always has. A raw piece of
+  # Zasele's stock (task_stock_piece?) goes back in the crafting bag by its
+  # id; instructions and a tool +belt+ lists go through DRCC.stow_crafting_item
+  # (tied to the belt, else the crafting bag). DRCI.stow_hands alone sends
+  # all of it to the default container: after sew stopped on a piece too
+  # small to use, the scrap went into the pack, and sew's next GET by its
+  # remembered id took it back out from there (Lilwea, 2026-11-11 08:32:01
+  # "You get some burlap cloth from inside your traveler's pack."), and its
+  # knitting needles had to be fetched from the pack each item ("Untie
+  # what?", Evro, 2026-11-10 22:19:19). An unfinished piece is left to the
+  # default container, as before, so it never reaches the hand-in bag.
+  #
+  # @param belt [Hash, nil] the belt tools are tied to; the taskmaster's
+  #   (task_belt) unless given
+  # @return [void]
+  def put_hands_away(belt = task_belt)
+    held_objects.each do |obj|
+      if task_stock_piece?(obj)
+        DRCI.put_away_item?("##{obj.id}", @bag)
+      elsif obj.noun.to_s == 'instructions'
+        DRCC.stow_crafting_item('instructions', @bag, nil)
+      elsif (tool = belt_tool(obj.name.to_s, belt))
+        # By the belt's own name for it ("knitting needles"), as the
+        # crafting scripts stow it, never the whole hand name.
+        DRCC.stow_crafting_item(tool, @bag, belt)
+      end
+    end
+    DRCI.stow_hands
+  end
+
+  # Whether a held object is a raw piece of the cloth, leather or yarn
+  # taskmaster buys for Zasele (by its GameObj noun and a stock material in
+  # its name), not an unfinished item made from it.
+  #
+  # @param obj [Object] a hand's GameObj (name, noun, id)
+  # @return [Boolean]
+  def task_stock_piece?(obj)
+    return false unless obj.id && TASK_STOCK_BASES.include?(obj.noun.to_s)
+
+    materials = @stackmap.values_at(*TASK_STOCK_BASES).compact.map(&:first)
+    name = obj.name.to_s
+    !name.match?(/\bunfinished\b/) && name.match?(/\b(?:#{Regexp.union(materials)})\b/)
+  end
+
+  # The item +belt+ lists for the held tool +name+, as the belt names it.
+  #
+  # @param name [String] the held tool's name
+  # @param belt [Hash, nil] belt settings ('name', 'items')
+  # @return [String, nil] e.g. "knitting needles"; nil when not listed
+  def belt_tool(name, belt)
+    return nil if name.empty? || !belt.is_a?(Hash)
+
+    Array(belt['items']).find { |item| /\b#{Regexp.escape(item)}/i.match?(name) }
   end
 
   # A new task is offered about 30 seconds after a turn-in, so the poll
@@ -1477,7 +1545,7 @@ class TaskMaster
     return if missing.empty?
 
     DRC.message("Missing #{missing.join(', ')}; asking the #{discipline} clerk.")
-    DRCI.stow_hands
+    put_hands_away
     DRC.wait_for_script_to_complete('clerk-tools', [discipline, 'get'])
     missing = missing_tools(missing)
     return if missing.empty?
@@ -1504,7 +1572,7 @@ class TaskMaster
   def afford(amount, keep_hands: false, note: nil)
     return if DRCM.ensure_copper_on_hand(amount, @settings, "Crossing")
 
-    DRCI.stow_hands unless keep_hands
+    put_hands_away unless keep_hands
     DRC.message("Out of money: #{amount} Kronars (copper) needed and the Crossing bank could not cover it. #{note && "#{note} "}Stopping before buying anything more.")
     exit
   end
@@ -1538,7 +1606,7 @@ class TaskMaster
   # @raise [SystemExit] always
   def stop_buying(what, keep: [], note: nil)
     if keep.empty?
-      DRCI.stow_hands
+      put_hands_away
     else
       (hand_ids - keep).each { |id| DRCI.put_away_item?("##{id}", @bag) }
     end
@@ -2759,7 +2827,7 @@ class TaskMaster
     others = sorted[:of_kind].size - ours + unread.size
     return ours if others.zero?
 
-    DRCI.stow_hands unless held_vessel(recipe)
+    put_hands_away unless held_vessel(recipe)
     DRC.message("Your #{@bag} holds #{others} #{noun}#{others == 1 ? '' : 's'} that #{others == 1 ? 'is' : 'are'} not #{recipe[:product]}. remedy and the hand-in find the #{recipe[:product]} by its noun, so they could take #{others == 1 ? 'it' : 'them'} instead. Move #{others == 1 ? 'it' : 'them'} out of your #{@bag}, then start again. Stopping before buying anything.#{unread_note(noun, unread)}")
     exit
   end
@@ -3346,7 +3414,7 @@ class TaskMaster
   # @raise [SystemExit] when the cancel does not go through
   def cancel_task(giver, item)
     DRC.message("You are on a task for #{giver.capitalize}, not #{@npc.capitalize}: cancelling it (task_cancel_foreign_tasks).")
-    DRCI.stow_hands
+    put_hands_away
     find_npc(@rooms, giver)
     confirm, cancelled, none = [TASK_CANCEL_CONFIRM, TASK_CANCELLED, TASK_CANCEL_NONE].map { |text| cancel_reply(giver, text) }
     asks = 0
@@ -3590,14 +3658,15 @@ class TaskMaster
 
   # Put the instructions just read into the crafting bag by name, where the
   # crafting scripts put them after studying, rather than leaving them to
-  # default stow. Anything else still in hand (a tool or unfinished item held
-  # after a crash) goes to default stow as before.
+  # default stow. Anything else still in hand goes where put_hands_away puts
+  # it (stock to the bag, a belt tool to the belt, anything else to default
+  # stow as before).
   #
   # @param item [String] item noun
   # @return [void]
   def stow_instructions(item)
     DRCC.stow_crafting_item("#{item} instructions", @bag, nil)
-    DRCI.stow_hands
+    put_hands_away
   end
 
   # The taskmaster's replies to ASK <taskmaster> FOR INSTRUCTIONS that hand a
@@ -4772,8 +4841,8 @@ class TaskMaster
   # @param belt [Hash, nil] toolbelt settings the tools live on
   # @return [void]
   def repair(tools, belt)
-    if @no_repair # skipping repair, stowing tool(s), moving on
-      DRCI.stow_hands
+    if @no_repair # skipping repair, putting tool(s) and stock away, moving on
+      put_hands_away(belt)
       return
     elsif @self_repair
       DRCC.repair_own_tools({ 'finisher-room' => 8776, 'finisher-number' => 6 }, tools, @bag, @bag_items, belt) # runs self repair routine
