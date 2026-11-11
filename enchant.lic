@@ -185,8 +185,13 @@ class Enchant
   # remaining.  Study them again to proceed.]"). No quote may come before
   # it, so a player saying the line does not count.
   STUDY_INSTRUCTIONS_AGAIN = /^[^"]*?(?:These instructions have only (?<uses>\d+) uses? remaining\.\s+)?Study them again/.freeze
-  # A completed study ends in roundtime (log 1).
-  STUDY_INSTRUCTIONS_DONE = /^Roundtime/.freeze
+  # A completed study's own line, before "You now feel ready to begin the
+  # crafting process." and the roundtime ("You scan the spongestone
+  # instructions with a glance and completely understand all facets of the
+  # design.", November 2026 logs). Not the roundtime: when the game lags, a
+  # late Roundtime from an earlier command can arrive before the study's
+  # reply, or in place of it.
+  STUDY_INSTRUCTIONS_DONE = /^You scan the .+ instructions with a glance and /.freeze
   # No instructions by that name.
   STUDY_INSTRUCTIONS_NOT_FOUND = /^What were you referring to/.freeze
   # Log 1 has the second: "You must be holding the instructions to study them."
