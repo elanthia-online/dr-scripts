@@ -103,6 +103,13 @@ class Sew
   # only delays the reply, and every resend would be done once it clears.
   STUDY_TIMEOUT = 90
 
+  # Seconds wait_for_backlog waits for the game to answer before a run
+  # starts. The 2026-11-12 outage held replies for about 3.5 minutes (about
+  # 01:00 to 01:03:31 NZDT); a silence much longer usually ends in a
+  # disconnect (Nelis dropped after about 2 minutes), and the run has sent
+  # only the one GLANCE meanwhile.
+  BACKLOG_TIMEOUT = 300
+
   # The thread the needles take, as the stock room sells it ("100 yards of
   # cotton thread", order 6). Spun spools are thread too ("some heavy silk
   # thread") and spin keeps them in the crafting container, so the thread
@@ -164,6 +171,7 @@ class Sew
     @cloth = CLOTH
     @pin_pokes = 0
 
+    wait_for_backlog
     DRC.wait_for_script_to_complete('buff', ['sew'])
 
     Flags.add('sew-assembly',
@@ -201,6 +209,35 @@ class Sew
 
     check_rental_status
     start_item
+  end
+
+  # Waits, before sew sends anything else, until the game has answered
+  # every command sent before this run: one GLANCE, and its reply. The game
+  # runs commands in the order they arrive, so once a GLANCE is answered
+  # nothing sent before it is still queued, and the hands GameObj shows are
+  # the real ones. Any GLANCE reply counts, so one to another script's
+  # GLANCE sent just before (taskmaster glances at the hands before it
+  # starts sew) can answer it; that still means everything sent before that
+  # GLANCE is done, and sew has sent nothing else meanwhile.
+  #
+  # On 2026-11-12 the game went quiet from about 01:00 to 01:03:31 NZDT.
+  # A sew that gave up in it (Byd) left its put-backs queued; taskmaster
+  # started the next sew ten seconds later, which saw the yarn and the
+  # instructions still in hand, took timed-out gets and a timed-out study as
+  # done, and had its untie answered by the first run's. The queued
+  # commands all ran at 01:03:31 and left the hands in a state neither run
+  # expected.
+  #
+  # When the game says nothing for BACKLOG_TIMEOUT seconds, the run stops
+  # without sending more; whoever started it starts it again.
+  #
+  # @return [void]
+  # @raise [SystemExit] when the GLANCE gets no reply
+  def wait_for_backlog
+    return unless DRC.bput('glance', { 'timeout' => BACKLOG_TIMEOUT }, /^You glance/).empty?
+
+    Lich::Messaging.msg('bold', "sew: The game has not answered for #{BACKLOG_TIMEOUT} seconds. Stopping before sending anything else.")
+    exit
   end
 
   # Readies a new item (prep) and works it. A completion line still on its
