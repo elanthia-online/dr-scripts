@@ -16,6 +16,8 @@ RSpec.describe TaskMaster do
   # Turn-in replies as the game prints them (2025 Hollow Eve logs).
   let(:sack_handed) { 'Seamstress Zasele hands you a woven sack.' }
   let(:missed_give) { "What is it you're trying to give?" }
+  # Her reply to an item the character did not make (Fizzlestiks, 2026-11-10).
+  let(:not_made_by_you) { 'Seamstress Zasele shakes her head and fishes out a piece of parchment from her robe: "It needs to be something that you made."' }
 
   before do
     allow(DRC).to receive(:message)
@@ -489,9 +491,13 @@ RSpec.describe TaskMaster do
     # talks to the game stubbed to record itself. args: the parsed arguments
     # (npc:, repeat:, marathon: ...). ticket: whether a Rangu ticket is
     # carried; samples: the taskmasters cycle picks, in order. The wrap-up flag
-    # goes up with the turn-in numbered wrap_up_after. Returns the recorded
+    # goes up with the turn-in numbered wrap_up_after. stock_ok: what
+    # check_stock answers; short_after_restock: what still_short? answers
+    # once a task's restock is done; restocks: what each restock returns
+    # (the stocks it got none of), in order, then none; made: how many items
+    # tailor_item makes, every item owed when nil. Returns the recorded
     # steps, in order.
-    def start(settings: {}, ticket: false, stock_ok: true, wrap_up_after: nil, samples: [], **args)
+    def start(settings: {}, ticket: false, stock_ok: true, short_after_restock: false, restocks: [], made: nil, wrap_up_after: nil, samples: [], **args)
       tm = described_class.allocate
       events = []
       completed = 0
@@ -533,14 +539,21 @@ RSpec.describe TaskMaster do
         events << :resume
         exit
       end
-      allow(tm).to receive(:restock) { events << :restock }
+      allow(tm).to receive(:restock) do
+        events << :restock
+        restocks.shift || []
+      end
       allow(tm).to receive(:check_stock) do |*needed|
         events << [:check_stock, *needed]
         stock_ok
       end
+      allow(tm).to receive(:still_short?).and_return(short_after_restock)
       allow(tm).to receive(:repair) { |tools, belt| events << [:repair, tools, belt] }
       allow(tm).to receive(:find_npc) { |rooms, npc| events << [:find_npc, rooms.size, npc] }
-      allow(tm).to receive(:tailor_item) { |*task| events << [:tailor, *task] }
+      allow(tm).to receive(:tailor_item) do |*task|
+        events << [:tailor, *task]
+        made || task[1]
+      end
       allow(DRCT).to receive(:dispose) { |item, room| events << [:dispose, item, room] }
       allow(tm).to receive(:_respond) { |text| events << [:respond, text] }
       allow(DRC).to receive(:message) { |text| events << [:message, text] unless text.start_with?("taskmaster version ") } # the version banner has its own example
@@ -680,6 +693,49 @@ RSpec.describe TaskMaster do
         events = start(npc: 'zasele', marathon: true, settings: { task_self_repair: true, task_get_tools_on_completion: true }, ticket: true, wrap_up_after: 1)
         expect(events.last(3)).to eq([[:complete, 'rope', 2], :tool_pickup, :exit])
       end
+
+      # Fizzlestiks, 2026-11-10 23:11: every walk to the outfitting shop
+      # bonked on a closed exit, restock bought nothing, sew found no burlap
+      # cloth, and the hand-in gave Zasele a bundling rope five times.
+      describe 'when a restock leaves the stock short' do
+        let(:unreached) do
+          'Restocking bought no burlap cloth, rat leather: the outfitting shop (room 16667) could not be reached, or would not sell (see above). Stopping.'
+        end
+
+        it 'stops before asking for a task when the opening restock got none of a stock, after picking up repaired tools' do
+          events = start(npc: 'zasele', marathon: true, ticket: true, restocks: [%w[cloth leather]], wrap_up_after: 1)
+          expect(events).to eq([:reconcile, :restock, :tool_pickup, [:message, unreached], :exit])
+        end
+
+        it "stops before sewing when a task's restock got none of a stock, after picking up repaired tools" do
+          events = start(npc: 'zasele', marathon: true, ticket: true, stock_ok: false, restocks: [[], %w[cloth leather]], wrap_up_after: 1)
+          expect(events.last(6)).to eq([[:check_stock, 8, 'burlap', 'cloth'], [:repair, ['scissors'], outfitting_belt], :restock, :tool_pickup,
+                                        [:message, unreached], :exit])
+        end
+
+        it 'stops before sewing when the restock left too little for the task' do
+          events = start(npc: 'zasele', marathon: true, stock_ok: false, short_after_restock: true, wrap_up_after: 1)
+          expect(events.last(3)).to eq([:restock, [:message, 'Restocking left too little burlap cloth for 2 ropes (8 yards). Stopping before any is made; the task stays open for the next run.'],
+                                        :exit])
+          expect(events.map { |event| Array(event).first }).not_to include(:tailor, :complete)
+        end
+
+        it 'checks the stock again only after a restock for the task' do
+          events = start(npc: 'zasele', marathon: true, short_after_restock: true, wrap_up_after: 1)
+          expect(events).to include([:tailor, 'rope', 2, 'cloth', 'burlap'], [:complete, 'rope', 2])
+        end
+      end
+
+      it 'hands nothing in when sew made none of the items, so none of the player\'s own is given' do
+        events = start(npc: 'zasele', marathon: true, made: 0, wrap_up_after: 1)
+        expect(events.last(3)).to eq([[:tailor, 'rope', 2, 'cloth', 'burlap'],
+                                      [:message, 'No rope was made, so none is handed in to Zasele. Stopping; the task stays open for the next run.'], :exit])
+        expect(events.map { |event| Array(event).first }).not_to include(:complete)
+      end
+
+      it 'hands in what sew made when it made some' do
+        expect(start(npc: 'zasele', marathon: true, made: 1, wrap_up_after: 1).last(3)).to eq([[:tailor, 'rope', 2, 'cloth', 'burlap'], [:complete, 'rope', 2], :exit])
+      end
     end
 
     describe 'a task already open when the run asks for one' do
@@ -769,15 +825,22 @@ RSpec.describe TaskMaster do
           hand_in.call
         end
         allow(tm).to receive(:cancel_task) { |giver, item| events << [:cancel, giver, item] }
-        allow(tm).to receive(:restock) { events << :restock }
+        allow(tm).to receive(:restock) do
+          events << :restock
+          []
+        end
         allow(tm).to receive(:check_stock) do |*needed|
           raise "check_stock with #{needed.inspect}" if needed.any?(&:nil?)
 
           events << [:check_stock, *needed]
           stock_ok
         end
+        allow(tm).to receive(:still_short?).and_return(false)
         allow(tm).to receive(:repair)
-        allow(tm).to receive(:tailor_item) { |*task| events << [:tailor, *task] }
+        allow(tm).to receive(:tailor_item) do |*task|
+          events << [:tailor, *task]
+          task[1]
+        end
         allow(DRC).to receive(:message) { |text| events << [:message, text] if text.start_with?('You are not on a task', 'You are on a task', 'Your task journal') }
         ask = lambda do |command, *|
           events << [:ask, command[/\Aask (\w+) for task/, 1]]
@@ -2707,6 +2770,20 @@ RSpec.describe TaskMaster do
     end
 
     describe '#turn_in_banked' do
+      # Fizzlestiks, 2026-11-10: with none of the task's ropes in the bag,
+      # the GET took the character's own bundling rope.
+      it 'puts back an item the character did not make at once, and leaves the items still owed to be made' do
+        tm = reader
+        allow(DRCC).to receive(:stow_crafting_item)
+        giving([not_made_by_you], banked: 1)
+
+        expect(tm.turn_in_banked('rope', 7)).to eq(7)
+
+        expect(DRC).to have_received(:bput).with('give my rope to zasele', any_args).once
+        expect(DRCC).to have_received(:stow_crafting_item).with('rope', 'duffel bag', nil).once
+        expect(DRC).to have_received(:message).with('Zasele only takes a rope you made, and the rope from your duffel bag was not one, so it is back in your duffel bag.')
+      end
+
       it 'puts back an item the taskmaster will not take, after five tries in a row, and stops handing in' do
         tm = reader
         allow(DRCI).to receive(:get_item?).and_return(true)
@@ -3930,21 +4007,48 @@ RSpec.describe TaskMaster do
           'yarn' => { 'stock-value' => 625, 'stock-number' => 13 }, 'thread' => { 'stock-value' => 971, 'stock-number' => 6 } }
       end
 
-      # Runs the real restock with the script's own stack map and an empty bag,
-      # recording every order placed.
-      def restock_orders(tm = build(stockdata: stockdata))
+      # What each order number brings in, by the name TAP and COUNT use.
+      let(:ordered) { { 8 => ['burlap cloth', 10], 2 => ['rat leather', 10], 13 => ['wool yarn', 100], 6 => ['cotton thread', 100] } }
+
+      # The crafting bag's stock and the shop, for the real restock with the
+      # script's own stack map. carried: yards carried of each stock by name
+      # (none of any other); reached: whether the walk to the shop works
+      # (order_item returns nil and nothing comes in when it does not, as on
+      # 2026-11-10); missed: stocks whose first TAP after an order goes
+      # unanswered. Returns the world; :orders records every order placed.
+      def restock_world(tm, carried: {}, reached: true, missed: [])
+        world = { orders: [], carried: Hash.new(0).merge(carried), missed: missed.dup }
         allow(tm).to receive(:get_data).and_return({ 'tailoring' => { 'Crossing' => { 'tool-room' => 16667 } } })
         allow(tm).to receive(:exchange_coins)
         allow(tm).to receive(:top_up_copper)
         allow(DRCC).to receive(:check_consumables)
-        allow(DRCI).to receive(:exists?).and_return(false)
+        allow(DRCI).to receive(:exists?) do |name|
+          next false if world[:orders].any? && world[:missed].delete(name)
+
+          world[:carried][name].positive?
+        end
         allow(DRCT).to receive(:walk_to)
-        orders = []
-        allow(DRCT).to receive(:order_item) { |room, number| orders << [room, number] }
-        allow(DRC).to receive(:bput).and_return('You combine')
+        allow(DRCT).to receive(:order_item) do |room, number|
+          world[:orders] << [room, number]
+          next nil unless reached
+
+          name, yards = ordered.fetch(number)
+          world[:carried][name] += yards
+          'The clerk takes some coins from you'
+        end
+        allow(DRC).to receive(:bput) do |command, *|
+          name = command[/\Acount my (.+)\z/, 1]
+          name ? "You count out #{world[:carried][name]} yards of material" : 'You combine'
+        end
         allow(DRCC).to receive(:stow_crafting_item)
+        world
+      end
+
+      # Runs the real restock from an empty bag, recording every order placed.
+      def restock_orders(tm = build(stockdata: stockdata))
+        world = restock_world(tm)
         tm.restock
-        orders
+        world[:orders]
       end
 
       it 'restocks thread without tripping over a missing stack map entry' do
@@ -3968,6 +4072,69 @@ RSpec.describe TaskMaster do
         expect(tm).to receive(:top_up_copper)
         restock_orders(tm)
         expect(DRCM).not_to have_received(:deposit_coins)
+      end
+
+      describe 'what it got none of' do
+        # Fizzlestiks' bag before the 2026-11-10 23:11 restock: no burlap
+        # cloth, 20 yards of rat leather, 84 of wool yarn, 400 of cotton
+        # thread.
+        let(:fizzlestiks_bag) { { 'rat leather' => 20, 'wool yarn' => 84, 'cotton thread' => 400 } }
+
+        it 'is nothing when every stock it ordered came in' do
+          tm = build(stockdata: stockdata)
+          world = restock_world(tm, carried: fizzlestiks_bag)
+
+          expect(tm.restock).to eq([])
+          expect(world[:carried]).to include('burlap cloth' => 100, 'rat leather' => 100, 'wool yarn' => 384, 'cotton thread' => 400)
+        end
+
+        it 'is every stock it ordered when the shop could not be reached, as on 2026-11-10' do
+          tm = build(stockdata: stockdata)
+          world = restock_world(tm, carried: fizzlestiks_bag, reached: false)
+
+          expect(tm.restock).to eq(%w[cloth leather yarn])
+          expect(world[:orders].map(&:last).tally).to eq(8 => 10, 2 => 8, 13 => 3)
+        end
+
+        it 'asks again before calling a stock it got none of, so one missed TAP does not stop the run' do
+          tm = build(stockdata: stockdata)
+          world = restock_world(tm, carried: fizzlestiks_bag, missed: ['burlap cloth'])
+
+          expect(tm.restock).to eq([])
+          # The missed TAP was asked.
+          expect(world[:missed]).to be_empty
+        end
+
+        it 'is nothing, with nothing counted again, when no stock was short' do
+          tm = build(stockdata: stockdata)
+          world = restock_world(tm, carried: { 'burlap cloth' => 100, 'rat leather' => 95, 'wool yarn' => 400, 'cotton thread' => 350 })
+
+          expect(tm.restock).to eq([])
+          expect(world[:orders]).to be_empty
+          expect(DRC).to have_received(:bput).with(/\Acount my /, any_args).exactly(4).times
+        end
+      end
+    end
+
+    describe '#still_short?' do
+      it 'asks check_stock once more before calling a stock short' do
+        tm = build
+        answers = [false, true]
+        allow(tm).to receive(:check_stock) { answers.shift }
+
+        expect(tm.still_short?(8, 'burlap', 'cloth')).to be(false)
+        expect(tm).to have_received(:check_stock).with(8, 'burlap', 'cloth').twice
+      end
+
+      it 'calls it short when both answers say so, and asks once when the first says enough' do
+        tm = build
+        allow(tm).to receive(:check_stock).and_return(false)
+        expect(tm.still_short?(8, 'burlap', 'cloth')).to be(true)
+
+        tm = build
+        allow(tm).to receive(:check_stock).and_return(true)
+        expect(tm.still_short?(8, 'burlap', 'cloth')).to be(false)
+        expect(tm).to have_received(:check_stock).once
       end
     end
 
@@ -4426,6 +4593,38 @@ RSpec.describe TaskMaster do
         expect { tm.complete_task('rope', 2) }.to raise_error(SystemExit)
         expect(DRC).to have_received(:message).with(/after 5 tries/)
         expect(tm).not_to have_received(:sort_sack)
+      end
+
+      # Fizzlestiks, 2026-11-10: the GET took the character's own bundling
+      # rope, and each of five gives waited out bput's 15 s on Zasele's reply.
+      context 'when the taskmaster says the character did not make the item' do
+        it 'puts it back and stops at once, instead of giving it again' do
+          tm = finisher
+          allow(DRCC).to receive(:stow_crafting_item)
+          messages = []
+          allow(DRC).to receive(:message) { |text| messages << text }
+          state = giving([more_needed(1), not_made_by_you])
+
+          expect { tm.complete_task('rope', 2) }.to raise_error(SystemExit)
+
+          expect(state[:gets]).to eq(2)
+          expect(DRC).to have_received(:bput).with('give my rope to zasele', any_args).twice
+          expect(DRCC).to have_received(:stow_crafting_item).with('rope', 'duffel bag', nil).once
+          expect(messages).to eq(['Zasele only takes a rope you made, and the rope from your duffel bag was not one, so it is back in your duffel bag.',
+                                  "Stopping; the task stays open. Keep your own ropes out of your duffel bag while on Zasele's tasks."])
+          expect(tm).not_to have_received(:sort_sack)
+        end
+
+        it "matches Zasele's reply as logged, and as bput hands it back, and is one of the replies every GIVE waits for" do
+          expect(not_made_by_you).to match(TaskMaster::GIVE_NOT_MADE_BY_YOU)
+          expect(not_made_by_you[TaskMaster::GIVE_NOT_MADE_BY_YOU]).to match(TaskMaster::GIVE_NOT_MADE_BY_YOU)
+          expect(TaskMaster::GIVE_REPLIES).to include(TaskMaster::GIVE_NOT_MADE_BY_YOU)
+        end
+
+        it 'does not match a player saying the words' do
+          expect(%(Mallory says, "It needs to be something that you made.")).not_to match(TaskMaster::GIVE_NOT_MADE_BY_YOU)
+          expect(%(Mallory says, "#{not_made_by_you}")).not_to match(TaskMaster::GIVE_NOT_MADE_BY_YOU)
+        end
       end
 
       it 'puts back an item the taskmaster does not take and stops, instead of handing it over again' do
