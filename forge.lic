@@ -374,9 +374,9 @@ class Forge
   # study line below). forge keeps its own loop because $MIN_LICH_VERSION
   # (dependency.lic) is 5.23.0, older than v5.24.0, the first release with
   # DRCC.study_instructions. Once the minimum Lich includes the release with
-  # lich-5#2321, study_instructions can become
+  # lich-5#2321, the get, study and stow in prep_with_instructions can become
   # DRCC.study_instructions("#{@item} instructions", @bag, @bag_items,
-  # @forging_belt). Where this copy differs: a 90 s wait per study (DRCC
+  # @forging_belt), which does all three. Where this copy differs: a 90 s wait per study (DRCC
   # uses bput's 15 s), `study my instructions` without the item's name, and
   # only "You must be holding the instructions" as the not-holding reply.
 
