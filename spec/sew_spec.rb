@@ -3919,4 +3919,92 @@ RSpec.describe Sew do
       expect(sew).not_to have_received(:swap_tool)
     end
   end
+
+  # ===========================================================================
+  # #wait_for_backlog -- a run starts only once the game has caught up
+  # ===========================================================================
+  # 2026-11-12 01:01:15 NZDT: taskmaster started a sew while the game was
+  # still silent and the first run's put-backs were queued (Byd); the second
+  # run's commands all went into the backlog.
+  describe '#wait_for_backlog' do
+    let(:calls) { [] }
+    let(:glance_reply) { ['You glance down to see some polished loimic knitting needles in your right hand and nothing in your left hand.'] }
+
+    def answer(lines, patterns)
+      matchers = patterns.flatten.reject { |pattern| pattern.is_a?(Hash) }
+      lines.each do |line|
+        matchers.each do |matcher|
+          hit = line.match(matcher)
+          return hit[0] if hit
+        end
+      end
+      ''
+    end
+
+    before(:each) do
+      $test_settings = OpenStruct.new(hometown: 'Crossing', crafting_training_spells: [])
+      $test_data = OpenStruct.new(crafting: { 'tailoring' => { 'Crossing' => { 'tool-room' => 1, 'stock-room' => 2 } } })
+      $parsed_args = OpenStruct.new(finish: 'stow', instructions: 'instructions', recipe_name: +'', material: 'wool', noun: 'outfit', knit: 'knit', skip: 'skip')
+      allow(sew).to receive(:exit).and_raise(SystemExit)
+      allow(Lich::Messaging).to receive(:msg) { |_kind, text| calls << "msg #{text}" }
+      allow(DRC).to receive(:wait_for_script_to_complete) { |name, *| calls << "wait #{name}" }
+      allow(sew).to receive(:clear_hands) { calls << :clear_hands }
+      allow(sew).to receive(:check_rental_status)
+      allow(sew).to receive(:start_item) { calls << :start_item }
+      allow(sew).to receive(:work) { calls << :work }
+    end
+
+    def game_says(lines)
+      allow(DRC).to receive(:bput) do |command, *patterns|
+        calls << [command, patterns.first.is_a?(Hash) ? patterns.first['timeout'] : nil]
+        answer(lines, patterns)
+      end
+    end
+
+    it 'sends one GLANCE, waiting BACKLOG_TIMEOUT for it, before buff or anything else' do
+      game_says(glance_reply)
+
+      sew.send(:initialize)
+
+      expect(calls.first).to eq(['glance', Sew::BACKLOG_TIMEOUT])
+      expect(calls[1]).to eq('wait buff')
+      expect(calls).to include(:clear_hands, :start_item)
+    end
+
+    it 'counts the empty-hands GLANCE reply as an answer too' do
+      game_says(['You glance down at your empty hands.'])
+
+      sew.send(:initialize)
+
+      expect(calls).to include(:start_item)
+    end
+
+    it 'stops, sending nothing else, when the game does not answer' do
+      game_says([])
+
+      expect { sew.send(:initialize) }.to raise_error(SystemExit)
+      expect(calls).to eq([['glance', Sew::BACKLOG_TIMEOUT],
+                           "msg sew: The game has not answered for #{Sew::BACKLOG_TIMEOUT} seconds. Stopping before sending anything else."])
+    end
+
+    it 'does not take another line as the answer' do
+      game_says(['Roundtime: 8 sec.', 'You put your yarn in your duffel bag.'])
+
+      expect { sew.send(:initialize) }.to raise_error(SystemExit)
+      expect(calls).not_to include('wait buff')
+    end
+
+    it 'waits on a resume too, before the ANALYZE' do
+      $parsed_args = OpenStruct.new(resume: 'resume', recipe_name: +'', noun: 'outfit')
+      $right_hand = 'polished loimic knitting needles'
+      game_says(glance_reply)
+
+      sew.send(:initialize)
+
+      expect(calls.first).to eq(['glance', Sew::BACKLOG_TIMEOUT])
+      expect(calls.index(:work)).to be > calls.index(['glance', Sew::BACKLOG_TIMEOUT])
+    ensure
+      $right_hand = nil
+    end
+  end
 end
