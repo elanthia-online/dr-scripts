@@ -1286,6 +1286,12 @@ module Harness
 
   def waitrt?; end
 
+  # Seconds of roundtime left (lich-5 global_defs.rb); none in the harness.
+  # Stub it per example to give a reply a roundtime.
+  def checkrt
+    0
+  end
+
   def waitcastrt?; end
 
   def get?

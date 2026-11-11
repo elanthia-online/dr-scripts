@@ -41,6 +41,28 @@ class Sew
   # commands pile up behind the lag.
   ANALYZE_TIMEOUT = 90
 
+  # Times in a row #work takes the same reply to the same command with no
+  # roundtime before it stops. A step that does something starts a
+  # roundtime (the game's <roundTime> tag comes on the first line of its
+  # reply, so checkrt shows it by the time bput returns), so a command
+  # answered the same way with none, again and again, is going nowhere. On
+  # 2026-11-12 Byd sent 'knit my needles' about 165 times a minute for five
+  # hours, every one answered "You need a free hand to do that." with no
+  # roundtime.
+  NO_ROUNDTIME_REPEATS = 3
+
+  # Replies in a row with no roundtime, whatever they are, before #work
+  # stops: two replies taking turns, neither a step done, would get past
+  # NO_ROUNDTIME_REPEATS. The longest run of such replies an item needs is
+  # far shorter (a pull, its confirmation and the discard; a missing
+  # thread, the threading and the reply).
+  NO_ROUNDTIME_STREAK = 8
+
+  # "You cannot do that while engaged!": #work retreats and waits, and the
+  # refusal starts no roundtime. Neither guard counts it, so the retreats go
+  # on as long as the fight does.
+  ENGAGED = /^You cannot do that while engaged!/
+
   # The thread the needles take, as the stock room sells it ("100 yards of
   # cotton thread", order 6). Spun spools are thread too ("some heavy silk
   # thread") and spin keeps them in the crafting container, so the thread
@@ -603,10 +625,19 @@ class Sew
   # finishes if the item was finished meanwhile (sew-done), or else sends
   # ANALYZE, as a resume does, and waits up to ANALYZE_TIMEOUT for it to say
   # what the item needs next. After MAX_UNMATCHED misses it gives up.
+  #
+  # A reply it knows can loop too, when it changes nothing: the same reply
+  # to the same command NO_ROUNDTIME_REPEATS times in a row, or any
+  # NO_ROUNDTIME_STREAK replies in a row, with no roundtime, stops the run
+  # with the hands put away (ENGAGED, which has its own recovery, aside).
   def work(command)
     DRC.bput("touch my #{@cube}", /^Warm vapor swirls around your head in a misty halo/, /^A thin cloud of vapor manifests with no particular effect./, /^Touch what/, /^You reach out and touch/) if @cube
     unmatched = 0
     stalled = nil
+    repeats = 0
+    streak = 0
+    last_reply = nil
+    free_hand_replies = 0
     loop do
       DRCA.crafting_magic_routine(@settings)
       renew_rental if Flags['sew-rental-warning']
@@ -657,7 +688,7 @@ class Sew
                         /^You need a free hand to do that/,
                         /^You realize that cannot be repaired, and stop/,
                         /^You must be holding the .* to do that/,
-                        /^You cannot do that while engaged!/)
+                        ENGAGED)
       # An ANALYZE that finds nothing to analyze (no item yet, or the wrong
       # one named) says nothing about the item: it counts as a miss, not as
       # the missing tool the not-found branch below fetches, which would send
@@ -681,6 +712,21 @@ class Sew
       end
       unmatched = 0 unless stalled
       stalled = nil
+      unless result.match?(ENGAGED)
+        roundtime = checkrt.positive?
+        repeats = if roundtime
+                    0
+                  elsif last_reply == [command, result]
+                    repeats + 1
+                  else
+                    1
+                  end
+        streak = roundtime ? 0 : streak + 1
+        last_reply = [command, result]
+        stop_going_nowhere("sew: '#{command}' got the same reply #{repeats} times in a row with no roundtime (#{result}). Cannot continue crafting #{@noun}.") if repeats >= NO_ROUNDTIME_REPEATS
+        stop_going_nowhere("sew: #{streak} replies in a row with no roundtime, the last to '#{command}' (#{result}). Cannot continue crafting #{@noun}.") if streak >= NO_ROUNDTIME_STREAK
+      end
+      free_hand_replies = result.match?(/^You need a free hand to do that/) ? free_hand_replies + 1 : 0
 
       case result
       when /You need a larger amount of material to continue crafting/
@@ -767,15 +813,81 @@ class Sew
         command = 'pull my needles'
       when 'You untie and discard'
         command = 'knit my yarn with my knitting needles'
-      when /^Roundtime/, /^You realize that cannot be repaired, and stop/, /^You need a free hand to do that/
+      when /^Roundtime/, /^You realize that cannot be repaired, and stop/
         waitrt?
         finish if Flags['sew-done']
         swap_tool(@home_tool) unless @home_tool.nil?
         command = @home_command.nil? ? command : @home_command
-      when /^You cannot do that while engaged!/
+      when /^You need a free hand to do that/
+        # Not a step done: the same command goes again once a hand is free.
+        finish if Flags['sew-done']
+        free_a_hand(command, free_hand_replies)
+      when ENGAGED
         DRC.retreat
         pause 10
       end
+    end
+  end
+
+  # Stops a run whose replies are going nowhere (#work's no-roundtime
+  # guards), unless the item was finished meanwhile: a completion that
+  # arrived late still gets its finish.
+  #
+  # @param message [String]
+  # @return [void]
+  # @raise [SystemExit] always (finish exits too)
+  def stop_going_nowhere(message)
+    finish if Flags['sew-done']
+    stop_with_hands_put_away(message)
+  end
+
+  # Frees a hand for +command+ after "You need a free hand to do that.", so
+  # #work can send it again: puts away, by id, whatever is held that the
+  # command does not name. On 2026-11-12 a lag left Byd's wool yarn in the
+  # left hand beside the knitting needles; 'knit my needles' needs that
+  # hand, and sew, which took the reply as a Roundtime and sent the command
+  # again, did so about 165 times a minute for five hours. Stops the run
+  # when nothing held is spare, or when the command was refused a free hand
+  # once already.
+  #
+  # @param command [String] the command that got the reply
+  # @param replies [Integer] free-hand replies in a row, this one included
+  # @return [void]
+  # @raise [SystemExit] when no hand can be freed
+  def free_a_hand(command, replies)
+    stop_with_hands_put_away("sew: Still no free hand for '#{command}' after putting away what was held. Cannot continue crafting #{@noun}.") if replies > 1
+
+    spare = spare_held_objects(command)
+    stop_with_hands_put_away("sew: No free hand for '#{command}', and everything held is needed. Cannot continue crafting #{@noun}.") if spare.empty?
+
+    spare.each do |obj|
+      next if DRCI.put_away_item?("##{obj.id}", @bag)
+
+      stop_with_hands_put_away("sew: Could not put the #{obj.name} (##{obj.id}) in your #{@bag} to free a hand. Cannot continue crafting #{@noun}.")
+    end
+  end
+
+  # What is held that +command+ does not name: a hand object with an id
+  # whose noun is not a word of the command and whose id the command does
+  # not give, other than the item being worked. 'knit my needles' names the
+  # needles, not the yarn; 'cut my duffel.bag with my scissors' names the
+  # bag (its noun is the last part of 'duffel.bag') and the scissors; 'put
+  # my thread on #63049908' names the needles by id, and the piece being
+  # sewn is never spare.
+  #
+  # A spare tool goes to the crafting bag by id, not back on the belt;
+  # get_crafting_item finds it there when it is wanted again.
+  #
+  # @param command [String]
+  # @return [Array<GameObj>] zero, one or two hand objects
+  def spare_held_objects(command)
+    words = command.downcase.scan(/[a-z']+/)
+    item = @noun.to_s.split('.').last.to_s.downcase
+    [GameObj.right_hand, GameObj.left_hand].select do |obj|
+      next false unless obj&.id && obj.noun
+
+      noun = obj.noun.downcase
+      !words.include?(noun) && !command.include?("##{obj.id}") && noun != item
     end
   end
 

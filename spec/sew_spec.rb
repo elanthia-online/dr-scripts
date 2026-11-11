@@ -3381,4 +3381,290 @@ RSpec.describe Sew do
       end
     end
   end
+
+  # ===========================================================================
+  # #work -- "You need a free hand to do that" and replies that change nothing
+  # ===========================================================================
+  # Byd, 2026-11-12 01:03:51 to 06:12:48 NZDT: after a lag left the wool yarn
+  # in the left hand beside the knitting needles, every 'knit my needles' got
+  # "You need a free hand to do that." with no roundtime. sew took it as a
+  # Roundtime, sent the home command again at once, and did so about 165
+  # times a minute for five hours.
+  describe '#work when a reply changes nothing' do
+    let(:sent) { [] }
+    let(:messages) { [] }
+    let(:roundtimes) { [] }
+    let(:free_hand) { 'You need a free hand to do that.' }
+    let(:knit_row) do
+      ["Stopping only to feed more yarn, you continue to knit another row along your knitting needles.  With exceptional skill you complete the current row of knitting and find no mistakes in the piece's stitching.",
+       'Roundtime: 8 sec.']
+    end
+    let(:out_of_material) { 'You need a larger amount of material to continue crafting.' }
+
+    def hold(hand, name, id)
+      hand == :left ? $left_hand = name : $right_hand = name
+      $hand_item_ids = ($hand_item_ids || {}).merge(hand => [name, id])
+    end
+
+    def empty(hand)
+      hand == :left ? $left_hand = nil : $right_hand = nil
+      $hand_item_ids = ($hand_item_ids || {}).reject { |key, _| key == hand }
+    end
+
+    # DRC.bput's result for +lines+: each line in turn against the matchers
+    # in order (a String matcher is /str/i), the first match's text, else ''.
+    def bput_result(lines, patterns)
+      matchers = patterns.flatten.reject { |pattern| pattern.is_a?(Hash) }
+                         .map { |pattern| pattern.is_a?(Regexp) ? pattern : /#{pattern}/i }
+      lines.each do |line|
+        matchers.each do |matcher|
+          hit = line.match(matcher)
+          return hit[0] if hit
+        end
+      end
+      ''
+    end
+
+    # Plays a transcript: each step is the game's lines for one command,
+    # optionally with the roundtime the reply starts ({ lines:, rt: }), or a
+    # lambda run when the command is sent. bput's result is worked out the
+    # way DRC.bput does it: the lines in order, each against the matchers in
+    # order, the first match's text, else ''. Running out of steps raises,
+    # so a loop fails the example instead of hanging the suite.
+    def play(command, *steps)
+      allow(DRC).to receive(:bput) do |cmd, *patterns|
+        sent << cmd
+        raise "too many bput calls (last: #{cmd})" if steps.empty?
+
+        step = steps.shift
+        step = step.call(cmd) if step.respond_to?(:call)
+        step = { lines: Array(step) } unless step.is_a?(Hash)
+        roundtimes[0] = step.fetch(:rt, 0)
+        bput_result(step[:lines], patterns)
+      end
+      expect { sew.send(:work, command) }.to raise_error(SystemExit)
+    end
+
+    before(:each) do
+      sew.instance_variable_set(:@noun, 'outfit')
+      sew.instance_variable_set(:@cube, nil)
+      sew.instance_variable_set(:@home_tool, 'knitting needles')
+      sew.instance_variable_set(:@home_command, 'knit my needles')
+      sew.instance_variable_set(:@material_noun, nil)
+      $hand_nouns = { 'polished loimic knitting needles' => 'needles', 'wool yarn' => 'yarn',
+                      'reinforced netting' => 'netting', 'slender agonite sewing needles' => 'needles',
+                      'duffel bag' => 'bag', 'clockwork scissors' => 'scissors', 'knitted outfit instructions' => 'instructions' }
+      hold(:right, 'polished loimic knitting needles', '29846001')
+      hold(:left, 'wool yarn', '29869585')
+
+      allow(sew).to receive(:checkrt) { roundtimes.first.to_i }
+      allow(sew).to receive(:exit).and_raise(SystemExit)
+      allow(sew).to receive(:magic_cleanup)
+      allow(sew).to receive(:finish).and_raise(SystemExit)
+      allow(sew).to receive(:swap_tool)
+      allow(DRCA).to receive(:crafting_magic_routine)
+      allow(DRCC).to receive(:stow_crafting_item) { |name, *| sent << "stow #{name}" }
+      allow(Lich::Messaging).to receive(:msg) { |_kind, text| messages << text }
+      allow(DRCI).to receive(:put_away_item?) do |ref, container|
+        sent << "put #{ref} in #{container}"
+        hand = %i[left right].find { |h| ref == "##{($hand_item_ids || {})[h]&.last}" }
+        empty(hand) if hand
+        !hand.nil?
+      end
+    end
+
+    after(:each) do
+      $hand_item_ids = {}
+      $hand_nouns = {}
+      $left_hand = nil
+      $right_hand = nil
+    end
+
+    context 'when a free hand is needed' do
+      it 'puts away the held item the command does not name, by id, and sends the same command again' do
+        play('knit my needles', free_hand, knit_row, out_of_material)
+
+        expect(sent).to eq(['knit my needles', 'put #29869585 in duffel bag', 'knit my needles', 'knit my needles'])
+        expect(sent).not_to include('put #29846001 in duffel bag')
+      end
+
+      it "stops on Byd's endless free-hand replies after one put-away, instead of looping" do
+        play('knit my needles', *Array.new(50) { free_hand })
+
+        expect(sent.count('knit my needles')).to eq(2)
+        expect(messages).to include("sew: Still no free hand for 'knit my needles' after putting away what was held. Cannot continue crafting outfit.")
+      end
+
+      it 'stops at once, sending nothing more, when everything held is named by the command' do
+        empty(:left)
+
+        play('knit my needles', free_hand)
+
+        expect(sent).to eq(['knit my needles'])
+        expect(messages).to include("sew: No free hand for 'knit my needles', and everything held is needed. Cannot continue crafting outfit.")
+      end
+
+      it 'keeps the piece being sewn: the command names it, so nothing is spare' do
+        sew.instance_variable_set(:@noun, 'netting')
+        hold(:right, 'slender agonite sewing needles', '1')
+        hold(:left, 'reinforced netting', '2')
+
+        play('push my netting with my sewing needles', free_hand)
+
+        expect(sent).to eq(['push my netting with my sewing needles'])
+        expect(messages).to include(a_string_starting_with("sew: No free hand for 'push my netting with my sewing needles'"))
+      end
+
+      it 'stops, naming the item, when it cannot be put away' do
+        allow(DRCI).to receive(:put_away_item?).and_return(false)
+
+        play('knit my needles', free_hand)
+
+        expect(messages).to include('sew: Could not put the wool yarn (#29869585) in your duffel bag to free a hand. Cannot continue crafting outfit.')
+        expect(sent.count('knit my needles')).to eq(1)
+      end
+
+      it 'frees a hand again later in the run: the count is of replies in a row' do
+        regrab = lambda do |_cmd|
+          hold(:left, 'wool yarn', '29869999')
+          { lines: [free_hand] }
+        end
+
+        play('knit my needles', free_hand, knit_row, regrab, knit_row, out_of_material)
+
+        expect(messages).not_to include(a_string_starting_with('sew: Still no free hand'))
+        expect(sent).to include('put #29869585 in duffel bag', 'put #29869999 in duffel bag')
+      end
+
+      it 'finishes, rather than freeing a hand, when the item was finished meanwhile' do
+        finished = lambda do |_cmd|
+          Flags['sew-done'] = ['Applying the final touches, you complete working on a knitted wool outfit.']
+          { lines: [free_hand] }
+        end
+
+        play('knit my needles', finished)
+
+        expect(sew).to have_received(:finish)
+        expect(sent).not_to include(a_string_starting_with('put #'))
+      ensure
+        Flags.reset('sew-done')
+      end
+
+      it 'no longer treats the reply as a Roundtime: no swap to the home tool' do
+        play('knit my needles', free_hand, free_hand)
+
+        expect(sew).not_to have_received(:swap_tool)
+      end
+    end
+
+    context 'when the same reply comes back with no roundtime' do
+      let(:turn) { 'Now the needles must be turned to add some ribbing to the piece.' }
+
+      it 'stops after NO_ROUNDTIME_REPEATS of the same reply to the same command' do
+        play('turn my needles', *Array.new(10) { turn })
+
+        expect(sent.size).to eq(Sew::NO_ROUNDTIME_REPEATS)
+        expect(messages).to include("sew: 'turn my needles' got the same reply #{Sew::NO_ROUNDTIME_REPEATS} times in a row with no roundtime (Now the needles must be turned). Cannot continue crafting outfit.")
+      end
+
+      it 'never stops a step that keeps starting a roundtime, however often it repeats' do
+        play('turn my needles', *Array.new(6) { { lines: [turn], rt: 8 } }, out_of_material)
+
+        expect(sent.size).to eq(7)
+        expect(messages).not_to include(a_string_matching(/times in a row with no roundtime/))
+      end
+
+      it 'starts the count again after a reply with a roundtime' do
+        replies = [turn, turn, { lines: [turn], rt: 8 }, turn, turn, out_of_material]
+
+        play('turn my needles', *replies)
+
+        expect(messages).not_to include(a_string_matching(/times in a row with no roundtime/))
+      end
+
+      it 'counts a reply as a repeat only for the same command' do
+        # 'scissor cuts' moves a push on to the scissors: the first reply is
+        # to the push, the next two to the cut, so no three are the same.
+        play('push my outfit with my needles', 'scissor cuts', 'scissor cuts', 'scissor cuts', out_of_material)
+
+        expect(sent).to eq(['push my outfit with my needles', 'cut my outfit with my scissors', 'cut my outfit with my scissors', 'cut my outfit with my scissors'])
+        expect(messages).not_to include(a_string_matching(/no roundtime/))
+      end
+
+      it 'stops two replies taking turns after NO_ROUNDTIME_STREAK, though neither repeats' do
+        push = 'The needles are ready to be pushed for the addition of some purl stitching.'
+
+        play('turn my needles', *Array.new(12) { |i| i.even? ? turn : push })
+
+        expect(sent.size).to eq(Sew::NO_ROUNDTIME_STREAK)
+        expect(messages).to include(a_string_starting_with("sew: #{Sew::NO_ROUNDTIME_STREAK} replies in a row with no roundtime, the last to"))
+      end
+
+      it 'keeps retreating while engaged: the refusal starts no roundtime but is not counted' do
+        allow(DRC).to receive(:retreat) { sent << 'retreat' }
+        allow(sew).to receive(:pause)
+        engaged = 'You cannot do that while engaged!'
+
+        play('knit my needles', *Array.new(Sew::NO_ROUNDTIME_STREAK + 2) { engaged }, out_of_material)
+
+        expect(sent.count('retreat')).to eq(Sew::NO_ROUNDTIME_STREAK + 2)
+        expect(messages).not_to include(a_string_matching(/no roundtime/))
+      end
+
+      it 'finishes, rather than stopping, when the item was finished meanwhile' do
+        finished = lambda do |_cmd|
+          Flags['sew-done'] = ['Applying the final touches, you complete working on a knitted wool outfit.']
+          { lines: [turn] }
+        end
+
+        play('turn my needles', turn, turn, finished)
+
+        expect(sew).to have_received(:finish)
+        expect(messages).not_to include(a_string_matching(/no roundtime/))
+      ensure
+        Flags.reset('sew-done')
+      end
+
+      it 'does not count different replies as repeats' do
+        push = 'The needles are ready to be pushed for the addition of some purl stitching.'
+
+        play('turn my needles', turn, push, turn, push, turn, push, out_of_material)
+
+        expect(messages).not_to include(a_string_matching(/times in a row with no roundtime/))
+      end
+    end
+
+    describe '#spare_held_objects' do
+      it 'names a dotted noun by its last part' do
+        hold(:right, 'clockwork scissors', '7')
+        hold(:left, 'duffel bag', '8')
+
+        expect(sew.send(:spare_held_objects, 'cut my duffel.bag with my scissors')).to be_empty
+      end
+
+      it 'skips an empty hand (the Empty placeholder has no id)' do
+        empty(:left)
+
+        expect(sew.send(:spare_held_objects, 'knit my yarn with my knitting needles')).to be_empty
+      end
+
+      it 'returns both hands when the command names neither' do
+        hold(:right, 'knitted outfit instructions', '9')
+
+        expect(sew.send(:spare_held_objects, 'knit my needles').map(&:id)).to eq(%w[9 29869585])
+      end
+
+      it 'keeps what the command names by id, and the piece being sewn' do
+        sew.instance_variable_set(:@noun, 'netting')
+        hold(:right, 'slender agonite sewing needles', '63049908')
+        hold(:left, 'reinforced netting', '2')
+
+        expect(sew.send(:spare_held_objects, 'put my thread on #63049908')).to be_empty
+      end
+
+      it 'matches the noun whatever its case' do
+        expect(sew.send(:spare_held_objects, 'KNIT MY NEEDLES').map(&:id)).to eq(['29869585'])
+      end
+    end
+  end
 end
