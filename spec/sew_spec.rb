@@ -3713,6 +3713,131 @@ RSpec.describe Sew do
       end
     end
 
+    context 'when the needles already hold work' do
+      let(:already) { 'You are already knitting an unfinished knitted wool outfit on the yarn.  You must finish this before starting another project.' }
+      # Fidon, 2026-11-12 06:43:29: ANALYZE with an outfit on the needles.
+      let(:analyze_wip) do
+        ['You analyze both the needles and an unfinished knitted wool outfit on them.',
+         'You analyze every minute detail of the knitted outfit and smile knowingly to yourself (6/6).',
+         'When crafting is complete this will be a type of finished knitted clothing.',
+         'The outfit is in need of more knitting.',
+         'You estimate that it is two-thirds done.',
+         'Roundtime: 4 sec.']
+      end
+      let(:consider) do
+        ['You consider pulling off and discarding an unfinished knitted wool outfit from around your needles.',
+         '[Do you really want to discard the outfit from around the needles?  Pull the needles one more time to destroy it forever.]']
+      end
+
+      before do
+        sew.instance_variable_set(:@mat_type, 'wool')
+        sew.instance_variable_set(:@material_noun, 'yarn')
+        sew.instance_variable_set(:@material_name, 'wool yarn')
+        sew.instance_variable_set(:@material_id, '29869585')
+      end
+
+      # Fidon, 2026-11-12 06:44:20: the same reply led to two pulls that
+      # discarded an outfit ready to be cast off.
+      it 'goes on with its own outfit: puts the yarn away, ANALYZEs, knits on' do
+        play('knit my yarn with my knitting needles', already, analyze_wip, knit_row, out_of_material)
+
+        expect(sent).to eq(['knit my yarn with my knitting needles', 'put #29869585 in duffel bag',
+                            'analyze my knitting needles', 'knit my needles', 'knit my needles'])
+        expect(sent).not_to include('pull my needles')
+        expect(messages).to include('sew: The needles already hold an unfinished outfit; going on with it.')
+      end
+
+      it 'still discards work that is not its item' do
+        hat = 'You are already knitting an unfinished knitted wool hat on the yarn.  You must finish this before starting another project.'
+
+        play('knit my yarn with my knitting needles', hat, consider, 'You untie and discard an unfinished knitted wool hat from around the needles.', out_of_material)
+
+        expect(sent.first(4)).to eq(['knit my yarn with my knitting needles', 'pull my needles', 'pull my needles', 'knit my yarn with my knitting needles'])
+        expect(sent).not_to include('analyze my knitting needles')
+      end
+
+      it 'still discards its noun in another material' do
+        silk = 'You are already knitting an unfinished knitted silk outfit on the yarn.  You must finish this before starting another project.'
+
+        play('knit my yarn with my knitting needles', silk, out_of_material)
+
+        expect(sent[1]).to eq('pull my needles')
+        expect(sent).not_to include('analyze my knitting needles')
+      end
+
+      it 'matches the noun as a word: a hatband is not a hat' do
+        sew.instance_variable_set(:@noun, 'hat')
+        band = 'You are already knitting an unfinished knitted wool hatband on the yarn.  You must finish this before starting another project.'
+
+        play('knit my yarn with my knitting needles', band, out_of_material)
+
+        expect(sent[1]).to eq('pull my needles')
+        expect(sent).not_to include('analyze my knitting needles')
+      end
+
+      it 'goes by the noun alone when the run names bare yarn (book runs)' do
+        sew.instance_variable_set(:@mat_type, 'yarn')
+
+        play('knit my yarn with my knitting needles', already, analyze_wip, out_of_material)
+
+        expect(sent).to include('analyze my knitting needles')
+        expect(sent).not_to include('pull my needles')
+      end
+
+      # Review of #8084 (mrhoribu): "a knitted hat" and "a lacework hat" are
+      # both chapter 5 with noun hat.
+      context 'when the run names a recipe (book and work-order runs)' do
+        let(:knitted_hat) { 'You are already knitting an unfinished knitted wool hat on the yarn.  You must finish this before starting another project.' }
+
+        before { sew.instance_variable_set(:@noun, 'hat') }
+
+        it "discards a knitted hat on a lacework hat's run" do
+          sew.instance_variable_set(:@recipe_name, 'lacework hat')
+
+          play('knit my yarn with my knitting needles', knitted_hat, out_of_material)
+
+          expect(sent[1]).to eq('pull my needles')
+          expect(sent).not_to include('analyze my knitting needles')
+        end
+
+        it "goes on with a knitted hat on a knitted hat's run, article or not" do
+          sew.instance_variable_set(:@recipe_name, 'a knitted hat')
+
+          play('knit my yarn with my knitting needles', knitted_hat, analyze_wip, out_of_material)
+
+          expect(sent).to include('analyze my knitting needles')
+          expect(sent).not_to include('pull my needles')
+        end
+      end
+
+      it 'takes a dotted noun by its last part' do
+        sew.instance_variable_set(:@noun, 'knitted.hat')
+        hat = 'You are already knitting an unfinished knitted wool hat on the yarn.  You must finish this before starting another project.'
+
+        play('knit my yarn with my knitting needles', hat, analyze_wip, out_of_material)
+
+        expect(sent).to include('analyze my knitting needles')
+        expect(sent).not_to include('pull my needles')
+      end
+
+      it 'is not set off by a player saying the line: no pull, no discard' do
+        speech = 'Pryce says, "You are already knitting an unfinished knitted wool outfit on the yarn."'
+
+        play('knit my yarn with my knitting needles', [speech, out_of_material])
+
+        expect(sent).not_to include('pull my needles', 'analyze my knitting needles')
+        expect(messages).to include('sew: Not enough material to continue crafting outfit. Exiting.')
+      end
+
+      it 'goes by the noun alone when the run names no material' do
+        sew.instance_variable_set(:@mat_type, nil)
+
+        play('knit my yarn with my knitting needles', already, analyze_wip, out_of_material)
+
+        expect(sent).not_to include('pull my needles')
+      end
+    end
+
     describe '#spare_held_objects' do
       it 'names a dotted noun by its last part' do
         hold(:right, 'clockwork scissors', '7')
