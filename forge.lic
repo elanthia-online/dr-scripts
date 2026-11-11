@@ -367,6 +367,43 @@ class Forge
 
   # @!endgroup
 
+  # @!group Study Patterns
+
+  # The study's own line, which comes before "You now feel ready to begin the
+  # crafting process." and its roundtime. It always ends one of three ways:
+  # "completely understand all facets of the design.", "comprehend all but
+  # several minor details in the text." or "confidently discern most of the
+  # design's minutiae." A Roundtime line is not enough: when the game lags,
+  # a late Roundtime from an earlier command can arrive before the study's
+  # reply, or in place of it.
+  # @return [Regexp]
+  STUDY_SUCCESS_PATTERN = /^You scan the .+ instructions with a glance and /
+
+  # The game asking for another study, e.g. "[These instructions have only 9
+  # uses remaining.  Study them again to proceed.]". No quote may come
+  # before it, so a player saying the line does not count.
+  # @return [Regexp]
+  STUDY_AGAIN_PATTERN = /^[^"]*Study them again/
+
+  # A study when the game does not see the instructions in hand.
+  # @return [Regexp]
+  STUDY_NOT_HOLDING_PATTERN = /^You must be holding the instructions/
+
+  # A study when there are no instructions on the character.
+  # @return [Regexp]
+  STUDY_NOT_FOUND_PATTERN = /^What were you referring to/
+
+  # Seconds to wait for each study's reply. Long, since a lagging game can
+  # answer minutes late, and a reply that never comes stops the script.
+  # @return [Integer]
+  STUDY_TIMEOUT = 90
+
+  # Most studies sent; the game asks for a second one at most once.
+  # @return [Integer]
+  STUDY_MAX_ATTEMPTS = 3
+
+  # @!endgroup
+
   # Initialize and run the forge script.
   #
   # Parses command-line arguments, validates settings, and orchestrates
@@ -1014,13 +1051,37 @@ class Forge
     DRCC.stow_crafting_item("#{@item} instructions", @bag, @forging_belt)
   end
 
-  # Study instructions, repeating if needed.
+  # Study the instructions in hand, again when the game asks, up to
+  # STUDY_MAX_ATTEMPTS studies.
+  #
+  # Only the study's own line (STUDY_SUCCESS_PATTERN) counts as done. Any
+  # other end -- no reply within STUDY_TIMEOUT, not holding the instructions,
+  # no instructions, or still asked to study again after the last study --
+  # stops the script through cleanup_and_exit, which puts away what is in
+  # hand (the instructions) first, so forging never starts without the
+  # design in effect.
   #
   # @return [void]
+  # @raise [SystemExit] when the study does not complete
   def study_instructions
-    if /again/ =~ DRC.bput('study my instructions', 'Roundtime', 'Study them again')
-      DRC.bput('study my instructions', 'Roundtime', 'Study them again')
+    STUDY_MAX_ATTEMPTS.times do
+      result = DRC.bput('study my instructions', { 'timeout' => STUDY_TIMEOUT },
+                        STUDY_SUCCESS_PATTERN, STUDY_AGAIN_PATTERN, STUDY_NOT_HOLDING_PATTERN, STUDY_NOT_FOUND_PATTERN)
+      case result
+      when STUDY_SUCCESS_PATTERN
+        waitrt?
+        return
+      when STUDY_AGAIN_PATTERN
+        next
+      when STUDY_NOT_HOLDING_PATTERN
+        cleanup_and_exit("Not holding the #{@item} instructions to study them.")
+      when STUDY_NOT_FOUND_PATTERN
+        cleanup_and_exit("Could not find the #{@item} instructions to study.")
+      else
+        cleanup_and_exit("No reply to studying the #{@item} instructions.")
+      end
     end
+    cleanup_and_exit("Still told to study the #{@item} instructions again after #{STUDY_MAX_ATTEMPTS} studies.")
   end
 
   # Prepare using a recipe book.
