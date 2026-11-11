@@ -66,6 +66,23 @@ class Sew
   # on as long as the fight does.
   ENGAGED = /^You cannot do that while engaged!/
 
+  # A crafting command with no design in mind: no study took, or the one
+  # that did has faded ("You struggle to recall the crafting instructions
+  # you last studied as they fade from your mind."). Byd, 2026-11-12
+  # 01:03:32, after a lag: "You cannot figure out how to do that.  Perhaps
+  # finding suitable ingredients and studying some instructions would
+  # help." Nothing #work can send fixes it. Matched with its second
+  # sentence: other scripts take a bare "You cannot figure out how to do
+  # that" as the item being done (taskmaster.lic, carve.lic).
+  NO_DESIGN = /^You cannot figure out how to do that\.\s+Perhaps finding suitable ingredients and studying some instructions/
+
+  # 'knit my needles' with no knitting on the needles (Fidon, 2026-11-12
+  # 06:50:45, bare needles in hand): "You can only knit with the needles after
+  # knitting has already begun.  Instead, try studying some instructions
+  # and knitting some yarn with the needles to begin." There is nothing
+  # for #work to go on with.
+  NOTHING_ON_NEEDLES = /^You can only knit with the needles after knitting has already begun/
+
   # The thread the needles take, as the stock room sells it ("100 yards of
   # cotton thread", order 6). Spun spools are thread too ("some heavy silk
   # thread") and spin keeps them in the crafting container, so the thread
@@ -692,7 +709,9 @@ class Sew
                         /^You need a free hand to do that/,
                         /^You realize that cannot be repaired, and stop/,
                         /^You must be holding the .* to do that/,
-                        ENGAGED)
+                        ENGAGED,
+                        NO_DESIGN,
+                        NOTHING_ON_NEEDLES)
       # An ANALYZE that finds nothing to analyze (no item yet, or the wrong
       # one named) says nothing about the item: it counts as a miss, not as
       # the missing tool the not-found branch below fetches, which would send
@@ -737,6 +756,12 @@ class Sew
         stop_with_hands_put_away("sew: Not enough material to continue crafting #{@noun}. Exiting.")
       when /^You must be holding the .* to do that/
         stop_with_hands_put_away("sew: Required tool not in hand. Cannot continue crafting #{@noun}.")
+      when NO_DESIGN
+        finish if Flags['sew-done']
+        stop_with_hands_put_away("sew: The game says no design is in mind for #{@noun}: the study did not take, or it has faded. Cannot continue crafting.")
+      when NOTHING_ON_NEEDLES
+        finish if Flags['sew-done']
+        stop_with_hands_put_away("sew: There is no knitting on the needles to go on with. Cannot continue crafting #{@noun}.")
       when 'dimensions appear to have shifted and could benefit from some remeasuring', 'dimensions changed while working on it'
         swap_tool('yardstick')
         @home_tool = 'sewing needles'
