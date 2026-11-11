@@ -88,6 +88,12 @@ class Sew
   # bare Roundtime is not enough: in a backlog a late Roundtime from an
   # earlier command can arrive while the study waits.
   STUDY_DONE = /^You scan the .+ instructions with a glance and /
+
+  # A knit started while the needles hold work: "You are already knitting
+  # an unfinished knitted wool outfit on the yarn.  You must finish this
+  # before starting another project." (Fidon, 2026-11-12 06:44:20). The
+  # match runs to "on the", so it names the work and not the yarn.
+  ALREADY_KNITTING = /^You are already knitting [^.]*? on the/
   # "[These instructions have only 5 uses remaining.  Study them again to
   # proceed.]" before the study that uses one. No double quote may come
   # before it, so a player saying it doesn't count.
@@ -789,7 +795,7 @@ class Sew
                         'What were you referring',
                         'With the measuring complete',
                         'wrinkles from all the handling and could use',
-                        'You are already knitting',
+                        ALREADY_KNITTING,
                         'You carefully thread some cotton thread',
                         'is already threaded with',
                         'You must assemble',
@@ -930,7 +936,9 @@ class Sew
         command = 'push my needles'
       when 'The garment is nearly complete and now must be cast off', /^The .* needles must be cast to finish binding the knit yarn\.$/
         command = 'cast my needles'
-      when 'You are already knitting', 'Do you really want to discard'
+      when ALREADY_KNITTING
+        command = keep_or_discard_knitting(result)
+      when 'Do you really want to discard'
         command = 'pull my needles'
       when 'You untie and discard'
         command = 'knit my yarn with my knitting needles'
@@ -960,6 +968,46 @@ class Sew
   def stop_going_nowhere(message)
     finish if Flags['sew-done']
     stop_with_hands_put_away(message)
+  end
+
+  # What to send after "You are already knitting ...": a new knit can't
+  # start while the needles hold work. When the work is this run's own item
+  # (its noun, and its material when the run names one other than bare
+  # yarn), the yarn is put away and the run goes on with it: ANALYZE says
+  # where it stands, as a resume does. Anything else is pulled off and
+  # discarded, as before.
+  #
+  # taskmaster never resumes knitting (the work doesn't show in the hand),
+  # so after a crash in the middle of an outfit the next sew got here and
+  # threw the outfit away. Fidon, 2026-11-12 06:44:20: "You are already
+  # knitting an unfinished knitted wool outfit on the yarn.  You must finish
+  # this before starting another project.", then two pulls discarded an
+  # outfit ready to be cast off.
+  #
+  # @param reply [String] the matched text, "You are already knitting an
+  #   unfinished knitted wool outfit on the"
+  # @return [String] the next command
+  def keep_or_discard_knitting(reply)
+    return 'pull my needles' unless own_knitting?(reply)
+
+    Lich::Messaging.msg('plain', "sew: The needles already hold an unfinished #{@noun}; going on with it.")
+    put_away_raw_material
+    analyze_command
+  end
+
+  # Whether +reply+ names this run's item: its noun (the last part of a
+  # dotted one, as clear_hands takes it), and its material when the run
+  # names one other than bare yarn (craft.lic passes "yarn", which the reply
+  # never names).
+  #
+  # @param reply [String]
+  # @return [Boolean]
+  def own_knitting?(reply)
+    text = reply.downcase
+    return false unless text.match?(/\b#{Regexp.escape(@noun.split('.').last.downcase)}\b/)
+    return true if @mat_type.nil? || @mat_type.casecmp?('yarn')
+
+    text.match?(/\b#{Regexp.escape(@mat_type.downcase)}\b/)
   end
 
   # Frees a hand for +command+ after "You need a free hand to do that.", so
