@@ -1373,6 +1373,165 @@ RSpec.describe Forge do
       end
     end
 
+    # The game answers a study with its own line, then "You now feel ready to
+    # begin the crafting process." and the roundtime. When the game lags,
+    # replies to earlier commands (a stray Roundtime) can come first, so the
+    # bput stub below reads a queue of lines the way DRC.bput does: it skips
+    # lines that match none of the matchers it was given and returns the
+    # matched text of the first that does, or '' (a timeout) when none is left.
+    describe '#study_instructions' do
+      let(:study_line_endings) do
+        [
+          'completely understand all facets of the design.',
+          'comprehend all but several minor details in the text.',
+          "confidently discern most of the design's minutiae."
+        ]
+      end
+      let(:again_reply) do
+        ['The delicate nature of the instructions will cause them to wear out with use.',
+         '[These instructions have only 9 uses remaining.  Study them again to proceed.]']
+      end
+      let(:study_replies) { [] }
+      let(:study_options) { [] }
+      let(:matched_lines) { [] }
+
+      def study_reply(ending)
+        ["You scan the steel sword instructions with a glance and #{ending}",
+         'You now feel ready to begin the crafting process.',
+         'Roundtime: 7 sec.']
+      end
+
+      before do
+        $right_hand = 'steel sword instructions'
+        $left_hand = nil
+        allow(DRC).to receive(:bput) do |command, *args|
+          raise "unexpected command #{command.inspect}" unless command == 'study my instructions'
+
+          study_options << (args.first.is_a?(Hash) ? args.shift : {})
+          matchers = args.flatten.map { |m| m.is_a?(Regexp) ? m : /#{m}/i }
+          lines = (study_replies.shift || []).dup
+          found = nil
+          while found.nil? && (line = lines.shift)
+            matchers.each do |matcher|
+              next unless (match = line.match(matcher))
+
+              matched_lines << line
+              found = match.to_a.first
+              break
+            end
+          end
+          found || ''
+        end
+        allow(DRCC).to receive(:stow_crafting_item)
+        allow(forge_instance).to receive(:magic_cleanup)
+        allow(forge_instance).to receive(:waitrt?)
+      end
+
+      it 'succeeds on each of the three endings of the study line, and on nothing earlier' do
+        study_line_endings.each do |ending|
+          study_replies.replace([study_reply(ending)])
+          matched_lines.clear
+
+          forge_instance.send(:study_instructions)
+
+          expect(matched_lines).to eq(["You scan the steel sword instructions with a glance and #{ending}"])
+        end
+        expect(DRCC).not_to have_received(:stow_crafting_item)
+      end
+
+      it 'waits out the study roundtime after the study line' do
+        study_replies.replace([study_reply(study_line_endings.first)])
+
+        forge_instance.send(:study_instructions)
+
+        expect(forge_instance).to have_received(:waitrt?)
+      end
+
+      it 'waits 90 seconds for each study reply' do
+        study_replies.replace([again_reply, study_reply(study_line_endings.first)])
+
+        forge_instance.send(:study_instructions)
+
+        expect(study_options).to eq([{ 'timeout' => 90 }, { 'timeout' => 90 }])
+      end
+
+      it 'skips a late Roundtime from an earlier command and succeeds on the study line after it' do
+        study_replies.replace([['Roundtime: 8 sec.'] + study_reply(study_line_endings[1])])
+
+        forge_instance.send(:study_instructions)
+
+        expect(matched_lines).to eq(["You scan the steel sword instructions with a glance and #{study_line_endings[1]}"])
+      end
+
+      it 'stops when a late Roundtime is followed by the instructions not being in hand' do
+        study_replies.replace([['Roundtime: 8 sec.', 'You must be holding the instructions to study them.']])
+
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: Not holding the sword instructions to study them.')
+        expect { forge_instance.send(:study_instructions) }.to raise_error(SystemExit)
+      end
+
+      it 'stops when a late Roundtime is the only reply (the study itself never answered)' do
+        study_replies.replace([['Roundtime: 8 sec.']])
+
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: No reply to studying the sword instructions.')
+        expect { forge_instance.send(:study_instructions) }.to raise_error(SystemExit)
+        expect(forge_instance).not_to have_received(:waitrt?)
+      end
+
+      it 'studies again when asked, then succeeds' do
+        study_replies.replace([again_reply, study_reply(study_line_endings[2])])
+
+        forge_instance.send(:study_instructions)
+
+        expect(DRC).to have_received(:bput).with('study my instructions', any_args).twice
+        expect(matched_lines.last).to eq("You scan the steel sword instructions with a glance and #{study_line_endings[2]}")
+      end
+
+      it 'stops, putting the instructions away, when still asked to study again after three studies' do
+        study_replies.replace([again_reply, again_reply, again_reply, study_reply(study_line_endings.first)])
+
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: Still told to study the sword instructions again after 3 studies.')
+        expect { forge_instance.send(:study_instructions) }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:bput).with('study my instructions', any_args).exactly(3).times
+        expect(DRCC).to have_received(:stow_crafting_item).with('steel sword instructions', 'backpack', nil)
+        expect(forge_instance).to have_received(:magic_cleanup)
+      end
+
+      it 'stops, putting the instructions away, when the game says they are not in hand' do
+        study_replies.replace([['You must be holding the instructions to study them.']])
+
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: Not holding the sword instructions to study them.')
+        expect { forge_instance.send(:study_instructions) }.to raise_error(SystemExit)
+        expect(DRCC).to have_received(:stow_crafting_item).with('steel sword instructions', 'backpack', nil)
+      end
+
+      it 'stops when there are no instructions to study' do
+        study_replies.replace([['What were you referring to?']])
+
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: Could not find the sword instructions to study.')
+        expect { forge_instance.send(:study_instructions) }.to raise_error(SystemExit)
+      end
+
+      it 'stops, putting the instructions away, when the study gets no reply' do
+        study_replies.replace([[]])
+
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'Forge: No reply to studying the sword instructions.')
+        expect { forge_instance.send(:study_instructions) }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:bput).once
+        expect(DRCC).to have_received(:stow_crafting_item).with('steel sword instructions', 'backpack', nil)
+      end
+
+      it "does not take a player's quoted line as the game asking for another study" do
+        expect('[These instructions have only 9 uses remaining.  Study them again to proceed.]').to match(Forge::STUDY_AGAIN_PATTERN)
+        expect('Someone says, "Study them again to proceed."').not_to match(Forge::STUDY_AGAIN_PATTERN)
+      end
+
+      it "does not take a player's speech as the study line" do
+        expect('Someone says, "You scan the steel sword instructions with a glance and completely understand all facets of the design."')
+          .not_to match(Forge::STUDY_SUCCESS_PATTERN)
+      end
+    end
+
     describe '#set_defaults' do
       it 'sets up for temper recipe' do
         forge_instance.instance_variable_set(:@recipe_name, 'temper')
