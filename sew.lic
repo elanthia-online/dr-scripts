@@ -1000,18 +1000,33 @@ class Sew
   end
 
   # Whether +reply+ names this run's item: its noun (the last part of a
-  # dotted one, as clear_hands takes it), and its material when the run
-  # names one other than bare yarn (craft.lic passes "yarn", which the reply
-  # never names).
+  # dotted one, as clear_hands takes it), its material when the run names
+  # one other than bare yarn (craft.lic passes "yarn", which the reply never
+  # names), and, when the run names a recipe (book and work-order runs),
+  # every word of the recipe's name. The noun alone can't tell "a knitted
+  # hat" from "a lacework hat" (both chapter 5, noun hat); the unfinished
+  # work keeps the recipe's words ("an unfinished knitted wool outfit" for
+  # "a knitted outfit", Fidon 2026-11-12 06:44:20). Taskmaster's
+  # instructions runs name no recipe.
   #
   # @param reply [String]
   # @return [Boolean]
   def own_knitting?(reply)
     text = reply.downcase
-    return false unless text.match?(/\b#{Regexp.escape(@noun.split('.').last.downcase)}\b/)
+    word = ->(w) { text.match?(/\b#{Regexp.escape(w.downcase)}\b/) }
+    return false unless word.call(@noun.split('.').last)
+    return false unless recipe_words.all?(&word)
     return true if @mat_type.nil? || @mat_type.casecmp?('yarn')
 
-    text.match?(/\b#{Regexp.escape(@mat_type.downcase)}\b/)
+    word.call(@mat_type)
+  end
+
+  # The words of the run's recipe name, without a leading article; none
+  # when the run names no recipe.
+  #
+  # @return [Array<String>]
+  def recipe_words
+    @recipe_name.to_s.downcase.sub(/\A(?:a|an|some)\s+/, '').scan(/[a-z'-]+/)
   end
 
   # Frees a hand for +command+ after "You need a free hand to do that.", so

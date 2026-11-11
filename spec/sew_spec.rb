@@ -3784,6 +3784,32 @@ RSpec.describe Sew do
         expect(sent).not_to include('pull my needles')
       end
 
+      # Review of #8084 (mrhoribu): "a knitted hat" and "a lacework hat" are
+      # both chapter 5 with noun hat.
+      context 'when the run names a recipe (book and work-order runs)' do
+        let(:knitted_hat) { 'You are already knitting an unfinished knitted wool hat on the yarn.  You must finish this before starting another project.' }
+
+        before { sew.instance_variable_set(:@noun, 'hat') }
+
+        it "discards a knitted hat on a lacework hat's run" do
+          sew.instance_variable_set(:@recipe_name, 'lacework hat')
+
+          play('knit my yarn with my knitting needles', knitted_hat, out_of_material)
+
+          expect(sent[1]).to eq('pull my needles')
+          expect(sent).not_to include('analyze my knitting needles')
+        end
+
+        it "goes on with a knitted hat on a knitted hat's run, article or not" do
+          sew.instance_variable_set(:@recipe_name, 'a knitted hat')
+
+          play('knit my yarn with my knitting needles', knitted_hat, analyze_wip, out_of_material)
+
+          expect(sent).to include('analyze my knitting needles')
+          expect(sent).not_to include('pull my needles')
+        end
+      end
+
       it 'takes a dotted noun by its last part' do
         sew.instance_variable_set(:@noun, 'knitted.hat')
         hat = 'You are already knitting an unfinished knitted wool hat on the yarn.  You must finish this before starting another project.'
