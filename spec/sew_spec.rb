@@ -1385,7 +1385,9 @@ RSpec.describe Sew do
       allow(DRCC).to receive(:get_crafting_item).and_return(true)
       allow(DRCC).to receive(:stow_crafting_item)
       allow(DRCC).to receive(:find_recipe2)
-      allow(DRC).to receive(:bput).and_return('Roundtime')
+      # A completed study answers with its own line (Sew::STUDY_DONE); bput
+      # returns the matched text.
+      allow(DRC).to receive(:bput) { |command, *| command == 'study my instructions' ? 'You scan the rucksack instructions with a glance and ' : 'Roundtime' }
       allow(DRCI).to receive(:in_left_hand?).and_return(true)
       allow(sew).to receive(:check_hand)
       allow(sew).to receive(:swap_tool)
@@ -1420,7 +1422,7 @@ RSpec.describe Sew do
         allow(sew).to receive(:exit).and_raise(SystemExit)
         allow(DRC).to receive(:bput) do |command, *|
           sent << command
-          replies.fetch(command, 'Roundtime')
+          replies.fetch(command) { command == 'study my instructions' ? 'You scan the rucksack instructions with a glance and ' : 'Roundtime' }
         end
         allow(DRCC).to receive(:get_crafting_item) do |name, _bag, _items, _belt, skip_exit = false|
           reply = DRC.bput("get my #{name}", /^You get/, /^What were you/)
@@ -1871,17 +1873,17 @@ RSpec.describe Sew do
       end
 
       it 'studies instructions twice if prompted to study again' do
-        allow(DRC).to receive(:bput).with('study my instructions', 'Roundtime', 'Study them again')
-                                    .and_return('Study them again', 'Roundtime')
-        expect(DRC).to receive(:bput).with('study my instructions', 'Roundtime', 'Study them again').twice
+        allow(DRC).to receive(:bput).with('study my instructions', anything, any_args)
+                                    .and_return('Study them again', 'You scan the rucksack instructions with a glance and ')
+        expect(DRC).to receive(:bput).with('study my instructions', anything, any_args).twice
 
         sew.send(:prep)
       end
 
       it 'studies instructions only once if no re-study prompt' do
-        allow(DRC).to receive(:bput).with('study my instructions', 'Roundtime', 'Study them again')
-                                    .and_return('Roundtime')
-        expect(DRC).to receive(:bput).with('study my instructions', 'Roundtime', 'Study them again').once
+        allow(DRC).to receive(:bput).with('study my instructions', anything, any_args)
+                                    .and_return('You scan the rucksack instructions with a glance and ')
+        expect(DRC).to receive(:bput).with('study my instructions', anything, any_args).once
 
         sew.send(:prep)
       end
@@ -3017,7 +3019,7 @@ RSpec.describe Sew do
         empty(:right)
         hold(:left, name, id)
         'You move some burlap cloth to your left hand.'
-      when 'study my instructions' then 'Roundtime: 8 sec.'
+      when 'study my instructions' then 'You scan the netting instructions with a glance and completely understand all facets of the design.'
       else ''
       end
     end
@@ -3729,6 +3731,179 @@ RSpec.describe Sew do
       it 'matches the noun whatever its case' do
         expect(sew.send(:spare_held_objects, 'KNIT MY NEEDLES').map(&:id)).to eq(['29869585'])
       end
+    end
+  end
+
+  # ===========================================================================
+  # #study_instructions -- only the study's own line counts as done
+  # ===========================================================================
+  # Byd, 2026-11-12: a sew started during a lag sent 'study my instructions'
+  # at 01:02:48, took the 15 s timeout as done and crafted on; the reply at
+  # 01:03:32 was "You must be holding the instructions to study them."
+  describe '#study_instructions' do
+    let(:sent) { [] }
+    let(:messages) { [] }
+    let(:timeouts) { [] }
+    let(:again) { '[These instructions have only 5 uses remaining.  Study them again to proceed.]' }
+    let(:done_lines) do
+      ['You scan the outfit instructions with a glance and completely understand all facets of the design.',
+       'You now feel ready to begin the crafting process.', 'Roundtime: 5 sec.']
+    end
+    let(:not_holding) { 'You must be holding the instructions to study them.' }
+
+    # bput's result for the game lines of one study, the way DRC.bput works
+    # it out: each line in turn against the matchers in order, the matched
+    # text of the first hit, else ''.
+    def bput_result(lines, patterns)
+      matchers = patterns.flatten.reject { |pattern| pattern.is_a?(Hash) }
+                         .map { |pattern| pattern.is_a?(Regexp) ? pattern : /#{pattern}/i }
+      lines.each do |line|
+        matchers.each do |matcher|
+          hit = line.match(matcher)
+          return hit[0] if hit
+        end
+      end
+      ''
+    end
+
+    # Each argument is the game's lines for one study; running out raises.
+    def studies(*replies)
+      allow(DRC).to receive(:bput) do |command, *patterns|
+        sent << command
+        timeouts << (patterns.first.is_a?(Hash) ? patterns.first['timeout'] : nil)
+        raise "too many bput calls (last: #{command})" if replies.empty?
+
+        bput_result(Array(replies.shift), patterns)
+      end
+    end
+
+    before(:each) do
+      sew.instance_variable_set(:@noun, 'outfit')
+      sew.instance_variable_set(:@material_noun, 'yarn')
+      sew.instance_variable_set(:@material_name, 'wool yarn')
+      sew.instance_variable_set(:@material_id, '29869585')
+      $hand_nouns = { 'wool yarn' => 'yarn', 'knitted outfit instructions' => 'instructions' }
+      $left_hand = 'wool yarn'
+      $right_hand = 'knitted outfit instructions'
+      $hand_item_ids = { left: ['wool yarn', '29869585'], right: ['knitted outfit instructions', '29862597'] }
+      allow(sew).to receive(:exit).and_raise(SystemExit)
+      allow(sew).to receive(:magic_cleanup)
+      allow(Lich::Messaging).to receive(:msg) { |_kind, text| messages << text }
+      allow(DRCC).to receive(:stow_crafting_item) do |name, *|
+        sent << "stow #{name}"
+        $right_hand = nil if name.to_s.end_with?('instructions')
+      end
+      allow(DRCI).to receive(:put_away_item?) do |ref, container|
+        sent << "put #{ref} in #{container}"
+        $left_hand = nil if ref == '#29869585'
+        true
+      end
+    end
+
+    after(:each) do
+      $hand_item_ids = {}
+      $hand_nouns = {}
+      $left_hand = nil
+      $right_hand = nil
+    end
+
+    def stop_message(why)
+      "sew: Could not study the outfit instructions: #{why}. Stopping before crafting with no design in mind."
+    end
+
+    it 'counts each logged ending of the study line as done' do
+      ['completely understand all facets of the design.',
+       'comprehend all but several minor details in the text.',
+       "confidently discern most of the design's minutiae."].each do |ending|
+        sent.clear
+        studies(["You scan the outfit instructions with a glance and #{ending}", 'Roundtime: 5 sec.'])
+
+        expect { sew.send(:study_instructions) }.not_to raise_error
+        expect(sent).to eq(['study my instructions'])
+      end
+    end
+
+    it 'waits STUDY_TIMEOUT for every study, not the 15 s default' do
+      studies(again, done_lines)
+
+      sew.send(:study_instructions)
+
+      expect(timeouts).to eq([Sew::STUDY_TIMEOUT, Sew::STUDY_TIMEOUT])
+    end
+
+    it 'studies again when told to, and stops there once done' do
+      studies(again, done_lines)
+
+      expect { sew.send(:study_instructions) }.not_to raise_error
+      expect(sent).to eq(['study my instructions', 'study my instructions'])
+    end
+
+    it 'does not take a late Roundtime from an earlier command as the study' do
+      studies(['Roundtime: 8 sec.', not_holding])
+
+      expect { sew.send(:study_instructions) }.to raise_error(SystemExit)
+      expect(messages).to include(stop_message('the game says they are not in hand'))
+    end
+
+    it 'does not take a late Roundtime alone as the study either' do
+      studies(['Roundtime: 8 sec.'])
+
+      expect { sew.send(:study_instructions) }.to raise_error(SystemExit)
+      expect(messages).to include(stop_message("no reply sew knows within #{Sew::STUDY_TIMEOUT} seconds"))
+    end
+
+    it 'still finds the study line after a late Roundtime' do
+      studies(['Roundtime: 8 sec.', *done_lines])
+
+      expect { sew.send(:study_instructions) }.not_to raise_error
+    end
+
+    it "stops on Byd's reply, putting the instructions away first, then the yarn" do
+      studies(not_holding)
+
+      expect { sew.send(:study_instructions) }.to raise_error(SystemExit)
+      expect(sent).to eq(['study my instructions', 'stow outfit instructions', 'put #29869585 in duffel bag'])
+      expect(messages).to include(stop_message('the game says they are not in hand'))
+    end
+
+    it 'stops when the game cannot find the instructions' do
+      studies('What were you referring to?')
+
+      expect { sew.send(:study_instructions) }.to raise_error(SystemExit)
+      expect(messages).to include(stop_message('the game cannot find them'))
+    end
+
+    it 'stops on no reply at all' do
+      studies([])
+
+      expect { sew.send(:study_instructions) }.to raise_error(SystemExit)
+      expect(messages).to include(stop_message("no reply sew knows within #{Sew::STUDY_TIMEOUT} seconds"))
+    end
+
+    it 'stops after MAX_STUDIES prompts to study again, sending no more' do
+      studies(*Array.new(Sew::MAX_STUDIES) { again }, done_lines)
+
+      expect { sew.send(:study_instructions) }.to raise_error(SystemExit)
+      expect(sent.count('study my instructions')).to eq(Sew::MAX_STUDIES)
+      expect(messages).to include(stop_message("still told to study them again after #{Sew::MAX_STUDIES} studies"))
+    end
+
+    it 'ignores a player saying either line' do
+      studies(['Pryce says, "Study them again."', 'Pryce says, "You scan the outfit instructions with a glance and completely understand all facets of the design."'])
+
+      expect { sew.send(:study_instructions) }.to raise_error(SystemExit)
+      expect(sent.count('study my instructions')).to eq(1)
+    end
+
+    it 'sends no crafting command when the study fails during prep' do
+      sew.instance_variable_set(:@instructions, true)
+      allow(sew).to receive(:get_recipe_item)
+      allow(sew).to receive(:ensure_enough_material)
+      allow(sew).to receive(:swap_tool)
+      studies(not_holding)
+
+      expect { sew.send(:read_recipe, 'wool yarn') }.to raise_error(SystemExit)
+      expect(sew).not_to have_received(:swap_tool)
     end
   end
 end

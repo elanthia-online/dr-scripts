@@ -80,6 +80,29 @@ class Sew
   # for #work to go on with.
   NOTHING_ON_NEEDLES = /^You can only knit with the needles after knitting has already begun/
 
+  # The study's own first line when it completes: "You scan the <x>
+  # instructions with a glance and" then, by skill, "completely understand
+  # all facets of the design.", "comprehend all but several minor details in
+  # the text." or "confidently discern most of the design's minutiae." (the
+  # only three endings in about 940,000 studies, Novembers 2023-2026). A
+  # bare Roundtime is not enough: in a backlog a late Roundtime from an
+  # earlier command can arrive while the study waits.
+  STUDY_DONE = /^You scan the .+ instructions with a glance and /
+  # "[These instructions have only 5 uses remaining.  Study them again to
+  # proceed.]" before the study that uses one. No double quote may come
+  # before it, so a player saying it doesn't count.
+  STUDY_AGAIN = /^[^"]*Study them again/
+  # "You must be holding the instructions to study them." (Byd, 2026-11-12
+  # 01:03:32); lich-5 DRCC.study_instructions also expects "But you're not
+  # holding".
+  STUDY_NOT_HOLDING = /^(?:But you're not holding|You must be holding the instructions)/
+  STUDY_NOT_FOUND = /^What were you referring to/
+  # Studies sent per item: the game asks for a second once.
+  MAX_STUDIES = 3
+  # Seconds to wait for a study's reply. Long, like ANALYZE_TIMEOUT: a lag
+  # only delays the reply, and every resend would be done once it clears.
+  STUDY_TIMEOUT = 90
+
   # The thread the needles take, as the stock room sells it ("100 yards of
   # cotton thread", order 6). Spun spools are thread too ("some heavy silk
   # thread") and spin keeps them in the crafting container, so the thread
@@ -297,9 +320,7 @@ class Sew
     if @instructions
       get_recipe_item("#{@noun} instructions", material)
       ensure_enough_material(material) if material
-      if /again/ =~ DRC.bput('study my instructions', 'Roundtime', 'Study them again')
-        DRC.bput('study my instructions', 'Roundtime', 'Study them again')
-      end
+      study_instructions
     elsif @settings.master_crafting_book
       DRCC.find_recipe2(@chapter, @recipe_name, @settings.master_crafting_book, 'tailoring')
     else
@@ -308,6 +329,44 @@ class Sew
       DRCC.find_recipe2(@chapter, @recipe_name)
       DRCC.stow_crafting_item('tailoring book', @bag, @belt)
     end
+  end
+
+  # Studies the instructions held in the right hand, sending the study again
+  # on "Study them again" (up to MAX_STUDIES in all). Only the study's own
+  # line counts as done (STUDY_DONE); anything else stops the run before a
+  # crafting command goes out with no design in mind: the instructions are
+  # put away, then the material (stop_with_hands_put_away).
+  #
+  # On 2026-11-12 a sew started during a lag sent its study into the
+  # backlog, took the timeout as done, and crafted on; the study's reply,
+  # when it came, was "You must be holding the instructions to study them."
+  # (Byd, 01:02:48 sent, 01:03:32 answered).
+  #
+  # The replies are those lich-5 DRCC.study_instructions waits for (its
+  # STUDY_INSTRUCTIONS_* patterns; a lich-5 change moves its success match
+  # from Roundtime to the same study line). sew keeps its own study because
+  # ensure_enough_material reads the instructions between the GET and the
+  # study, and DRCC.study_instructions gets, studies and puts away in one
+  # call.
+  #
+  # @return [void]
+  # @raise [SystemExit] when the study does not complete
+  def study_instructions
+    reply = ''
+    MAX_STUDIES.times do
+      reply = DRC.bput('study my instructions', { 'timeout' => STUDY_TIMEOUT }, STUDY_AGAIN, STUDY_DONE, STUDY_NOT_HOLDING, STUDY_NOT_FOUND)
+      return if reply.match?(STUDY_DONE)
+      break unless reply.match?(STUDY_AGAIN)
+    end
+
+    why = case reply
+          when STUDY_AGAIN then "still told to study them again after #{MAX_STUDIES} studies"
+          when STUDY_NOT_HOLDING then 'the game says they are not in hand'
+          when STUDY_NOT_FOUND then 'the game cannot find them'
+          else "no reply sew knows within #{STUDY_TIMEOUT} seconds"
+          end
+    DRCC.stow_crafting_item("#{@noun} instructions", @bag, @belt)
+    stop_with_hands_put_away("sew: Could not study the #{@noun} instructions: #{why}. Stopping before crafting with no design in mind.")
   end
 
   # Gets the instructions or the tailoring book. When the get fails (the
