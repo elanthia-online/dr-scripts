@@ -3634,6 +3634,70 @@ RSpec.describe Sew do
       end
     end
 
+    context 'when the reply says crafting cannot go on' do
+      let(:no_design) { 'You cannot figure out how to do that.  Perhaps finding suitable ingredients and studying some instructions would help.' }
+      let(:bare_needles) { 'You can only knit with the needles after knitting has already begun.  Instead, try studying some instructions and knitting some yarn with the needles to begin.' }
+
+      before do
+        sew.instance_variable_set(:@material_noun, 'yarn')
+        sew.instance_variable_set(:@material_name, 'wool yarn')
+        sew.instance_variable_set(:@material_id, '29869585')
+      end
+
+      it 'stops at once on "You cannot figure out how to do that", with no ANALYZE, and puts the yarn away' do
+        play('knit my yarn with my knitting needles', no_design)
+
+        expect(sent).to eq(['knit my yarn with my knitting needles', 'put #29869585 in duffel bag'])
+        expect(messages).to include('sew: The game says no design is in mind for outfit: the study did not take, or it has faded. Cannot continue crafting.')
+      end
+
+      it 'stops at once when there is no knitting on the needles, with no ANALYZE' do
+        empty(:left)
+
+        play('knit my needles', bare_needles)
+
+        expect(sent).to eq(['knit my needles'])
+        expect(messages).to include('sew: There is no knitting on the needles to go on with. Cannot continue crafting outfit.')
+      end
+
+      it 'keeps the knitting needles in hand on those stops (any knitting stays on them)' do
+        play('knit my needles', bare_needles)
+
+        expect(sent).not_to include(a_string_matching(/stow .*needles/))
+      end
+
+      it 'finishes, rather than stopping, when the item was finished meanwhile' do
+        finished = lambda do |_cmd|
+          Flags['sew-done'] = ['Applying the final touches, you complete working on a knitted wool outfit.']
+          { lines: [bare_needles] }
+        end
+
+        play('knit my needles', finished)
+
+        expect(sew).to have_received(:finish)
+        expect(messages).not_to include(a_string_starting_with('sew: There is no knitting'))
+      ensure
+        Flags.reset('sew-done')
+      end
+
+      it 'leaves the bare "You cannot figure out how to do that." to the no-reply path (other scripts read it as done)' do
+        play('knit my yarn with my knitting needles', 'You cannot figure out how to do that.', 'Now the needles must be turned to add some ribbing to the piece.', out_of_material)
+
+        expect(sent[1]).to eq('analyze my knitting needles')
+        expect(messages).not_to include(a_string_starting_with('sew: The game says no design'))
+      end
+
+      # The whole of Byd's case: the yarn beside the bare needles. The free
+      # hand is made, the knit then says there is nothing to go on with, and
+      # the run ends after three commands instead of five hours.
+      it "ends Byd's loop in three commands: free the hand, try again, stop" do
+        play('knit my needles', free_hand, bare_needles)
+
+        expect(sent).to eq(['knit my needles', 'put #29869585 in duffel bag', 'knit my needles'])
+        expect(messages).to include('sew: There is no knitting on the needles to go on with. Cannot continue crafting outfit.')
+      end
+    end
+
     describe '#spare_held_objects' do
       it 'names a dotted noun by its last part' do
         hold(:right, 'clockwork scissors', '7')
