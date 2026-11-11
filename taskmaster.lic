@@ -11,7 +11,7 @@
   task_junk_list: list of items to throw away; everything else is kept. When set (non-empty) it replaces task_keep_list, so a prize nobody has listed yet is kept rather than binned
   task_slack_keepers: true/false # send a Slack message (slack_username) for each keeper
   task_unpack_keepers: true/false # put a keeper's item (not its sack) in task_loot_bag and bin the empty sack
-  task_bin_leftover_stock: true/false # after each Zasele task is handed in, bin her leftover stock and offcuts from the crafting bag into worn_trashcan (needs worn_trashcan; not in marathon, which carries its stock between tasks)
+  task_bin_leftover_stock: true/false # after each Zasele task is handed in, bin her leftover stock and offcuts from the crafting bag into worn_trashcan (needs worn_trashcan; not in marathon, which carries its stock between tasks). Also, after a sew run that made none or before a task whose instructions ran out is cancelled, bins burlap cloth, rat leather and wool yarn found in task_loot_bag (only when task_loot_bag is set and is not the crafting bag), your own pieces of those stocks there included
   task_bin_metal_from: <container> # before the first metal task (Poltu, Bradyn) of a run, bin every bronze and steel ingot in this container: a one-time sweep of leftover task metal that forge used to leave in the stow container. Bins your own ingots there too; unset it once it says none are left (until then it tries again before each metal task). Ignored when it may be crafting_container: the same worn container, or a noun the same as its noun or shortened from it
   task_crafting_room: <room number> # Room to craft in. Ensure it meets specifications for tooling required...
   task_before_scripts: ['restock'] # scripts (with any arguments) to run before asking for each task, while the previous task's cooldown runs
@@ -36,7 +36,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.11.5'
+  VERSION = '2026.11.11.7'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -3688,6 +3688,7 @@ class TaskMaster
   # @raise [SystemExit] when the cancel does not go through, and after the
   #   cancel in a finish run
   def cancel_short_task(item, short)
+    bin_stray_stock("The #{item} instructions ran out")
     cancel_task(@npc, item, why: "#{short} Cancelling the task instead of stopping on every run (task_cancel_when_instructions_short); the #{item}s made for it are lost.")
     if @finish_only
       DRC.message("Cancelled the #{@npc.capitalize} task. Not taking a new one: this run was only to finish the task in progress.")
@@ -4213,9 +4214,13 @@ class TaskMaster
     else
       DRCT.walk_to(@crafting_room)
     end
-    craft_each('sew', item, count) do
+    made = craft_each('sew', item, count) do
       DRC.wait_for_script_to_complete('sew', ['stow', 'instructions', type, item, base == 'yarn' ? 'knit' : nil, 'skip'])
     end
+    # Only after a sew run that was counted and made none (craft_each's
+    # stall): no INVENTORY reply proves nothing about the stock.
+    bin_stray_stock("sew made no #{item} on its last run (#{made} of #{count} made)") if @craft_stalled
+    made
   end
 
   # Runs a crafting script once per item owed (the block runs it once) and
@@ -4235,6 +4240,9 @@ class TaskMaster
   # @yield runs the script once
   # @return [Integer] how many were made
   def craft_each(script, item, count)
+    # Cleared before anything can return, so a stall from an earlier call
+    # (a forge or sew run that made none) never speaks for this one.
+    @craft_stalled = false
     start = before = finished_count(item)
     unless start
       DRC.message("Could not count the #{item}s in #{@bag} (no reply to INVENTORY), so no #{script} runs.")
@@ -4248,6 +4256,7 @@ class TaskMaster
       next unless after
 
       stalled = after <= before
+      @craft_stalled = stalled
       break if stalled
 
       before = after
@@ -4730,6 +4739,42 @@ class TaskMaster
     refs.size
   end
 
+  # Bins Zasele's stock left outside the crafting bag, in task_loot_bag, when
+  # a run has shown the problem it causes: a sew run made none (craft_each's
+  # stall), or the instructions ran out (cancel_short_task). It looks only in
+  # task_loot_bag, where STOW put the scraps on the characters this was seen
+  # on: a scrap STOW put in another container is not looked for, since
+  # binning from a container the settings don't name could destroy items the
+  # player keeps there. A scrap stowed there after sew
+  # stopped on it was taken back by its remembered id for the next item
+  # (Lilwea, 2026-11-11 08:32:01 "You get some burlap cloth from inside your
+  # traveler's pack."), studied over and stopped on again, until the task
+  # locked; 22 characters carried such scraps after 2026-11-10. Only with
+  # task_bin_leftover_stock (bins_task_stock?), since it also bins the
+  # player's own pieces of those stocks there, and only with task_loot_bag
+  # set (never the 'backpack' default); never when task_loot_bag is the
+  # crafting bag (same_container?). Outside the crafting bag a piece must be
+  # named as the stock (held_stock_id) to be binned; any other, and a piece
+  # the trash can refuses, goes back where it was.
+  #
+  # @param why [String] what showed the problem, for the message
+  # @return [Integer] pieces binned
+  def bin_stray_stock(why)
+    return 0 unless bins_task_stock? && @settings.task_loot_bag && !same_container?(@lootbag, @bag)
+
+    refs = []
+    TASK_STOCK_BASES.each do |base|
+      _count, stop = bin_stock("#{@stackmap[base].first} #{base}", base, refs, from: @lootbag)
+      break if stop
+    end
+    return 0 if refs.empty?
+
+    flushed = flush_binned_stock(refs)
+    where = "#{refs.size} piece(s) of task stock left in your #{@lootbag}, outside the crafting bag, where a GET by a remembered id could take one for the next item"
+    DRC.message(flushed ? "#{why}: binned #{where}." : "#{why}: threw away #{where} (the #{@worn_trashcan} did not flush; see above).")
+    refs.size
+  end
+
   # Flushes the worn trash can after bin_task_stock put +refs+ in it, and
   # records the pieces as thrown away (DRCI.note_thrown_away, when DRCI has
   # it), so nothing fetches them again by id. With a lich-5 whose DRCI
@@ -4793,16 +4838,23 @@ class TaskMaster
   # @param stock [String] e.g. 'burlap cloth'
   # @param noun [String] the stock's noun, e.g. 'cloth'
   # @param refs [Array<String>] collects "#id" of each piece binned
+  # @param from [String] the container to take the pieces from
   # @return [Array(Integer, Boolean)] pieces binned, and whether to stop
   #   binning other stock (a piece may be left in hand, or the hands are full)
-  def bin_stock(stock, noun, refs = [])
+  def bin_stock(stock, noun, refs = [], from: @bag)
     binned = 0
     TASK_STOCK_BIN_CAP.times do
-      ref = take_stock_piece(stock, noun)
+      ref = take_stock_piece(stock, noun, from)
       return [binned, true] if ref == :stuck
       break unless ref
+      # Outside the crafting bag, only a piece named as the stock is binned:
+      # the GET takes whatever the game finds for the name there.
+      if from != @bag && held_stock_id(stock, noun) != ref.delete_prefix('#')
+        return [binned, !put_back_stock(ref, stock, from)]
+      end
+
       landed = DRCI.put_away_item?(ref, @worn_trashcan) || left_hands?(ref)
-      return [binned, !put_back_stock(ref, stock)] unless landed
+      return [binned, !put_back_stock(ref, stock, from)] unless landed
 
       refs << ref
       binned += 1
