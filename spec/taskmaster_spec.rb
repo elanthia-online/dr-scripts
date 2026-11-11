@@ -2258,6 +2258,98 @@ RSpec.describe TaskMaster do
             .with("Already asked zasele for rope instructions on this task, and no set you carry has the 3 uses still needed (you carry none with a use left). Stopping instead of asking again; check why the ropes aren't being made.")
         end
 
+        # 2026-11-10/11: with the stop, t2 started taskmaster again every 12
+        # seconds, about 2,000 times on each of 22 characters, until a person
+        # cleared it.
+        describe 'with task_cancel_when_instructions_short' do
+          it 'is on by default: base.yaml declares it true' do
+            expect(base_yaml).to include('task_cancel_when_instructions_short' => true)
+          end
+
+          it 'cancels the task, waits out the cooldown and sends the run back for a new task' do
+            UserVars.taskmaster_replacements = { 'zasele' => 'rope' }
+            tm = build(cancel_short_tasks: true)
+            allow(tm).to receive(:pause)
+            allow(tm).to receive(:get_instructions)
+            expect(tm).to receive(:cancel_task)
+              .with('zasele', 'rope', why: "Already asked zasele for rope instructions on this task, and no set you carry has the 3 uses still needed (the best has 2). Cancelling the task instead of stopping on every run (task_cancel_when_instructions_short); the ropes made for it are lost.")
+
+            expect { tm.request_replacement('rope', needed: 3, most: 2) }.to throw_symbol(TaskMaster::FOREIGN_TASK_CANCELLED)
+
+            expect(tm).to have_received(:pause).with(600)
+            expect(tm).not_to have_received(:get_instructions)
+            expect(DRC).not_to have_received(:message).with(/Stopping instead of asking again/)
+          end
+
+          it 'is caught by get_task, which asks for a new task after the cancel' do
+            UserVars.taskmaster_replacements = { 'zasele' => 'rope' }
+            tm = build(cancel_short_tasks: true)
+            allow(tm).to receive(:pause)
+            allow(tm).to receive(:find_npc)
+            allow(tm).to receive(:cancel_task)
+            asks = 0
+            allow(tm).to receive(:resume_task) { tm.request_replacement('rope', needed: 3, most: 2) }
+            allow(tm).to receive(:finish).and_return(:new_task)
+            game('ask zasele for task' => lambda do |*|
+              asks += 1
+              asks == 1 ? 'You are already on a task.' : 'You may accept by typing ACCEPT TASK'
+            end,
+                 'accept task'         => 'You can check your progress with the TASK verb')
+
+            expect(tm.get_task).to eq(:new_task)
+            expect(asks).to eq(2)
+            expect(tm).to have_received(:cancel_task).once
+          end
+
+          # Review: a remake (remake_not_good_enough) runs under complete_task,
+          # which run_tasks and run_marathon call outside any catch.
+          it 'is caught in a remake, so the task is cancelled and complete_task returns' do
+            UserVars.taskmaster_replacements = { 'zasele' => 'rope' }
+            tm = build(cancel_short_tasks: true)
+            allow(tm).to receive(:pause)
+            allow(tm).to receive(:cancel_task)
+            allow(tm).to receive(:resume_task) { tm.request_replacement('rope', needed: 3, most: 2) }
+
+            expect { tm.remake_not_good_enough('rope', 1) }.not_to raise_error
+
+            expect(tm).to have_received(:cancel_task).once
+          end
+
+          it 'stops after the cancel in a finish run instead of taking new tasks' do
+            UserVars.taskmaster_replacements = { 'zasele' => 'rope' }
+            tm = build(cancel_short_tasks: true, finish_only: true)
+            allow(tm).to receive(:pause)
+            allow(tm).to receive(:cancel_task)
+
+            expect { tm.request_replacement('rope', needed: 3, most: 2) }.to raise_error(SystemExit)
+
+            expect(tm).to have_received(:cancel_task).once
+            expect(tm).not_to have_received(:pause)
+            expect(DRC).to have_received(:message).with('Cancelled the Zasele task. Not taking a new one: this run was only to finish the task in progress.')
+          end
+
+          it 'still asks once for a replacement when none was asked for on this task' do
+            UserVars.taskmaster_replacements = {}
+            tm = build(cancel_short_tasks: true)
+            allow(tm).to receive(:get_instructions).and_return('Seamstress Zasele frowns.  She holds up one of her signs while handing you some reinforced rope instructions:')
+            expect(tm).not_to receive(:cancel_task)
+
+            tm.request_replacement('rope', needed: 3, most: 2)
+
+            expect(UserVars.taskmaster_replacements).to eq('zasele' => 'rope')
+          end
+
+          it 'stops as before when the setting is false' do
+            UserVars.taskmaster_replacements = { 'zasele' => 'rope' }
+            tm = build(cancel_short_tasks: false)
+            expect(tm).not_to receive(:cancel_task)
+
+            expect { tm.request_replacement('rope', needed: 3, most: 2) }.to raise_error(SystemExit)
+
+            expect(DRC).to have_received(:message).with(/Stopping instead of asking again/)
+          end
+        end
+
         # A remake after Zasele turned items down (remake_not_good_enough)
         # runs out of uses this way: each binned item had taken a study. The
         # stop names the refusal rather than sending the player to find out
