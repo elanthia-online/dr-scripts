@@ -3056,7 +3056,10 @@ task_unpack_keepers: false
 # Setting for taskmaster - After each Zasele task is handed in, bin her leftover stock and the offcuts
 # (burlap cloth, rat leather, wool yarn) from the crafting bag into worn_trashcan. Needs worn_trashcan;
 # with it, the walk to the bin room for leftover stock is skipped. Bins your own pieces of those stocks
-# in the crafting bag too. Never runs in marathon mode, which carries its restock stock between tasks.
+# in the crafting bag too. Also, after a sew run that made none, or before a task whose instructions ran
+# out is cancelled, bins those stocks found in task_loot_bag, your own pieces there included (only when
+# task_loot_bag is set and is not the crafting bag). Never runs in marathon mode, which carries its
+# restock stock between tasks.
 task_bin_leftover_stock: false
 # Setting for taskmaster - When the task's one replacement set of instructions is spent and the sets
 # carried still have too few uses, cancel the task (the items made for it are lost), wait out the
