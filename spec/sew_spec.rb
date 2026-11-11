@@ -3428,7 +3428,8 @@ RSpec.describe Sew do
     end
 
     # Plays a transcript: each step is the game's lines for one command,
-    # optionally with the roundtime the reply starts ({ lines:, rt: }), or a
+    # optionally with the roundtime the reply starts ({ lines:, rt: }, or
+    # late: true for one that started a roundtime already over), or a
     # lambda run when the command is sent. bput's result is worked out the
     # way DRC.bput does it: the lines in order, each against the matchers in
     # order, the first match's text, else ''. Running out of steps raises,
@@ -3442,6 +3443,9 @@ RSpec.describe Sew do
         step = step.call(cmd) if step.respond_to?(:call)
         step = { lines: Array(step) } unless step.is_a?(Hash)
         roundtimes[0] = step.fetch(:rt, 0)
+        # A reply that started a roundtime moves roundtime_end, even when it
+        # arrived after that roundtime had already passed (late: true).
+        XMLData.roundtime_end += 1 if step.fetch(:rt, 0).positive? || step[:late]
         bput_result(step[:lines], patterns)
       end
       expect { sew.send(:work, command) }.to raise_error(SystemExit)
@@ -3582,6 +3586,15 @@ RSpec.describe Sew do
         play('turn my needles', *replies)
 
         expect(messages).not_to include(a_string_matching(/times in a row with no roundtime/))
+      end
+
+      # Review of #8080 (mrhoribu): checkrt is roundtime left, so a reply to
+      # a real step held up past its own roundtime shows none.
+      it 'counts a reply held up past its own roundtime as a step done, by roundtime_end' do
+        play('turn my needles', *Array.new(5) { { lines: [turn], late: true } }, out_of_material)
+
+        expect(sent.size).to eq(6)
+        expect(messages).not_to include(a_string_matching(/no roundtime/))
       end
 
       it 'counts a reply as a repeat only for the same command' do

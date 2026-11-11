@@ -43,9 +43,12 @@ class Sew
 
   # Times in a row #work takes the same reply to the same command with no
   # roundtime before it stops. A step that does something starts a
-  # roundtime (the game's <roundTime> tag comes on the first line of its
-  # reply, so checkrt shows it by the time bput returns), so a command
-  # answered the same way with none, again and again, is going nowhere. On
+  # roundtime: the game's <roundTime> tag comes on the first line of its
+  # reply, so by the time bput returns XMLData.roundtime_end has moved (and
+  # checkrt usually shows time left). A command answered the same way with
+  # neither, again and again, is going nowhere. The moved roundtime_end
+  # counts even when the reply was held up past its own roundtime, so a
+  # late reply to a real step is never taken for one that did nothing. On
   # 2026-11-12 Byd sent 'knit my needles' about 165 times a minute for five
   # hours, every one answered "You need a free hand to do that." with no
   # roundtime.
@@ -755,6 +758,7 @@ class Sew
       DRCA.crafting_magic_routine(@settings)
       renew_rental if Flags['sew-rental-warning']
       assemble_part
+      roundtime_before = XMLData.roundtime_end
       result = DRC.bput(command,
                         *(stalled ? [{ 'timeout' => ANALYZE_TIMEOUT }] : []),
                         'a slip knot in your yarn',
@@ -828,7 +832,7 @@ class Sew
       unmatched = 0 unless stalled
       stalled = nil
       unless result.match?(ENGAGED)
-        roundtime = checkrt.positive?
+        roundtime = checkrt.positive? || XMLData.roundtime_end != roundtime_before
         repeats = if roundtime
                     0
                   elsif last_reply == [command, result]
