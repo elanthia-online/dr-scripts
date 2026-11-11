@@ -192,9 +192,12 @@ class Sew
   def prep
     DRCA.crafting_magic_routine(@settings)
     if @knit || @chapter == 5 # knitting
-      # The run's yarn by its material ("wool yarn"), so another yarn the
-      # player carries (silk) is never taken; bare "yarn" only without one.
-      yarn = @mat_type ? "#{@mat_type} yarn" : 'yarn'
+      # Instructions runs (taskmaster passes "wool") get the run's yarn by
+      # its material ("wool yarn"), so another yarn the player carries
+      # (silk) is never taken. Book runs keep bare "yarn" as before:
+      # craft.lic passes the material "yarn" itself, and "yarn yarn" would
+      # match nothing.
+      yarn = @instructions && @mat_type && !@mat_type.casecmp?('yarn') ? "#{@mat_type} yarn" : 'yarn'
       hold_material(yarn, 'yarn')
       read_recipe(yarn)
       swap_tool('knitting needles')

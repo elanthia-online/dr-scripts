@@ -1965,8 +1965,10 @@ RSpec.describe Sew do
       end
     end
 
+    # The knit flag exists only in the instructions arg set (taskmaster).
     context 'knitting via @knit flag' do
       before do
+        sew.instance_variable_set(:@instructions, true)
         sew.instance_variable_set(:@knit, true)
         sew.instance_variable_set(:@mat_type, 'wool')
       end
@@ -2032,6 +2034,35 @@ RSpec.describe Sew do
         result = sew.send(:prep)
 
         expect(result).to eq('knit my yarn with my knitting needles')
+      end
+
+      # craft.lic:578 (crossing-training's Outfitting) passes the material
+      # "yarn"; prefixing it gave "yarn yarn", which matches nothing.
+      it 'gets bare yarn in book mode when the material is "yarn" (craft.lic)' do
+        sew.instance_variable_set(:@mat_type, 'yarn')
+        expect(DRCC).to receive(:get_crafting_item).with('yarn', 'duffel bag', [], nil, true).and_return(true)
+        expect(DRCC).not_to receive(:get_crafting_item).with('yarn yarn', any_args)
+
+        sew.send(:prep)
+      end
+
+      # workorders.lic:703 passes the stock name ("wool"); book recipes keep
+      # getting bare "yarn", as before this change.
+      it 'gets bare yarn in book mode when the material is "wool" (workorders.lic)' do
+        sew.instance_variable_set(:@mat_type, 'wool')
+        expect(DRCC).to receive(:get_crafting_item).with('yarn', 'duffel bag', [], nil, true).and_return(true)
+        expect(DRCC).not_to receive(:get_crafting_item).with('wool yarn', any_args)
+
+        sew.send(:prep)
+      end
+
+      it 'gets bare yarn in instructions mode when the material is "yarn"' do
+        sew.instance_variable_set(:@instructions, true)
+        sew.instance_variable_set(:@mat_type, 'Yarn')
+        expect(DRCC).to receive(:get_crafting_item).with('yarn', 'duffel bag', [], nil, true).and_return(true)
+        expect(DRCC).not_to receive(:get_crafting_item).with('Yarn yarn', any_args)
+
+        sew.send(:prep)
       end
     end
 
@@ -3206,6 +3237,7 @@ RSpec.describe Sew do
     end
 
     it 'gets the run\'s yarn by its material for knitting ("wool yarn"), never bare "yarn"' do
+      sew.instance_variable_set(:@instructions, true)
       sew.instance_variable_set(:@knit, true)
       sew.instance_variable_set(:@mat_type, 'wool')
       sew.instance_variable_set(:@noun, 'outfit')
@@ -3223,7 +3255,7 @@ RSpec.describe Sew do
       expect(got).not_to include('yarn')
     end
 
-    it 'keeps bare "yarn" for knitting only when the run names no material' do
+    it 'keeps bare "yarn" for knitting when the run names no material' do
       sew.instance_variable_set(:@knit, true)
       sew.instance_variable_set(:@mat_type, nil)
       allow(DRCA).to receive(:crafting_magic_routine)
