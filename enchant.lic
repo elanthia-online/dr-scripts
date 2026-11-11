@@ -173,12 +173,14 @@ class Enchant
     ]
   ].freeze
 
-  # Local copy of lich-5 DRCC.study_instructions (lich-5 #2246, merged
-  # 2026-11-03, in no release yet; v5.23.0 lacks it). Remove these constants
-  # and local_study_instructions once a release ships it:
-  # study_instructions already prefers DRCC's. Same commands and toss rule;
-  # this copy also anchors "Study them again" against speech, which #2246
-  # does not.
+  # Local copy of lich-5 DRCC.study_instructions (lich-5 #2246, first
+  # released in v5.24.0), for a Lich older than that: $MIN_LICH_VERSION
+  # (dependency.lic) is 5.23.0. study_instructions already prefers DRCC's
+  # when the running Lich has it, so on 5.24.0 and later this copy is not
+  # used, and the study counts a Roundtime as done until a release includes
+  # lich-5#2321. Remove these constants and local_study_instructions once
+  # the minimum Lich includes the release with lich-5#2321. Same commands,
+  # success line and toss rule as that release.
   #
   # The first study of instructions that wear out asks for a second one,
   # with the uses left (log 1: "[These instructions have only 9 uses
