@@ -793,6 +793,7 @@ module Harness
     @@_server_time = nil
     @@_name = nil
     @@_room_count = 0
+    @@_roundtime_end = 0
 
     def self._reset
       @@_room_title = nil
@@ -801,6 +802,17 @@ module Harness
       @@_server_time = nil
       @@_name = nil
       @@_room_count = 0
+      @@_roundtime_end = 0
+    end
+
+    # When the last roundtime the game set ends (lich-5 xmlparser.rb sets it
+    # from each <roundTime value='...'/>). Defaults to 0.
+    def self.roundtime_end
+      @@_roundtime_end
+    end
+
+    def self.roundtime_end=(val)
+      @@_roundtime_end = val
     end
 
     # Goes up by one each time the game sends a room, whether or not the map
@@ -1285,6 +1297,12 @@ module Harness
   alias righthand checkright
 
   def waitrt?; end
+
+  # Seconds of roundtime left (lich-5 global_defs.rb); none in the harness.
+  # Stub it per example to give a reply a roundtime.
+  def checkrt
+    0
+  end
 
   def waitcastrt?; end
 
