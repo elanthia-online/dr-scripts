@@ -863,7 +863,7 @@ crafting_recipes:
   work_order: false
   chapter: 3
   part:
-  - small padding
+  - small backing
 - name: a metal bascinet
   noun: bascinet
   volume: 23
