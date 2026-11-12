@@ -1,6 +1,5 @@
 ---
 crafting_recipes:
-##### Page numbers are as of 2/20/2021 15:48 ET #####
 ##################################
 ##### Forging section begins #####
 ##################################
@@ -4035,9 +4034,9 @@ crafting_recipes:
   work_order: false
   chapter: # Instructions only, not in crafting book.
   instructions: true
-###############################
-##### Forging section end #####
-###############################
+################################
+##### Forging section ends #####
+################################
 ######################################
 ##### Engineering section begins #####
 ######################################
@@ -6177,7 +6176,7 @@ crafting_recipes:
   - long pole
   - long pole
   - long pole
-# Tinkering Chapter 2
+# Tinkering Chapter 2 recipes
 - name: a toy crossbow
   noun: crossbow
   work_order: true
@@ -6325,7 +6324,7 @@ crafting_recipes:
   - mechanism
   - mechanism
   - bow string
-# Tinkering Chapter 3
+# Tinkering Chapter 3 recipes
 - name: a simple heavy crossbow
   noun: crossbow
   work_order: true
@@ -6458,7 +6457,7 @@ crafting_recipes:
   - mechanism
   - mechanism
   - bow string
-# Tinkering Chapter 4
+# Tinkering Chapter 4 recipes
 - name: a reinforced arbalest
   noun: arbalest
   work_order: true
@@ -6573,7 +6572,7 @@ crafting_recipes:
   - mechanism
   - mechanism
   - bow string
-# Tinkering Chapter 5
+# Tinkering Chapter 5 recipes
 - name: simple stonebow
   noun: stonebow
   work_order: true
@@ -6684,10 +6683,10 @@ crafting_recipes:
   - mechanism
   - mechanism
   - bow string
-# Tinkering Chapter 6 Siege Wapon Crafting - Blank
+# Tinkering Chapter 6 Siege Weapon Crafting - Blank
 # Tinkering Chapter 7 Bolts - use bolts.lic script
 # Tinkering Chapter 8 Tinkered Enhancement
-# Tinkering Chapter 9
+# Tinkering Chapter 9 recipes
 - name: a small music box
   noun: box
   work_order: true
@@ -6790,9 +6789,9 @@ crafting_recipes:
 ####################################
 ##### Engineering section ends #####
 ####################################
-####################################
-##### Outfitting section ends  #####
-####################################
+#####################################
+##### Outfitting section begins #####
+#####################################
 # Tailoring Chapter 1 recipes
 - name: some small cloth padding
   noun: padding
@@ -8572,12 +8571,12 @@ crafting_recipes:
   part:
   - leather shield handle
   - long cord
-####################################
-##### Outfitting section ends  #####
-####################################
-#################################
-##### Alchemy section begins#####
-#################################
+###################################
+##### Outfitting section ends #####
+###################################
+##################################
+##### Alchemy section begins #####
+##################################
 # Remedies Chapter 2 recipes
 - name: some blister cream
   noun: cream
@@ -9269,9 +9268,12 @@ crafting_recipes:
   herb1: crushed flamestalk
   herb1_stock: # Foraged as ashen flamestalk (create_remedies.lic)
   liquid: water
-####################################
-##### Enchanting section ends #####
-####################################
+################################
+##### Alchemy section ends #####
+################################
+#####################################
+##### Enchanting section begins #####
+#####################################
 # Artificing Chapter 2 recipes
 - name: a radiant trinket
   noun: bone totem
@@ -10652,3 +10654,6 @@ crafting_recipes:
   item:
   part:
   - runestone
+###################################
+##### Enchanting section ends #####
+###################################
