@@ -8395,7 +8395,7 @@ crafting_recipes:
   work_order: false
   chapter: 10
   part:
-  - shield handle
+  - leather shield handle
   - long cord
 - name: an ordinary leather shield
   noun: shield
@@ -8404,7 +8404,7 @@ crafting_recipes:
   work_order: false
   chapter: 10
   part:
-  - shield handle
+  - leather shield handle
   - long cord
 - name: a small leather shield
   noun: shield
@@ -8422,7 +8422,7 @@ crafting_recipes:
   work_order: false
   chapter: 10
   part:
-  - shield handle
+  - leather shield handle
   - long cord
 - name: a leather targe
   noun: targe
@@ -8431,7 +8431,7 @@ crafting_recipes:
   work_order: false
   chapter: 10
   part:
-  - shield handle
+  - leather shield handle
   - long cord
 - name: a leather oval shield
   noun: shield
@@ -8440,7 +8440,7 @@ crafting_recipes:
   work_order: false
   chapter: 10
   part:
-  - shield handle
+  - leather shield handle
   - long cord
 - name: a medium leather shield
   noun: shield
@@ -8449,7 +8449,7 @@ crafting_recipes:
   work_order: false
   chapter: 10
   part:
-  - shield handle
+  - leather shield handle
   - long cord
 - name: a leather kite shield
   noun: shield
@@ -8458,7 +8458,7 @@ crafting_recipes:
   work_order: false
   chapter: 10
   part:
-  - shield handle
+  - leather shield handle
   - long cord
 ####################################
 ##### Outfitting section ends  #####
