@@ -5565,6 +5565,37 @@ RSpec.describe TaskMaster do
         end
       end
 
+      context 'with junk-list string entries' do
+        it 'matches a string entry as a whole word, not inside a longer one' do
+          tm = filtered(task_junk_list: %w[steel pine])
+          expect(tm.keeper?(sack('a silversteel ingot'))).to be(true)
+          expect(tm.keeper?(sack('some ghostspine lumber'))).to be(true)
+          expect(tm.keeper?(sack('a steel ingot'))).to be(false)
+          expect(tm.keeper?(sack('some pine lumber'))).to be(false)
+        end
+
+        it 'matches across a hyphen' do
+          expect(filtered(task_junk_list: ['bone']).keeper?(sack('a bear-bone stack'))).to be(false)
+        end
+
+        it 'matches a string entry that starts or ends with punctuation' do
+          expect(filtered(task_junk_list: ['dye.']).keeper?(sack('some coral dye'))).to be(false)
+          expect(filtered(task_junk_list: ['(used)']).keeper?(sack('a deed (used)'))).to be(false)
+        end
+      end
+
+      context 'with junk-list regexp entries' do
+        it 'keeps the flags of a lone regexp entry' do
+          expect(filtered(task_junk_list: [/DYE/i]).keeper?(sack('some coral dye'))).to be(false)
+          expect(filtered(task_junk_list: [/coral \s dye/x]).keeper?(sack('some coral dye'))).to be(false)
+        end
+
+        it 'uses a regexp entry as written, without adding word boundaries' do
+          expect(filtered(task_junk_list: [/wood/]).keeper?(sack('some rosewood lumber'))).to be(false)
+          expect(filtered(task_junk_list: [/dye\./]).keeper?(sack('some coral dye'))).to be(false)
+        end
+      end
+
       it 'falls back to the keep list when the junk list is empty' do
         expect(filtered(task_keep_list: %w[agonite], task_junk_list: []).keeper?(sack('some punka leather'))).to be(false)
       end
