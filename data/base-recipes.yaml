@@ -119,7 +119,7 @@ crafting_recipes:
   - small padding
 - name: some metal ring vambraces
   noun: vambraces
-  volume: 19
+  volume: 17
   type: armorsmithing
   work_order: false
   chapter: 1
@@ -2436,7 +2436,7 @@ crafting_recipes:
   - hilt
 - name: a metal dart
   noun: dart
-  volume: 2
+  volume: 1
   type: weaponsmithing
   work_order: true
   chapter: 1
@@ -3486,7 +3486,7 @@ crafting_recipes:
   - long pole
 - name: a metal allarh
   noun: allarh
-  volume: 10
+  volume: 7
   type: weaponsmithing
   work_order: true
   chapter: 7
@@ -3494,7 +3494,7 @@ crafting_recipes:
   - long pole
 - name: a metal hunthsleg
   noun: hunthsleg
-  volume: 10
+  volume: 7
   type: weaponsmithing
   work_order: true
   chapter: 7
@@ -3502,7 +3502,7 @@ crafting_recipes:
   - long pole
 - name: a metal awgravet ava
   noun: ava
-  volume: 7
+  volume: 12
   type: weaponsmithing
   work_order: true
   chapter: 7
@@ -3518,7 +3518,7 @@ crafting_recipes:
   - long pole
 - name: a metal tzece
   noun: tzece
-  volume: 7
+  volume: 12
   type: weaponsmithing
   work_order: true
   chapter: 7
@@ -3534,7 +3534,7 @@ crafting_recipes:
   - long pole
 - name: a metal guisarme
   noun: guisarme
-  volume: 7
+  volume: 10
   type: weaponsmithing
   work_order: true
   chapter: 7
@@ -3542,7 +3542,7 @@ crafting_recipes:
   - long pole
 - name: a metal lochaber axe
   noun: axe
-  volume: 7
+  volume: 10
   type: weaponsmithing
   work_order: true
   chapter: 7
@@ -3550,7 +3550,7 @@ crafting_recipes:
   - long pole
 - name: a metal bardiche
   noun: bardiche
-  volume: 7
+  volume: 10
   type: weaponsmithing
   work_order: true
   chapter: 7
@@ -3558,7 +3558,7 @@ crafting_recipes:
   - long pole
 - name: a metal scythe
   noun: scythe
-  volume: 7
+  volume: 10
   type: weaponsmithing
   work_order: true
   chapter: 7
@@ -7724,7 +7724,7 @@ crafting_recipes:
   chapter: 5
 - name: some knitted gloves
   noun: gloves
-  volume: 16
+  volume: 13
   type: tailoring
   work_order: true
   chapter: 5
