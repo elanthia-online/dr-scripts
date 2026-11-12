@@ -1146,6 +1146,9 @@ RSpec.describe Sew do
           @data[key] = nil
         end
       end)
+      # The item being crafted is in hand after an assembly unless an
+      # example says otherwise.
+      allow(DRCI).to receive(:in_hands?).and_return(true)
     end
 
     context 'when flag is not set' do
@@ -1279,6 +1282,115 @@ RSpec.describe Sew do
         sew.send(:assemble_part)
 
         expect(Flags['sew-assembly']).to be_nil
+      end
+    end
+
+    # Saelia, 2026-11-12 (Crossing): an ordinary rat-pelt shield, first with
+    # a leather shield handle (run A), then with the forging supply's iron
+    # shield handle (run B). The prompt, the refusal and the not-held reply
+    # are the game's lines from that log.
+    context 'leather shield runs (Saelia, 2026-11-12)' do
+      let(:prompt) do
+        'You need another finished leather shield handle to continue crafting an unfinished ordinary rat-pelt shield.  ' \
+          'You believe you can assemble the two ingredients together once you acquire them.'
+      end
+      let(:refusal) do
+        'The shield handle is not required to continue crafting an unfinished ordinary rat-pelt shield, so you stop assembling them.'
+      end
+      let(:not_held) { 'The shield must be in your hands or on the ground to continue assembly.' }
+      let(:messages) { [] }
+
+      before do
+        sew.instance_variable_set(:@noun, 'shield')
+        # The flag as Lich sets it: the MatchData of sew's handle matcher.
+        Flags['sew-assembly'] = prompt.match(/another finished (\S+) shield (handle)/i)
+        $right_hand = nil
+        allow(DRCC).to receive(:get_crafting_item)
+        allow(DRCC).to receive(:stow_crafting_item)
+        allow(Lich::Messaging).to receive(:msg) { |_type, text| messages << text }
+        allow(sew).to receive(:exit).and_raise(SystemExit)
+      end
+
+      it 'gets the leather handle the prompt names, not any handle' do
+        allow(DRC).to receive(:bput).and_return('carefully mark where it will attach when you continue crafting')
+
+        expect(DRCC).to receive(:get_crafting_item).with('leather handle', 'duffel bag', [], nil)
+        expect(DRC).to receive(:bput).with('assemble my shield with my leather handle', any_args)
+
+        sew.send(:assemble_part)
+      end
+
+      it 'stops with the part the game asked for when the game refuses the part (run B)' do
+        allow(DRC).to receive(:bput).and_return('is not required to continue crafting')
+
+        expect(DRCI).to receive(:put_away_item?).with('leather handle', 'duffel bag')
+        expect { sew.send(:assemble_part) }.to raise_error(SystemExit)
+        expect(messages.last).to include('would not take your leather handle', 'finished leather shield handle')
+      end
+
+      it 'sends the assemble once on a refusal instead of asking again' do
+        allow(DRC).to receive(:bput).and_return('is not required to continue crafting')
+
+        expect(DRC).to receive(:bput).with('assemble my shield with my leather handle', any_args).once
+        expect { sew.send(:assemble_part) }.to raise_error(SystemExit)
+      end
+
+      it 'stops when the shield is not held (run A)' do
+        allow(DRC).to receive(:bput).and_return('must be in your hands or on the ground to continue assembly')
+
+        expect { sew.send(:assemble_part) }.to raise_error(SystemExit)
+        expect(messages.last).to include('The shield is not in your hands')
+      end
+
+      it 'stops when the assemble gets no reply' do
+        allow(DRC).to receive(:bput).and_return('')
+
+        expect(sew).not_to receive(:swap_tool)
+        expect { sew.send(:assemble_part) }.to raise_error(SystemExit)
+        expect(messages.last).to include('No reply to assembling the leather handle')
+      end
+
+      it 'keeps the unfinished shield in hand instead of stowing it as a tool (run A)' do
+        $right_hand = 'unfinished ordinary rat-pelt shield'
+        allow(DRC).to receive(:bput).and_return('carefully mark where it will attach when you continue crafting')
+
+        expect(DRCC).not_to receive(:stow_crafting_item).with('unfinished ordinary rat-pelt shield', any_args)
+        expect(sew).not_to receive(:swap_tool)
+
+        sew.send(:assemble_part)
+      end
+
+      it 'still puts a real tool away and takes it back' do
+        $right_hand = 'sewing needles'
+        allow(DRC).to receive(:bput).and_return('carefully mark where it will attach when you continue crafting')
+
+        expect(DRCC).to receive(:stow_crafting_item).with('sewing needles', 'duffel bag', nil)
+        expect(sew).to receive(:swap_tool).with('sewing needles')
+
+        sew.send(:assemble_part)
+      end
+
+      it 'stops before "my shield" can reach a worn shield when the shield left the hands (run A)' do
+        allow(DRC).to receive(:bput).and_return('carefully mark where it will attach when you continue crafting')
+        allow(DRCI).to receive(:in_hands?).with('shield').and_return(false)
+
+        expect { sew.send(:assemble_part) }.to raise_error(SystemExit)
+        expect(messages.last).to include("commands on 'my shield' cannot reach a worn shield")
+      end
+
+      it 'does not check the hands when no part was asked for' do
+        Flags['sew-assembly'] = nil
+
+        expect(DRCI).not_to receive(:in_hands?)
+        sew.send(:assemble_part)
+      end
+
+      it 'does not check the hands while knitting (the work is on the needles)' do
+        allow(sew).to receive(:knitting?).and_return(true)
+        allow(DRC).to receive(:bput).and_return('carefully mark where it will attach when you continue crafting')
+
+        expect(DRCI).not_to receive(:in_hands?)
+        sew.send(:assemble_part)
       end
     end
   end
@@ -2818,6 +2930,7 @@ RSpec.describe Sew do
       pushes = 0
       allow(DRC).to receive(:bput) do |command, *_matches|
         sent << command
+        next 'affix it securely in place' if command.start_with?('assemble my rucksack')
         next 'You put' unless command.start_with?('push my rucksack')
 
         pushes += 1
@@ -2878,7 +2991,8 @@ RSpec.describe Sew do
       real_assembly_lines = {
         'You need another finished small cloth padding to continue crafting a burlap rucksack.'          => 'small padding',
         'The burlap rucksack is ready to be lined with some large cloth padding.'                        => 'large padding',
-        'You need another finished target shield handle to continue crafting a burlap rucksack.'         => 'handle',
+        # Saelia, 2026-11-12: the game names the handle's material.
+        'You need another finished leather shield handle to continue crafting a burlap rucksack.'        => 'leather handle',
         'You need another finished wooden hilt to continue crafting a burlap rucksack.'                  => 'hilt',
         '<pushBold/>You need another finished long leather cord to continue crafting a burlap rucksack.' => 'long cord',
         'You need another finished short wooden pole to continue crafting a burlap rucksack.'            => 'short pole'
@@ -2886,6 +3000,7 @@ RSpec.describe Sew do
 
       real_assembly_lines.each do |line, part|
         it "assembles '#{part}' on the game line: #{line}" do
+          allow(DRCI).to receive(:in_hands?).with('rucksack').and_return(true)
           run_work(line)
 
           expect(sent).to include("assemble my rucksack with my #{part}")

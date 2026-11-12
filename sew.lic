@@ -185,7 +185,7 @@ class Sew
 
     Flags.add('sew-assembly',
               /#{NO_QUOTE}ready to be #{NO_QUOTE_RUN} with some (small|large) cloth (padding)/i,
-              /#{NO_QUOTE}another finished \S+ shield (handle)/i,
+              /#{NO_QUOTE}another finished (\S+) shield (handle)/i,
               /#{NO_QUOTE}another finished wooden (hilt|haft)/i,
               /#{NO_QUOTE}another finished (long|short|small|large) leather (cord|backing)/i,
               /#{NO_QUOTE}another finished (small|large) cloth (padding)/i,
@@ -688,15 +688,83 @@ class Sew
     DRCI.in_left_hand?(@material_id ? "##{@material_id}" : material)
   end
 
+  # Replies to ASSEMBLE when the part goes on.
+  ASSEMBLE_SUCCESS = [
+    'affix it securely in place',
+    'and tighten the pommel to secure it',
+    'carefully mark where it will attach when you continue crafting'
+  ].freeze
+
+  # The game refuses the part in hand: it asked for another one. Saelia,
+  # 2026-11-12, an iron shield handle for a leather shield: "The shield
+  # handle is not required to continue crafting an unfinished ordinary
+  # rat-pelt shield, so you stop assembling them."
+  ASSEMBLE_NOT_REQUIRED = 'is not required to continue crafting'
+
+  # The item being crafted is not held. Saelia, 2026-11-12, after the
+  # unfinished shield had been stowed: "The shield must be in your hands or
+  # on the ground to continue assembly."
+  ASSEMBLE_NOT_HELD = 'must be in your hands or on the ground to continue assembly'
+
+  # Gets each part the game asks for and assembles it. The part is the one
+  # the prompt names, material included ("another finished leather shield
+  # handle" gets "leather handle", so an iron shield handle in the bag is
+  # not taken). The right hand's tool is put away and taken back after; the
+  # item being crafted stays in hand. A refusal, or no reply, stops sew
+  # with a message instead of asking for the part again. Afterwards the
+  # item must still be in hand: sew works on it as "my <noun>", which would
+  # reach a worn item of the same noun. Without the flag it does nothing
+  # (#work calls it every pass).
+  #
+  # @return [void]
+  # @raise [SystemExit] when the game refuses the part, gives no reply, or
+  #   the item is no longer in hand
   def assemble_part
+    return unless Flags['sew-assembly']
+
     while Flags['sew-assembly']
       tool = DRC.right_hand
+      tool = nil if tool&.include?(@noun.tr('.', ' '))
       DRCC.stow_crafting_item(tool, @bag, @belt) if tool
-      part = Flags['sew-assembly'].to_a[1..-1].join(' ')
+      match = Flags['sew-assembly']
+      part = match.to_a[1..-1].join(' ')
       Flags.reset('sew-assembly')
       DRCC.get_crafting_item(part, @bag, @bag_items, @belt)
-      DRC.bput("assemble my #{@noun} with my #{part}", 'affix it securely in place', 'and tighten the pommel to secure it', 'carefully mark where it will attach when you continue crafting')
+      reply = DRC.bput("assemble my #{@noun} with my #{part}", *ASSEMBLE_SUCCESS, ASSEMBLE_NOT_REQUIRED, ASSEMBLE_NOT_HELD)
+      stop_assembly(part, asked_part(match, part), reply) unless ASSEMBLE_SUCCESS.include?(reply)
       swap_tool(tool) if tool
+    end
+    return if knitting? || DRCI.in_hands?(@noun)
+
+    stop_with_hands_put_away("sew: The #{@noun} being crafted is not in your hands. Stopping, so that commands on 'my #{@noun}' cannot reach a worn #{@noun}.")
+  end
+
+  # The part as the game's prompt names it ("leather shield handle"), for
+  # messages; +part+ when the prompt has no such words.
+  #
+  # @param match [MatchData, Array] the 'sew-assembly' flag
+  # @param part [String] the part sew gets
+  # @return [String]
+  def asked_part(match, part)
+    match.to_a.first.to_s[/(?:another finished|with some) (.+?)\s*\z/i, 1] || part
+  end
+
+  # Puts the refused part back in the bag and stops with the reason.
+  #
+  # @param part [String] the part sew got
+  # @param asked [String] the part the game asked for
+  # @param reply [String] ASSEMBLE's reply, empty on no reply
+  # @return [void]
+  # @raise [SystemExit] always
+  def stop_assembly(part, asked, reply)
+    DRCI.put_away_item?(part, @bag)
+    case reply
+    when ASSEMBLE_NOT_REQUIRED
+      stop_with_hands_put_away("sew: The game would not take your #{part} for the #{@noun}; it asks for a finished #{asked}. Put one in your #{@bag}, then ;sew resume #{@noun}.")
+    when ASSEMBLE_NOT_HELD
+      stop_with_hands_put_away("sew: The #{@noun} is not in your hands, so the #{part} cannot go on. Stopping.")
+    else
+      stop_with_hands_put_away("sew: No reply to assembling the #{part} with the #{@noun}. Stopping instead of trying again.")
     end
   end
 
