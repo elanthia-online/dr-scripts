@@ -2771,11 +2771,14 @@ RSpec.describe TaskMaster do
 
     describe '#turn_in_banked' do
       # Fizzlestiks, 2026-11-10: with none of the task's ropes in the bag,
-      # the GET took the character's own bundling rope.
+      # the GET took the character's own bundling rope. The bag would hand
+      # out a second item and Zasele would turn it down too, so only an end
+      # to the hand-in keeps this to one give: the put-back item is what the
+      # next GET takes.
       it 'puts back an item the character did not make at once, and leaves the items still owed to be made' do
         tm = reader
         allow(DRCC).to receive(:stow_crafting_item)
-        giving([not_made_by_you], banked: 1)
+        giving([not_made_by_you, not_made_by_you], banked: 2)
 
         expect(tm.turn_in_banked('rope', 7)).to eq(7)
 
