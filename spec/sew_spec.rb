@@ -1342,22 +1342,14 @@ RSpec.describe Sew do
         expect(messages.last).to include('The shield is not in your hands')
       end
 
-      it 'stops when the assemble gets no reply' do
+      it 'stops when the assemble gets no reply, leaving the hands as they are' do
         allow(DRC).to receive(:bput).and_return('')
 
         expect(sew).not_to receive(:swap_tool)
+        expect(DRCI).not_to receive(:put_away_item?)
+        expect(sew).not_to receive(:stop_with_hands_put_away)
         expect { sew.send(:assemble_part) }.to raise_error(SystemExit)
-        expect(messages.last).to include('No reply to assembling the leather handle')
-      end
-
-      it 'keeps the unfinished shield in hand instead of stowing it as a tool (run A)' do
-        $right_hand = 'unfinished ordinary rat-pelt shield'
-        allow(DRC).to receive(:bput).and_return('carefully mark where it will attach when you continue crafting')
-
-        expect(DRCC).not_to receive(:stow_crafting_item).with('unfinished ordinary rat-pelt shield', any_args)
-        expect(sew).not_to receive(:swap_tool)
-
-        sew.send(:assemble_part)
+        expect(messages.last).to include('No reply sew could act on to assembling the leather handle', 'hands are left as they are')
       end
 
       it 'still puts a real tool away and takes it back' do

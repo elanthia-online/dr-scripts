@@ -709,12 +709,12 @@ class Sew
   # Gets each part the game asks for and assembles it. The part is the one
   # the prompt names, material included ("another finished leather shield
   # handle" gets "leather handle", so an iron shield handle in the bag is
-  # not taken). The right hand's tool is put away and taken back after; the
-  # item being crafted stays in hand. A refusal, or no reply, stops sew
-  # with a message instead of asking for the part again. Afterwards the
-  # item must still be in hand: sew works on it as "my <noun>", which would
-  # reach a worn item of the same noun. Without the flag it does nothing
-  # (#work calls it every pass).
+  # not taken). The right hand's tool is put away and taken back after;
+  # ASSEMBLE leaves the item in the left hand. A refusal, or no reply, stops
+  # sew with a message instead of asking for the part again. Afterwards the
+  # item must still be in hand (another script can stow it): sew works on it
+  # as "my <noun>", which would reach a worn item of the same noun. Without
+  # the flag it does nothing (#work calls it every pass).
   #
   # @return [void]
   # @raise [SystemExit] when the game refuses the part, gives no reply, or
@@ -724,7 +724,6 @@ class Sew
 
     while Flags['sew-assembly']
       tool = DRC.right_hand
-      tool = nil if tool&.include?(@noun.tr('.', ' '))
       DRCC.stow_crafting_item(tool, @bag, @belt) if tool
       match = Flags['sew-assembly']
       part = match.to_a[1..-1].join(' ')
@@ -749,22 +748,27 @@ class Sew
     match.to_a.first.to_s[/(?:another finished|with some) (.+?)\s*\z/i, 1] || part
   end
 
-  # Puts the refused part back in the bag and stops with the reason.
+  # Stops with the reason. A refused part goes back in the bag first. With
+  # no reply sew could act on, nothing is put or stowed, as in #work: in a
+  # lag the ASSEMBLE may still be queued, and every command waits behind it.
   #
   # @param part [String] the part sew got
   # @param asked [String] the part the game asked for
-  # @param reply [String] ASSEMBLE's reply, empty on no reply
+  # @param reply [String] ASSEMBLE's reply, empty when no matcher fit
   # @return [void]
   # @raise [SystemExit] always
   def stop_assembly(part, asked, reply)
+    if reply.empty?
+      Lich::Messaging.msg('bold', "sew: No reply sew could act on to assembling the #{part} with the #{@noun}. Stopping instead of trying again; your hands are left as they are.")
+      magic_cleanup
+      exit
+    end
+
     DRCI.put_away_item?(part, @bag)
-    case reply
-    when ASSEMBLE_NOT_REQUIRED
+    if reply == ASSEMBLE_NOT_REQUIRED
       stop_with_hands_put_away("sew: The game would not take your #{part} for the #{@noun}; it asks for a finished #{asked}. Put one in your #{@bag}, then ;sew resume #{@noun}.")
-    when ASSEMBLE_NOT_HELD
-      stop_with_hands_put_away("sew: The #{@noun} is not in your hands, so the #{part} cannot go on. Stopping.")
     else
-      stop_with_hands_put_away("sew: No reply to assembling the #{part} with the #{@noun}. Stopping instead of trying again.")
+      stop_with_hands_put_away("sew: The #{@noun} is not in your hands, so the #{part} cannot go on. Stopping.")
     end
   end
 
