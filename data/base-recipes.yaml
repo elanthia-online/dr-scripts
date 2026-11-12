@@ -1435,7 +1435,7 @@ crafting_recipes:
 - name: a metal deflector
   noun: deflector
   volume: 25
-  type: Armorsmithing
+  type: armorsmithing
   work_order: true
   chapter: 4
   part:
@@ -9080,7 +9080,7 @@ crafting_recipes:
   chapter: 6
   container: bowl
   herb1: belradi
-  herb1-stock:
+  herb1_stock:
   liquid: alcohol
 - name: some alyssum tea
   noun: tea
