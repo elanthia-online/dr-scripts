@@ -9254,7 +9254,7 @@ crafting_recipes:
   item: 16
   part:
 - name: simple devourer
-  noun: gem
+  noun: pearl
   type: artificing
   chapter: 2
   work_order: false
@@ -9268,7 +9268,7 @@ crafting_recipes:
   enchant_stock4:
   item:
   part:
-  - gem
+  - pearl
 - name: Eluned's Scry
   noun: bone
   type: artificing
@@ -9394,7 +9394,7 @@ crafting_recipes:
   part:
   - gem
 - name: nemmiro stone
-  noun: stone
+  noun: pebble
   type: artificing
   chapter: 2
   work_order: false
@@ -9440,7 +9440,7 @@ crafting_recipes:
   item: 16
   part:
 - name: a mining stone
-  noun: stone
+  noun: pebble
   type: artificing
   chapter: 2
   work_order: false
@@ -10255,6 +10255,7 @@ crafting_recipes:
   part:
   - pole
 - name: simple imbuement rod
+  noun: rod
   type: artificing
   chapter: 5
   work_order: false
@@ -10302,6 +10303,7 @@ crafting_recipes:
   part:
   - pole
 - name: stout imbuement rod
+  noun: rod
   type: artificing
   chapter: 5
   work_order: false
@@ -10347,6 +10349,7 @@ crafting_recipes:
   part:
   - pole
 - name: precise imbuement rod
+  noun: rod
   type: artificing
   chapter: 5
   work_order: false
