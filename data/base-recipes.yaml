@@ -9384,7 +9384,7 @@ crafting_recipes:
     part:
       - pearl
   - name: Eluned's Scry
-    noun: bone
+    noun: stack
     type: artificing
     chapter: 2
     work_order: false
@@ -9398,7 +9398,7 @@ crafting_recipes:
     enchant_stock4:
     item:
     part:
-      - bone
+      - stack
   - name: an earth trinket
     noun: bone totem
     type: artificing
