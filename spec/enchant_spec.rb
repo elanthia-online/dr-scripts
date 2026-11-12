@@ -1963,6 +1963,16 @@ RSpec.describe Enchant, 'whole runs' do
       expect(game.messages).to include('Enchant: Could not put the rock on the brazier: You must be holding the rocks before doing that.')
     end
 
+    it 'stops after one PUT when the item is not a base the recipe takes' do
+      game.command("get my rock from my #{bag}", ENCHANT_LOG[:get_rock], gives: 'rock')
+      game.command('put my rock on my brazier', ["You have no idea how to craft spongestone from this."])
+
+      expect { run_script(chapter: '1', recipe: 'spongestone', noun: 'rock') }.to raise_error(SystemExit)
+
+      expect_transcript_done
+      expect(game.messages).to eq(['Enchant: Could not put the rock on the brazier: You have no idea how to craft spongestone from this.'])
+    end
+
     it 'stops when no brazier is in reach (log 2)' do
       game.command("get my rock from my #{bag}", ENCHANT_LOG[:get_rock], gives: 'rock')
       game.command('put my rock on my brazier', ['What were you referring to?'])
