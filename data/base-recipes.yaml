@@ -8376,14 +8376,14 @@ crafting_recipes:
   part:
   - large padding
 # Tailoring Chapter 10 recipes
-- name: a leather target handle
-  noun: shield
+- name: a leather shield handle
+  noun: handle
   volume: 2
   type: tailoring
   work_order: false
   chapter: 10
 - name: a long leather cord
-  noun: shield
+  noun: cord
   volume: 2
   type: tailoring
   work_order: false
