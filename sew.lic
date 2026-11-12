@@ -28,8 +28,96 @@ class Sew
   RENTAL_RENEWED = /#{LINE_START}\[Your [^\]]*rental has been extended until/
   RENTAL_WARNING = /#{LINE_START}\[You have less than \d+ minutes remaining\.\s+If you wish to renew your rental/
 
-  # Unrecognized replies in a row before #work gives up on a command.
+  # Unrecognized replies before #work gives up: the crafting command's own
+  # miss, then the ANALYZEs sent in its place (#work). A recognized reply to
+  # a crafting command starts the count again; one to an ANALYZE does not,
+  # so a command whose replies sew never knows cannot cycle through ANALYZE
+  # forever.
   MAX_UNMATCHED = 3
+
+  # Seconds #work waits for an ANALYZE's reply after a crafting command got
+  # none. A lag on 2026-11-06 held every reply for about 100 seconds; ANALYZE
+  # is sent once and waited on, not resent every 15 seconds, so no more
+  # commands pile up behind the lag.
+  ANALYZE_TIMEOUT = 90
+
+  # Times in a row #work takes the same reply to the same command with no
+  # roundtime before it stops. A step that does something starts a
+  # roundtime: the game's <roundTime> tag comes on the first line of its
+  # reply, so by the time bput returns XMLData.roundtime_end has moved (and
+  # checkrt usually shows time left). A command answered the same way with
+  # neither, again and again, is going nowhere. The moved roundtime_end
+  # counts even when the reply was held up past its own roundtime, so a
+  # late reply to a real step is never taken for one that did nothing. On
+  # 2026-11-12 Byd sent 'knit my needles' about 165 times a minute for five
+  # hours, every one answered "You need a free hand to do that." with no
+  # roundtime.
+  NO_ROUNDTIME_REPEATS = 3
+
+  # Replies in a row with no roundtime, whatever they are, before #work
+  # stops: two replies taking turns, neither a step done, would get past
+  # NO_ROUNDTIME_REPEATS. The longest run of such replies an item needs is
+  # far shorter (a pull, its confirmation and the discard; a missing
+  # thread, the threading and the reply).
+  NO_ROUNDTIME_STREAK = 8
+
+  # "You cannot do that while engaged!": #work retreats and waits, and the
+  # refusal starts no roundtime. Neither guard counts it, so the retreats go
+  # on as long as the fight does.
+  ENGAGED = /^You cannot do that while engaged!/
+
+  # A crafting command with no design in mind: no study took, or the one
+  # that did has faded ("You struggle to recall the crafting instructions
+  # you last studied as they fade from your mind."). Byd, 2026-11-12
+  # 01:03:32, after a lag: "You cannot figure out how to do that.  Perhaps
+  # finding suitable ingredients and studying some instructions would
+  # help." Nothing #work can send fixes it. Matched with its second
+  # sentence: other scripts take a bare "You cannot figure out how to do
+  # that" as the item being done (taskmaster.lic, carve.lic).
+  NO_DESIGN = /^You cannot figure out how to do that\.\s+Perhaps finding suitable ingredients and studying some instructions/
+
+  # 'knit my needles' with no knitting on the needles (Fidon, 2026-11-12
+  # 06:50:45, bare needles in hand): "You can only knit with the needles after
+  # knitting has already begun.  Instead, try studying some instructions
+  # and knitting some yarn with the needles to begin." There is nothing
+  # for #work to go on with.
+  NOTHING_ON_NEEDLES = /^You can only knit with the needles after knitting has already begun/
+
+  # The study's own first line when it completes: "You scan the <x>
+  # instructions with a glance and" then, by skill, "completely understand
+  # all facets of the design.", "comprehend all but several minor details in
+  # the text." or "confidently discern most of the design's minutiae." (the
+  # only three endings in about 940,000 studies, Novembers 2023-2026). A
+  # bare Roundtime is not enough: in a backlog a late Roundtime from an
+  # earlier command can arrive while the study waits.
+  STUDY_DONE = /^You scan the .+ instructions with a glance and /
+
+  # A knit started while the needles hold work: "You are already knitting
+  # an unfinished knitted wool outfit on the yarn.  You must finish this
+  # before starting another project." (Fidon, 2026-11-12 06:44:20). The
+  # match runs to "on the", so it names the work and not the yarn.
+  ALREADY_KNITTING = /^You are already knitting [^.]*? on the/
+  # "[These instructions have only 5 uses remaining.  Study them again to
+  # proceed.]" before the study that uses one. No double quote may come
+  # before it, so a player saying it doesn't count.
+  STUDY_AGAIN = /^[^"]*Study them again/
+  # "You must be holding the instructions to study them." (Byd, 2026-11-12
+  # 01:03:32); lich-5 DRCC.study_instructions also expects "But you're not
+  # holding".
+  STUDY_NOT_HOLDING = /^(?:But you're not holding|You must be holding the instructions)/
+  STUDY_NOT_FOUND = /^What were you referring to/
+  # Studies sent per item: the game asks for a second once.
+  MAX_STUDIES = 3
+  # Seconds to wait for a study's reply. Long, like ANALYZE_TIMEOUT: a lag
+  # only delays the reply, and every resend would be done once it clears.
+  STUDY_TIMEOUT = 90
+
+  # Seconds wait_for_backlog waits for the game to answer before a run
+  # starts. The 2026-11-12 outage held replies for about 3.5 minutes (about
+  # 01:00 to 01:03:31 NZDT); a silence much longer usually ends in a
+  # disconnect (Nelis dropped after about 2 minutes), and the run has sent
+  # only the one GLANCE meanwhile.
+  BACKLOG_TIMEOUT = 300
 
   # The thread the needles take, as the stock room sells it ("100 yards of
   # cotton thread", order 6). Spun spools are thread too ("some heavy silk
@@ -92,6 +180,7 @@ class Sew
     @cloth = CLOTH
     @pin_pokes = 0
 
+    wait_for_backlog
     DRC.wait_for_script_to_complete('buff', ['sew'])
 
     Flags.add('sew-assembly',
@@ -110,15 +199,13 @@ class Sew
 
     if args.resume
       Lich::Messaging.msg('plain', "Resuming work on #{@noun} (finish mode: #{@finish}).")
-      if DRCI.in_hands?('knitting needles')
+      if knitting?
         @home_command = 'knit my needles'
-        command = 'analyze my knitting needles'
       else
         check_hand(@noun) unless DRCI.in_left_hand?(@noun)
         @home_command = "analyze my #{@noun}"
-        command = "analyze my #{@noun}"
       end
-      work(command)
+      work(analyze_command)
     end
     # Before the consumables check: its get needs a free hand too.
     clear_hands
@@ -130,7 +217,51 @@ class Sew
     end
 
     check_rental_status
-    work(prep)
+    start_item
+  end
+
+  # Waits, before sew sends anything else, until the game has answered
+  # every command sent before this run: one GLANCE, and its reply. The game
+  # runs commands in the order they arrive, so once a GLANCE is answered
+  # nothing sent before it is still queued, and the hands GameObj shows are
+  # the real ones. Any GLANCE reply counts, so one to another script's
+  # GLANCE sent just before (taskmaster glances at the hands before it
+  # starts sew) can answer it; that still means everything sent before that
+  # GLANCE is done, and sew has sent nothing else meanwhile.
+  #
+  # On 2026-11-12 the game went quiet from about 01:00 to 01:03:31 NZDT.
+  # A sew that gave up in it (Byd) left its put-backs queued; taskmaster
+  # started the next sew ten seconds later, which saw the yarn and the
+  # instructions still in hand, took timed-out gets and a timed-out study as
+  # done, and had its untie answered by the first run's. The queued
+  # commands all ran at 01:03:31 and left the hands in a state neither run
+  # expected.
+  #
+  # When the game says nothing for BACKLOG_TIMEOUT seconds, the run stops
+  # without sending more; whoever started it starts it again.
+  #
+  # @return [void]
+  # @raise [SystemExit] when the GLANCE gets no reply
+  def wait_for_backlog
+    return unless DRC.bput('glance', { 'timeout' => BACKLOG_TIMEOUT }, /^You glance/).empty?
+
+    Lich::Messaging.msg('bold', "sew: The game has not answered for #{BACKLOG_TIMEOUT} seconds. Stopping before sending anything else.")
+    exit
+  end
+
+  # Readies a new item (prep) and works it. A completion line still on its
+  # way from an earlier run sets sew-done while this run starts: on
+  # 2026-11-06 a 100-second lag stopped a sew mid-netting, taskmaster started
+  # another, and the stopped run's backlogged commands then finished the old
+  # netting ("Applying the final touches") during the new run's setup. The
+  # new run's first cut then ended in finish, which stowed a netting cut
+  # once as done; the unfinished netting rode in the bag for days, and
+  # Zasele turned it down at each hand-in. So the flag is cleared once prep
+  # is done, right before the first crafting command.
+  def start_item
+    command = prep
+    Flags.reset('sew-done')
+    work(command)
   end
 
   def check_hand(item)
@@ -164,12 +295,19 @@ class Sew
   end
 
   # The material comes first: each study of the instructions uses one of
-  # their uses, so a missing material must stop the run before the study.
+  # their uses, so a missing material, or one too small for the item
+  # (ensure_enough_material), must stop the run before the study.
   def prep
     DRCA.crafting_magic_routine(@settings)
     if @knit || @chapter == 5 # knitting
-      hold_material('yarn', 'yarn')
-      read_recipe('yarn')
+      # Instructions runs (taskmaster passes "wool") get the run's yarn by
+      # its material ("wool yarn"), so another yarn the player carries
+      # (silk) is never taken. Book runs keep bare "yarn" as before:
+      # craft.lic passes the material "yarn" itself, and "yarn yarn" would
+      # match nothing.
+      yarn = @instructions && @mat_type && !@mat_type.casecmp?('yarn') ? "#{@mat_type} yarn" : 'yarn'
+      hold_material(yarn, 'yarn')
+      read_recipe(yarn)
       swap_tool('knitting needles')
       @home_tool = 'knitting needles'
       @home_command = 'knit my needles'
@@ -218,6 +356,8 @@ class Sew
     end
     check_hand(noun) unless DRCI.in_left_hand?(noun)
     @material_id = GameObj.left_hand.id
+    @material_name = name
+    @material_noun = noun
   end
 
   # Reads the recipe once +material+ is in the left hand. +material+ is
@@ -225,9 +365,8 @@ class Sew
   def read_recipe(material)
     if @instructions
       get_recipe_item("#{@noun} instructions", material)
-      if /again/ =~ DRC.bput('study my instructions', 'Roundtime', 'Study them again')
-        DRC.bput('study my instructions', 'Roundtime', 'Study them again')
-      end
+      ensure_enough_material(material) if material
+      study_instructions
     elsif @settings.master_crafting_book
       DRCC.find_recipe2(@chapter, @recipe_name, @settings.master_crafting_book, 'tailoring')
     else
@@ -236,6 +375,44 @@ class Sew
       DRCC.find_recipe2(@chapter, @recipe_name)
       DRCC.stow_crafting_item('tailoring book', @bag, @belt)
     end
+  end
+
+  # Studies the instructions held in the right hand, sending the study again
+  # on "Study them again" (up to MAX_STUDIES in all). Only the study's own
+  # line counts as done (STUDY_DONE); anything else stops the run before a
+  # crafting command goes out with no design in mind: the instructions are
+  # put away, then the material (stop_with_hands_put_away).
+  #
+  # On 2026-11-12 a sew started during a lag sent its study into the
+  # backlog, took the timeout as done, and crafted on; the study's reply,
+  # when it came, was "You must be holding the instructions to study them."
+  # (Byd, 01:02:48 sent, 01:03:32 answered).
+  #
+  # The replies are those lich-5 DRCC.study_instructions waits for (its
+  # STUDY_INSTRUCTIONS_* patterns; a lich-5 change moves its success match
+  # from Roundtime to the same study line). sew keeps its own study because
+  # ensure_enough_material reads the instructions between the GET and the
+  # study, and DRCC.study_instructions gets, studies and puts away in one
+  # call.
+  #
+  # @return [void]
+  # @raise [SystemExit] when the study does not complete
+  def study_instructions
+    reply = ''
+    MAX_STUDIES.times do
+      reply = DRC.bput('study my instructions', { 'timeout' => STUDY_TIMEOUT }, STUDY_AGAIN, STUDY_DONE, STUDY_NOT_HOLDING, STUDY_NOT_FOUND)
+      return if reply.match?(STUDY_DONE)
+      break unless reply.match?(STUDY_AGAIN)
+    end
+
+    why = case reply
+          when STUDY_AGAIN then "still told to study them again after #{MAX_STUDIES} studies"
+          when STUDY_NOT_HOLDING then 'the game says they are not in hand'
+          when STUDY_NOT_FOUND then 'the game cannot find them'
+          else "no reply sew knows within #{STUDY_TIMEOUT} seconds"
+          end
+    DRCC.stow_crafting_item("#{@noun} instructions", @bag, @belt)
+    stop_with_hands_put_away("sew: Could not study the #{@noun} instructions: #{why}. Stopping before crafting with no design in mind.")
   end
 
   # Gets the instructions or the tailoring book. When the get fails (the
@@ -255,6 +432,241 @@ class Sew
     Lich::Messaging.msg('bold', message)
     magic_cleanup
     exit
+  end
+
+  # Most pieces of material ensure_enough_material looks at for one item,
+  # the one in hand included, so the top-up always ends.
+  MAX_MATERIAL_PIECES = 5
+
+  # The ingredient line of READ INSTRUCTIONS, for the material's noun:
+  # "(1) finished fabric cloth (10 yards)" (netting), "(1) refined fabric
+  # yarn (12 yards)" (knitted outfit), "(1) refined leather material (5
+  # yards)" (Lilwea and Defileous, Hollow Eve 2026). READ, unlike STUDY,
+  # uses none of the instructions' uses.
+  #
+  # @param noun [String] 'cloth', 'yarn' or 'leather'
+  # @return [Regexp] capturing the yards
+  def self.instruction_yards_line(noun)
+    /^\s*\(\d+\) [^()]*\b#{Regexp.escape(noun)}\b[^()]* \((\d+) yards?\)/
+  end
+
+  # Replies to COUNT of the material: the yards counted; the last two catch
+  # any other answer in full, so it is told apart from no answer at all.
+  MATERIAL_COUNT_YARDS = /^You count out (\d+) yards/
+  MATERIAL_COUNT_REPLIES = [MATERIAL_COUNT_YARDS, /^I could not find/, /^You count.*/, /^That doesn't tell you much.*/].freeze
+
+  # Replies to COMBINE of two pieces held. "You must be holding both" and
+  # "Those items cannot be combined." are refusals (taskmaster, Hollow Eve
+  # 2026-11-04). A combine leaves one stack under a new id: Defileous held
+  # burlap cloth #27484547 (left) and #27484586 (right); after "You combine
+  # the bolts of cloth together." the right hand was empty and the left held
+  # #27484597 (2026-11-11 08:52:14). Yarn and leather pieces combine and
+  # count in yards the same way as cloth.
+  COMBINE_REPLIES = [/^You combine/, /^You must be holding both.*/, /^Those items cannot be combined.*/].freeze
+
+  # Makes sure the material in hand is enough for one item before the
+  # instructions are studied, since every study uses one of their uses.
+  # A piece too small used to get as far as the first cut or knit, then
+  # "You need a larger amount of material to continue crafting." stopped
+  # the run with the study spent. Hollow Eve 2026-11-11, Lilwea 08:32:01:
+  # "[sew]>get #25917288" / "You get some burlap cloth from inside your
+  # traveler's pack." (a scrap from an earlier stop), the study, then at
+  # 08:32:12 "You need a larger amount of material to continue crafting."
+  # (Defileous, 2026-11-10 22:14:36-44, the same with a scrap of yarn.)
+  # Each rerun spent another study, until the instructions ran out.
+  #
+  # So READ (no use spent) gives the yards one item needs, and COUNT the
+  # yards in hand. Short, the instructions go back in the bag and the next
+  # piece is got from the bag (never the one held) and combined into it,
+  # up to MAX_MATERIAL_PIECES pieces. Nothing is ever thrown away. When it
+  # stays short (no more in the bag, no new piece in hand, a refused
+  # COMBINE, the cap), every piece of the material held goes back in the
+  # bag by its id and the run stops, saying which, with no study sent. A
+  # READ with no yards line, or a COUNT with no yards, says so and goes
+  # ahead as before.
+  #
+  # @param material [String] e.g. 'burlap cloth', 'wool yarn'
+  # @return [void]
+  # @raise [SystemExit] when not enough material can be had
+  def ensure_enough_material(material)
+    needed = instruction_yards(material)
+    return unless needed
+
+    have = count_material(material)
+    return if have.nil? || have >= needed
+
+    DRCC.stow_crafting_item("#{@noun} instructions", @bag, @belt)
+    combined = 0
+    stop = nil
+    while have && have < needed
+      if combined + 1 >= MAX_MATERIAL_PIECES
+        stop = [:cap]
+        break
+      end
+      stop = add_material_piece(material)
+      break unless stop.first == :added
+
+      stop = nil
+      combined += 1
+      have = count_material(material)
+    end
+    if have.nil? || have >= needed
+      get_recipe_item("#{@noun} instructions", material)
+      return
+    end
+
+    stop_with_hands_put_away(short_material_message(stop, material, have, needed, combined))
+  end
+
+  # What ensure_enough_material says when it stops short.
+  #
+  # @param stop [Array(Symbol, String)] the reason, and for a refused
+  #   COMBINE its reply
+  # @param material [String]
+  # @param have [Integer] yards in hand
+  # @param needed [Integer] yards one item needs
+  # @param combined [Integer] pieces combined in
+  # @return [String]
+  def short_material_message(stop, material, have, needed, combined)
+    reason, reply = stop
+    tail = 'Stopping before the instructions are studied.'
+    if reason == :combine_refused
+      return "sew: Could not combine the #{material} pieces (#{reply.to_s.empty? ? 'no reply' : reply}); " \
+             "the one in hand is #{have} yards and the #{@noun} needs #{needed}. #{tail}"
+    end
+
+    why = case reason
+          when :cap then "Combined #{combined} more piece#{combined == 1 ? '' : 's'} of #{material} and the #{material} in hand is still only #{have} yards"
+          when :none_in_bag then "The #{material} in hand is #{have} yards and there is no more #{material} in your #{@bag} to add to it"
+          when :no_new_piece then "The #{material} in hand is #{have} yards; getting more from your #{@bag} said it worked, but no new piece of it is in hand"
+          when :no_free_hand then "The #{material} in hand is #{have} yards, and with both hands full no more could be got from your #{@bag}"
+          when :swap_failed then "The #{material} could not be moved to your left hand to work it"
+          else "No piece of #{material} is in hand after combining"
+          end
+    "sew: Not enough #{material} for the #{@noun}, which needs #{needed} yards. #{why}. #{tail}"
+  end
+
+  # The yards of the material one item needs, from READ of the instructions
+  # in hand (instruction_yards_line). nil, after saying so, when the reply
+  # names none; nil without a READ when the material's noun is unknown.
+  #
+  # @param material [String]
+  # @return [Integer, nil]
+  def instruction_yards(material)
+    # hold_material sets the noun with the material; without it there is
+    # no ingredient line to look for.
+    return nil unless @material_noun
+
+    line = Sew.instruction_yards_line(@material_noun)
+    reply = DRC.bput("read my #{@noun} instructions", line)
+    yards = reply[line, 1]
+    return yards.to_i if yards
+
+    Lich::Messaging.msg('bold', "sew: The #{@noun} instructions name no yards of #{material}; going ahead without checking how much is in hand.")
+    nil
+  end
+
+  # The yards in the material held, by its id when hold_material saw one.
+  # nil, after saying so, when COUNT gives no yards.
+  #
+  # @param material [String]
+  # @return [Integer, nil]
+  def count_material(material)
+    ref = @material_id ? "##{@material_id}" : "my #{material}"
+    reply = DRC.bput("count #{ref}", *MATERIAL_COUNT_REPLIES)
+    yards = reply[MATERIAL_COUNT_YARDS, 1]
+    return yards.to_i if yards
+
+    Lich::Messaging.msg('bold', "sew: Could not count the #{material} (#{reply.empty? ? 'no reply' : reply}); going ahead without checking it is enough.")
+    nil
+  end
+
+  # Adds a piece of the material from the crafting bag to the short one in
+  # hand. The next piece is got first (from the bag, never a held id). Then
+  # COMBINE, judged by the hands rather than its reply (which a lag can
+  # hold back, as taskmaster's combine_stock does): one held piece of the
+  # material with a new id is the combined stack, which ends in the left
+  # hand, its id in @material_id. Nothing is thrown away: on a refusal both
+  # pieces stay in hand for the stop to put back.
+  #
+  # @param material [String]
+  # @return [Array(Symbol, String)] [:added] or the reason it stopped:
+  #   :no_free_hand, :none_in_bag, :no_new_piece (a GET that said it worked,
+  #   "You are already holding that", with no new piece in hand),
+  #   :combine_refused (with COMBINE's reply), :swap_failed, :lost
+  def add_material_piece(material)
+    return [:no_free_hand] if DRC.right_hand && DRC.left_hand
+    return [:none_in_bag] unless DRCC.get_crafting_item(material, @bag, [material], @belt, true)
+
+    piece = material_pieces.find { |obj| obj.id.to_s != @material_id.to_s }
+    return [:no_new_piece] unless piece
+
+    short = @material_id.to_s
+    added = piece.id.to_s
+    reply = DRC.bput("combine #{@material_noun}", *COMBINE_REPLIES)
+    held = material_pieces
+    return [:combine_refused, reply] if held.map { |obj| obj.id.to_s }.sort == [short, added].sort
+    return [:lost] if held.empty?
+
+    # The combined stack (a new id), or the one original piece left.
+    keep_material_in_left_hand(held.first.id) ? [:added] : [:swap_failed]
+  end
+
+  # The pieces of the material held: hand objects with an id and the
+  # material's noun.
+  #
+  # @return [Array<OpenStruct, GameObj>]
+  def material_pieces
+    [GameObj.left_hand, GameObj.right_hand].select { |obj| obj&.id && obj.noun == @material_noun }
+  end
+
+  # Makes the piece with this id the material, in the left hand.
+  #
+  # @param id [String, Integer]
+  # @return [Boolean] true once it is in the left hand
+  def keep_material_in_left_hand(id)
+    DRC.bput('swap', 'You move', 'You have nothing') unless GameObj.left_hand&.id.to_s == id.to_s
+    return false unless GameObj.left_hand&.id.to_s == id.to_s
+
+    @material_id = id
+    true
+  end
+
+  # Stops the run, first putting away what is in hand so a caller's STOW
+  # doesn't send it to the default container (taskmaster's stow after a
+  # stopped sew put scraps of material and the knitting needles in the
+  # pack, Hollow Eve 2026-11-10): the material back in the crafting bag by
+  # its id while it is still raw material in the left hand (a piece already
+  # being worked stays in hand), and the tool in the right hand back on the
+  # belt or in the bag. While knitting the needles stay in hand: the work is
+  # on them, and ";sew resume" picks it up from there.
+  #
+  # @param message [String] said first
+  # @return [void]
+  # @raise [SystemExit] always
+  def stop_with_hands_put_away(message)
+    Lich::Messaging.msg('bold', message)
+    put_away_raw_material
+    right = DRC.right_hand
+    DRCC.stow_crafting_item(right, @bag, @belt) if right && !right.include?(@noun.tr('.', ' ')) && !knitting?
+    magic_cleanup
+    exit
+  end
+
+  # Puts every piece of the material held back in the crafting bag by its
+  # id: raw material, a hand object with an id and the material's noun (a
+  # piece already being worked has the item's noun and stays in hand).
+  # Says so when a put fails.
+  #
+  # @return [void]
+  def put_away_raw_material
+    return unless @material_noun
+
+    material_pieces.each do |obj|
+      next if DRCI.put_away_item?("##{obj.id}", @bag)
+
+      Lich::Messaging.msg('bold', "sew: Could not put the #{@material_name} (##{obj.id}) back in your #{@bag}; it is still in your hand.")
+    end
   end
 
   # Puts the held material back in the bag. By id when hold_material saw
@@ -303,14 +715,58 @@ class Sew
     end
   end
 
+  # ANALYZE of the piece being worked: the knitting needles while knitting,
+  # else the item. Its reply names the next step in words #work already
+  # matches: "The fabric appears ready for more sewing by pushing it with a
+  # needle and thread." (Catheroine, 2026-11-02), "The fabric is in need of
+  # pinning to help arrange the material for further sewing." (Mahtra,
+  # 2026-11-04), and it ends with a Roundtime.
+  def analyze_command
+    knitting? ? 'analyze my knitting needles' : "analyze my #{@noun}"
+  end
+
+  # Whether the run is knitting: prep set the knitting needles as the home
+  # tool, or (on a resume, before any prep) a hand holds knitting needles,
+  # by their whole name. DRCI.in_hands? reads the shortened hand names, where
+  # crafted "smooth knitting needles" (data/base-recipes.yaml) become
+  # "smooth needles" and no longer match.
+  def knitting?
+    return true if @home_tool == 'knitting needles'
+
+    [GameObj.right_hand, GameObj.left_hand].any? { |obj| obj&.name&.include?('knitting needles') }
+  end
+
+  # Replies to a command that names something the game can't find.
+  NOT_FOUND_REPLIES = ['What were you referring', 'I could not find what you were'].freeze
+
+  # Works the item, one command at a time, until a reply ends the run. A
+  # crafting command that gets no reply #work knows is not sent again: it
+  # may only be held up by a lag, and every resend would be done once the
+  # lag clears (on 2026-11-06 three pushes sent into a 100-second lag
+  # finished a netting after sew had given up on it). Instead the run
+  # finishes if the item was finished meanwhile (sew-done), or else sends
+  # ANALYZE, as a resume does, and waits up to ANALYZE_TIMEOUT for it to say
+  # what the item needs next. After MAX_UNMATCHED misses it gives up.
+  #
+  # A reply it knows can loop too, when it changes nothing: the same reply
+  # to the same command NO_ROUNDTIME_REPEATS times in a row, or any
+  # NO_ROUNDTIME_STREAK replies in a row, with no roundtime, stops the run
+  # with the hands put away (ENGAGED, which has its own recovery, aside).
   def work(command)
     DRC.bput("touch my #{@cube}", /^Warm vapor swirls around your head in a misty halo/, /^A thin cloud of vapor manifests with no particular effect./, /^Touch what/, /^You reach out and touch/) if @cube
     unmatched = 0
+    stalled = nil
+    repeats = 0
+    streak = 0
+    last_reply = nil
+    free_hand_replies = 0
     loop do
       DRCA.crafting_magic_routine(@settings)
       renew_rental if Flags['sew-rental-warning']
       assemble_part
+      roundtime_before = XMLData.roundtime_end
       result = DRC.bput(command,
+                        *(stalled ? [{ 'timeout' => ANALYZE_TIMEOUT }] : []),
                         'a slip knot in your yarn',
                         'A sufficient quantity of wax exists',
                         'A buildup of wax on .* must now be rubbed',
@@ -343,7 +799,7 @@ class Sew
                         'What were you referring',
                         'With the measuring complete',
                         'wrinkles from all the handling and could use',
-                        'You are already knitting',
+                        ALREADY_KNITTING,
                         'You carefully thread some cotton thread',
                         'is already threaded with',
                         'You must assemble',
@@ -355,28 +811,59 @@ class Sew
                         /^You need a free hand to do that/,
                         /^You realize that cannot be repaired, and stop/,
                         /^You must be holding the .* to do that/,
-                        /^You cannot do that while engaged!/)
-      # bput returns an empty string when no matcher fits. Resending the
-      # same command would loop forever, so give up after a few misses.
+                        ENGAGED,
+                        NO_DESIGN,
+                        NOTHING_ON_NEEDLES)
+      # An ANALYZE that finds nothing to analyze (no item yet, or the wrong
+      # one named) says nothing about the item: it counts as a miss, not as
+      # the missing tool the not-found branch below fetches, which would send
+      # the same ANALYZE again with the count started over.
+      result = '' if command.start_with?('analyze ') && NOT_FOUND_REPLIES.include?(result)
+      # bput returns an empty string when no matcher fits.
       if result.empty?
         unmatched += 1
-        next if unmatched < MAX_UNMATCHED
-
-        Lich::Messaging.msg('bold', "sew: No recognized response to '#{command}' after #{MAX_UNMATCHED} tries. Cannot continue crafting.")
-        magic_cleanup
-        exit
+        stalled ||= command
+        waitrt?
+        finish if Flags['sew-done']
+        if unmatched >= MAX_UNMATCHED
+          # No put or stow here: in a lag every command waits behind the
+          # ones already sent, so the hands are left as they are.
+          Lich::Messaging.msg('bold', "sew: No reply sew could act on to '#{stalled}', or to ANALYZE after it, in #{MAX_UNMATCHED} tries. Cannot continue crafting.")
+          magic_cleanup
+          exit
+        end
+        command = analyze_command
+        next
       end
-      unmatched = 0
+      unmatched = 0 unless stalled
+      stalled = nil
+      unless result.match?(ENGAGED)
+        roundtime = checkrt.positive? || XMLData.roundtime_end != roundtime_before
+        repeats = if roundtime
+                    0
+                  elsif last_reply == [command, result]
+                    repeats + 1
+                  else
+                    1
+                  end
+        streak = roundtime ? 0 : streak + 1
+        last_reply = [command, result]
+        stop_going_nowhere("sew: '#{command}' got the same reply #{repeats} times in a row with no roundtime (#{result}). Cannot continue crafting #{@noun}.") if repeats >= NO_ROUNDTIME_REPEATS
+        stop_going_nowhere("sew: #{streak} replies in a row with no roundtime, the last to '#{command}' (#{result}). Cannot continue crafting #{@noun}.") if streak >= NO_ROUNDTIME_STREAK
+      end
+      free_hand_replies = result.match?(/^You need a free hand to do that/) ? free_hand_replies + 1 : 0
 
       case result
       when /You need a larger amount of material to continue crafting/
-        Lich::Messaging.msg('bold', "sew: Not enough material to continue crafting #{@noun}. Exiting.")
-        magic_cleanup
-        exit
+        stop_with_hands_put_away("sew: Not enough material to continue crafting #{@noun}. Exiting.")
       when /^You must be holding the .* to do that/
-        Lich::Messaging.msg('bold', "sew: Required tool not in hand. Cannot continue crafting #{@noun}.")
-        magic_cleanup
-        exit
+        stop_with_hands_put_away("sew: Required tool not in hand. Cannot continue crafting #{@noun}.")
+      when NO_DESIGN
+        finish if Flags['sew-done']
+        stop_with_hands_put_away("sew: The game says no design is in mind for #{@noun}: the study did not take, or it has faded. Cannot continue crafting.")
+      when NOTHING_ON_NEEDLES
+        finish if Flags['sew-done']
+        stop_with_hands_put_away("sew: There is no knitting on the needles to go on with. Cannot continue crafting #{@noun}.")
       when 'dimensions appear to have shifted and could benefit from some remeasuring', 'dimensions changed while working on it'
         swap_tool('yardstick')
         @home_tool = 'sewing needles'
@@ -396,11 +883,7 @@ class Sew
         # Take the id while the needles are still in hand. Once they are tied
         # or stowed, "my sewing needles" can pick a spare pair instead.
         needles_id = GameObj.right_hand&.id
-        unless needles_id
-          Lich::Messaging.msg('bold', 'sew: Could not identify the sewing needles to thread. Cannot continue crafting.')
-          magic_cleanup
-          exit
-        end
+        stop_with_hands_put_away('sew: Could not identify the sewing needles to thread. Cannot continue crafting.') unless needles_id
         swap_tool(SEWING_THREAD, true)
         command = "put my thread on ##{needles_id}"
       when 'You carefully thread some cotton thread', 'is already threaded with'
@@ -457,19 +940,142 @@ class Sew
         command = 'push my needles'
       when 'The garment is nearly complete and now must be cast off', /^The .* needles must be cast to finish binding the knit yarn\.$/
         command = 'cast my needles'
-      when 'You are already knitting', 'Do you really want to discard'
+      when ALREADY_KNITTING
+        command = keep_or_discard_knitting(result)
+      when 'Do you really want to discard'
         command = 'pull my needles'
       when 'You untie and discard'
         command = 'knit my yarn with my knitting needles'
-      when /^Roundtime/, /^You realize that cannot be repaired, and stop/, /^You need a free hand to do that/
+      when /^Roundtime/, /^You realize that cannot be repaired, and stop/
         waitrt?
         finish if Flags['sew-done']
         swap_tool(@home_tool) unless @home_tool.nil?
         command = @home_command.nil? ? command : @home_command
-      when /^You cannot do that while engaged!/
+      when /^You need a free hand to do that/
+        # Not a step done: the same command goes again once a hand is free.
+        finish if Flags['sew-done']
+        free_a_hand(command, free_hand_replies)
+      when ENGAGED
         DRC.retreat
         pause 10
       end
+    end
+  end
+
+  # Stops a run whose replies are going nowhere (#work's no-roundtime
+  # guards), unless the item was finished meanwhile: a completion that
+  # arrived late still gets its finish.
+  #
+  # @param message [String]
+  # @return [void]
+  # @raise [SystemExit] always (finish exits too)
+  def stop_going_nowhere(message)
+    finish if Flags['sew-done']
+    stop_with_hands_put_away(message)
+  end
+
+  # What to send after "You are already knitting ...": a new knit can't
+  # start while the needles hold work. When the work is this run's own item
+  # (its noun, and its material when the run names one other than bare
+  # yarn), the yarn is put away and the run goes on with it: ANALYZE says
+  # where it stands, as a resume does. Anything else is pulled off and
+  # discarded, as before.
+  #
+  # taskmaster never resumes knitting (the work doesn't show in the hand),
+  # so after a crash in the middle of an outfit the next sew got here and
+  # threw the outfit away. Fidon, 2026-11-12 06:44:20: "You are already
+  # knitting an unfinished knitted wool outfit on the yarn.  You must finish
+  # this before starting another project.", then two pulls discarded an
+  # outfit ready to be cast off.
+  #
+  # @param reply [String] the matched text, "You are already knitting an
+  #   unfinished knitted wool outfit on the"
+  # @return [String] the next command
+  def keep_or_discard_knitting(reply)
+    return 'pull my needles' unless own_knitting?(reply)
+
+    Lich::Messaging.msg('plain', "sew: The needles already hold an unfinished #{@noun}; going on with it.")
+    put_away_raw_material
+    analyze_command
+  end
+
+  # Whether +reply+ names this run's item: its noun (the last part of a
+  # dotted one, as clear_hands takes it), its material when the run names
+  # one other than bare yarn (craft.lic passes "yarn", which the reply never
+  # names), and, when the run names a recipe (book and work-order runs),
+  # every word of the recipe's name. The noun alone can't tell "a knitted
+  # hat" from "a lacework hat" (both chapter 5, noun hat); the unfinished
+  # work keeps the recipe's words ("an unfinished knitted wool outfit" for
+  # "a knitted outfit", Fidon 2026-11-12 06:44:20). Taskmaster's
+  # instructions runs name no recipe.
+  #
+  # @param reply [String]
+  # @return [Boolean]
+  def own_knitting?(reply)
+    text = reply.downcase
+    word = ->(w) { text.match?(/\b#{Regexp.escape(w.downcase)}\b/) }
+    return false unless word.call(@noun.split('.').last)
+    return false unless recipe_words.all?(&word)
+    return true if @mat_type.nil? || @mat_type.casecmp?('yarn')
+
+    word.call(@mat_type)
+  end
+
+  # The words of the run's recipe name, without a leading article; none
+  # when the run names no recipe.
+  #
+  # @return [Array<String>]
+  def recipe_words
+    @recipe_name.to_s.downcase.sub(/\A(?:a|an|some)\s+/, '').scan(/[a-z'-]+/)
+  end
+
+  # Frees a hand for +command+ after "You need a free hand to do that.", so
+  # #work can send it again: puts away, by id, whatever is held that the
+  # command does not name. On 2026-11-12 a lag left Byd's wool yarn in the
+  # left hand beside the knitting needles; 'knit my needles' needs that
+  # hand, and sew, which took the reply as a Roundtime and sent the command
+  # again, did so about 165 times a minute for five hours. Stops the run
+  # when nothing held is spare, or when the command was refused a free hand
+  # once already.
+  #
+  # @param command [String] the command that got the reply
+  # @param replies [Integer] free-hand replies in a row, this one included
+  # @return [void]
+  # @raise [SystemExit] when no hand can be freed
+  def free_a_hand(command, replies)
+    stop_with_hands_put_away("sew: Still no free hand for '#{command}' after putting away what was held. Cannot continue crafting #{@noun}.") if replies > 1
+
+    spare = spare_held_objects(command)
+    stop_with_hands_put_away("sew: No free hand for '#{command}', and everything held is needed. Cannot continue crafting #{@noun}.") if spare.empty?
+
+    spare.each do |obj|
+      next if DRCI.put_away_item?("##{obj.id}", @bag)
+
+      stop_with_hands_put_away("sew: Could not put the #{obj.name} (##{obj.id}) in your #{@bag} to free a hand. Cannot continue crafting #{@noun}.")
+    end
+  end
+
+  # What is held that +command+ does not name: a hand object with an id
+  # whose noun is not a word of the command and whose id the command does
+  # not give, other than the item being worked. 'knit my needles' names the
+  # needles, not the yarn; 'cut my duffel.bag with my scissors' names the
+  # bag (its noun is the last part of 'duffel.bag') and the scissors; 'put
+  # my thread on #63049908' names the needles by id, and the piece being
+  # sewn is never spare.
+  #
+  # A spare tool goes to the crafting bag by id, not back on the belt;
+  # get_crafting_item finds it there when it is wanted again.
+  #
+  # @param command [String]
+  # @return [Array<GameObj>] zero, one or two hand objects
+  def spare_held_objects(command)
+    words = command.downcase.scan(/[a-z']+/)
+    item = @noun.to_s.split('.').last.to_s.downcase
+    [GameObj.right_hand, GameObj.left_hand].select do |obj|
+      next false unless obj&.id && obj.noun
+
+      noun = obj.noun.downcase
+      !words.include?(noun) && !command.include?("##{obj.id}") && noun != item
     end
   end
 
@@ -481,9 +1087,7 @@ class Sew
 
     return if DRCI.in_hands?(next_tool)
 
-    Lich::Messaging.msg('bold', "sew: Failed to get '#{next_tool}'. Cannot continue crafting.")
-    magic_cleanup
-    exit
+    stop_with_hands_put_away("sew: Failed to get '#{next_tool}'. Cannot continue crafting.")
   end
 
   def finish
