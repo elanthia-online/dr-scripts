@@ -621,7 +621,7 @@ class TaskMaster
       @junk_regex = nil
       @keeplist_regex = Regexp.union(Array(@settings.task_keep_list))
     else
-      @junk_regex = Regexp.union(junk)
+      @junk_regex = /\b(?:#{Regexp.union(junk).source})\b/
     end
     @slack_keepers = @settings.task_slack_keepers
     register_slackbot(@settings.slack_username) if @slack_keepers
