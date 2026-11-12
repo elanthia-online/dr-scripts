@@ -6766,6 +6766,19 @@ crafting_recipes:
 ####################################
 ##### Outfitting section ends  #####
 ####################################
+# Tailoring Chapter 1 recipes
+- name: some small cloth padding
+  noun: padding
+  volume: 1
+  type: tailoring
+  work_order: false
+  chapter: 1
+- name: some large cloth padding
+  noun: padding
+  volume: 2
+  type: tailoring
+  work_order: false
+  chapter: 1
 # Tailoring Chapter 2 recipes
 - name: some cloth socks
   noun: socks
@@ -6953,6 +6966,12 @@ crafting_recipes:
   type: tailoring
   work_order: false
   chapter: 2
+- name: a cloth shawl
+  noun: shawl
+  volume: 3
+  type: tailoring
+  work_order: false
+  chapter: 2
 - name: a cloth dress hat
   noun: hat
   volume: 4
@@ -7010,6 +7029,18 @@ crafting_recipes:
 - name: some cloth robes
   noun: robes
   volume: 9
+  type: tailoring
+  work_order: false
+  chapter: 2
+- name: a cloth blouse
+  noun: blouse
+  volume: 4
+  type: tailoring
+  work_order: false
+  chapter: 2
+- name: a cloth caftan
+  noun: caftan
+  volume: 8
   type: tailoring
   work_order: false
   chapter: 2
@@ -7073,8 +7104,38 @@ crafting_recipes:
   type: tailoring
   work_order: false
   chapter: 2
+- name: a cloth bodice
+  noun: bodice
+  volume: 4
+  type: tailoring
+  work_order: false
+  chapter: 2
+- name: some sturdy cloth trousers
+  noun: trousers
+  volume: 6
+  type: tailoring
+  work_order: false
+  chapter: 2
+- name: a cloth dress vest
+  noun: vest
+  volume: 4
+  type: tailoring
+  work_order: false
+  chapter: 2
 - name: a deeply-hooded cloak
   noun: cloak
+  volume: 9
+  type: tailoring
+  work_order: false
+  chapter: 2
+- name: a cloth surcoat
+  noun: surcoat
+  volume: 9
+  type: tailoring
+  work_order: false
+  chapter: 2
+- name: a cloth gamantang
+  noun: gamantang
   volume: 9
   type: tailoring
   work_order: false
@@ -7379,6 +7440,14 @@ crafting_recipes:
   chapter: 4
   part:
   - small padding
+- name: a quilted cloth headwrap
+  noun: headwrap
+  volume: 10
+  type: tailoring
+  work_order: false
+  chapter: 4
+  part:
+  - small padding
 - name: a padded cloth hood
   noun: hood
   volume: 9
@@ -7422,6 +7491,14 @@ crafting_recipes:
 - name: a quilted cloth tasset
   noun: tasset
   volume: 8
+  type: tailoring
+  work_order: false
+  chapter: 4
+  part:
+  - small padding
+- name: a padded cloth headwrap
+  noun: headwrap
+  volume: 10
   type: tailoring
   work_order: false
   chapter: 4
@@ -7486,6 +7563,14 @@ crafting_recipes:
 - name: a quilted cloth mantle
   noun: mantle
   volume: 17
+  type: tailoring
+  work_order: false
+  chapter: 4
+  part:
+  - small padding
+- name: an insulated cloth headwrap
+  noun: headwrap
+  volume: 10
   type: tailoring
   work_order: false
   chapter: 4
