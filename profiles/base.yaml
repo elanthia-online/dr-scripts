@@ -3046,7 +3046,7 @@ task_keep_list:
   - vardite
 # Setting for taskmaster - Seconds between asks while the taskmaster makes you wait (minimum 3).
 task_cooldown_poll: 15
-# Setting for taskmaster - Items to throw away (strings or regexps); everything else is kept. When non-empty it replaces task_keep_list.
+# Setting for taskmaster - Items to throw away (strings or regexps); everything else is kept. Strings match whole words only ('steel' does not match silversteel); regexps match as written. When non-empty it replaces task_keep_list.
 task_junk_list: []
 # Setting for taskmaster - Send a Slack message (to slack_username) for each keeper.
 task_slack_keepers: false

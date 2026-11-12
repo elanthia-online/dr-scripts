@@ -3,6 +3,44 @@
 =end
 
 class Shape
+  # Studying the instructions. These mirror lich-5 DRCC.study_instructions
+  # (its STUDY_INSTRUCTIONS_* patterns; lich-5#2321 moves its success match
+  # from Roundtime to the study line below). shape keeps its own loop
+  # because $MIN_LICH_VERSION (dependency.lic) is 5.23.0, older than v5.24.0,
+  # the first release with DRCC.study_instructions. Once the minimum Lich
+  # includes the release with lich-5#2321, the get, study and stow in prep can
+  # become DRCC.study_instructions("#{@noun} instructions", @bag, @bag_items,
+  # @belt). Where this copy differs: a 90 s wait per study (DRCC uses bput's
+  # 15 s), `study my instructions` without the item's name, and only "You
+  # must be holding the instructions" as the not-holding reply.
+
+  # The study's own line, which comes before "You now feel ready to begin the
+  # crafting process." and its roundtime. It always ends one of three ways:
+  # "completely understand all facets of the design.", "comprehend all but
+  # several minor details in the text." or "confidently discern most of the
+  # design's minutiae." A Roundtime line is not enough: when the game lags,
+  # a late Roundtime from an earlier command can arrive before the study's
+  # reply, or in place of it.
+  STUDY_SUCCESS_PATTERN = /^You scan the .+ instructions with a glance and /
+
+  # The game asking for another study, e.g. "[These instructions have only 9
+  # uses remaining.  Study them again to proceed.]". No quote may come
+  # before it, so a player saying the line does not count.
+  STUDY_AGAIN_PATTERN = /^[^"]*Study them again/
+
+  # A study when the game does not see the instructions in hand.
+  STUDY_NOT_HOLDING_PATTERN = /^You must be holding the instructions/
+
+  # A study when there are no instructions on the character.
+  STUDY_NOT_FOUND_PATTERN = /^What were you referring to/
+
+  # Seconds to wait for each study's reply. Long, since a lagging game can
+  # answer minutes late, and a reply that never comes stops the script.
+  STUDY_TIMEOUT = 90
+
+  # Most studies sent; the game asks for a second one at most once.
+  STUDY_MAX_ATTEMPTS = 3
+
   def initialize
     @settings = get_settings
     @hometown = @settings.force_crafting_town || @settings.hometown
@@ -101,13 +139,48 @@ class Shape
     end
   end
 
+  # Studies the instructions in hand, again when the game asks, up to
+  # STUDY_MAX_ATTEMPTS studies. Only the study's own line counts as done; any
+  # other end (no reply within STUDY_TIMEOUT, not holding the instructions,
+  # no instructions, or still asked to study again after the last study)
+  # stops the script, so crafting never starts without the design in mind.
+  def study_instructions
+    STUDY_MAX_ATTEMPTS.times do
+      result = DRC.bput('study my instructions', { 'timeout' => STUDY_TIMEOUT },
+                        STUDY_SUCCESS_PATTERN, STUDY_AGAIN_PATTERN, STUDY_NOT_HOLDING_PATTERN, STUDY_NOT_FOUND_PATTERN)
+      case result
+      when STUDY_SUCCESS_PATTERN
+        waitrt?
+        return
+      when STUDY_AGAIN_PATTERN
+        next
+      when STUDY_NOT_HOLDING_PATTERN
+        stop_studying("Not holding the #{@noun} instructions to study them.")
+      when STUDY_NOT_FOUND_PATTERN
+        stop_studying("Could not find the #{@noun} instructions to study.")
+      else
+        stop_studying("No reply to studying the #{@noun} instructions.")
+      end
+    end
+    stop_studying("Still told to study the #{@noun} instructions again after #{STUDY_MAX_ATTEMPTS} studies.")
+  end
+
+  # Stops the script after a study that did not complete, putting the
+  # instructions away first. Like DRCC.study_instructions, the put is sent
+  # even when the game said they are not in hand: the study came after a get
+  # that may have got them, and if they are gone the put only fails.
+  def stop_studying(message)
+    DRC.message("***#{message} Exiting.***")
+    DRCC.stow_crafting_item("#{@noun} instructions", @bag, @belt)
+    magic_cleanup
+    exit
+  end
+
   def prep
     DRCA.crafting_magic_routine(@settings)
     if @instruction
       DRCC.get_crafting_item("#{@noun} instructions", @bag, @bag_items, @belt)
-      if /again/ =~ DRC.bput('study my instructions', 'Roundtime', 'Study them again')
-        DRC.bput('study my instructions', 'Roundtime', 'Study them again')
-      end
+      study_instructions
       DRCC.stow_crafting_item("#{@noun} instructions", @bag, @belt)
       swap_tool('drawknife')
       DRCC.get_crafting_item("#{@material} lumber", @bag, @bag_items, @belt)

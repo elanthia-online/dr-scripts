@@ -4062,7 +4062,7 @@ RSpec.describe Remedy do
     let(:stopped_message) { 'Remedy: could not study the salve instructions. Stopping.' }
 
     # Scripts the two studies of 25:94392-94410: "Study them again" with 8
-    # uses left, then the study that ends in Roundtime.
+    # uses left, then the study that completes (the study line, 25:94406).
     #
     # @return [void]
     def script_salve_study
@@ -4175,7 +4175,7 @@ RSpec.describe Remedy do
       expect(remedy_messages.first).to eq('Remedy: 1 use left on the salve instructions.')
     end
 
-    it 'says nothing of uses for instructions that do not wear out (the study ends in Roundtime at once, 25:94406-94410)' do
+    it 'says nothing of uses for instructions that do not wear out (the first study completes, 25:94406-94410)' do
       game.script(study, log('25:94406'), log('25:94408'), log('25:94410'))
       script_salve_crafting
       expect(run_remedy(salve_line)).to eq(:exited)
@@ -8768,7 +8768,8 @@ RSpec.describe 'Remedy::LocalStudyInstructions (layer 20)' do
   describe 'the patterns, against the real lines' do
     it 'reads the uses count from the prompt, as DRC.bput returns it (25:10812, 25:30340)' do
       again = Remedy::LocalStudyInstructions::STUDY_INSTRUCTIONS_AGAIN
-      expect(log('25:10812').text[again]).to eq('These instructions have only 5 uses remaining.  Study them again')
+      # Anchored at the line's start (lich-5#2250), so the match takes the bracket too.
+      expect(log('25:10812').text[again]).to eq('[These instructions have only 5 uses remaining.  Study them again')
       expect(log('25:10812').text[again][again, :uses]).to eq('5')
       expect(log('25:30340').text[again, :uses]).to eq('1')
     end
@@ -8858,15 +8859,124 @@ RSpec.describe 'Remedy::LocalStudyInstructions (layer 20)' do
     end
   end
 
+  # Game lag (DragonRealms, 2026-11-12, about 01:00-01:03 NZDT): the server
+  # went quiet, then ran the queued commands in order and sent their replies
+  # at once, so a reply to a command sent before the study can be the first
+  # line after it. A study is complete on its own line
+  # (STUDY_INSTRUCTIONS_SUCCESS, as lich-5#2321), never on a Roundtime line.
+  describe 'the study line, not a Roundtime, completes a study (lich-5#2321)' do
+    let(:success) { Remedy::LocalStudyInstructions::STUDY_INSTRUCTIONS_SUCCESS }
+    let(:scan) { 'You scan the liniment instructions with a glance and ' }
+    let(:late_roundtime) { code('Roundtime: 8 sec.', from: '2026-11-12 lag: a Roundtime line from a command sent before the study') }
+    let(:returned) { [] }
+
+    # Records what DRC.bput returned for each study, so an example can see
+    # which line counted. The replay still answers every command.
+    before do
+      allow(DRC).to receive(:bput) do |*args|
+        game.bput(*args).tap { |reply| returned << reply if args.first == study }
+      end
+    end
+
+    # The three endings of the study line in the November logs of 2023-2026
+    # (about 940,000 studies): the first nearly always, the second and the
+    # third (25:10821) rarely.
+    [
+      ['completely understand all facets of the design.', nil],
+      ['comprehend all but several minor details in the text.', nil],
+      ["confidently discern most of the design's minutiae.", '25:10821']
+    ].each do |ending, cite|
+      it "counts a study whose line ends #{ending.inspect}, on that line" do
+        study_line = cite ? log(cite) : code("#{scan}#{ending}", from: 'November 2023-2026 logs (ClickHouse log index)')
+        expect(study_line.text).to eq("#{scan}#{ending}")
+        expect(study_line.text).to match(success)
+        game.script(study, study_line, log('25:10823'), log('25:10825'))
+        expect(study_liniment.to_h).to eq(studied: true, uses_left: nil, discarded: false)
+        expect(returned).to eq([scan])
+        expect(instructions_stows.size).to eq(1)
+      end
+    end
+
+    it 'reads past a late Roundtime before the study line and counts the study line' do
+      game.script(study, late_roundtime, log('25:10821'), log('25:10823'), log('25:10825'))
+      expect(study_liniment.to_h).to eq(studied: true, uses_left: nil, discarded: false)
+      expect(returned).to eq([scan])
+    end
+
+    # As lich-5#2250 anchored the helper's prompt: another player quoting the
+    # prompt is not the game asking for another study.
+    it 'does not study again for a player quoting the "Study them again" prompt' do
+      quoted = code(%(<preset id='speech'>Mallory says</preset>, "These instructions have only 5 uses remaining.  Study them again to proceed."),
+                    from: '25:10812 as player speech (lich-5#2250)')
+      game.script(study, quoted, log('25:10821'), log('25:10823'), log('25:10825'))
+      expect(study_liniment.to_h).to eq(studied: true, uses_left: nil, discarded: false)
+      expect(returned).to eq([scan])
+    end
+
+    it 'reads past a late Roundtime before a "Study them again" prompt and studies again, 4 uses left (25:10810-10825)' do
+      game.script(study, late_roundtime, log('25:10810'), log('25:10812'))
+      script_completed_study
+      expect(study_liniment.to_h).to eq(studied: true, uses_left: 4, discarded: false)
+      expect(game.sent).to eq([study, study])
+    end
+
+    it 'is not done on a late Roundtime followed by "You must be holding the instructions to study them."' do
+      holding = code('You must be holding the instructions to study them.', from: 'enchant.lic STUDY_INSTRUCTIONS_NOT_HOLDING in #7891')
+      game.script(study, late_roundtime, holding)
+      expect(study_liniment.to_h).to eq(studied: false, uses_left: nil, discarded: false)
+      expect(instructions_stows.size).to eq(1)
+      expect(messages).to eq(['DRCC: Not holding liniment instructions to study.'])
+    end
+
+    it 'is not done on a late Roundtime alone: no reply, put back' do
+      game.script(study, late_roundtime)
+      expect(study_liniment.to_h).to eq(studied: false, uses_left: nil, discarded: false)
+      expect(instructions_stows.size).to eq(1)
+      expect(messages).to eq(['DRCC: No reply to studying liniment instructions.'])
+    end
+
+    it 'stops the script on a late Roundtime alone without skip_exit, after putting the instructions back' do
+      game.script(study, late_roundtime)
+      expect { study_liniment(skip_exit: false) }.to raise_error(SystemExit)
+      expect(instructions_stows.size).to eq(1)
+      expect(messages.last).to eq('DRCC: Cannot continue crafting without required item. Stopping script.')
+    end
+
+    it 'does not take a late Roundtime after a "1 uses" prompt for the last use: not done, not tossed, put back (25:30340)' do
+      holding = code('You must be holding the instructions to study them.', from: 'enchant.lic STUDY_INSTRUCTIONS_NOT_HOLDING in #7891')
+      script_prompt('25:30338', '25:30340')
+      game.script(study, late_roundtime, holding)
+      expect(study_liniment.to_h).to eq(studied: false, uses_left: 1, discarded: false)
+      expect(instructions_stows.size).to eq(1)
+    end
+
+    it 'still sees the toss after the last use when a late Roundtime came before the "1 uses" prompt (25:30338-30352)' do
+      game.script(study, late_roundtime, log('25:30338'), log('25:30340'))
+      game.script(study, log('25:30345'), log('25:30347'), log('25:30349'), log('25:30352'), after: ->(_game) { commons.release(name) })
+      expect(study_liniment.to_h).to eq(studied: true, uses_left: 0, discarded: true)
+      expect(game.sent).to eq([study, study])
+      expect(instructions_stows).to be_empty
+    end
+
+    it "does not take another player's speech quoting the study line as the study" do
+      spoken = code(%(Mallory says, "#{log('25:10821').text}"), from: '25:10821 as player speech (STUDY_INSTRUCTIONS_SUCCESS anchor)')
+      expect(log('25:10821').text).to match(success)
+      expect(spoken.text).not_to match(success)
+      game.script(study, spoken)
+      expect(study_liniment.to_h).to eq(studied: false, uses_left: nil, discarded: false)
+      expect(messages).to eq(['DRCC: No reply to studying liniment instructions.'])
+    end
+  end
+
   describe 'a set that does not wear out' do
-    it 'reports no count when the first study ends in Roundtime (25:10821-10825)' do
+    it 'reports no count when the first study completes (25:10821-10825)' do
       script_completed_study
       expect(study_liniment.to_h).to eq(studied: true, uses_left: nil, discarded: false)
       expect(game.sent).to eq([study])
     end
   end
 
-  describe 'a study that never ends in Roundtime' do
+  describe 'a study that never completes' do
     {
       'still "Study them again" after three studies (25:10812 each time)' => [['25:10812'], 'DRCC: Still told to study liniment instructions again after 3 studies.'],
       'not found (26:60708, analog: the reply to the GET)'                => [['26:60708'], 'DRCC: Could not find liniment instructions to study.'],

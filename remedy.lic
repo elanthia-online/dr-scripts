@@ -3294,8 +3294,8 @@ class Remedy
   # until the game is ready to craft, and puts them away again unless the
   # game tossed them.
   #
-  # It mirrors the helper proposed in elanthia-online/lich-5#2246
-  # (common-crafting.rb, its
+  # It mirrors the helper of elanthia-online/lich-5#2246, with the success
+  # line of elanthia-online/lich-5#2321 (common-crafting.rb, its
   # STUDY_INSTRUCTIONS_* constants, StudyInstructionsResult and
   # study_instructions with its private helpers): the same signature,
   # result, constants, steps and messages, with two differences:
@@ -3312,13 +3312,19 @@ class Remedy
   #   DRCC.crafting_item_failed is private in lich-5.
   #
   # Remedy calls it once, from {Recipe::Instructions#prepare}, with skip_exit
-  # true, and decides itself what a failure means.
+  # true, and decides itself what a failure means. That call always uses
+  # this copy, never DRCC.study_instructions, whatever Lich is running.
   #
-  # @deprecated Use DRCC.study_instructions once a lich-5 release ships it.
-  # @note Remove once a lich-5 release ships DRCC.study_instructions
-  #   (elanthia-online/lich-5#2246): the
-  #   follow-up `refactor(remedy): use DRCC.study_instructions` deletes this
-  #   module and its specs, calls DRCC.study_instructions from
+  # @deprecated Use DRCC.study_instructions once the minimum Lich has a
+  #   release with elanthia-online/lich-5#2321.
+  # @note DRCC.study_instructions (elanthia-online/lich-5#2246) first
+  #   shipped in lich-5 v5.24.0, but $MIN_LICH_VERSION (dependency.lic) is
+  #   5.23.0, which lacks it, and v5.24.0 and v5.24.1 still count a study
+  #   done on any line starting "Roundtime"; lich-5#2321 makes it the
+  #   study's own line, as here. Remove this module once the minimum Lich
+  #   includes the release with lich-5#2321: the follow-up
+  #   `refactor(remedy): use DRCC.study_instructions` deletes this module
+  #   and its specs, calls DRCC.study_instructions from
   #   {Recipe::Instructions#prepare}, drops the Flag from
   #   {Remedy.delete_flags}, and adds a study_instructions default to
   #   Harness::DRCC in test/test_harness.rb. Until then, a change to the
@@ -3334,11 +3340,30 @@ class Remedy
     # counts as a prompt. The game says "1 uses" for the last use
     # (25:30340); the singular "use" is accepted but has not been seen.
     # DRC.bput returns the matched text, from which +uses+ is read with
-    # this same pattern.
-    STUDY_INSTRUCTIONS_AGAIN = /(?:These instructions have only (?<uses>\d+) uses? remaining\.\s+)?Study them again/
+    # this same pattern. No double quote may come before the prompt, so
+    # another player's speech, whisper or ESP that quotes it is not taken
+    # as the game asking for another study (as lich-5#2250 anchored the
+    # helper's).
+    STUDY_INSTRUCTIONS_AGAIN = /^[^"]*?(?:These instructions have only (?<uses>\d+) uses? remaining\.\s+)?Study them again/
 
-    # Ends a completed study: "Roundtime: 7 sec." (25:10825).
-    STUDY_INSTRUCTIONS_SUCCESS = /^Roundtime/
+    # The study's own line, the first line of a completed study's reply:
+    # "You scan the liniment instructions with a glance and confidently
+    # discern most of the design's minutiae." (25:10821), then "You now
+    # feel ready to begin the crafting process." and "Roundtime: 7 sec."
+    # (25:10823, 25:10825). In the November logs of 2023-2026 (about
+    # 940,000 studies) it always starts "You scan the <x> instructions with
+    # a glance and ", with three endings: "completely understand all
+    # facets of the design.", "comprehend all but several minor details in
+    # the text." and "confidently discern most of the design's minutiae.".
+    # Only the start is matched, so an ending not seen yet still counts.
+    #
+    # Not "Roundtime": DRC.bput returns on the first line after the command
+    # that matches, and when the game lags it can still be answering
+    # commands sent before the study, so a late "Roundtime: N sec." from
+    # one of them would count a study that had not happened, or had failed,
+    # as done. Anchored, so another player's speech or ESP that quotes the
+    # line does not match either. The same as lich-5#2321.
+    STUDY_INSTRUCTIONS_SUCCESS = /^You scan the .+ instructions with a glance and /
 
     # The reply to a `<verb> my <name>` that names nothing on the
     # character, as the GET of missing instructions got at 26:60708.
@@ -3356,9 +3381,9 @@ class Remedy
     #   study: never seen after one.
     STUDY_INSTRUCTIONS_NOT_HOLDING = /^(?:But you're not holding|You must be holding the instructions)/
 
-    # Sent after the Roundtime of the study that used the last use, so
-    # DRC.bput has already returned when it arrives and a Flag has to catch
-    # it (25:30349 then 25:30352; same order at 25:32936, 26:49540 and
+    # Sent after the Roundtime of the study that used the last use, two
+    # lines after the study's own line DRC.bput returns on, so a Flag has to
+    # catch it (25:30349 then 25:30352; same order at 25:32936, 26:49540 and
     # 26:58546). Anchored like DRParser's spoof-guarded patterns (StatLine,
     # TDPValue): only tags or whitespace may come before the text, so
     # another player's speech or ESP that quotes it does not count as a
@@ -3442,18 +3467,21 @@ class Remedy
     #    another "instructions" item cannot answer it. A "Study them again"
     #    prompt sends it again, up to {STUDY_INSTRUCTIONS_MAX_STUDIES}
     #    studies in all; the prompt's uses count is kept for +uses_left+.
-    # 3. Waits out the study's roundtime, then checks a Flag for
-    #    {STUDY_INSTRUCTIONS_DISCARDED}, which arrives after the Roundtime
-    #    line DRC.bput returned on. A completed study after a "1 uses"
-    #    prompt counts as a toss even if the Flag missed the line.
+    # 3. A study is complete on the study's own line
+    #    ({STUDY_INSTRUCTIONS_SUCCESS}), not on "Roundtime", which a reply to
+    #    an earlier command can send while the game is lagging. Waits out
+    #    the study's roundtime, then checks a Flag for
+    #    {STUDY_INSTRUCTIONS_DISCARDED}, which arrives after the study's
+    #    Roundtime line, after DRC.bput returned. A completed study after a
+    #    "1 uses" prompt counts as a toss even if the Flag missed the line.
     # 4. DRCC.stow_crafting_item(+name+, +bag+, +belt+), unless the
     #    instructions were tossed. A study that says they are not there or
     #    not in hand still comes after a GET that got them, so they are put
     #    away too; if they really are gone, the PUT only gets "What were you
     #    referring to?" (25:30361).
     #
-    # A study that does not end in Roundtime (not found, not holding, a
-    # timeout, or still "Study them again" after the last study) is a final
+    # A study that does not complete (not found, not holding, a timeout,
+    # or still "Study them again" after the last study) is a final
     # failure: it beeps, prints a bold line and stops the script, or returns
     # with +studied+ false when +skip_exit+ is set. The instructions are put
     # away first, so a stop does not leave them in hand. A GET that leaves
@@ -3549,7 +3577,7 @@ class Remedy
       end
     end
 
-    # The bold line for a study that did not end in Roundtime.
+    # The bold line for a study that did not complete.
     #
     # @param outcome [Symbol] a study_instructions_outcome other than :studied
     # @param name [String] the instructions
@@ -3686,7 +3714,7 @@ class Remedy
       # Studies the instructions with skip_exit, so remedy decides what
       # each result means:
       # - not studied (the instructions cannot be got, or the study never
-      #   ends in Roundtime): stops with "Remedy: could not study the <noun>
+      #   completes): stops with "Remedy: could not study the <noun>
       #   instructions. Stopping.", after the helper put any instructions
       #   in hand away, before any herb is gathered;
       # - tossed (the study used their last use): says so, then crafts on;

@@ -8,7 +8,7 @@
   task_cooldown_poll: 15 # seconds between asks while the taskmaster makes you wait (minimum 3)
   task_boosts: [task, haste] # boosts to use. task: BOOST TASK when a task is on cooldown (same as task_use_boost). haste: keep BOOST HASTE (1 hour, roundtimes -1 second) running between tasks
   task_keep_list: list of items to keep. See default in base.yaml
-  task_junk_list: list of items to throw away; everything else is kept. When set (non-empty) it replaces task_keep_list, so a prize nobody has listed yet is kept rather than binned
+  task_junk_list: list of items to throw away; everything else is kept. String entries match whole words only ('steel' does not match silversteel); regexps match as written. When set (non-empty) it replaces task_keep_list, so a prize nobody has listed yet is kept rather than binned
   task_slack_keepers: true/false # send a Slack message (slack_username) for each keeper
   task_unpack_keepers: true/false # put a keeper's item (not its sack) in task_loot_bag and bin the empty sack
   task_bin_leftover_stock: true/false # after each Zasele task is handed in, bin her leftover stock and offcuts from the crafting bag into worn_trashcan (needs worn_trashcan; not in marathon, which carries its stock between tasks). Also, after a sew run that made none or before a task whose instructions ran out is cancelled, bins burlap cloth, rat leather and wool yarn found in task_loot_bag (only when task_loot_bag is set and is not the crafting bag), your own pieces of those stocks there included
@@ -36,7 +36,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.11.7'
+  VERSION = '2026.11.13.1'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -635,18 +635,21 @@ class TaskMaster
   end
 
   # Either a keep list (keep matches, bin the rest) or a junk list (bin
-  # matches, keep the rest). Entries may be strings or regexps. A missing or
+  # matches, keep the rest). Entries may be strings or regexps. A junk-list
+  # string matches whole words only, so 'steel' does not bin a silversteel
+  # ingot; a junk-list regexp is used exactly as written. Blank junk-list
+  # entries (a stray '-' line, null, '') are ignored. A missing or
   # empty junk list falls back to the keep list; a missing keep list keeps
   # nothing, as before.
   #
   # @return [void]
   def configure_loot_filter
-    junk = Array(@settings.task_junk_list)
+    junk = Array(@settings.task_junk_list).reject { |entry| entry.to_s.strip.empty? }
     if junk.empty?
       @junk_regex = nil
       @keeplist_regex = Regexp.union(Array(@settings.task_keep_list))
     else
-      @junk_regex = Regexp.union(junk)
+      @junk_regex = Regexp.union(junk.map { |entry| entry.is_a?(Regexp) ? entry : /(?<!\w)#{Regexp.escape(entry.to_s)}(?!\w)/ })
     end
     @slack_keepers = @settings.task_slack_keepers
     register_slackbot(@settings.slack_username) if @slack_keepers

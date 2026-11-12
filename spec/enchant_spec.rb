@@ -797,8 +797,74 @@ RSpec.describe Enchant do
       expect(instance.send(:study_instructions, name)).to be(true)
     end
 
+    # Reads queued reply lines the way DRC.bput does: lines that match none
+    # of the matchers given are skipped, the matched text of the first that
+    # does is returned, and '' (a timeout) when none is left. When the game
+    # lags, a late Roundtime from an earlier command can come before the
+    # study's own line, so a stub that only hands back canned values would
+    # hide which line counted.
+    def queue_study_replies(*replies)
+      matched = []
+      queue = replies.map(&:dup)
+      allow(DRC).to receive(:bput) do |_command, *matchers|
+        regexes = matchers.flatten.map { |m| m.is_a?(Regexp) ? m : /#{m}/i }
+        lines = queue.shift || []
+        found = nil
+        while found.nil? && (line = lines.shift)
+          regexes.each do |re|
+            next unless (m = line.match(re))
+
+            matched << line
+            found = m.to_a.first
+            break
+          end
+        end
+        found || ''
+      end
+      matched
+    end
+
+    it 'counts a study done on each of the three endings of its own line' do
+      ['completely understand all facets of the design.',
+       'comprehend all but several minor details in the text.',
+       "confidently discern most of the design's minutiae."].each do |ending|
+        study_line = "You scan the spongestone instructions with a glance and #{ending}"
+        matched = queue_study_replies([study_line, 'You now feel ready to begin the crafting process.', 'Roundtime: 7 sec.'])
+
+        expect(instance.send(:study_instructions, name)).to be(true)
+        expect(matched).to eq([study_line])
+      end
+    end
+
+    it 'skips a late Roundtime from an earlier command and counts the study line after it' do
+      matched = queue_study_replies(['Roundtime: 8 sec.'] + ENCHANT_LOG[:study_spongestone_instructions])
+
+      expect(instance.send(:study_instructions, name)).to be(true)
+
+      expect(matched).to eq([ENCHANT_LOG[:study_spongestone_instructions].first])
+    end
+
+    it 'does not count a late Roundtime followed by the instructions not being in hand' do
+      queue_study_replies(['Roundtime: 8 sec.', 'You must be holding the instructions to study them.'])
+
+      expect(instance.send(:study_instructions, name)).to be(false)
+    end
+
+    it 'does not count a late Roundtime that is the only reply' do
+      queue_study_replies(['Roundtime: 8 sec.'])
+
+      expect(instance.send(:study_instructions, name)).to be(false)
+    end
+
+    it "does not take a player's speech as the study line" do
+      expect(ENCHANT_LOG[:study_wand_instructions].first).to match(Enchant::STUDY_INSTRUCTIONS_DONE)
+      player_lines('You scan the wand instructions with a glance and completely understand all facets of the design.').each do |line|
+        expect(line).not_to match(Enchant::STUDY_INSTRUCTIONS_DONE)
+      end
+    end
+
     it 'studies twice when the first study asks for another, then puts them back' do
-      allow(DRC).to receive(:bput).and_return('These instructions have only 9 uses remaining.  Study them again', 'Roundtime')
+      queue_study_replies(ENCHANT_LOG[:study_instructions_again], ENCHANT_LOG[:study_spongestone_instructions])
 
       expect(instance.send(:study_instructions, name)).to be(true)
 
@@ -809,7 +875,7 @@ RSpec.describe Enchant do
     it 'does not put back instructions the game threw away' do
       allow(DRC).to receive(:bput) do
         Flags[Enchant::STUDY_INSTRUCTIONS_TOSSED_FLAG] = true
-        'Roundtime'
+        'You scan the spongestone instructions with a glance and '
       end
 
       expect(instance.send(:study_instructions, name)).to be(true)
@@ -818,7 +884,8 @@ RSpec.describe Enchant do
     end
 
     it 'counts a completed study after "1 uses" as the last, and keeps nothing' do
-      allow(DRC).to receive(:bput).and_return('These instructions have only 1 uses remaining.  Study them again', 'Roundtime')
+      queue_study_replies(['[These instructions have only 1 uses remaining.  Study them again to proceed.]'],
+                          ENCHANT_LOG[:study_spongestone_instructions])
 
       expect(instance.send(:study_instructions, name)).to be(true)
 
@@ -1894,6 +1961,16 @@ RSpec.describe Enchant, 'whole runs' do
 
       expect_transcript_done
       expect(game.messages).to include('Enchant: Could not put the rock on the brazier: You must be holding the rocks before doing that.')
+    end
+
+    it 'stops after one PUT when the item is not a base the recipe takes' do
+      game.command("get my rock from my #{bag}", ENCHANT_LOG[:get_rock], gives: 'rock')
+      game.command('put my rock on my brazier', ["You have no idea how to craft spongestone from this."])
+
+      expect { run_script(chapter: '1', recipe: 'spongestone', noun: 'rock') }.to raise_error(SystemExit)
+
+      expect_transcript_done
+      expect(game.messages).to eq(['Enchant: Could not put the rock on the brazier: You have no idea how to craft spongestone from this.'])
     end
 
     it 'stops when no brazier is in reach (log 2)' do

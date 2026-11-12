@@ -58,10 +58,12 @@ class Enchant
   # The first PUT, which only asks to confirm.
   PUT_BRAZIER_GLANCE = /^You glance down/.freeze
   # A PUT that cannot work: the item is not in hand (log 1, "You must be
-  # holding the rocks before doing that."), or nothing to PUT (log 2: the
+  # holding the rocks before doing that."), nothing to PUT (log 2: the
   # wand GET failed for want of a free hand, and "put wand on brazier" got
-  # "What were you referring to?").
-  PUT_BRAZIER_FAILURES = [/^You must be holding.*/, /^What were you referring to.*/].freeze
+  # "What were you referring to?"), or the item is not a base the recipe
+  # takes (2026-11-12: a ten-piece deer-bone stack for Eluned's Scry got
+  # "You have no idea how to craft Eluned's Scry from this.").
+  PUT_BRAZIER_FAILURES = [/^You must be holding.*/, /^What were you referring to.*/, /^You have no idea how to craft .* from this\./].freeze
 
   # Get item patterns
   GET_SUCCESS = /^You get/.freeze
@@ -173,20 +175,27 @@ class Enchant
     ]
   ].freeze
 
-  # Local copy of lich-5 DRCC.study_instructions (lich-5 #2246, merged
-  # 2026-11-03, in no release yet; v5.23.0 lacks it). Remove these constants
-  # and local_study_instructions once a release ships it:
-  # study_instructions already prefers DRCC's. Same commands and toss rule;
-  # this copy also anchors "Study them again" against speech, which #2246
-  # does not.
+  # Local copy of lich-5 DRCC.study_instructions (lich-5 #2246, first
+  # released in v5.24.0), for a Lich older than that: $MIN_LICH_VERSION
+  # (dependency.lic) is 5.23.0. study_instructions already prefers DRCC's
+  # when the running Lich has it, so on 5.24.0 and later this copy is not
+  # used, and the study counts a Roundtime as done until a release includes
+  # lich-5#2321. Remove these constants and local_study_instructions once
+  # the minimum Lich includes the release with lich-5#2321. Same commands,
+  # success line and toss rule as that release.
   #
   # The first study of instructions that wear out asks for a second one,
   # with the uses left (log 1: "[These instructions have only 9 uses
   # remaining.  Study them again to proceed.]"). No quote may come before
   # it, so a player saying the line does not count.
   STUDY_INSTRUCTIONS_AGAIN = /^[^"]*?(?:These instructions have only (?<uses>\d+) uses? remaining\.\s+)?Study them again/.freeze
-  # A completed study ends in roundtime (log 1).
-  STUDY_INSTRUCTIONS_DONE = /^Roundtime/.freeze
+  # A completed study's own line, before "You now feel ready to begin the
+  # crafting process." and the roundtime ("You scan the spongestone
+  # instructions with a glance and completely understand all facets of the
+  # design.", November 2026 logs). Not the roundtime: when the game lags, a
+  # late Roundtime from an earlier command can arrive before the study's
+  # reply, or in place of it.
+  STUDY_INSTRUCTIONS_DONE = /^You scan the .+ instructions with a glance and /.freeze
   # No instructions by that name.
   STUDY_INSTRUCTIONS_NOT_FOUND = /^What were you referring to/.freeze
   # Log 1 has the second: "You must be holding the instructions to study them."
