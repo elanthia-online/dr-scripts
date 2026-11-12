@@ -6696,6 +6696,15 @@ crafting_recipes:
   volume: 2
   part:
   - mechanism
+- name: a sturdy wooden bellows
+  noun: bellows
+  work_order: false
+  type: tinkering
+  chapter: 9
+  volume: 6
+  part:
+  - mechanism
+  - mechanism
 - name: miniature male soldier
   noun: soldier
   work_order: true
@@ -6739,6 +6748,24 @@ crafting_recipes:
   - mechanism
   - mechanism
   - lenses
+- name: a tapered wooden bellows
+  noun: bellows
+  work_order: false
+  type: tinkering
+  chapter: 9
+  volume: 4
+  part:
+  - mechanism
+  - mechanism
+- name: a sleek wooden bellows
+  noun: bellows
+  work_order: false
+  type: tinkering
+  chapter: 9
+  volume: 5
+  part:
+  - mechanism
+  - mechanism
 - name: a simple orlog
   noun: orlog
   work_order: true
