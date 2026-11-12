@@ -6882,7 +6882,7 @@ crafting_recipes:
   work_order: false
   chapter: 2
 - name: a cloth commoner's cloak
-  noun: 6
+  noun: cloak
   volume: 6
   type: tailoring
   work_order: false
@@ -6972,13 +6972,14 @@ crafting_recipes:
   work_order: false
   chapter: 2
 - name: a cloth dress
+  noun: dress
   volume: 8
   type: tailoring
   work_order: false
   chapter: 2
 - name: a knee-length cloth dress
-  noun: 8
-  volume:
+  noun: dress
+  volume: 8
   type: tailoring
   work_order: false
   chapter: 2
@@ -8135,8 +8136,8 @@ crafting_recipes:
   part:
   - small padding
 - name: a rugged leather jerkin
-  noun: 28
-  volume:
+  noun: jerkin
+  volume: 28
   type: tailoring
   work_order: false
   chapter: 9
@@ -8256,7 +8257,7 @@ crafting_recipes:
   - small padding
 - name: a coarse leather tasset
   noun: tasset
-  volume:
+  volume: 10
   type: tailoring
   work_order: false
   chapter: 9
@@ -8343,6 +8344,7 @@ crafting_recipes:
   part:
   - small padding
 - name: a coarse leather robe
+  noun: robe
   volume: 40
   type: tailoring
   work_order: false
