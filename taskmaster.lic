@@ -36,7 +36,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.13.1'
+  VERSION = '2026.11.13.2'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -297,17 +297,20 @@ class TaskMaster
   # the stock runs short, then exits. A task already open when it asks is
   # finished by get_task (resume_task, which works it from the carried stock
   # with marathon_tailor too), and the loop then goes on to the wrap-up
-  # check and asks again.
+  # check and asks again. An opening restock that got none of a stock it
+  # ordered stops the run before it asks for a task (stop_restock).
   #
   # @return [void]
-  # @raise [SystemExit] after the wrap-up call; or from get_task when
-  #   resume_task stops (not on a task, another taskmaster's task, a worker
-  #   or hand-in stop) or from complete_task
+  # @raise [SystemExit] after the wrap-up call; when the opening restock got
+  #   none of a stock; or from get_task when resume_task stops (not on a
+  #   task, another taskmaster's task, a worker or hand-in stop), from
+  #   marathon_tailor or from complete_task
   def run_marathon
     @npc = 'zasele'
     reconcile_hands
-    restock
+    unbought = restock
     tool_pickup if !@self_repair && DRCI.exists?("rangu ticket")
+    stop_restock(unbought) unless unbought.empty?
     loop do
       prepare_for_task
       # nil: a task already open was finished and handed in by get_task.
@@ -328,20 +331,42 @@ class TaskMaster
   # Unlike the zasele worker it buys no stock for the task and bins nothing
   # after it, since the leftover is the carried stack the next task uses.
   #
+  # Nothing is made, and so nothing handed in, when the stock is still short
+  # after the restock: a restock that got none of a stock it ordered stops
+  # the run (stop_restock), and so does one that left too little for the
+  # task. When sew made none of the items it stops too, before the hand-in:
+  # with none of the task's in the crafting bag, the hand-in's GET would
+  # take one of the player's own of the noun (2026-11-10: a run whose
+  # restock could not reach the shop sewed no ropes, then gave Zasele a
+  # bundling rope five times). Either stop leaves the task open for the
+  # next run.
+  #
   # @param item [String] item noun from the task journal
   # @param count [Integer] how many items to make
   # @param volume_per_item [Integer] yards per item
   # @param base [String] stock base: 'cloth', 'leather' or 'yarn'
   # @param type [String] stock name, e.g. 'burlap'
-  # @return [void]
+  # @return [Integer] how many were made, at least one
+  # @raise [SystemExit] when the stock is still short after the restock, or
+  #   when sew made none
   def marathon_tailor(item, count, volume_per_item, base, type)
-    unless check_stock(count * volume_per_item, type, base)
+    needed = count * volume_per_item
+    unless check_stock(needed, type, base)
       repair(@settings.outfitting_tools, @settings.outfitting_belt) unless @no_repair
-      restock
+      unbought = restock
       tool_pickup if !@self_repair && DRCI.exists?("rangu ticket")
+      stop_restock(unbought) unless unbought.empty?
+      if still_short?(needed, type, base)
+        DRC.message("Restocking left too little #{type} #{base} for #{count} #{item}s (#{needed} yards). Stopping before any is made; the task stays open for the next run.")
+        exit
+      end
       find_npc(@rooms, @npc)
     end
-    tailor_item(item, count, base, type)
+    made = tailor_item(item, count, base, type)
+    return made if made.positive?
+
+    DRC.message("No #{item} was made, so none is handed in to #{@npc.capitalize}. Stopping; the task stays open for the next run.")
+    exit
   end
 
   # Cleans up what a crash or disconnect left in hand before starting: a
@@ -732,18 +757,28 @@ class TaskMaster
 
   # Marathon restock: tops up burlap cloth and rat leather to 100 yards, and
   # wool yarn and cotton thread to 400, plus pins, paying from the copper
-  # float.
+  # float. Each stock it ordered is counted again afterwards: one that counts
+  # no more than before got none of its orders. A walk to the shop that
+  # fails only prints a line ("DRCT: Could not reach room 16667, so not
+  # ordering 8." on 2026-11-10, when go2 bonked on an exit closed that
+  # night), and order_item's return can't be trusted the other way either
+  # (it is '' when the clerk's line is missed after a sale; see
+  # order_stock_piece), so the count is what tells.
   #
-  # @return [void]
+  # @return [Array<String>] the bases (STACKMAP keys, e.g. 'cloth') it
+  #   ordered and got none of; empty when nothing was short or every
+  #   stock it ordered came in
   def restock
     info = get_data('crafting')['tailoring']["Crossing"]
     DRCC.check_consumables('pins', info['tool-room'], 5, @bag, @bag_items, nil, 40)
     need = {}
+    carried = Hash.new(0)
     cost = 0
     ['cloth', 'leather'].each do |stock|
       if DRCI.exists?("#{@stackmap[stock].first} #{stock}")
         /(\d+)/ =~ DRC.bput("count my #{@stackmap[stock].first} #{stock}", /^You count out (\d+) yards of material/)
         current = Regexp.last_match(1).to_i
+        carried[stock] = current
         need.store(stock, (100 - current) / 10)
       else
         need.store(stock, 10)
@@ -754,13 +789,14 @@ class TaskMaster
       if DRCI.exists?("#{@stackmap[stock].first} #{stock}")
         /(\d+)/ =~ DRC.bput("count my #{@stackmap[stock].first} #{stock}", /^You count out (\d+) yards of material/)
         current = Regexp.last_match(1).to_i
+        carried[stock] = current
         need.store(stock, (400 - current) / 100)
       else
         need.store(stock, 4)
       end
       cost += need[stock] * @stockdata[stock]['stock-value']
     end
-    return if cost == 0
+    return [] if cost == 0
 
     top_up_copper
     DRCM.ensure_copper_on_hand(cost + 8000, @settings, "Crossing")
@@ -776,6 +812,35 @@ class TaskMaster
       end
       DRCC.stow_crafting_item("#{@stackmap[stock].first} #{stock}", @bag, nil)
     end
+    need.select { |stock, number| number.positive? && still_short?(carried[stock] + 1, @stackmap[stock].first, stock) }.keys
+  end
+
+  # Whether a stock is short, by check_stock, asked once more when it says
+  # so: a TAP or COUNT that goes unanswered reads as short, and one missed
+  # reply should not stop a run that has the stock.
+  #
+  # @param needed [Integer] yards wanted
+  # @param type [String] stock name, e.g. 'burlap'
+  # @param base [String] stock base, e.g. 'cloth'
+  # @return [Boolean]
+  def still_short?(needed, type, base)
+    2.times.none? { check_stock(needed, type, base) }
+  end
+
+  # Stops a marathon whose restock got none of some stock it ordered
+  # (restock's return): every order of it failed, most likely as the walk to
+  # the outfitting shop did. Going on would sew with no stock, and the
+  # hand-in would then give whatever of the item's noun the crafting bag
+  # held.
+  #
+  # @param bases [Array<String>] STACKMAP keys, e.g. ['cloth', 'leather']
+  # @return [void]
+  # @raise [SystemExit] always
+  def stop_restock(bases)
+    stocks = bases.map { |base| "#{@stackmap[base].first} #{base}" }
+    rooms = bases.map { |base| @stackmap[base].last }.uniq
+    DRC.message("Restocking bought no #{stocks.join(', ')}: the outfitting shop (room #{rooms.join(', ')}) could not be reached, or would not sell (see above). Stopping.")
+    exit
   end
 
   # Whether the crafting bag holds enough of a stock for a task.
@@ -3500,7 +3565,9 @@ class TaskMaster
   # complete_task; after MAX_UNKNOWN_GIVE_REPLIES of them in a row the item
   # goes back in the bag and the hand-in stops. One the taskmaster says is
   # not made well enough goes in the trash (trash_not_good_enough) and the
-  # hand-in goes on; it is still owed, so the caller makes it again. For Nezhiri the doses on
+  # hand-in goes on; it is still owed, so the caller makes it again. One the
+  # character did not make goes back in the bag and the hand-in ends there
+  # (put_back_not_made_by_you). For Nezhiri the doses on
   # hand are handed in only when they cover the task (remedy_hand_in?);
   # otherwise they are counted (@remedy_doses) and the task goes on.
   #
@@ -3533,6 +3600,12 @@ class TaskMaster
       when GIVE_NOT_GOOD_ENOUGH
         trash_not_good_enough(item, reply)
         unknown_replies = 0
+      when GIVE_NOT_MADE_BY_YOU
+        # Put back, the hand-in ends as after replies it did not know, but at
+        # once: the items still owed are made next, and they go in the bag
+        # after the player's own, so the hand-in that follows gets them first.
+        put_back_not_made_by_you(item)
+        break
       else
         unknown_replies += 1
         next if unknown_replies < MAX_UNKNOWN_GIVE_REPLIES
@@ -4392,6 +4465,17 @@ class TaskMaster
   # taskmaster's name, so a player saying it does not count.
   GIVE_NOT_GOOD_ENOUGH = /^(?:[\w'-]+ ){1,2}inspects the [^"]*"I'm sorry, but this could be done better\./
 
+  # The taskmaster turning down an item the character did not make:
+  # 'Seamstress Zasele shakes her head and fishes out a piece of parchment
+  # from her robe: "It needs to be something that you made."' (Fizzlestiks,
+  # 2026-11-10). With none of the task's items in the crafting bag, the GET
+  # took one of the player's own of the noun, a bundling rope for a rope
+  # task. Unlisted, each one waited out bput's 15 s, five times, before the
+  # run stopped. Giving it again cannot help, and once it is put back the
+  # GET takes it again. The text starts the line after the taskmaster's
+  # name, so a player saying it does not count.
+  GIVE_NOT_MADE_BY_YOU = /^(?:[\w'-]+ ){1,2}shakes \w+ head [^"]*"It needs to be something that you made\./
+
   # Gives one finished item to the taskmaster and returns the reply, or nil when
   # there is none in hand or in the bag. A give that misses her (she wandered
   # off between the get and the give) leaves the item in hand: find her again
@@ -4445,7 +4529,7 @@ class TaskMaster
   end
 
   # Every reply a GIVE to the taskmaster waits for.
-  GIVE_REPLIES = [TURN_IN_MORE_NEEDED, /hands you a/, GIVE_MISSED, GIVE_NOT_ENCHANTED, GIVE_NOT_GOOD_ENOUGH, GIVE_NOT_NOW, GIVE_WRONG_AMOUNT, GIVE_IGNORED].freeze
+  GIVE_REPLIES = [TURN_IN_MORE_NEEDED, /hands you a/, GIVE_MISSED, GIVE_NOT_ENCHANTED, GIVE_NOT_GOOD_ENOUGH, GIVE_NOT_MADE_BY_YOU, GIVE_NOT_NOW, GIVE_WRONG_AMOUNT, GIVE_IGNORED].freeze
 
   # Hands the item over the way the game asks after GIVE_NOT_NOW: in the
   # right hand, with GIVE <taskmaster> and no object. A bare GIVE hands over
@@ -4517,14 +4601,17 @@ class TaskMaster
   # An item the taskmaster says is not made well enough goes in the trash
   # (trash_not_good_enough) and the hand-in goes on with the next one; when
   # the items run out after that, the trashed ones are made again
-  # (remake_not_good_enough).
+  # (remake_not_good_enough). One the character did not make goes back in
+  # the bag and the run stops at once (put_back_not_made_by_you), since the
+  # next GET would take that same item.
   #
   # @param item [String] item noun
   # @param count [Integer] how many are owed (doses for Nezhiri)
   # @return [void]
   # @raise [SystemExit] when the items run out first with none trashed,
-  #   when the taskmaster will not take one (refused_hand_in), from
-  #   remake_not_good_enough, or from give_item
+  #   when the taskmaster will not take one (refused_hand_in) or says the
+  #   character did not make it, from remake_not_good_enough, or from
+  #   give_item
   def complete_task(item, count)
     unknown_replies = 0
     retried = false
@@ -4560,6 +4647,11 @@ class TaskMaster
         trashed += 1
         unknown_replies = 0
         next
+      end
+      if reply.match?(GIVE_NOT_MADE_BY_YOU)
+        put_back_not_made_by_you(item)
+        DRC.message("Stopping; the task stays open. Keep your own #{hand_in_noun(item)}s out of your #{hand_in_bag} while on #{@npc.capitalize}'s tasks.")
+        exit
       end
       # A reply bput did not know may be a lagged acceptance or a passing
       # refusal: give again (the item still in hand, or the next one if it
@@ -4662,6 +4754,18 @@ class TaskMaster
     # run_marathon call outside any catch, so the cancel is caught here: the
     # task is gone, and the caller's loop asks for the next one.
     catch(FOREIGN_TASK_CANCELLED) { resume_task(exit_when_done: false) }
+  end
+
+  # The taskmaster said the item handed over was not made by the character
+  # (GIVE_NOT_MADE_BY_YOU): one of the player's own of the noun, still in
+  # hand. It goes back in the bag it came from, saying so.
+  #
+  # @param item [String] the task item's noun
+  # @return [void]
+  def put_back_not_made_by_you(item)
+    noun = hand_in_noun(item)
+    DRCC.stow_crafting_item(noun, hand_in_bag, nil)
+    DRC.message("#{@npc.capitalize} only takes a #{noun} you made, and the #{noun} from your #{hand_in_bag} was not one, so it is back in your #{hand_in_bag}.")
   end
 
   # The taskmaster neither took the item nor asked for more, MAX_UNKNOWN_GIVE_REPLIES
