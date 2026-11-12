@@ -3331,7 +3331,7 @@ crafting_recipes:
   part:
   - haft
 - name: a metal hara
-  noun: mallet
+  noun: hara
   volume: 10
   type: weaponsmithing
   work_order: true
@@ -3339,7 +3339,7 @@ crafting_recipes:
   part:
   - haft
 - name: a double-headed hammer
-  noun: mallet
+  noun: hammer
   volume: 10
   type: weaponsmithing
   work_order: true
