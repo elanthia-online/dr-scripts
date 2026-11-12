@@ -58,10 +58,12 @@ class Enchant
   # The first PUT, which only asks to confirm.
   PUT_BRAZIER_GLANCE = /^You glance down/.freeze
   # A PUT that cannot work: the item is not in hand (log 1, "You must be
-  # holding the rocks before doing that."), or nothing to PUT (log 2: the
+  # holding the rocks before doing that."), nothing to PUT (log 2: the
   # wand GET failed for want of a free hand, and "put wand on brazier" got
-  # "What were you referring to?").
-  PUT_BRAZIER_FAILURES = [/^You must be holding.*/, /^What were you referring to.*/].freeze
+  # "What were you referring to?"), or the item is not a base the recipe
+  # takes (2026-11-12: a ten-piece deer-bone stack for Eluned's Scry got
+  # "You have no idea how to craft Eluned's Scry from this.").
+  PUT_BRAZIER_FAILURES = [/^You must be holding.*/, /^What were you referring to.*/, /^You have no idea how to craft .* from this\./].freeze
 
   # Get item patterns
   GET_SUCCESS = /^You get/.freeze
