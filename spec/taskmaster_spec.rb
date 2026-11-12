@@ -5596,6 +5596,16 @@ RSpec.describe TaskMaster do
         end
       end
 
+      it 'ignores blank junk-list entries instead of binning every sack' do
+        tm = filtered(task_junk_list: ['steel', nil, ''])
+        expect(tm.keeper?(sack('a large haledroth shard'))).to be(true)
+        expect(tm.keeper?(sack('a steel ingot'))).to be(false)
+      end
+
+      it 'falls back to the keep list when every junk-list entry is blank' do
+        expect(filtered(task_keep_list: %w[agonite], task_junk_list: [nil]).keeper?(sack('a large agonite bar'))).to be(true)
+      end
+
       it 'falls back to the keep list when the junk list is empty' do
         expect(filtered(task_keep_list: %w[agonite], task_junk_list: []).keeper?(sack('some punka leather'))).to be(false)
       end

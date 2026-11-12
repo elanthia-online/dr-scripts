@@ -36,7 +36,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.12.1'
+  VERSION = '2026.11.13.1'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -612,13 +612,14 @@ class TaskMaster
   # Either a keep list (keep matches, bin the rest) or a junk list (bin
   # matches, keep the rest). Entries may be strings or regexps. A junk-list
   # string matches whole words only, so 'steel' does not bin a silversteel
-  # ingot; a junk-list regexp is used exactly as written. A missing or
+  # ingot; a junk-list regexp is used exactly as written. Blank junk-list
+  # entries (a stray '-' line, null, '') are ignored. A missing or
   # empty junk list falls back to the keep list; a missing keep list keeps
   # nothing, as before.
   #
   # @return [void]
   def configure_loot_filter
-    junk = Array(@settings.task_junk_list)
+    junk = Array(@settings.task_junk_list).reject { |entry| entry.to_s.strip.empty? }
     if junk.empty?
       @junk_regex = nil
       @keeplist_regex = Regexp.union(Array(@settings.task_keep_list))
