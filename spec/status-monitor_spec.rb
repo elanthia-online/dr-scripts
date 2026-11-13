@@ -726,6 +726,57 @@ RSpec.describe StatusMonitor::MessageFilter do
     end
   end
 
+  # The game sends a whole ESP thought as one line, opening and closing the
+  # stream on that line (the shape real logs and the safe-room fixtures carry).
+  describe 'stream tags on the same line' do
+    let(:esp) { '<pushStream id="thoughts"/>[General][Harsh] "Hello there"<popStream/>' }
+    let(:check) { 'This is a test of your conscious awareness.' }
+
+    it 'drops a thought that opens and closes its stream on one line' do
+      expect(filter.clean(+esp)).to be_nil
+    end
+
+    it 'keeps monitoring ordinary and check lines after a same-line thought' do
+      filter.clean(+esp)
+      expect(filter.clean(+'A cold wind blows.')).to eq('A cold wind blows.')
+      expect(filter.clean(+check)).to eq(check)
+    end
+
+    it 'never passes check wording quoted inside a thought' do
+      expect(filter.clean(+%(<pushStream id="thoughts"/>[General][Mallory] "#{check}"<popStream/>))).to be_nil
+    end
+
+    it 'drops the tail of a thought that closes its stream on a later line' do
+      filter.clean(+'<pushStream id="thoughts"/>[General][Mallory] "first part')
+      expect(filter.clean(+%(and #{check}"<popStream/>))).to be_nil
+      expect(filter.clean(+'A cold wind blows.')).to eq('A cold wind blows.')
+    end
+
+    it 'keeps game text that follows the closing tag on the same line' do
+      filter.clean(+'<pushStream id="percWindow"/>')
+      expect(filter.clean(+'<popStream/>A cold wind blows.')).to eq('A cold wind blows.')
+    end
+
+    it 'keeps game text that precedes an opening tag on the same line' do
+      expect(filter.clean(+'A cold wind blows.<pushStream id="thoughts"/>[General][Mallory] "hi"<popStream/>')).to eq('A cold wind blows.')
+    end
+
+    it 'stays in a filtered stream that a line opens and does not close' do
+      filter.clean(+'A cold wind blows.<pushStream id="percWindow"/>')
+      expect(filter.clean(+'spell data here')).to be_nil
+    end
+
+    it 'passes the content of a non-filtered stream opened and closed on one line' do
+      expect(filter.clean(+'<pushStream id="inv"/>a leather backpack<popStream/>')).to eq('a leather backpack')
+    end
+
+    it 'does not mutate a line that carries stream tags' do
+      line = +esp
+      filter.clean(line)
+      expect(line).to eq(esp)
+    end
+  end
+
   describe 'adversarial scenarios' do
     it 'does not trigger stream state from pushStream substring in normal text' do
       filter.clean(+'Someone says, "check pushStream id="percWindow" this out"')
@@ -954,10 +1005,89 @@ RSpec.describe StatusMonitor::Monitor do
       end
     end
 
+    it 'keeps detecting checks after a same-line ESP thought' do
+      monitor = build_monitor
+      expect(monitor.process(+'<pushStream id="thoughts"/>[General][Harsh] "Hello there"<popStream/>')).to be false
+      expect(monitor.process(+squirrel_lines.first)).to be true
+    end
+
+    it 'does not alert on check wording quoted inside an ESP thought' do
+      settings.quit_on_status_warning = true
+      thought = %(<pushStream id="thoughts"/>[General][Mallory] "#{squirrel_lines.first}"<popStream/>)
+      expect(build_monitor.process(+thought)).to be false
+      expect(fput_commands).to be_empty
+    end
+
     it 'still auto-quits on a GameMaster line that is not the error notice' do
       settings.quit_on_status_warning = true
       build_monitor.process(+'Also here: GameMaster Avaari and Trauma Prodigy Yonack.')
       expect(fput_commands).to include('exit')
+    end
+
+    # Live, the room's players arrive in the room players component, which the
+    # filter drops as UI markup; the GameMaster has to be detected there.
+    describe 'a GameMaster in the room players component' do
+      let(:gm_component) { "<component id='room players'>Also here: GameMaster Avaari and Trauma Prodigy Yonack.</component>" }
+      let(:saga_gm_component) do
+        "<component id='room players'>Also here: GameMaster <a exist=\"-1\" noun=\"Avaari\">Avaari</a>.</component>"
+      end
+      let(:no_gm_component) { "<component id='room players'>Also here: Trauma Prodigy Yonack.</component>" }
+
+      before { settings.quit_on_status_warning = true }
+
+      it 'alerts as a strong check' do
+        expect(build_monitor.process(+gm_component)).to be true
+        expect(fput_commands).to eq(['exit'])
+      end
+
+      it 'alerts on the Saga form, where the name is a link' do
+        expect(build_monitor.process(+saga_gm_component)).to be true
+        expect(fput_commands).to eq(['exit'])
+      end
+
+      it 'alerts once while the GameMaster stays, not on every room update' do
+        monitor = build_monitor
+        3.times { monitor.process(+gm_component) }
+        expect(fput_commands).to eq(['exit'])
+      end
+
+      it 'does not alert again on the bare "Also here:" line that follows the component' do
+        monitor = build_monitor
+        monitor.process(+gm_component)
+        expect(monitor.process(+'Also here: GameMaster Avaari and Trauma Prodigy Yonack.')).to be false
+        expect(fput_commands).to eq(['exit'])
+      end
+
+      it 'alerts again when the GameMaster leaves and comes back' do
+        monitor = build_monitor
+        monitor.process(+gm_component)
+        monitor.process(+no_gm_component)
+        monitor.process(+gm_component)
+        expect(fput_commands).to eq(%w[exit exit])
+      end
+
+      it 'alerts during the start-up grace period' do
+        settings.status_monitor_grace_seconds = 300
+        expect(build_monitor.process(+gm_component)).to be true
+      end
+
+      it 'alerts past the rate cap' do
+        monitor = build_monitor
+        StatusMonitor::Monitor::ALERT_RATE_MAX.times { |i| monitor.process(+"novel line number #{'x' * (i + 1)}") }
+        expect(monitor.process(+gm_component)).to be true
+      end
+
+      it 'does not alert on a room with no GameMaster' do
+        expect(build_monitor.process(+no_gm_component)).to be false
+        expect(fput_commands).to be_empty
+      end
+
+      it 'ignores GameMaster wording in a player description or parenthetical' do
+        monitor = build_monitor
+        expect(monitor.process(+"<component id='room players'>Also here: Brenna who is trailed by a flag " \
+                                'reading GameMaster and Corwin (GameMaster).</component>')).to be false
+        expect(fput_commands).to be_empty
+      end
     end
 
     it 'does not auto-act on a plain novel line, even with those settings on' do

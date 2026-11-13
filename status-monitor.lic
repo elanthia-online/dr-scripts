@@ -293,11 +293,17 @@ module StatusMonitor
     attr_reader :last_player_line
 
     FILTERED_STREAMS = %w[assess ooc atmospherics thoughts talk death group percWindow logons shopWindow].freeze
+    # An opening (capturing the stream id) or closing stream tag.
+    STREAM_TAG = /<(?:pushStream id="([^"]+)"|popStream)[^>]*>/i
+    # The title the game shows before a GameMaster's name in the room players list.
+    GM_TITLE = /\bgame ?master\b/i
 
     # @param filter_strings [Array<Regexp>] configurable patterns to ignore
     def initialize(filter_strings)
       @filter_strings = filter_strings
       @room_players = []
+      @gms_present = []
+      @gm_arrival = nil
       @in_stream = false
       @current_stream = ''
       @non_useful_tags = [
@@ -326,10 +332,11 @@ module StatusMonitor
     # @param line [String] raw game stream line with XML tags
     # @return [String, nil] a new cleaned line, or nil if it should be ignored
     def clean(line)
+      return nil if line.nil?
+
       update_players(line)
-      update_stream_state(line)
-      return nil if @in_stream && FILTERED_STREAMS.include?(@current_stream)
-      return nil if line.nil? || line.empty? || @non_useful_tags.any? { |tag| tag =~ line }
+      line = visible_text(line)
+      return nil if line.empty? || @non_useful_tags.any? { |tag| tag =~ line }
       return nil if @room_players.any? { |name| line.include?(name) }
       return nil if UserVars.npcs&.any? { |name| line.include?(name) }
 
@@ -365,19 +372,37 @@ module StatusMonitor
     # @return [Array<Regexp>] the configured filter patterns
     attr_reader :filter_strings
 
-    private
-
-    # Extracts player names from the room players component.
+    # Returns, once, the room players text in which a GameMaster has just
+    # appeared. The game re-sends the room players component on every room
+    # update, so this fires when a GameMaster joins the list, not while one
+    # stays in it.
     #
-    # @param room_players [String] raw "Also here:" component text
-    # @return [Array<String>] list of player short names
-    def find_pcs(room_players)
-      room_players.sub(/ and (.*)$/) { ", #{Regexp.last_match(1)}" }
-                  .split(', ')
-                  .map { |obj| obj.sub(/ who (has|is) .+/, '').sub(/ \(.+\)/, '') }
-                  .filter_map { |obj| obj.strip.scan(/\w+$/).first }
+    # @return [String, nil] the "Also here: ..." text, or nil if no GameMaster arrived
+    def consume_gm_arrival
+      arrival = @gm_arrival
+      @gm_arrival = nil
+      arrival
     end
 
+    private
+
+    # Splits the room players component text into one entry per player, with
+    # the trailing "who is ..." / "(...)" descriptions removed.
+    #
+    # @param room_players [String] "Also here:" component text, links removed
+    # @return [Array<String>] one entry per player, e.g. "GameMaster Avaari"
+    def player_entries(room_players)
+      room_players.sub(/ and (.*)$/) { ", #{Regexp.last_match(1)}" }
+                  .split(', ')
+                  .map { |obj| obj.sub(/ who (has|is) .+/, '').sub(/ \(.+\)/, '').strip }
+    end
+
+    # Tracks the room's players. The component is game-generated markup that a
+    # player cannot inject, so it is also where a GameMaster's presence is read:
+    # the line itself is dropped as UI markup by #clean, and the bare
+    # "Also here:" line that may follow names the GameMaster, whose name is now
+    # a room player and filters it.
+    #
     # @param line [String] raw game stream line to check for player component
     # @return [void]
     def update_players(line)
@@ -386,19 +411,54 @@ module StatusMonitor
       @last_player_line = line
       # The Saga-identity stream links each name (<a exist=.. noun=..>Name</a>);
       # parse the text inside the links.
-      @room_players = find_pcs(Regexp.last_match(1).gsub(%r{</?a\b[^>]*>}, ''))
+      text = Regexp.last_match(1).gsub(%r{</?a\b[^>]*>}, '')
+      entries = player_entries(text)
+      @room_players = entries.filter_map { |obj| obj.scan(/\w+$/).first }
+      gms = entries.grep(GM_TITLE)
+      @gm_arrival = "Also here: #{text.gsub(/<[^>]+>/, '')}." if (gms - @gms_present).any?
+      @gms_present = gms
     end
 
+    # Removes the content of filtered streams from a line, walking its stream
+    # tags in order, and carries the stream state on to the next line. A whole
+    # ESP thought arrives as one line that opens and closes its stream, so the
+    # tags must be applied in sequence: deciding on the line's first tag alone
+    # left the monitor muted after the thought, and deciding on its last tag
+    # alone would let the thought's quoted text through.
+    #
     # @param line [String] raw game stream line
-    # @return [void]
-    def update_stream_state(line)
-      if line =~ /<pushStream id="([^"]+)"/i
-        @in_stream = true
-        @current_stream = Regexp.last_match(1)
-      elsif line =~ /<popStream/i
-        @in_stream = false
-        @current_stream = ''
+    # @return [String] the line without filtered-stream content (empty if none is left)
+    def visible_text(line)
+      return (filtered_stream? ? '' : line) unless line.match?(STREAM_TAG)
+
+      visible = String.new(encoding: line.encoding)
+      pos = 0
+      line.scan(STREAM_TAG) do
+        tag = Regexp.last_match
+        visible << line[pos...tag.begin(0)] unless filtered_stream?
+        tag[1] ? enter_stream(tag[1]) : leave_stream
+        pos = tag.end(0)
       end
+      visible << line[pos..] unless filtered_stream?
+      visible
+    end
+
+    # @return [Boolean] whether the stream state is inside a filtered stream
+    def filtered_stream?
+      @in_stream && FILTERED_STREAMS.include?(@current_stream)
+    end
+
+    # @param stream [String] id of the stream being pushed
+    # @return [void]
+    def enter_stream(stream)
+      @in_stream = true
+      @current_stream = stream
+    end
+
+    # @return [void]
+    def leave_stream
+      @in_stream = false
+      @current_stream = ''
     end
   end
 
@@ -592,6 +652,9 @@ module StatusMonitor
 
     # Processes a single raw game line through the full pipeline.
     #
+    # A GameMaster appearing in the room players component alerts as a strong
+    # signal, like a check, bypassing grace, learn mode and the rate cap.
+    #
     # A line matching CHECK_PATTERNS always alerts as a strong signal (canned
     # response / auto-quit if configured) and is never recorded. One that also
     # matches GM_NOTICE_PATTERNS alerts weakly (no canned response or auto-quit),
@@ -610,6 +673,10 @@ module StatusMonitor
       update_learning
       cleaned = @filter.clean(line)
       @last_clean_line = cleaned
+      if (arrival = @filter.consume_gm_arrival)
+        alert(arrival, strong: true)
+        return true
+      end
       return false if cleaned.nil?
 
       if cleaned.match?(CHECK_PATTERNS)
