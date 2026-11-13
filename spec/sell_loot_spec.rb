@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'ostruct'
+require 'yaml'
 
 require_relative 'spec_helper'
 
@@ -421,6 +422,16 @@ RSpec.describe SellLoot do
       give_up = messages.find { |m| m.include?('gave up') }
       expect(give_up).to include('Wickett and attendant')
       expect(give_up).to include('gem-shop')
+    end
+
+    it "finds Fang Cove's Halfling gembuyer from the shipped gemshop clerk list" do
+      # "a Halfling gembuyer" shows up in DRRoom.npcs as 'gembuyer'.
+      town = YAML.unsafe_load_file(File.expand_path('../data/base-town.yaml', __dir__))
+      clerks = town.dig('Fang Cove', 'gemshop', 'name')
+      DRRoom.npcs = ['gembuyer']
+      instance = build_instance
+      expect(instance).not_to receive(:pause)
+      expect(instance.wait_for_clerk(clerks)).to eq('gembuyer')
     end
 
     it 'retries CLERK_MAX_ATTEMPTS times, pausing between each, before giving up' do
