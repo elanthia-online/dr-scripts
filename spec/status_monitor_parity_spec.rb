@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require 'ostruct'
+require 'sqlite3'
+require 'tmpdir'
 
 # Cross-script parity guard for status-monitor.lic <-> status-monitor-import.lic.
 #
@@ -45,6 +47,25 @@ RSpec.describe 'status-monitor / status-monitor-import parity' do
 
   it 'the live monitor and the importer resolve the SAME shared corpus path' do
     expect(StatusMonitorImport.default_db_path).to eq(StatusMonitor::MessageStore.default_db_path)
+  end
+
+  # Both scripts create the shared table; whichever runs first decides its
+  # schema, so the two definitions must be identical.
+  it 'the live monitor and the importer create the SAME seen_messages schema' do
+    Dir.mktmpdir('status-monitor-parity') do |dir|
+      schema = lambda do |path|
+        db = SQLite3::Database.new(path)
+        [db.get_first_value("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'seen_messages'"),
+         db.execute('PRAGMA table_info(seen_messages)')]
+      ensure
+        db&.close
+      end
+      # MessageStore merges legacy files from the working directory; run it
+      # in the empty tmpdir so it finds none.
+      Dir.chdir(dir) { StatusMonitor::MessageStore.new(File.join(dir, 'live.db')).shutdown }
+      StatusMonitorImport.open_database(File.join(dir, 'import.db')).close
+      expect(schema.call(File.join(dir, 'import.db'))).to eq(schema.call(File.join(dir, 'live.db')))
+    end
   end
 
   describe 'similarity_scrub produces identical output in both scripts' do
