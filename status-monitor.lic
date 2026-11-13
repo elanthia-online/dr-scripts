@@ -37,24 +37,23 @@ module StatusMonitor
   # safe everywhere, so the corpus is one shared whitelist across all characters.
   #
   # Writes are immediate (INSERT on record) so a line one character learns is
-  # visible to every other character at once -- there is no per-process cache to
-  # go stale. Because the shared file can have many concurrent writers (every
-  # running character, plus an import), all DB access goes through a
-  # busy-retry/backoff wrapper that logs-and-continues rather than crashing the
-  # monitor. A small in-process cache of KNOWN lines only avoids repeat SELECTs
-  # (known stays known, so it never needs invalidation).
+  # visible to every other character at once. Lookups always read the shared
+  # file: there is no per-process cache, so rows deleted from it (a learn
+  # session undone by source) alert again in every running monitor at once. A
+  # primary-key lookup costs microseconds even on a corpus of millions of lines.
+  # Because the shared file can have many concurrent writers (every running
+  # character, plus an import), all DB access goes through a busy-retry/backoff
+  # wrapper that logs-and-continues rather than crashing the monitor.
   #
   # On first run, any legacy per-character .dat (Marshal) and seen_messages_<Char>.db
-  # files found in the working directory are merged in and renamed .migrated.
+  # files found in the working directory are merged in and renamed .migrated
+  # (an unreadable .dat is recovered from its backup and kept as .corrupt).
   #
   # @note in_corpus? is the novelty gate: a known line is never analysed/alerted.
   class MessageStore
     # Attempts to ride out a busy shared DB after the SQLite busy_timeout is
     # itself exceeded (e.g. a burst of simultaneous logins all writing at once).
     BUSY_RETRIES = 5
-    # Soft cap on the in-process known-line cache before it is cleared (it is
-    # only a read optimisation; clearing just forces DB reads again).
-    KNOWN_CACHE_CAP = 50_000
     # Minimum seconds between echoes of a swallowed DB error.
     DB_ERROR_ECHO_SECONDS = 60
 
@@ -69,7 +68,6 @@ module StatusMonitor
       @db_path = db_path
       FileUtils.mkdir_p(File.dirname(@db_path))
       @db = open_database
-      @known = {}
       migrate_legacy
     end
 
@@ -83,11 +81,8 @@ module StatusMonitor
     # @return [Boolean] true if the line is already known
     def in_corpus?(line)
       return true if line.nil? || line.strip.empty?
-      return true if @known[line]
 
-      found = with_retry { exists_in_db?(line) }
-      remember(line) if found
-      found ? true : false
+      with_retry { exists_in_db?(line) } ? true : false
     end
 
     # Records a line as known-safe, writing it through to the shared store
@@ -100,7 +95,6 @@ module StatusMonitor
     def record(line, source = 'live')
       return if line.nil? || line.strip.empty?
 
-      remember(line)
       with_retry { insert_line(line, source) }
     end
 
@@ -119,12 +113,6 @@ module StatusMonitor
     end
 
     private
-
-    # Adds a line to the in-process known-line cache, bounding its size.
-    def remember(line)
-      @known.clear if @known.size >= KNOWN_CACHE_CAP
-      @known[line] = true
-    end
 
     # Runs a DB operation, retrying past the busy_timeout on contention and
     # logging-and-continuing (returning nil) on ANY SQLite error rather than
@@ -226,21 +214,50 @@ module StatusMonitor
       echo "status-monitor: merged #{total} entries from #{dats.size + dbs.size} legacy corpus file(s) into the shared store."
     end
 
+    # Merges a legacy Marshal .dat. If it is unreadable, merges the backup copy
+    # the old monitor kept in backup/ instead (the old monitor restored from it
+    # the same way). Files are renamed only after a successful merge: a
+    # recovered primary is kept as .corrupt for diagnosis and the backup becomes
+    # .migrated. When nothing can be merged, both files stay as they are.
+    #
     # @param path [String] legacy Marshal .dat file
     # @return [Integer] entries merged
     def migrate_dat(path)
-      data = File.open(path, 'rb') { |f| Marshal.load(f) }
+      backup = "backup/#{File.basename(path, '.dat')}.bak"
+      data, recovered = read_dat_or_backup(path, backup)
       lines = data.keys.map { |line| line.to_s.strip }.reject(&:empty?).uniq
       retrying do
         @db.transaction { lines.each { |line| insert_line(line, 'migration') } }
       end
-      File.rename(path, "#{path}.migrated")
-      backup = "backup/#{File.basename(path, '.dat')}.bak"
+      File.rename(path, recovered ? "#{path}.corrupt" : "#{path}.migrated")
       File.rename(backup, "#{backup}.migrated") if File.exist?(backup)
       lines.size
     rescue => e
       echo "status-monitor: could not merge #{path} (#{e.message}); skipping."
       0
+    end
+
+    # @param path [String] legacy Marshal .dat file
+    # @param backup [String] the old monitor's backup copy of it
+    # @return [Array(Hash, Boolean)] the corpus hash, and whether it came from the backup
+    # @raise [StandardError] when the primary is unreadable and there is no readable backup
+    def read_dat_or_backup(path, backup)
+      [read_dat(path), false]
+    rescue => e
+      raise unless File.exist?(backup)
+
+      echo "status-monitor: #{path} is unreadable (#{e.message}); merging its backup #{backup} instead."
+      [read_dat(backup), true]
+    end
+
+    # @param path [String] Marshal file holding a { line => true } corpus hash
+    # @return [Hash] the corpus hash
+    # @raise [TypeError] when the file holds something other than a Hash
+    def read_dat(path)
+      data = File.open(path, 'rb') { |f| Marshal.load(f) }
+      raise TypeError, "expected a Hash, got #{data.class}" unless data.is_a?(Hash)
+
+      data
     end
 
     # @param path [String] legacy per-character seen_messages_<Char>.db file

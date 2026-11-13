@@ -221,6 +221,62 @@ RSpec.describe StatusMonitor::MessageStore do
       expect(s.in_corpus?('good')).to be true
     end
 
+    # The old monitor restored an unreadable .dat from its backup copy, so an
+    # upgrade must merge that backup instead of skipping the corpus.
+    describe 'unreadable legacy .dat with a backup' do
+      before { FileUtils.mkdir_p('backup') }
+
+      def write_backup(data)
+        File.open('backup/seen_messages_Alice.bak', 'wb') { |f| Marshal.dump(data, f) }
+      end
+
+      it 'merges the backup when the primary is corrupt' do
+        File.write('seen_messages_Alice.dat', 'corrupted garbage')
+        write_backup({ 'backup line' => true, '  indented backup line' => true })
+        expect(store.in_corpus?('backup line')).to be true
+        expect(store.in_corpus?('indented backup line')).to be true
+      end
+
+      it 'keeps the corrupt primary as .corrupt and retires the backup as .migrated' do
+        File.write('seen_messages_Alice.dat', 'corrupted garbage')
+        write_backup({ 'backup line' => true })
+        store
+        expect(File.exist?('seen_messages_Alice.dat.corrupt')).to be true
+        expect(File.exist?('seen_messages_Alice.dat')).to be false
+        expect(File.exist?('backup/seen_messages_Alice.bak.migrated')).to be true
+      end
+
+      it 'treats a primary that is not a Hash as unreadable' do
+        File.open('seen_messages_Alice.dat', 'wb') { |f| Marshal.dump(%w[not a hash], f) }
+        write_backup({ 'backup line' => true })
+        expect(store.in_corpus?('backup line')).to be true
+      end
+
+      it 'leaves both files in place, merging nothing, when the backup is corrupt too' do
+        File.write('seen_messages_Alice.dat', 'corrupted garbage')
+        File.write('backup/seen_messages_Alice.bak', 'also garbage')
+        expect(store.count).to eq(0)
+        expect(File.exist?('seen_messages_Alice.dat')).to be true
+        expect(File.exist?('backup/seen_messages_Alice.bak')).to be true
+      end
+
+      it 'leaves both files in place when the merge of the backup fails' do
+        File.write('seen_messages_Alice.dat', 'corrupted garbage')
+        write_backup({ 'backup line' => true })
+        allow_any_instance_of(SQLite3::Database).to receive(:transaction).and_raise(SQLite3::IOException, 'disk I/O error')
+        expect { store }.not_to raise_error
+        expect(File.exist?('seen_messages_Alice.dat')).to be true
+        expect(File.exist?('backup/seen_messages_Alice.bak')).to be true
+      end
+
+      it 'does not read the backup when the primary is readable' do
+        File.open('seen_messages_Alice.dat', 'wb') { |f| Marshal.dump({ 'primary line' => true }, f) }
+        write_backup({ 'stale backup line' => true })
+        expect(store.in_corpus?('primary line')).to be true
+        expect(store.in_corpus?('stale backup line')).to be false
+      end
+    end
+
     # The old monitor keyed lines unstripped; the live path strips before every
     # lookup, so an unstripped migrated key would never match.
     it 'strips legacy .dat keys so indented lines match the stripped live lookup' do
@@ -1017,6 +1073,29 @@ RSpec.describe StatusMonitor::Monitor do
       db.execute('DELETE FROM seen_messages WHERE source = ?', [monitor.learn_source])
       expect(source_of('a line learned in this session')).to be_nil
       expect(source_of('a line known before the session')).to eq('live')
+    end
+
+    # The undo is advertised for running monitors: no process may keep a
+    # deleted line suppressed from memory.
+    it 'alerts again on an undone line in the monitor that learned it' do
+      monitor = build_monitor(learn_minutes: 30)
+      monitor.process(+'a line learned in this session')
+      allow(Time).to receive(:now).and_return(start + (31 * 60))
+      monitor.process(+'a line already known') # ends the learn window
+      db.execute('DELETE FROM seen_messages WHERE source = ?', [monitor.learn_source])
+      expect(monitor.process(+'a line learned in this session')).to be true
+    end
+
+    it 'alerts again on an undone line in another running monitor that had seen it' do
+      learner = build_monitor(learn_minutes: 30)
+      learner.process(+'a line learned in this session')
+      other_store = StatusMonitor::MessageStore.new(File.join(tmpdir, 'corpus.db'))
+      other = described_class.new(settings, other_store)
+      expect(other.process(+'a line learned in this session')).to be false
+      db.execute('DELETE FROM seen_messages WHERE source = ?', [learner.learn_source])
+      expect(other.process(+'a line learned in this session')).to be true
+    ensure
+      other_store&.shutdown
     end
 
     it 'still learns right up to the last second of the window' do
