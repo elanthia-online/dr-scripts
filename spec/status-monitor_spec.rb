@@ -663,9 +663,9 @@ RSpec.describe StatusMonitor::MessageFilter do
       expect(result).to be_nil
     end
 
-    it 'filters lines containing an NPC name from UserVars.npcs' do
+    it 'treats a line naming a named NPC from UserVars.npcs as a creature line' do
       UserVars.npcs = ['Grubbnash']
-      expect(filter.clean(+'Grubbnash the orc snarls at you')).to be_nil
+      expect(filter.creature_line?('Grubbnash the orc snarls at you')).to be true
     end
 
     it 'does not raise when UserVars.npcs is nil' do
@@ -719,10 +719,97 @@ RSpec.describe StatusMonitor::MessageFilter do
       expect(filter.clean(+'A cold wind blows.')).to eq('A cold wind blows.')
     end
 
+    # Real component shape (names changed): a description containing " and "
+    # used to glue the following players into one entry, so only the last name
+    # survived and the others' lines leaked into alerts.
+    describe 'descriptions that contain list separators' do
+      let(:crowded_line) do
+        "<component id='room players'>Also here: Poho Ur'Shorasa <a exist=\"-1\" noun=\"Bovar\">Bovar</a> " \
+          'who is trailed by a ghostly flag displaying a dragon skull and crossbones, ' \
+          'Sweet Talker <a exist="-2" noun="Allwyn">Allwyn</a> whose steps leave a trail of glitter, ' \
+          'Bacon Bandit <a exist="-3" noun="Malva">Malva</a> and Forest Wizard <a exist="-4" noun="Urien">Urien</a>.</component>'
+      end
+
+      it 'takes every name from the links' do
+        filter.clean(+crowded_line)
+        expect(filter.instance_variable_get(:@room_players)).to eq(%w[Bovar Allwyn Malva Urien])
+      end
+
+      it 'drops lines from each of those players' do
+        filter.clean(+crowded_line)
+        %w[Bovar Allwyn Malva Urien].each do |name|
+          expect(filter.clean(+"#{name} gets some wide rat-pelt leather straps from inside a backpack.")).to be_nil
+        end
+      end
+
+      it 'keeps every linked name when the last description holds a comma and an " and "' do
+        filter.clean(+"<component id='room players'>Also here: <a exist=\"-2\" noun=\"Allwyn\">Allwyn</a> and " \
+                     '<a exist="-1" noun="Bovar">Bovar</a> who is carrying a lantern, a rope and a pick.</component>')
+        expect(filter.instance_variable_get(:@room_players)).to eq(%w[Allwyn Bovar])
+      end
+
+      it 'splits an unlinked list on the last " and " and strips "whose" descriptions' do
+        filter.clean(+"<component id='room players'>Also here: Bovar who is trailed by a flag with a skull and crossbones, " \
+                     'Allwyn whose steps leave glitter, Malva and Druid Urien.</component>')
+        expect(filter.instance_variable_get(:@room_players)).to eq(%w[Bovar Allwyn Malva Urien])
+      end
+    end
+
+    it 'matches player names as whole words' do
+      filter.clean(+"<component id='room players'>Also here: Ed.</component>")
+      expect(filter.clean(+'Ed waves.')).to be_nil
+      expect(filter.clean(+'Edges of frost creep across the window.')).not_to be_nil
+    end
+
+    it 'matches online player names as whole words' do
+      UserVars.players_online = %w[Testchar Mo]
+      expect(filter.clean(+'Mo waves.')).to be_nil
+      expect(filter.clean(+'Moonlight spills across the floor.')).not_to be_nil
+    end
+
     it 'treats the Saga room block as non-useful' do
       line = '<resource picture="0"/><room><name>[Bosque Deriel, Burial Ground] (230007)</name>' \
              '<description>A quiet place.</description></room>'
       expect(filter.clean(line)).to be_nil
+    end
+  end
+
+  # A GameMaster check can quote the nouns around you, including the creature
+  # you are fighting ("pouch.  bundle.  moth.  If you are alert to this, please
+  # bow twice at once."), so a creature noun only filters a line where it names
+  # a creature.
+  describe '#creature_line?' do
+    before { UserVars.npcs = %w[moth moth] }
+
+    [
+      'A void-black umbral moth lunges at you.  You evade, ducking in the nick of time.',
+      'The void-black moth closes to pole weapon range on you!',
+      "Your shadowed markings lands a good hit to a void-black umbral moth's abdomen!",
+      'You lob a steel light spear at a void-black umbral moth.',
+      'You carefully fit a void-black moth antenna into your bundle.'
+    ].each do |line|
+      it "filters the creature line #{line[0, 40].inspect}" do
+        expect(filter.creature_line?(line)).to be true
+      end
+    end
+
+    it 'does not filter a bare mention of the creature noun' do
+      expect(filter.creature_line?('pouch.  bundle.  moth.  If you are alert to this, please bow twice at once.  pouch.  bundle.  moth.')).to be false
+    end
+
+    it 'does not match the noun inside another word' do
+      expect(filter.creature_line?('The mothball smell lingers.')).to be false
+    end
+
+    it 'filters nothing when there are no creatures' do
+      UserVars.npcs = []
+      expect(filter.creature_line?('A void-black umbral moth lunges at you.')).to be false
+    end
+
+    it 'follows the creature list as it changes' do
+      expect(filter.creature_line?('A goblin snarls.')).to be false
+      UserVars.npcs = %w[goblin]
+      expect(filter.creature_line?('A goblin snarls.')).to be true
     end
   end
 
@@ -1024,6 +1111,33 @@ RSpec.describe StatusMonitor::Monitor do
       expect(fput_commands).to include('exit')
     end
 
+    # The shared log: a GameMaster quoting the character's nouns, including the
+    # creature it was fighting, five times a second.
+    describe 'while fighting the creature a check names' do
+      let(:check_line) { 'pouch.  bundle.  moth.  If you are alert to this, please bow twice at once.  pouch.  bundle.  moth.' }
+
+      before { UserVars.npcs = %w[moth] }
+
+      it 'alerts on the novel check line instead of filtering it as a creature line' do
+        monitor = build_monitor
+        expect(monitor.process(+check_line)).to be true
+        expect(store.in_corpus?(check_line)).to be true
+      end
+
+      it 'still drops the creature lines themselves, unrecorded' do
+        line = 'A void-black umbral moth lunges at you.  You evade, ducking in the nick of time.'
+        expect(build_monitor.process(+line)).to be false
+        expect(store.in_corpus?(line)).to be false
+      end
+
+      it 'alerts on a check pattern that names a creature in the room' do
+        settings.quit_on_status_warning = true
+        UserVars.npcs = %w[squirrel]
+        expect(build_monitor.process(+'A squirrel scurries into the room and chitters at you before it runs off.')).to be true
+        expect(fput_commands).to eq(['exit'])
+      end
+    end
+
     # Live, the room's players arrive in the room players component, which the
     # filter drops as UI markup; the GameMaster has to be detected there.
     describe 'a GameMaster in the room players component' do
@@ -1068,6 +1182,19 @@ RSpec.describe StatusMonitor::Monitor do
 
       # An empty room sends the component with no "Also here:" text (the form in
       # samples/customwindows.txt, and Lich's own DRParser RoomPlayersEmpty).
+      it 'does not alert again on the bare "Also here:" line when the GameMaster is alone' do
+        monitor = build_monitor
+        monitor.process(+saga_gm_component)
+        expect(monitor.process(+'Also here: GameMaster Avaari.')).to be false
+        expect(fput_commands).to eq(['exit'])
+      end
+
+      it 'does not filter what a GameMaster in the room does' do
+        monitor = build_monitor
+        monitor.process(+gm_component)
+        expect(monitor.process(+'Avaari looks at you expectantly.')).to be true
+      end
+
       it 'alerts again when the GameMaster comes back after the room empties' do
         monitor = build_monitor
         monitor.process(+gm_component)

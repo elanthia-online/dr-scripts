@@ -287,6 +287,11 @@ module StatusMonitor
   # Filters raw game stream lines, stripping XML tags and removing
   # lines from known players, NPCs, and non-useful UI elements.
   #
+  # Names are matched as whole words, and a creature noun only where it names a
+  # creature ("a void-black umbral moth", "the moth's"): a GameMaster check often
+  # quotes the nouns around you ("pouch.  bundle.  moth.  ...bow twice"), and a
+  # bare substring match on the creature you are fighting would hide it.
+  #
   # @note Uses status_tags mode to receive raw XML from the game stream.
   class MessageFilter
     # @return [String, nil] the last raw "Also here:" room players component line seen
@@ -300,12 +305,26 @@ module StatusMonitor
     # The room players component of a room with no other players (the same form
     # Lich's DRParser matches as RoomPlayersEmpty).
     EMPTY_ROOM_PLAYERS = %r{'room players'></component>}
+    # One linked player in the Saga-identity room players component: the title
+    # before the link (group 1, never crossing a ", " or " and " separator, so a
+    # previous player's description is not taken as this one's title) and the
+    # link's noun (group 2), which is the player's name as the game spells it.
+    LINKED_PLAYER = %r{(?:\A|, | and )((?:(?!, | and )[^<])*)<a\b[^>]*\bnoun="([^"]+)"[^>]*>[^<]*</a>}
+    # Words that open a phrase naming a creature: "a void-black umbral moth",
+    # "the moth", "its moth".
+    CREATURE_ARTICLE = %q{(?:[Aa]n?|[Tt]he|[Ss]ome|[Yy]our|[Hh]is|[Hh]er|[Ii]ts|[Tt]heir)}
 
     # @param filter_strings [Array<Regexp>] configurable patterns to ignore
     def initialize(filter_strings)
       @filter_strings = filter_strings
       @room_players = []
+      @room_players_pattern = nil
+      @players_component_seen = false
       @gms_present = []
+      @npc_key = nil
+      @npc_pattern = nil
+      @online_key = nil
+      @online_pattern = nil
       @gm_arrival = nil
       @in_stream = false
       @current_stream = ''
@@ -328,7 +347,11 @@ module StatusMonitor
       ]
     end
 
-    # Cleans a raw game line by stripping tags and filtering known sources.
+    # Cleans a raw game line by stripping tags and filtering lines that name
+    # another player. Creature lines are filtered separately by #creature_line?,
+    # after the GameMaster-check patterns, so a creature noun can never hide a
+    # check; player lines are filtered here, before them, so a player's emote
+    # cannot fake one.
     #
     # Does not mutate its argument: tag stripping returns a new String.
     #
@@ -340,14 +363,26 @@ module StatusMonitor
       update_players(line)
       line = visible_text(line)
       return nil if line.empty? || @non_useful_tags.any? { |tag| tag =~ line }
-      return nil if @room_players.any? { |name| line.include?(name) }
-      return nil if UserVars.npcs&.any? { |name| line.include?(name) }
+      # The bare "Also here:" text repeats the room players component, which is
+      # authoritative once seen; before that it is the only GameMaster signal.
+      return nil if @players_component_seen && line.start_with?('Also here: ')
+      return nil if @room_players_pattern&.match?(line)
+      return nil if online_player_pattern&.match?(line)
 
-      if UserVars.players_online
-        players_to_check = UserVars.players_online - [checkname, 'Endith']
-        return nil if players_to_check.any? { |name| line.include?(name) }
-      end
       line.gsub(/<[^>]+>/, '')
+    end
+
+    # Whether a cleaned line is about a creature in the room (Lich's
+    # UserVars.npcs). A capitalised name (a named NPC) matches as a whole word
+    # anywhere; a creature noun only inside a phrase that names a creature
+    # ("a void-black umbral moth lunges", "the moth's wings"), never as a bare
+    # word ("pouch.  bundle.  moth.").
+    #
+    # @param line [String] cleaned message line
+    # @return [Boolean]
+    def creature_line?(line)
+      pattern = npc_pattern
+      !pattern.nil? && pattern.match?(line)
     end
 
     # Checks whether a cleaned line matches any configured filter patterns.
@@ -389,38 +424,104 @@ module StatusMonitor
 
     private
 
-    # Splits the room players component text into one entry per player, with
-    # the trailing "who is ..." / "(...)" descriptions removed.
+    # The room players as [entry, name] pairs, where entry is the title and name
+    # ("GameMaster Avaari") and name is the player's name ("Avaari").
     #
-    # @param room_players [String] "Also here:" component text, links removed
-    # @return [Array<String>] one entry per player, e.g. "GameMaster Avaari"
+    # The Saga-identity stream links every name, and the links are used when
+    # present: a description can contain ", " or " and " ("trailed by a flag
+    # displaying a dragon skull and crossbones"), which no text split can tell
+    # from a list separator. Otherwise the text is split on ", " and the last
+    # " and ", and "who ..."/"whose ..."/"(...)" descriptions are removed.
+    #
+    # @param room_players [String] "Also here:" component text
+    # @return [Array<Array(String, String)>]
     def player_entries(room_players)
-      room_players.sub(/ and (.*)$/) { ", #{Regexp.last_match(1)}" }
-                  .split(', ')
-                  .map { |obj| obj.sub(/ who (has|is) .+/, '').sub(/ \(.+\)/, '').strip }
+      if room_players.include?('noun="')
+        return room_players.scan(LINKED_PLAYER).map { |title, noun| ["#{title.gsub(/<[^>]+>/, '').strip} #{noun}".strip, noun] }
+      end
+
+      head, separator, last = room_players.gsub(/<[^>]+>/, '').rpartition(' and ')
+      list = separator.empty? ? last : "#{head}, #{last}"
+      list.split(', ').filter_map do |obj|
+        entry = obj.sub(/ (?:who|whose) .+/, '').sub(/ \(.+\)/, '').strip
+        name = entry[/\w+\z/]
+        [entry, name] if name
+      end
+    end
+
+    # A whole-word pattern for a list of names, or nil for an empty list.
+    #
+    # @param names [Array<String>]
+    # @return [Regexp, nil]
+    def names_pattern(names)
+      return nil if names.empty?
+
+      /\b(?:#{Regexp.union(names).source})\b/
+    end
+
+    # Whole-word pattern for the online players other than this character,
+    # rebuilt only when Lich replaces the list.
+    #
+    # @return [Regexp, nil]
+    def online_player_pattern
+      online = UserVars.players_online
+      return nil unless online
+      return @online_pattern if online.equal?(@online_key)
+
+      @online_key = online
+      @online_pattern = names_pattern(online - [checkname, 'Endith'])
+    end
+
+    # Pattern matching a line about a creature in the room, rebuilt only when
+    # the creature list changes.
+    #
+    # @return [Regexp, nil]
+    def npc_pattern
+      npcs = UserVars.npcs
+      return nil if npcs.nil? || npcs.empty?
+      return @npc_pattern if npcs == @npc_key
+
+      @npc_key = npcs.dup
+      parts = npcs.uniq.map do |noun|
+        word = Regexp.escape(noun)
+        if noun.match?(/\A[A-Z]/)
+          "\\b#{word}\\b"
+        else
+          "\\b#{CREATURE_ARTICLE}\\s+(?:[\\w'-]+\\s+){0,5}?#{word}(?:'s|s|es)?\\b"
+        end
+      end
+      @npc_pattern = Regexp.new(parts.join('|'))
     end
 
     # Tracks the room's players. The component is game-generated markup that a
     # player cannot inject, so it is also where a GameMaster's presence is read:
-    # the line itself is dropped as UI markup by #clean, and the bare
-    # "Also here:" line that may follow names the GameMaster, whose name is now
-    # a room player and filters it. An empty component clears the GameMasters
-    # present, so one who leaves an otherwise empty room alerts again on return.
+    # the line itself is dropped as UI markup by #clean, and so is the bare
+    # "Also here:" line that may follow. A GameMaster's name is not added to the
+    # room players, so their emotes still reach the novelty gate. An empty
+    # component clears the GameMasters present, so one who leaves an otherwise
+    # empty room alerts again on return.
     #
     # @param line [String] raw game stream line to check for player component
     # @return [void]
     def update_players(line)
-      @gms_present = [] if line.match?(EMPTY_ROOM_PLAYERS)
+      if line.match?(EMPTY_ROOM_PLAYERS)
+        # Keep the last names: a departure line ("Bob just went north.") can
+        # follow the update that dropped them.
+        @players_component_seen = true
+        @gms_present = []
+        return
+      end
       return unless line =~ %r{\'room players\'>Also here: (.*)\.</component>}
 
+      @players_component_seen = true
       @last_player_line = line
-      # The Saga-identity stream links each name (<a exist=.. noun=..>Name</a>);
-      # parse the text inside the links.
-      text = Regexp.last_match(1).gsub(%r{</?a\b[^>]*>}, '')
-      entries = player_entries(text)
-      @room_players = entries.filter_map { |obj| obj.scan(/\w+$/).first }
-      gms = entries.grep(GM_TITLE)
-      @gm_arrival = "Also here: #{text.gsub(/<[^>]+>/, '')}." if (gms - @gms_present).any?
+      raw = Regexp.last_match(1)
+      entries = player_entries(raw)
+      gm_entries, players = entries.partition { |entry, _name| entry.match?(GM_TITLE) }
+      @room_players = players.map(&:last)
+      @room_players_pattern = names_pattern(@room_players)
+      gms = gm_entries.map(&:first)
+      @gm_arrival = "Also here: #{raw.gsub(/<[^>]+>/, '')}." if (gms - @gms_present).any?
       @gms_present = gms
     end
 
@@ -660,6 +761,10 @@ module StatusMonitor
     # A GameMaster appearing in the room players component alerts as a strong
     # signal, like a check, bypassing grace, learn mode and the rate cap.
     #
+    # Lines naming another player are dropped before the check patterns (a
+    # player's emote cannot fake a check); lines about a creature in the room
+    # only after them (a creature noun cannot hide one).
+    #
     # A line matching CHECK_PATTERNS always alerts as a strong signal (canned
     # response / auto-quit if configured) and is never recorded. One that also
     # matches GM_NOTICE_PATTERNS alerts weakly (no canned response or auto-quit),
@@ -690,6 +795,7 @@ module StatusMonitor
         alert(cleaned.strip, strong: true)
         return true
       end
+      return false if @filter.creature_line?(cleaned)
       return false if @filter.filtered?(cleaned)
 
       scrubbed = @filter.similarity_scrub(cleaned).strip
