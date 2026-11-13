@@ -1,7 +1,7 @@
 GEM
   remote: https://rubygems.org/
   specs:
-    addressable (2.9.0)
+    addressable (2.9.1)
       public_suffix (>= 2.0.2, < 8.0)
     ascii_charts (0.9.1)
     ast (2.4.3)
@@ -293,7 +293,7 @@ DEPENDENCIES
   zlib
 
 CHECKSUMS
-  addressable (2.9.0) sha256=7fdf6ac3660f7f4e867a0838be3f6cf722ace541dd97767fa42bc6cfa980c7af
+  addressable (2.9.1) sha256=f1212365945455c84e8d031eea40fc6bedf0c663a78d95b3ab93591040bc5c35
   ascii_charts (0.9.1) sha256=30441622538f01b1846665fd9e63471a2ce14bec3e0f5db3cd8073d70d74cbbe
   ast (2.4.3) sha256=954615157c1d6a382bc27d690d973195e79db7f55e9765ac7c481c60bdb4d383
   atk (4.3.9) sha256=f6d43be5dc1546a3a096124c0ec7518c266c225c88a91fd8ac857463beea3469
