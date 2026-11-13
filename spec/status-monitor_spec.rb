@@ -1066,6 +1066,16 @@ RSpec.describe StatusMonitor::Monitor do
         expect(fput_commands).to eq(%w[exit exit])
       end
 
+      # An empty room sends the component with no "Also here:" text (the form in
+      # samples/customwindows.txt, and Lich's own DRParser RoomPlayersEmpty).
+      it 'alerts again when the GameMaster comes back after the room empties' do
+        monitor = build_monitor
+        monitor.process(+gm_component)
+        monitor.process(+%(<compass><dir value="out"/></compass><component id='room players'></component>))
+        monitor.process(+gm_component)
+        expect(fput_commands).to eq(%w[exit exit])
+      end
+
       it 'alerts during the start-up grace period' do
         settings.status_monitor_grace_seconds = 300
         expect(build_monitor.process(+gm_component)).to be true

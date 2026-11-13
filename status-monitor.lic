@@ -297,6 +297,9 @@ module StatusMonitor
     STREAM_TAG = /<(?:pushStream id="([^"]+)"|popStream)[^>]*>/i
     # The title the game shows before a GameMaster's name in the room players list.
     GM_TITLE = /\bgame ?master\b/i
+    # The room players component of a room with no other players (the same form
+    # Lich's DRParser matches as RoomPlayersEmpty).
+    EMPTY_ROOM_PLAYERS = %r{'room players'></component>}
 
     # @param filter_strings [Array<Regexp>] configurable patterns to ignore
     def initialize(filter_strings)
@@ -401,11 +404,13 @@ module StatusMonitor
     # player cannot inject, so it is also where a GameMaster's presence is read:
     # the line itself is dropped as UI markup by #clean, and the bare
     # "Also here:" line that may follow names the GameMaster, whose name is now
-    # a room player and filters it.
+    # a room player and filters it. An empty component clears the GameMasters
+    # present, so one who leaves an otherwise empty room alerts again on return.
     #
     # @param line [String] raw game stream line to check for player component
     # @return [void]
     def update_players(line)
+      @gms_present = [] if line.match?(EMPTY_ROOM_PLAYERS)
       return unless line =~ %r{\'room players\'>Also here: (.*)\.</component>}
 
       @last_player_line = line
