@@ -305,7 +305,9 @@ module StatusMonitorImport
         record_import(db, file, lines, character_name)
         total_lines += lines
         processed += 1
-      rescue Zlib::GzipFile::Error, EOFError, SystemCallError => e
+      # Zlib::Error, not just Zlib::GzipFile::Error: a damaged DEFLATE body
+      # raises Zlib::DataError, a sibling class, and must skip only this file.
+      rescue Zlib::Error, EOFError, SystemCallError => e
         echo "Skipping #{file}: #{e.class}: #{e.message}"
         errors += 1
         next

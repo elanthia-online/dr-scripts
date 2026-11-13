@@ -365,37 +365,54 @@ RSpec.describe 'StatusMonitorImport database operations' do
       db.close
     end
 
-    it 'skips corrupt .gz files and continues importing remaining files' do
-      log_dir = File.join(LICH_DIR, 'logs', 'DR-Testchar')
-      FileUtils.mkdir_p(log_dir)
+    # Drives StatusMonitorImport.run itself over good -> damaged -> good, so the
+    # per-file rescue under test is the production one, not a copy.
+    describe 'StatusMonitorImport.run over a damaged file' do
+      let(:log_dir) { File.join(LICH_DIR, 'logs', 'DR-Runchar') }
+      let(:corpus_path) { File.join(tmpdir, 'shared.db') }
 
-      good1 = File.join(log_dir, '01-good.log')
-      File.write(good1, "2026-01-04 18:59:20 NZDT: First good line\n")
-
-      corrupt = File.join(log_dir, '02-corrupt.log.gz')
-      File.write(corrupt, 'not valid gzip data')
-
-      good2 = File.join(log_dir, '03-good.log')
-      File.write(good2, "2026-01-04 18:59:20 NZDT: Second good line\n")
-
-      db = StatusMonitorImport.open_database('Testchar')
-      errors = 0
-      [good1, corrupt, good2].each do |file|
-        begin
-          lines = StatusMonitorImport.import_file(db, file)
-          StatusMonitorImport.record_import(db, file, lines, 'Test')
-        rescue Zlib::GzipFile::Error, EOFError, SystemCallError
-          errors += 1
-          next
-        end
+      before do
+        FileUtils.mkdir_p(log_dir)
+        allow(StatusMonitorImport).to receive(:default_db_path).and_return(corpus_path)
+        File.write(File.join(log_dir, '01-good.log'), "2026-01-04 18:59:20 NZDT: First good line\n")
+        File.write(File.join(log_dir, '03-good.log'), "2026-01-04 18:59:20 NZDT: Second good line\n")
       end
 
-      count = db.get_first_value('SELECT COUNT(*) FROM seen_messages').to_i
-      expect(count).to eq(2)
-      expect(errors).to eq(1)
-      db.close
-    ensure
-      FileUtils.rm_rf(log_dir)
+      after { FileUtils.rm_rf(log_dir) }
+
+      def run_import
+        StatusMonitorImport.run('Runchar')
+        db = SQLite3::Database.new(corpus_path)
+        [db.execute('SELECT line_text FROM seen_messages ORDER BY line_text').flatten,
+         db.execute('SELECT file_path FROM import_log ORDER BY file_path').flatten.map { |f| File.basename(f) }]
+      ensure
+        db&.close
+      end
+
+      it 'skips a file that is not gzip at all and imports the rest' do
+        File.write(File.join(log_dir, '02-bad.log.gz'), 'not valid gzip data')
+        lines, imported = run_import
+        expect(lines).to eq(['First good line', 'Second good line'])
+        expect(imported).to eq(%w[01-good.log 03-good.log])
+      end
+
+      # A valid gzip header over a damaged DEFLATE body raises Zlib::DataError,
+      # a sibling of Zlib::GzipFile::Error, not a subclass.
+      it 'skips a gzip file with a damaged DEFLATE body and imports the rest' do
+        packed = StringIO.new
+        gz = Zlib::GzipWriter.new(packed)
+        gz.write("2026-01-04 18:59:20 NZDT: A damaged line\n" * 200)
+        gz.close
+        bytes = packed.string.b
+        (20...60).each { |i| bytes.setbyte(i, bytes.getbyte(i) ^ 0xFF) }
+        File.binwrite(File.join(log_dir, '02-bad.log.gz'), bytes)
+        expect { Zlib::GzipReader.new(StringIO.new(bytes)).read }.to raise_error(Zlib::DataError)
+
+        lines, imported = run_import
+        expect(lines).to include('First good line', 'Second good line')
+        expect(imported).to eq(%w[01-good.log 03-good.log])
+        expect(displayed_messages.join("\n")).to include('Skipping', '02-bad.log.gz', 'Zlib::DataError')
+      end
     end
 
     it 'handles truncated .gz files (EOFError)' do
