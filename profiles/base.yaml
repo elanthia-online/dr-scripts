@@ -918,8 +918,10 @@ box_hunt_minimum: 1
 # the reply, so a broad pattern such as '^You' can match an unrelated line and
 # count a failed command as a success. Match the exact wording of the reply.
 # Supported verbs: close get give lift lower open put remove sheath stow swap tie
-# unload untie wear wield. Each pattern is compiled with a timeout; an invalid or
-# runaway pattern, or a misspelt verb, is reported and skipped.
+# unload untie wear wield. Each pattern is compiled with a timeout. An invalid
+# pattern or a misspelt verb is reported and skipped. A pattern that takes too
+# long on a line of game text is reported and that command counts as failed;
+# the pattern stays loaded until you fix or remove it.
 # custom_item_success_patterns:
 #   remove:
 #     - '^You unhook your .* from your belt'
