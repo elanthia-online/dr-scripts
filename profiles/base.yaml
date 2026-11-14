@@ -909,6 +909,20 @@ box_hunt_minimum: 1
 # runaway pattern is reported and skipped.
 # custom_flavor_text_patterns:
 #   - '\s?\bbedizened with .*'
+#
+# Extra success replies (REGULAR EXPRESSIONS) for item commands, listed under
+# the command's verb, for when the game answers in words Lich does not know yet
+# and Lich reports "No match was found after 15 seconds". Lich tries these after
+# all of its own patterns, so on a single line its own failure patterns still
+# win. But Lich checks them against every line it reads while it waits, not only
+# the reply, so a broad pattern such as '^You' can match an unrelated line and
+# count a failed command as a success. Match the exact wording of the reply.
+# Supported verbs: close get give lift lower open put remove sheath stow swap tie
+# unload untie wear wield. Each pattern is compiled with a timeout; an invalid or
+# runaway pattern, or a misspelt verb, is reported and skipped.
+# custom_item_success_patterns:
+#   remove:
+#     - '^You unhook your .* from your belt'
 # ------------------------------------------------------------------------------
 
 # Non-combat settings
