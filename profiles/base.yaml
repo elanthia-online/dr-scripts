@@ -912,15 +912,17 @@ box_hunt_minimum: 1
 #
 # Extra success replies (REGULAR EXPRESSIONS) for item commands, listed under
 # the command's verb, for when the game answers in words Lich does not know yet
-# and Lich reports "No match was found after 15 seconds". A reply only counts
-# through these when none of Lich's own success or failure patterns matches it,
-# so a broad pattern cannot turn a failure into a success. Supported verbs:
-# close get give lift lower open put remove sheath stow swap tie unload untie
-# wear wield. Each pattern is compiled with a timeout; an invalid or runaway
-# pattern, or a misspelt verb, is reported and skipped.
+# and Lich reports "No match was found after 15 seconds". Lich tries these after
+# all of its own patterns, so on a single line its own failure patterns still
+# win. But Lich checks them against every line it reads while it waits, not only
+# the reply, so a broad pattern such as '^You' can match an unrelated line and
+# count a failed command as a success. Match the exact wording of the reply.
+# Supported verbs: close get give lift lower open put remove sheath stow swap tie
+# unload untie wear wield. Each pattern is compiled with a timeout; an invalid or
+# runaway pattern, or a misspelt verb, is reported and skipped.
 # custom_item_success_patterns:
 #   remove:
-#     - '^You unhook'
+#     - '^You unhook your .* from your belt'
 # ------------------------------------------------------------------------------
 
 # Non-combat settings
