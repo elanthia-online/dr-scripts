@@ -9887,6 +9887,126 @@ RSpec.describe TaskMaster do
           expect(DRC).to have_received(:message).with('Could not get another potion to hand in and the task is not finished, stopping.')
         end
 
+        # Gorkus, 2026-11-18 06:39:41-46: the stack was cut in the crafting
+        # room and carried on the walk to her, where bescort's STOW RIGHT took
+        # it. It now waits in the crafting bag for the walk
+        # (set_aside_remedy_hand_in) and is got from there by its id.
+        describe 'the stack on the walk to her' do
+          let(:potion_count) { ReplayGame.code('You count out 14 uses remaining.', from: 'Gorkus 2026-11-18 06:39:43') }
+
+          def potion_hand_in(tm)
+            game, commons, hand_in = handing_in(tm, kit + [['landsickness potion', 'duffel bag', '7701']], 14)
+            game.script('inventory duffel bag', *bag_listed('some landsickness potion'))
+            game.script('count #7701', potion_count)
+            [game, commons, hand_in]
+          end
+
+          def taken(game, commons)
+            game.script('give my potion to nezhiri', ReplayGame.log('6101:3623'), ReplayGame.log('6101:3626'), after: ->(_) { commons.release('#7701') })
+          end
+
+          def stack_calls(commons, name)
+            commons.calls.select { |call| call[0] == name && call[1] == '#7701' }
+          end
+
+          it 'puts the stack in the crafting bag for the walk, and gets it from there by its id once she is found' do
+            tm = maker(task_product: 'landsickness potion', task_item: 'potion')
+            game, commons, hand_in = potion_hand_in(tm)
+            DRRoom.npcs = []
+            walk = nil
+            allow(tm).to receive(:find_npc) do
+              walk = { held: tm.send(:hand_ids), calls: commons.calls.dup }
+              DRRoom.npcs = ['Nezhiri']
+            end
+            taken(game, commons)
+
+            hand_in.call
+
+            expect(walk[:held]).not_to include('7701')
+            expect(walk[:calls]).to include(['DRCI.put_away_item?', '#7701', 'duffel bag'])
+            expect(walk[:calls]).not_to include(['DRCI.get_item?', '#7701', 'duffel bag'])
+            expect(stack_calls(commons, 'DRCI.get_item?')).to eq([['DRCI.get_item?', '#7701', 'duffel bag']])
+            expect(game.sent).to eq(['inventory duffel bag', 'count #7701', 'give my potion to nezhiri', 'dump junk'])
+            expect(commons.inventory.map(&:name)).not_to include('landsickness potion')
+            expect([game.clock, game.diagnostics]).to eq([0.0, []])
+          end
+
+          it 'keeps the stack in hand when she is in the room already' do
+            tm = maker(task_product: 'landsickness potion', task_item: 'potion')
+            game, commons, hand_in = potion_hand_in(tm)
+            held_on_walk = nil
+            allow(tm).to receive(:find_npc) { held_on_walk = tm.send(:hand_ids) }
+            taken(game, commons)
+
+            hand_in.call
+
+            expect(held_on_walk).to include('7701')
+            expect(stack_calls(commons, 'DRCI.put_away_item?')).to eq([])
+            expect(stack_calls(commons, 'DRCI.get_item?')).to eq([])
+            expect([game.clock, game.diagnostics]).to eq([0.0, []])
+          end
+
+          it 'puts it back in the bag again when she wandered off before the give, and gets it back for the next' do
+            tm = maker(task_product: 'landsickness potion', task_item: 'potion')
+            game, commons, hand_in = potion_hand_in(tm)
+            held_on_walks = []
+            allow(tm).to receive(:find_npc) do
+              held_on_walks << tm.send(:hand_ids)
+              DRRoom.npcs = ['Nezhiri']
+            end
+            game.script('give my potion to nezhiri', ReplayGame.code(missed_give, from: 'taskmaster.lic GIVE_MISSED'), after: ->(_) { DRRoom.npcs = [] })
+            taken(game, commons)
+
+            hand_in.call
+
+            expect(held_on_walks.map { |held| held.include?('7701') }).to eq([true, false])
+            expect(stack_calls(commons, 'DRCI.put_away_item?')).to eq([['DRCI.put_away_item?', '#7701', 'duffel bag']])
+            expect(stack_calls(commons, 'DRCI.get_item?')).to eq([['DRCI.get_item?', '#7701', 'duffel bag']])
+            expect(game.sent.count('give my potion to nezhiri')).to eq(2)
+            expect(commons.inventory.map(&:name)).not_to include('landsickness potion')
+            expect([game.clock, game.diagnostics]).to eq([0.0, []])
+          end
+
+          it 'carries the stack as before when it will not go in the bag' do
+            tm = maker(task_product: 'landsickness potion', task_item: 'potion')
+            game, commons, hand_in = potion_hand_in(tm)
+            DRRoom.npcs = []
+            allow(DRCI).to receive(:put_away_item?).with('#7701', 'duffel bag').and_return(false)
+            held_on_walk = nil
+            allow(tm).to receive(:find_npc) do
+              held_on_walk = tm.send(:hand_ids)
+              DRRoom.npcs = ['Nezhiri']
+            end
+            taken(game, commons)
+
+            hand_in.call
+
+            expect(held_on_walk).to include('7701')
+            expect(stack_calls(commons, 'DRCI.get_item?')).to eq([])
+            expect(game.sent).to eq(['inventory duffel bag', 'count #7701', 'give my potion to nezhiri', 'dump junk'])
+            expect([game.clock, game.diagnostics]).to eq([0.0, []])
+          end
+
+          it 'gets it by its id from wherever it went when it is no longer in the bag' do
+            tm = maker(task_product: 'landsickness potion', task_item: 'potion')
+            game, commons, hand_in = potion_hand_in(tm)
+            DRRoom.npcs = []
+            allow(tm).to receive(:find_npc) do
+              commons.get_item?('#7701', 'duffel bag') # moved on the walk,
+              commons.put_away_item?('#7701', 'rucksack') # to the rucksack
+              DRRoom.npcs = ['Nezhiri']
+            end
+            taken(game, commons)
+
+            hand_in.call
+
+            expect(stack_calls(commons, 'DRCI.get_item?').last).to eq(['DRCI.get_item?', '#7701', nil])
+            expect(game.sent).to eq(['inventory duffel bag', 'count #7701', 'give my potion to nezhiri', 'dump junk'])
+            expect(commons.inventory.map(&:name)).not_to include('landsickness potion')
+            expect([game.clock, game.diagnostics]).to eq([0.0, []])
+          end
+        end
+
         # 6106:1800-1839: "ignores your offer", then the same stack is given
         # from the right hand with a bare GIVE and taken.
         it 'gives from the right hand with a bare GIVE when she ignores the offer (6106:1800, 1836-1839)' do

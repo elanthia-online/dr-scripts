@@ -37,7 +37,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.18.2'
+  VERSION = '2026.11.18.3'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -3356,6 +3356,7 @@ class TaskMaster
     recipe = nezhiri_recipe(product, item).merge(product: product)
     stack = gather_remedy(recipe)
     @remedy_hand_in = nil
+    @remedy_set_aside = false
     @remedy_stack = stack
     @remedy_doses = stack ? count_remedy(stack, product) : 0
     if @remedy_doses < owed
@@ -4616,8 +4617,10 @@ class TaskMaster
   #
   # Nezhiri takes one stack of exactly the doses she asked for, so for her
   # the stack is made ready first (remedy_hand_in?), before she is looked
-  # for: with too few doses there is nothing to give. Her GIVE_IGNORED is
-  # answered like GIVE_NOT_NOW, from the right hand.
+  # for: with too few doses there is nothing to give. It is not carried on
+  # the walk to her (set_aside_remedy_hand_in), and is got back by its id
+  # once she is found. Her GIVE_IGNORED is answered like GIVE_NOT_NOW, from
+  # the right hand.
   #
   # @param item [String] item noun
   # @param owed [Integer, nil] doses owed (Nezhiri's tasks; unused for the
@@ -4631,6 +4634,7 @@ class TaskMaster
     misses = 0
     @not_now_waited ||= 0
     loop do
+      set_aside_remedy_hand_in if @npc == 'nezhiri'
       find_npc(@rooms, @npc)
       return unless holding_hand_in?(noun)
 
@@ -4695,20 +4699,44 @@ class TaskMaster
   # Whether a hand holds Nezhiri's stack (@remedy_hand_in), getting it back
   # into the right hand when not. A stack already in either hand counts as it
   # is (a bare GIVE <npc> gives the right hand, so give_from_right_hand swaps
-  # first). The stack is made ready before she is looked for, and the walk to
-  # her can empty the hands: go2's dolphin to Andreshlew runs bescort, which
-  # STOWs RIGHT, so the stack lands in the default stow container (Gorkus,
-  # 2026-11-18 06:39:46: "stow right", then "Could not get another potion" on
-  # arrival). So a stack no longer held is got back by its id, from wherever
-  # it went, and moved to the right hand.
+  # first). The stack is made ready before she is looked for, and is put in
+  # the crafting bag for the walk (set_aside_remedy_hand_in); one carried
+  # anyway can be stowed on the way: go2's dolphin to Andreshlew runs
+  # bescort, which STOWs RIGHT, so the stack lands in the default stow
+  # container (Gorkus, 2026-11-18 06:39:46: "stow right", then "Could not get
+  # another potion" on arrival). So a stack no longer held is got back by its
+  # id, from the crafting bag when it was put there, else from wherever it
+  # went, and moved to the right hand.
   #
   # @return [Boolean] true when a hand holds the stack: either hand if it was
   #   already held, the right hand if it was got back
   def holding_remedy_hand_in?
     return true if hand_ids.include?(@remedy_hand_in)
-    return false unless @remedy_hand_in && DRCI.get_item?("##{@remedy_hand_in}")
+    return false unless @remedy_hand_in
 
+    ref = "##{@remedy_hand_in}"
+    return false unless (@remedy_set_aside && DRCI.get_item?(ref, @bag)) || DRCI.get_item?(ref)
+
+    @remedy_set_aside = false
     move_to_right_hand(@remedy_hand_in)
+  end
+
+  # Puts Nezhiri's stack (@remedy_hand_in) back in the crafting bag before
+  # the walk to her, and notes it in @remedy_set_aside, so
+  # holding_remedy_hand_in? gets it from there by its id. remedy_hand_in?
+  # makes it ready in the crafting room, and she is rarely there: the walk
+  # to her goes through go2's dolphin to Andreshlew, whose bescort STOWs
+  # RIGHT (Gorkus, 2026-11-18 06:39:46). Kept in hand when she is in the
+  # room already (a GIVE_NOT_NOW retry, or a hand-in where she stands), so
+  # it is not put away and got back for nothing; and when it won't go in
+  # the bag, it is carried as before.
+  #
+  # @return [void]
+  def set_aside_remedy_hand_in
+    return if DRRoom.npcs.include?('Nezhiri')
+    return unless @remedy_hand_in && hand_ids.include?(@remedy_hand_in)
+
+    @remedy_set_aside = DRCI.put_away_item?("##{@remedy_hand_in}", @bag)
   end
 
   # The id of the item being handed in, for a give from the right hand.
