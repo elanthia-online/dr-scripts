@@ -947,6 +947,28 @@ RSpec.describe StatusMonitor::Monitor do
       expect(store.in_corpus?('a brand new benign remark')).to be true
     end
 
+    it 'alerts with the full line, numbers and currency intact, but records the scrubbed key' do
+      line = 'The metal appears to be composed of: 67.00% agonite, and 33.00% oravir.'
+      monitor = build_monitor
+      expect(monitor.process(+line)).to be true
+      expect(monitor.spam_line).to eq(line)
+      expect(store.in_corpus?('The metal appears to be composed of: .% agonite, and .% oravir.')).to be true
+      expect(store.in_corpus?(line)).to be false
+    end
+
+    it 'keeps currency words in the alerted line' do
+      line = 'The clerk hands you 42 kronars.'
+      monitor = build_monitor
+      expect(monitor.process(+line)).to be true
+      expect(monitor.spam_line).to eq(line)
+    end
+
+    it 'stays silent on a variant that differs only in numbers once one has alerted' do
+      monitor = build_monitor
+      expect(monitor.process(+'The metal appears to be composed of: 67.00% agonite, and 33.00% oravir.')).to be true
+      expect(monitor.process(+'The metal appears to be composed of: 12.50% agonite, and 87.50% oravir.')).to be false
+    end
+
     it 'stays silent on the second sight of a line it alerted on' do
       monitor = build_monitor
       expect(monitor.process(+'a brand new benign remark')).to be true

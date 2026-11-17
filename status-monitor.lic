@@ -808,7 +808,8 @@ module StatusMonitor
       end
       return false if rate_limited?
 
-      alert(scrubbed, strong: false)
+      # Alert with the real line; the scrubbed form is only the corpus key.
+      alert(cleaned.strip, strong: false)
       @alert_times << Time.now
       @store.record(scrubbed)
       true
