@@ -9608,6 +9608,38 @@ RSpec.describe TaskMaster do
           expect([game.clock, game.diagnostics]).to eq([0.0, []])
         end
 
+        # Gorkus, 2026-11-18 06:39:41-06:40:19: the stack was cut and held,
+        # then go2's dolphin to Andreshlew ran bescort, whose STOW RIGHT put it
+        # in the rucksack; on arrival taskmaster said "Could not get another
+        # potion" and stopped. The stack is got back by its id instead.
+        it 'gets the stack back by its id when the walk to her stowed it (Gorkus 2026-11-18 06:39:46)' do
+          tm = maker(task_product: 'landsickness potion', task_item: 'potion')
+          game, commons, hand_in = handing_in(tm, kit + [['landsickness potion', 'duffel bag', '7701']], 14)
+          game.script('inventory duffel bag', *bag_listed('some landsickness potion'))
+          game.script('count #7701', ReplayGame.code('You count out 14 uses remaining.', from: 'Gorkus 2026-11-18 06:39:43'))
+          allow(tm).to receive(:find_npc) { commons.put_away_item?('#7701', 'rucksack') } # bescort's STOW RIGHT
+          game.script('give my potion to nezhiri', ReplayGame.log('6101:3623'), ReplayGame.log('6101:3626'), after: ->(_) { commons.release('#7701') })
+
+          hand_in.call
+
+          expect(game.sent).to eq(['inventory duffel bag', 'count #7701', 'give my potion to nezhiri', 'dump junk'])
+          expect(commons.inventory.map(&:name)).not_to include('landsickness potion')
+          expect([game.clock, game.diagnostics]).to eq([0.0, []])
+        end
+
+        it 'still stops when the stowed stack cannot be got back' do
+          tm = maker(task_product: 'landsickness potion', task_item: 'potion')
+          game, commons, hand_in = handing_in(tm, kit + [['landsickness potion', 'duffel bag', '7701']], 14)
+          game.script('inventory duffel bag', *bag_listed('some landsickness potion'))
+          game.script('count #7701', ReplayGame.code('You count out 14 uses remaining.', from: 'Gorkus 2026-11-18 06:39:43'))
+          allow(tm).to receive(:find_npc) { commons.release('#7701') } # gone for good
+
+          expect { hand_in.call }.to raise_error(SystemExit)
+
+          expect(game.sent).not_to include('give my potion to nezhiri')
+          expect(DRC).to have_received(:message).with('Could not get another potion to hand in and the task is not finished, stopping.')
+        end
+
         # 6106:1800-1839: "ignores your offer", then the same stack is given
         # from the right hand with a bare GIVE and taken.
         it 'gives from the right hand with a bare GIVE when she ignores the offer (6106:1800, 1836-1839)' do

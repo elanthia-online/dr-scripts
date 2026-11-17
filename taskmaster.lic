@@ -4560,9 +4560,25 @@ class TaskMaster
   # @param noun [String] the item's noun
   # @return [Boolean]
   def holding_hand_in?(noun)
-    return hand_ids.include?(@remedy_hand_in) if @npc == 'nezhiri'
+    return holding_remedy_hand_in? if @npc == 'nezhiri'
 
     !held_id(noun).nil? || DRCI.get_item?(noun, hand_in_bag)
+  end
+
+  # Whether the right hand holds Nezhiri's stack (@remedy_hand_in). The stack
+  # is made ready before she is looked for, and the walk to her can empty the
+  # hands: go2's dolphin to Andreshlew runs bescort, which STOWs RIGHT, so the
+  # stack lands in the default stow container (Gorkus, 2026-11-18 06:39:46:
+  # "stow right", then "Could not get another potion" on arrival). So a stack
+  # no longer held is got back by its id, from wherever it went, and moved to
+  # the right hand.
+  #
+  # @return [Boolean]
+  def holding_remedy_hand_in?
+    return true if hand_ids.include?(@remedy_hand_in)
+    return false unless @remedy_hand_in && DRCI.get_item?("##{@remedy_hand_in}")
+
+    move_to_right_hand(@remedy_hand_in)
   end
 
   # The id of the item being handed in, for a give from the right hand.
