@@ -37,7 +37,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.18.1'
+  VERSION = '2026.11.18.2'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -2018,8 +2018,8 @@ class TaskMaster
   #
   # @param npc [String] the taskmaster's name, lowercase
   # @param room_id [Integer] where to walk
-  # @return [String, nil] the title ("[Andreshlew, Upper Dock]") of the room
-  #   she was seen in, or nil
+  # @return [String, nil] the Map title ("[[Andreshlew, Upper Dock]]") of
+  #   the room she was seen in, or nil
   def walk_noting(npc, room_id)
     title = nil
     seen = nil
@@ -2029,7 +2029,9 @@ class TaskMaster
       # Line by line, so a chunk carrying several rooms pairs each room's
       # objects with its own title.
       xml.to_s.each_line do |line|
-        title = Regexp.last_match(1) if line =~ ROOM_SUBTITLE
+        # In Map's form, as XMLData.room_title: the subtitle's "[Area, Title]"
+        # in a second pair of brackets (lich-5 xml_delta.rb main_subtitle).
+        title = "[#{Regexp.last_match(1)}]" if line =~ ROOM_SUBTITLE
         seen ||= title if title && line.match?(named)
       end
       xml
@@ -2046,7 +2048,7 @@ class TaskMaster
   #
   # @param npc [String] the taskmaster's name, lowercase
   # @param rooms [Array<Integer>] the rooms find_npc searches
-  # @param seen_in [String] the room title walk_noting noted
+  # @param seen_in [String] the Map title walk_noting noted
   # @param looked_in [Array<Integer>] rooms npc_here? has LOOKed in
   # @return [Boolean] whether she was found
   def back_to_passed_room(npc, rooms, seen_in, looked_in)

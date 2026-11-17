@@ -1579,7 +1579,9 @@ RSpec.describe TaskMaster do
           here = start_in
           walked = []
           map = titles
-          stub_const('Map', Class.new { define_singleton_method(:[]) { |id| map[id] && OpenStruct.new(title: [map[id]]) } })
+          # Map titles carry a second pair of brackets, as XMLData.room_title
+          # does (lich-5 xml_delta.rb main_subtitle): "[[Andreshlew, Upper Dock]]".
+          stub_const('Map', Class.new { define_singleton_method(:[]) { |id| map[id] && OpenStruct.new(title: ["[#{map[id]}]"]) } })
           allow(Room).to receive(:current) { OpenStruct.new(id: here) }
           allow(DRRoom).to receive(:npcs) { here == nezhiri_in ? ['Nezhiri'] : [] }
           allow(DRRoom).to receive(:room_objs) { [] }
@@ -1624,13 +1626,13 @@ RSpec.describe TaskMaster do
         it 'notes the title of the room whose objects name her' do
           expect(noting(subtitle('[Andreshlew, East Dock]'), objs('a woven sack'),
                         subtitle('[Andreshlew, Upper Dock]'), objs('<a exist="76006" noun="Nezhiri">Potion Peddler Nezhiri</a>'),
-                        subtitle('[Andreshlew, Palace Road]'), objs('a woven sack'))).to eq('[Andreshlew, Upper Dock]')
+                        subtitle('[Andreshlew, Palace Road]'), objs('a woven sack'))).to eq('[[Andreshlew, Upper Dock]]')
         end
 
         it 'pairs her with her own room when one chunk carries several rooms' do
           chunk = [subtitle('[Andreshlew, Palace Road]'), objs('a woven sack'),
                    subtitle('[Andreshlew, Upper Dock]'), objs('<a exist="76006" noun="Nezhiri">Potion Peddler Nezhiri</a>')].join("\n")
-          expect(noting(chunk)).to eq('[Andreshlew, Upper Dock]')
+          expect(noting(chunk)).to eq('[[Andreshlew, Upper Dock]]')
         end
 
         it 'does not take an item named for her for her' do
