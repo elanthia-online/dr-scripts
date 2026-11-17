@@ -21,7 +21,7 @@
   task_rock_room: 793 # room where Dorhum's spongestone and splashstone tasks forage rocks (none can be had on Andreshlew)
   task_shell_room: 793 # room where Dorhum's glow shell tasks forage shells
   task_cancel_foreign_tasks: true/false # a run never works another taskmaster's task; with this it cancels one it finds open, waits out the 10-minute cooldown a cancel brings, then goes back to its own taskmaster. Off: it stops, saying whose task it is and how to finish or cancel it
-  task_fallback_npc: zasele # when the taskmaster asked says you have done the most tasks it allows today, work this taskmaster's task instead; the next run asks the first one again. Unset: the run stops there
+  task_fallback_npc: zasele # when the taskmaster asked says you have done the most tasks it allows today, work this taskmaster's task instead; the next run asks the first one again. Unset: the run stops there. Ignored by marathon (Zasele only)
   task_cancel_when_instructions_short: true/false # default true. When the task's one replacement set is spent and the instructions carried still have too few uses, cancel the task (losing the items made for it), wait out the 10-minute cooldown and take a new one. False: stop on every run with "Already asked ..." for a person to look at
   alchemy_tools: [bowl, mixing stick, mortar, pestle, sieve] # Nezhiri's tasks use the mortar and pestle or the bowl and mixing stick (whichever her remedy needs) and the sieve; the two used go to Rangu after each task (task_no_repair / task_self_repair as usual)
   alchemy_belt: # the toolbelt the alchemy tools are tied to, if any
@@ -3903,10 +3903,13 @@ class TaskMaster
 
   # task_fallback_npc when it names a taskmaster this script does that is not
   # the one being asked (once a run has fallen back, the one being asked is
-  # the fallback, so it never falls back twice).
+  # the fallback, so it never falls back twice). Never in marathon: it works
+  # only Zasele's tasks, through marathon_tailor (run_marathon, resume_task),
+  # so another taskmaster's task would be tailored.
   #
   # @return [String, nil]
   def usable_fallback_npc
+    return nil if @marathon
     return nil unless TASKMASTERS.include?(@fallback_npc) && @fallback_npc != @npc
 
     @fallback_npc

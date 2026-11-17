@@ -1870,8 +1870,8 @@ RSpec.describe TaskMaster do
         let(:offer) { 'You may accept by typing ACCEPT TASK.' }
 
         # Asks with per-taskmaster replies; records each ask by taskmaster.
-        def limited(replies, npc: 'nezhiri', fallback: 'zasele')
-          tm = reader(npc: npc, fallback_npc: fallback.to_s, cooldown_poll: 7)
+        def limited(replies, npc: 'nezhiri', fallback: 'zasele', marathon: false)
+          tm = reader(npc: npc, fallback_npc: fallback.to_s, cooldown_poll: 7, marathon: marathon)
           events = []
           allow(tm).to receive(:find_npc) { |_rooms, who| events << [:find, who] }
           allow(tm).to receive(:pause) { |seconds| events << [:pause, seconds] }
@@ -1926,6 +1926,17 @@ RSpec.describe TaskMaster do
           tm, = limited({ 'nezhiri' => [daily_max] }, fallback: 'mags')
 
           expect { tm.get_task }.to raise_error(SystemExit)
+        end
+
+        # Review 5944553147 (mrhoribu): marathon tailors every task it gets
+        # (marathon_tailor), so it must never take another taskmaster's.
+        it 'never falls back in marathon, which works only Zasele\'s tasks' do
+          zasele_max = daily_max.sub('Nezhiri', 'Zasele')
+          tm, events = limited({ 'zasele' => [zasele_max] }, npc: 'zasele', fallback: 'nezhiri', marathon: true)
+
+          expect { tm.get_task }.to raise_error(SystemExit)
+          expect(events.select { |e| e.is_a?(Array) && e.first == :ask }).to eq([[:ask, 'zasele']])
+          expect(tm.instance_variable_get(:@npc)).to eq('zasele')
         end
 
         it 'keeps polling the ordinary cooldown instead of falling back' do
@@ -1988,6 +1999,14 @@ RSpec.describe TaskMaster do
             expect(tm).not_to have_received(:cancel_foreign_task)
             expect([tm.instance_variable_get(:@npc), tm.instance_variable_get(:@primary_npc)]).to eq(%w[zasele nezhiri])
             expect(DRC).to have_received(:message).with('You are on a task for Zasele, the fallback taskmaster; finishing it.')
+          end
+
+          it 'stays foreign in marathon, which would tailor it' do
+            tm = build(npc: 'zasele', fallback_npc: 'nezhiri', task_giver: 'nezhiri', cancel_foreign_tasks: false, marathon: true)
+            allow(DRC).to receive(:message)
+
+            expect { tm.check_task_giver }.to raise_error(SystemExit)
+            expect(tm.instance_variable_get(:@npc)).to eq('zasele')
           end
 
           it 'still counts as foreign when it is some other taskmaster\'s' do

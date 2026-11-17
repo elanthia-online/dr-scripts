@@ -3101,7 +3101,7 @@ task_cancel_foreign_tasks: false
 # task for when the one asked says you have done the most tasks it allows today ("You have reached the
 # maximum number of TASKs you may complete for <taskmaster> today."). Each run asks the first one
 # again, so its tasks resume once its limit resets; a task left open for the fallback is finished, not
-# cancelled. Unset: the run stops at the limit.
+# cancelled. Unset: the run stops at the limit. Ignored by marathon, which works only Zasele's tasks.
 task_fallback_npc:
 
 # Setting for taskmaster - Scripts to run to completion before asking for each task, with any
