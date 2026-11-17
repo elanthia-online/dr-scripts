@@ -37,7 +37,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.18.3'
+  VERSION = '2026.11.18.5'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -1997,7 +1997,11 @@ class TaskMaster
       break if (found = npc_here?(npc, looked_in))
 
       seen_in = walk_noting(npc, room_id)
-      break if seen_in && !npc_here?(npc, looked_in) && (found = back_to_passed_room(npc, rooms, seen_in, looked_in))
+      # Not seen on the way: the room arrived at is checked at the top of the
+      # loop, or after it. Seen: checked here, and the result kept, since
+      # npc_here? LOOKs in a room only once.
+      next unless seen_in
+      break if (found = npc_here?(npc, looked_in) || back_to_passed_room(npc, rooms, seen_in, looked_in))
     end
     # The last room walked to is checked here.
     found ||= npc_here?(npc, looked_in)

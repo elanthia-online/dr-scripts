@@ -1694,7 +1694,9 @@ RSpec.describe TaskMaster do
       # given), walking changes the room. Walks and commands go to `events`
       # in the order they happen.
       # With moves: false every walk fails and the character stays put.
-      def search(room_data:, start_in:, moves: true)
+      # stream: room => lines the walk there sends through the downstream
+      # hooks (walk_noting's), as the game streams each room passed.
+      def search(room_data:, start_in:, moves: true, stream: {})
         tm = build
         here = start_in
         allow(Room).to receive(:current) { OpenStruct.new(id: here) }
@@ -1703,6 +1705,7 @@ RSpec.describe TaskMaster do
         allow(DRCT).to receive(:walk_to) do |room|
           events << [:walk, room]
           here = room if moves
+          Array(stream[room]).each { |line| DownstreamHook.run(line) }
         end
         allow(DRC).to receive(:bput) do |*args|
           events << [:send, args.first, here]
@@ -1718,6 +1721,19 @@ RSpec.describe TaskMaster do
           expect(events).to eq([[:walk, 16_145], [:walk, 16_146], [:walk, 16_148], [:send, 'look', 16_148]])
           expect(UserVars.taskmaster_last_seen['zasele']).to eq(16_148)
         end
+      end
+
+      # mrhoribu on #8116: the walk there saw her in the room's objects, then a
+      # cut-short refresh (#7993) left her out of DRRoom. The LOOK that finds
+      # her ends the search; a second check of the room would not LOOK again
+      # and would walk on past her.
+      it 'stops at the LOOK that finds her when the walk there also saw her' do
+        game.script('look', *described_look)
+        search(room_data: { 16_148 => cut_short }, start_in: 16_936,
+               stream: { 16_148 => [%(<streamWindow id='room' title='Room' subtitle=" - [Lithralia Street] (**)"/>),
+                                    %(<component id='room objs'>You also see <a exist="76029" noun="Zasele">Seamstress Zasele</a>.</component>)] })
+        expect(events).to eq([[:walk, 16_145], [:walk, 16_146], [:walk, 16_148], [:send, 'look', 16_148]])
+        expect(UserVars.taskmaster_last_seen['zasele']).to eq(16_148)
       end
 
       it 'sends nothing extra when DRRoom lists her (as it will once Lich reads the full listing)' do
