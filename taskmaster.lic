@@ -37,7 +37,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.13.2'
+  VERSION = '2026.11.18.1'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -1980,7 +1980,10 @@ class TaskMaster
   # Taskmasters wander, but between turn-ins they are usually back in the
   # room they were last seen in. Search from there outwards along the room
   # list, and remember where each one was found. Kept in UserVars because t2
-  # can start this script once per task.
+  # can start this script once per task. A room on the list is looked in only
+  # on arrival, so the rooms walked through on the way are watched too
+  # (walk_noting): when the taskmaster shows up in one, the search walks back
+  # to it (back_to_passed_room) instead of going on down the list.
   #
   # @param rooms [Array<Integer>] rooms to search, in order
   # @param npc [String] taskmaster name, lower case
@@ -1993,11 +1996,65 @@ class TaskMaster
     search_order(rooms, UserVars.taskmaster_last_seen[npc]).each do |room_id|
       break if (found = npc_here?(npc, looked_in))
 
-      DRCT.walk_to(room_id)
+      seen_in = walk_noting(npc, room_id)
+      break if seen_in && !npc_here?(npc, looked_in) && (found = back_to_passed_room(npc, rooms, seen_in, looked_in))
     end
     # The last room walked to is checked here.
     found ||= npc_here?(npc, looked_in)
     UserVars.taskmaster_last_seen[npc] = Room.current.id if found
+  end
+
+  # Name of the downstream hook walk_noting watches the walk with.
+  FIND_NPC_HOOK = 'taskmaster-find-npc'
+  # A room's title in the stream, sent before its room objects: subtitle="
+  # - [Andreshlew, Upper Dock] (**)" (Saelia, 2026-11-18 09:58:20).
+  ROOM_SUBTITLE = /subtitle=["'] - (\[[^\]]+\])/
+
+  # Walks to room_id, noting the title of the first room on the way whose
+  # room objects name the taskmaster. find_npc looks only on arrival, so a
+  # taskmaster standing in a room walked through was passed by (Saelia,
+  # 2026-11-18 09:58:20 and 09:58:22: through Upper Dock, where Nezhiri
+  # stood, on the way to Palace Road and then West Dock).
+  #
+  # @param npc [String] the taskmaster's name, lowercase
+  # @param room_id [Integer] where to walk
+  # @return [String, nil] the title ("[Andreshlew, Upper Dock]") of the room
+  #   she was seen in, or nil
+  def walk_noting(npc, room_id)
+    title = nil
+    seen = nil
+    # Not followed by ' or -, as in npc_here?, so "Nezhiri's ..." is not her.
+    named = /<component id=["']room objs["']>.*\b#{Regexp.escape(npc.capitalize)}\b(?!['-])/
+    DownstreamHook.add(FIND_NPC_HOOK, proc do |xml|
+      # Line by line, so a chunk carrying several rooms pairs each room's
+      # objects with its own title.
+      xml.to_s.each_line do |line|
+        title = Regexp.last_match(1) if line =~ ROOM_SUBTITLE
+        seen ||= title if title && line.match?(named)
+      end
+      xml
+    end)
+    DRCT.walk_to(room_id)
+    seen
+  ensure
+    DownstreamHook.remove(FIND_NPC_HOOK)
+  end
+
+  # Walks back to the room on the search list titled seen_in, where the
+  # taskmaster was seen on the way, and looks for her there. Several rooms
+  # can share a title ("Dock Walk"): each is tried in list order.
+  #
+  # @param npc [String] the taskmaster's name, lowercase
+  # @param rooms [Array<Integer>] the rooms find_npc searches
+  # @param seen_in [String] the room title walk_noting noted
+  # @param looked_in [Array<Integer>] rooms npc_here? has LOOKed in
+  # @return [Boolean] whether she was found
+  def back_to_passed_room(npc, rooms, seen_in, looked_in)
+    rooms.select { |id| Array(Map[id]&.title).include?(seen_in) && id != Room.current.id }.each do |id|
+      DRCT.walk_to(id)
+      return true if npc_here?(npc, looked_in)
+    end
+    false
   end
 
   # Still needed once Lich repairs DRRoom from the full room view: a refresh

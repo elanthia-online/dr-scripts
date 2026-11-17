@@ -1554,6 +1554,96 @@ RSpec.describe TaskMaster do
         expect(UserVars.taskmaster_last_seen['zasele']).to eq(16_150)
       end
 
+      # Saelia, 2026-11-18 09:58:20-23: go2 walked her through Upper Dock,
+      # where Nezhiri stood, on the way to other rooms on the list. The stream
+      # gives each room's title (subtitle) before its room objects.
+      describe 'a taskmaster in a room walked through' do
+        let(:titles) do
+          { 16_145 => '[Andreshlew, Palace Road]', 16_146 => '[Andreshlew, West Dock]',
+            16_148 => '[Andreshlew, East Dock]', 16_150 => '[Andreshlew, Upper Dock]',
+            16_153 => '[Andreshlew, Dock Walk]', 16_154 => '[Andreshlew, Dock Walk]' }
+        end
+
+        def subtitle(title)
+          %(<streamWindow id='room' title='Room' subtitle=" - #{title} (**)"/>)
+        end
+
+        def objs(*names)
+          "<component id='room objs'>You also see #{names.join(', ')}.</component>"
+        end
+
+        # path: room => the rooms walked through on the way there (title, and
+        # whether Nezhiri's link is in its room objects), fed to the hooks.
+        def walk_world(nezhiri_in:, path: {}, start_in: 16_936)
+          tm = build(npc: 'nezhiri')
+          here = start_in
+          walked = []
+          map = titles
+          stub_const('Map', Class.new { define_singleton_method(:[]) { |id| map[id] && OpenStruct.new(title: [map[id]]) } })
+          allow(Room).to receive(:current) { OpenStruct.new(id: here) }
+          allow(DRRoom).to receive(:npcs) { here == nezhiri_in ? ['Nezhiri'] : [] }
+          allow(DRRoom).to receive(:room_objs) { [] }
+          allow(DRCT).to receive(:walk_to) do |room|
+            walked << room
+            Array(path[room]).each do |id|
+              DownstreamHook.run(subtitle(titles[id]))
+              DownstreamHook.run(objs(id == nezhiri_in ? '<a exist="76006" noun="Nezhiri">Potion Peddler Nezhiri</a>' : 'a woven sack'))
+            end
+            DownstreamHook.run(subtitle(titles[room])) if titles[room]
+            here = room
+          end
+          tm.find_npc(titles.keys, 'nezhiri')
+          walked
+        end
+
+        it 'goes back to the room she was passed in, instead of searching on' do
+          walked = walk_world(nezhiri_in: 16_150, path: { 16_145 => [16_148, 16_150] })
+
+          expect(walked).to eq([16_145, 16_150])
+          expect(UserVars.taskmaster_last_seen['nezhiri']).to eq(16_150)
+        end
+
+        it 'searches the list as before when she was not seen on the way' do
+          walked = walk_world(nezhiri_in: 16_150, path: { 16_145 => [16_148] })
+
+          expect(walked).to eq([16_145, 16_146, 16_148, 16_150])
+        end
+
+        it 'tries each listed room of the title she was seen under' do
+          walked = walk_world(nezhiri_in: 16_154, path: { 16_145 => [16_154] })
+
+          expect(walked).to eq([16_145, 16_153, 16_154])
+        end
+
+        def noting(*lines)
+          tm = build(npc: 'nezhiri')
+          allow(DRCT).to receive(:walk_to) { lines.each { |line| DownstreamHook.run(line) } }
+          tm.walk_noting('nezhiri', 16_145)
+        end
+
+        it 'notes the title of the room whose objects name her' do
+          expect(noting(subtitle('[Andreshlew, East Dock]'), objs('a woven sack'),
+                        subtitle('[Andreshlew, Upper Dock]'), objs('<a exist="76006" noun="Nezhiri">Potion Peddler Nezhiri</a>'),
+                        subtitle('[Andreshlew, Palace Road]'), objs('a woven sack'))).to eq('[Andreshlew, Upper Dock]')
+        end
+
+        it 'pairs her with her own room when one chunk carries several rooms' do
+          chunk = [subtitle('[Andreshlew, Palace Road]'), objs('a woven sack'),
+                   subtitle('[Andreshlew, Upper Dock]'), objs('<a exist="76006" noun="Nezhiri">Potion Peddler Nezhiri</a>')].join("\n")
+          expect(noting(chunk)).to eq('[Andreshlew, Upper Dock]')
+        end
+
+        it 'does not take an item named for her for her' do
+          expect(noting(subtitle('[Andreshlew, East Dock]'), objs("some Nezhiri's potion instructions"))).to be_nil
+        end
+
+        it 'stops watching the stream once the walk ends' do
+          walk_world(nezhiri_in: 16_150, path: { 16_145 => [16_150] })
+
+          expect(DownstreamHook.ordered_hook_names).not_to include(TaskMaster::FIND_NPC_HOOK)
+        end
+      end
+
       it 'remembers each taskmaster separately' do
         UserVars.taskmaster_last_seen = { 'poltu' => 16_290 }
         search(zasele_in: 16_146, start_in: 16_936)
