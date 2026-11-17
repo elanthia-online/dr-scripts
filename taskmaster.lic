@@ -21,6 +21,7 @@
   task_rock_room: 793 # room where Dorhum's spongestone and splashstone tasks forage rocks (none can be had on Andreshlew)
   task_shell_room: 793 # room where Dorhum's glow shell tasks forage shells
   task_cancel_foreign_tasks: true/false # a run never works another taskmaster's task; with this it cancels one it finds open, waits out the 10-minute cooldown a cancel brings, then goes back to its own taskmaster. Off: it stops, saying whose task it is and how to finish or cancel it
+  task_fallback_npc: zasele # when the taskmaster asked says you have done the most tasks it allows today, work this taskmaster's task instead; the next run asks the first one again. Unset: the run stops there
   task_cancel_when_instructions_short: true/false # default true. When the task's one replacement set is spent and the instructions carried still have too few uses, cancel the task (losing the items made for it), wait out the 10-minute cooldown and take a new one. False: stop on every run with "Already asked ..." for a person to look at
   alchemy_tools: [bowl, mixing stick, mortar, pestle, sieve] # Nezhiri's tasks use the mortar and pestle or the bowl and mixing stick (whichever her remedy needs) and the sieve; the two used go to Rangu after each task (task_no_repair / task_self_repair as usual)
   alchemy_belt: # the toolbelt the alchemy tools are tied to, if any
@@ -111,6 +112,7 @@ class TaskMaster
     @shell_room = @settings.task_shell_room || DEFAULT_SHELL_ROOM
     @cancel_foreign_tasks = @settings.task_cancel_foreign_tasks
     @cancel_short_tasks = @settings.task_cancel_when_instructions_short != false
+    @fallback_npc = @settings.task_fallback_npc.to_s.strip.downcase
 
     @stockdata = get_data('crafting')['stock']
     @stackmap = STACKMAP
@@ -282,6 +284,7 @@ class TaskMaster
         send(@npc.to_sym, item, count, volume_per_item, base, type)
         complete_task(item, count)
       end
+      back_to_primary_npc
       break if Flags['wrap-up']
 
       if args.cycle
@@ -291,6 +294,18 @@ class TaskMaster
       break unless args.repeat
     end
     tool_pickup if @pickup_tools && DRCI.exists?("rangu ticket") # if indicated, and you have tickets, picks up any tools you may have dropped off previously, all disciplines
+  end
+
+  # After a task worked for task_fallback_npc (fall_back_for_the_day, or an
+  # open task of its finished by check_task_giver), goes back to the
+  # taskmaster the run was started for, so the next task is asked of it.
+  #
+  # @return [void]
+  def back_to_primary_npc
+    return unless @primary_npc
+
+    @npc = @primary_npc
+    @primary_npc = nil
   end
 
   # Zasele tasks until the wrap-up call, restocking (and repairing) only when
@@ -3437,7 +3452,8 @@ class TaskMaster
   # while on one of Dorhum's tasks, say). A run never works another
   # taskmaster's task: its items, tools and hand-in are theirs, and a
   # character set up for one craft may not be for another. So it says whose
-  # task it is and how to clear it, and stops. With task_cancel_foreign_tasks
+  # task it is and how to clear it, and stops; a task for task_fallback_npc
+  # is the exception, finished as this run's own. With task_cancel_foreign_tasks
   # it cancels that task instead, waits out the cooldown a cancel brings,
   # and goes back to asking its own taskmaster.
   #
@@ -3449,6 +3465,15 @@ class TaskMaster
   def check_task_giver
     giver = @task_giver
     return if giver.nil? || giver == @npc
+
+    if giver == usable_fallback_npc
+      # A task for task_fallback_npc left open (a run that fell back and
+      # stopped part way): it is ours to finish, not to cancel.
+      DRC.message("You are on a task for #{giver.capitalize}, the fallback taskmaster; finishing it.")
+      @primary_npc = @npc
+      @npc = giver
+      return
+    end
 
     cancel_foreign_task(giver) if @cancel_foreign_tasks
     DRC.message("#{another_taskmasters_task_message(giver)} Or set task_cancel_foreign_tasks to have taskmaster cancel such tasks itself.")
@@ -3468,6 +3493,12 @@ class TaskMaster
   # "you a chance a little later." (Zasele, 2026-11-03), so the older
   # one-line "give you a chance a little later" never matched it.
   TASK_UNRELIABLE = /You are unreliable/
+  # A taskmaster's daily limit, the bracketed line after its speech: "[You
+  # have reached the maximum number of TASKs you may complete for Nezhiri
+  # today.  Please try again tomorrow.]" (a player's report, 2026-11-18;
+  # Nezhiri first says she is "still working on packaging" what she was
+  # given). Asking again the same day gets the same answer.
+  TASK_DAILY_MAX = /You have reached the maximum number of TASKs you may complete for/
   # Unknown replies in a row to ASK FOR TASK before get_task stops.
   MAX_UNKNOWN_TASK_REPLIES = 3
 
@@ -3849,6 +3880,38 @@ class TaskMaster
     DRC.bput("ask #{@npc} for instructions", *INSTRUCTIONS_HANDED_OVER, INSTRUCTIONS_HANDS_FULL)
   end
 
+  # The taskmaster asked has given its daily limit (TASK_DAILY_MAX). With
+  # task_fallback_npc set (and not the one asked), the run switches to that
+  # taskmaster for this task and get_task asks it next; run_tasks switches
+  # back after the task, and every new run asks the first taskmaster again,
+  # so its tasks resume once the limit resets. Without a fallback, or when
+  # the fallback has hit its limit too, the run stops.
+  #
+  # @return [void]
+  # @raise [SystemExit] when there is no taskmaster left to ask today
+  def fall_back_for_the_day
+    fallback = usable_fallback_npc
+    unless fallback
+      DRC.message("#{@npc.capitalize} has given you all the tasks allowed today. #{@fallback_npc.empty? ? 'Set task_fallback_npc to work another taskmaster\'s tasks meanwhile.' : 'No other taskmaster to ask.'} Stopping.")
+      exit
+    end
+
+    DRC.message("#{@npc.capitalize} has given you all the tasks allowed today; working one of #{fallback.capitalize}'s instead (the next run asks #{@npc.capitalize} again).")
+    @primary_npc ||= @npc
+    @npc = fallback
+  end
+
+  # task_fallback_npc when it names a taskmaster this script does that is not
+  # the one being asked (once a run has fallen back, the one being asked is
+  # the fallback, so it never falls back twice).
+  #
+  # @return [String, nil]
+  def usable_fallback_npc
+    return nil unless TASKMASTERS.include?(@fallback_npc) && @fallback_npc != @npc
+
+    @fallback_npc
+  end
+
   # Asks the taskmaster for a task until one is offered, waiting out
   # cooldowns (including the one after a cancelled task), and returns what
   # finish reads from it. An ongoing task is finished and handed in instead
@@ -3874,7 +3937,7 @@ class TaskMaster
     unknown_replies = 0
     while true
       find_npc(@rooms, @npc)
-      reply = DRC.bput("ask #{@npc} for task", /if you agree to (his|her) terms/, /You may accept by typing ACCEPT TASK/, /utterly ignoring you/, /you must wait before I can give you a task/, /You are already on a task/, /give you a chance a little later/, TASK_UNRELIABLE, /^To whom are you speaking/)
+      reply = DRC.bput("ask #{@npc} for task", /if you agree to (his|her) terms/, /You may accept by typing ACCEPT TASK/, /utterly ignoring you/, /you must wait before I can give you a task/, /You are already on a task/, /give you a chance a little later/, TASK_UNRELIABLE, TASK_DAILY_MAX, /^To whom are you speaking/)
       unknown_replies = 0 unless reply.empty?
       case reply
       when /if you agree to (his|her) terms/, /To whom are you speaking/
@@ -3898,6 +3961,8 @@ class TaskMaster
         else
           pause @cooldown_poll
         end
+      when TASK_DAILY_MAX
+        fall_back_for_the_day
       when /You may accept by typing ACCEPT TASK/
         DRC.bput("accept task", /You can check your progress with the TASK verb/)
         forget_replacement

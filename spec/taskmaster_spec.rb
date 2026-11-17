@@ -1864,6 +1864,142 @@ RSpec.describe TaskMaster do
         end
       end
 
+      # A player's report, 2026-11-18: Nezhiri's speech, then this line.
+      describe 'a taskmaster\'s daily limit (task_fallback_npc)' do
+        let(:daily_max) { '[You have reached the maximum number of TASKs you may complete for Nezhiri today.  Please try again tomorrow.]' }
+        let(:offer) { 'You may accept by typing ACCEPT TASK.' }
+
+        # Asks with per-taskmaster replies; records each ask by taskmaster.
+        def limited(replies, npc: 'nezhiri', fallback: 'zasele')
+          tm = reader(npc: npc, fallback_npc: fallback.to_s, cooldown_poll: 7)
+          events = []
+          allow(tm).to receive(:find_npc) { |_rooms, who| events << [:find, who] }
+          allow(tm).to receive(:pause) { |seconds| events << [:pause, seconds] }
+          allow(tm).to receive(:finish) { events << :finish && :accepted }
+          allow(DRC).to receive(:message) { |text| events << [:message, text] }
+          asks = replies.keys.to_h do |who|
+            ["ask #{who} for task", lambda do |*|
+              events << [:ask, who]
+              raise "asked #{who} again after the last reply" if replies[who].empty?
+
+              replies[who].shift
+            end]
+          end
+          game(asks.merge('accept task' => 'You can check your progress with the TASK verb.'))
+          [tm, events]
+        end
+
+        it 'works a task for the fallback taskmaster when the first has hit its daily limit' do
+          tm, events = limited({ 'nezhiri' => [daily_max], 'zasele' => [offer] })
+
+          expect(tm.get_task).to eq(:accepted)
+          expect(events).to eq([[:find, 'nezhiri'], [:ask, 'nezhiri'],
+                                [:message, "Nezhiri has given you all the tasks allowed today; working one of Zasele's instead (the next run asks Nezhiri again)."],
+                                [:find, 'zasele'], [:ask, 'zasele'], :finish])
+          expect(tm.instance_variable_get(:@npc)).to eq('zasele')
+          expect(tm.instance_variable_get(:@primary_npc)).to eq('nezhiri')
+        end
+
+        it 'stops, naming the setting, when no fallback is set' do
+          tm, events = limited({ 'nezhiri' => [daily_max] }, fallback: nil)
+
+          expect { tm.get_task }.to raise_error(SystemExit)
+          expect(events.last).to eq([:message, 'Nezhiri has given you all the tasks allowed today. Set task_fallback_npc to work another taskmaster\'s tasks meanwhile. Stopping.'])
+        end
+
+        it 'stops when the fallback taskmaster has hit its limit too, without asking anyone a third time' do
+          zasele_max = daily_max.sub('Nezhiri', 'Zasele')
+          tm, events = limited({ 'nezhiri' => [daily_max], 'zasele' => [zasele_max] })
+
+          expect { tm.get_task }.to raise_error(SystemExit)
+          expect(events.count { |e| e.is_a?(Array) && e.first == :ask }).to eq(2)
+          expect(events.last).to eq([:message, 'Zasele has given you all the tasks allowed today. No other taskmaster to ask. Stopping.'])
+        end
+
+        it 'does not fall back to the taskmaster it was asking' do
+          tm, = limited({ 'zasele' => [daily_max.sub('Nezhiri', 'Zasele')] }, npc: 'zasele', fallback: 'zasele')
+
+          expect { tm.get_task }.to raise_error(SystemExit)
+        end
+
+        it 'ignores a fallback that is not a taskmaster this script does' do
+          tm, = limited({ 'nezhiri' => [daily_max] }, fallback: 'mags')
+
+          expect { tm.get_task }.to raise_error(SystemExit)
+        end
+
+        it 'keeps polling the ordinary cooldown instead of falling back' do
+          wait = 'Potion Peddler Nezhiri says, "I am sorry, you must wait before I can give you a task."'
+          tm, events = limited({ 'nezhiri' => [wait, offer] })
+
+          expect(tm.get_task).to eq(:accepted)
+          expect(events).to eq([[:find, 'nezhiri'], [:ask, 'nezhiri'], [:pause, 7], [:find, 'nezhiri'], [:ask, 'nezhiri'], :finish])
+          expect(tm.instance_variable_get(:@npc)).to eq('nezhiri')
+        end
+
+        it 'goes back to the first taskmaster after the fallback task' do
+          tm = build(npc: 'zasele', primary_npc: 'nezhiri')
+
+          tm.back_to_primary_npc
+
+          expect([tm.instance_variable_get(:@npc), tm.instance_variable_get(:@primary_npc)]).to eq(['nezhiri', nil])
+        end
+
+        it 'leaves the taskmaster alone after a task with no fallback' do
+          tm = build(npc: 'nezhiri')
+
+          tm.back_to_primary_npc
+
+          expect(tm.instance_variable_get(:@npc)).to eq('nezhiri')
+        end
+
+        it 'asks the first taskmaster again for the task after a fallback task (repeat)' do
+          tm = build(npc: 'nezhiri', fallback_npc: 'zasele')
+          %i[reconcile_hands prepare_for_task complete_task zasele].each { |name| allow(tm).to receive(name) }
+          allow(DRCI).to receive(:exists?).and_return(false)
+          asked = []
+          allow(tm).to receive(:get_task) do
+            asked << tm.instance_variable_get(:@npc)
+            if asked.size == 1
+              # fall_back_for_the_day's switch, then Zasele's task.
+              tm.instance_variable_set(:@primary_npc, 'nezhiri')
+              tm.instance_variable_set(:@npc, 'zasele')
+              ['rope', 5, 4, 'cloth', 'burlap']
+            else
+              Flags['wrap-up'] = true
+              nil
+            end
+          end
+
+          tm.run_tasks(OpenStruct.new(repeat: true))
+
+          expect(asked).to eq(%w[nezhiri nezhiri])
+          expect(tm).to have_received(:zasele).with('rope', 5, 4, 'cloth', 'burlap')
+        end
+
+        describe 'an open task for the fallback taskmaster' do
+          it 'is finished as this run\'s own, not cancelled' do
+            tm = build(npc: 'nezhiri', fallback_npc: 'zasele', task_giver: 'zasele', cancel_foreign_tasks: true)
+            allow(DRC).to receive(:message)
+            allow(tm).to receive(:cancel_foreign_task)
+
+            tm.check_task_giver
+
+            expect(tm).not_to have_received(:cancel_foreign_task)
+            expect([tm.instance_variable_get(:@npc), tm.instance_variable_get(:@primary_npc)]).to eq(%w[zasele nezhiri])
+            expect(DRC).to have_received(:message).with('You are on a task for Zasele, the fallback taskmaster; finishing it.')
+          end
+
+          it 'still counts as foreign when it is some other taskmaster\'s' do
+            tm = build(npc: 'nezhiri', fallback_npc: 'zasele', task_giver: 'dorhum', cancel_foreign_tasks: false)
+            allow(DRC).to receive(:message)
+
+            expect { tm.check_task_giver }.to raise_error(SystemExit)
+            expect(tm.instance_variable_get(:@npc)).to eq('nezhiri')
+          end
+        end
+      end
+
       describe 'every reply to ASK FOR TASK' do
         # Replies shaped to the script's matchers. Offer, wait and ignore lines
         # are from the 2025 Hollow Eve logs; the others are not in the logs at
@@ -1919,7 +2055,7 @@ RSpec.describe TaskMaster do
           asking([offer])
           expect(DRC).to have_received(:bput).with('ask zasele for task', /if you agree to (his|her) terms/, /You may accept by typing ACCEPT TASK/, /utterly ignoring you/,
                                                    /you must wait before I can give you a task/, /You are already on a task/, /give you a chance a little later/,
-                                                   TaskMaster::TASK_UNRELIABLE, /^To whom are you speaking/)
+                                                   TaskMaster::TASK_UNRELIABLE, TaskMaster::TASK_DAILY_MAX, /^To whom are you speaking/)
           expect(DRC).to have_received(:bput).with('accept task', /You can check your progress with the TASK verb/)
         end
 
