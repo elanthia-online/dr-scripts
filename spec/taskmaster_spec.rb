@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'ostruct'
+require 'tmpdir'
 require 'yaml'
 
 require_relative 'spec_helper'
@@ -8249,8 +8250,10 @@ RSpec.describe TaskMaster do
         product: 'landsickness potion', order: 10, price: 537, pieces: 5 }
     end
 
+    # remedy_takes_stocked: true stands for the remedy.lic shipped with this
+    # taskmaster; the examples of remedy_takes_stocked? set it themselves.
     def nezhiri_tm(**ivars)
-      build(npc: 'nezhiri', stockdata: stock, rooms: TaskMaster::ROOMS, **ivars)
+      build(npc: 'nezhiri', stockdata: stock, rooms: TaskMaster::ROOMS, remedy_takes_stocked: true, **ivars)
     end
 
     # A replay for the example: the game answers DRC.bput, fput and
@@ -8801,7 +8804,7 @@ RSpec.describe TaskMaster do
 
       def maker(settings: self.settings, **ivars)
         build(settings: settings, npc: 'nezhiri', stockdata: crafting['stock'], rooms: TaskMaster::ROOMS, lootbag: 'velvet backpack',
-              keeplist_regex: /leather|stack/, **ivars)
+              keeplist_regex: /leather|stack/, remedy_takes_stocked: true, **ivars)
       end
 
       # The arguments read as remedy.lic reads them: Lich joins a caller's
@@ -8825,6 +8828,60 @@ RSpec.describe TaskMaster do
             expect([craft.mode, craft.stocked?, craft.herb1, craft.catalyst, craft.container_request, craft.noun, craft.herb_quantity])
               .to eq([:instructions, true, recipe[:herb], 'coal nugget', recipe[:vessel], recipe[:noun], 25])
             expect([carry.mode, carry.stocked?, carry.catalyst, carry.container_request, carry.noun]).to eq([:continue, false, 'coal nugget', recipe[:vessel], recipe[:noun]])
+          end
+        end
+
+        # taskmaster can be updated without remedy.lic. An older remedy
+        # prints its help on the word and crafts nothing, after the task was
+        # taken and its supplies bought; without the word it is run with the
+        # arguments taskmaster gave it before (main's remedy_args).
+        describe 'with the remedy.lic Lich would run' do
+          let(:messages) { [] }
+          let(:old_args) { ['instructions', 'georin', 'coal nugget', 'mortar', 'glop', '25'] }
+
+          before { allow(DRC).to receive(:message) { |text| messages << text } }
+
+          # @param text [String, nil] the file's text; nil for no file found
+          # @return [TaskMaster]
+          def with_remedy_file(text)
+            tm = maker(remedy_takes_stocked: nil)
+            path = text && File.join(Dir.mktmpdir, 'remedy.lic')
+            File.write(path, text) if path
+            allow(tm).to receive(:remedy_script_file).and_return(path)
+            tm
+          end
+
+          it 'says stocked when it is the remedy.lic shipped with this taskmaster' do
+            tm = with_remedy_file(File.read(File.expand_path('../remedy.lic', __dir__)))
+            expect(tm.remedy_args(glop_recipe)).to eq(old_args + ['stocked'])
+            expect(messages).to be_empty
+          end
+
+          it 'leaves the word out, saying so once a run, when it has no stocked word' do
+            tm = with_remedy_file("class Remedy\n  ARG_DEFINITIONS = [].freeze\nend\n")
+            2.times { expect(tm.remedy_args(glop_recipe)).to eq(old_args) }
+            expect(messages).to eq(['Your remedy.lic does not take the stocked word (it is older than this taskmaster, or could not be read), so remedy checks the water, alcohol and coal on every craft. ' \
+                                    'Update remedy.lic to skip those checks.'])
+            expect(remedy_order(old_args).stocked?).to be(false)
+          end
+
+          it 'leaves the word out when Lich finds no remedy.lic, or it cannot be read' do
+            expect(with_remedy_file(nil).remedy_args(glop_recipe)).to eq(old_args)
+            unreadable = maker(remedy_takes_stocked: nil)
+            allow(unreadable).to receive(:remedy_script_file).and_return(File.join(Dir.mktmpdir, 'missing', 'remedy.lic'))
+            expect(unreadable.remedy_args(glop_recipe)).to eq(old_args)
+            expect(messages.size).to eq(2)
+          end
+
+          it "finds the file by Lich's own lookup, custom/ first, and gives nil when that lookup is not there" do
+            tm = maker
+            stub_const('SCRIPT_DIR', '/lich/scripts')
+            allow(Script).to receive(:send).and_call_original
+            allow(Script).to receive(:send).with(:__find_script_file, 'remedy').and_return('/custom/remedy.lic')
+            expect(tm.send(:remedy_script_file)).to eq('/lich/scripts/custom/remedy.lic')
+
+            allow(Script).to receive(:send).with(:__find_script_file, 'remedy').and_raise(NoMethodError)
+            expect(tm.send(:remedy_script_file)).to be_nil
           end
         end
       end

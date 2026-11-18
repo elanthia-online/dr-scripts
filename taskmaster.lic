@@ -26,7 +26,7 @@
   alchemy_tools: [bowl, mixing stick, mortar, pestle, sieve] # Nezhiri's tasks use the mortar and pestle or the bowl and mixing stick (whichever her remedy needs) and the sieve; the two used go to Rangu after each task (task_no_repair / task_self_repair as usual)
   alchemy_belt: # the toolbelt the alchemy tools are tied to, if any
   alchemy_room: <room number> # Nezhiri's remedies are crafted here; unset, in the Crossing alchemy supplies (8862), where the herbs are bought
-  ## Nezhiri's tasks: taskmaster buys brewer's brine on Andreshlew (room 51102), then in Crossing the herbs (one 25-piece stack per craft), a coal nugget when the ones carried have too few rubs left for the crafts (TAP shows the size: tiny lasts one craft, small two, and so on; should one run out all the same, remedy stops with the vessel in hand and the carry-on below buys another here), and water and alcohol when none is on hand (none of her remedies uses them, and her crafts tell remedy the supplies are stocked, so it does not look for them; but the carry-on of an unfinished remedy, below, runs without that word, and remedy then buys any that is missing, at your crafting town's shop, in the middle of the task; the wait before the task looks for them, and with no wait the crafting bag's INVENTORY or a TAP does). It looks over the brine, coal, herbs, alchemy tools and copper during that wait, so the task starts sooner after her accept. task_hometown is not needed for her. crafting_container holds the brine, the herbs and her remedies: doses left from earlier tasks count toward the next, every stack is combined into one, and the hand-in cuts it to the doses she asked for, putting the rest back. It plans one craft per 6 doses still owed, but a craft can make fewer, and how many has differed between characters (the cause is unknown): so it remembers, for each remedy, the fewest doses one craft made the last time you crafted it (UserVars.taskmaster_remedy_yields, kept per character across runs; each run whose crafts add doses replaces it, and a finish counts as such a run), and plans the next task's crafts at that many doses each, never more than 6. Crafting stops once the doses owed are made, so crafts planned for a yield since outgrown are not made: the herbs, brine and coal bought for them stay in crafting_container and the next task's purchases count them. Extra doses made are not lost either: they stay in crafting_container and count toward the next task. When the crafts planned fall short it makes enough more crafts for the doses still owed, counting each at the fewest doses one craft made this run (never more than 6), buying their supplies first, up to 2 such rounds. To forget the remembered yields, ;e UserVars.taskmaster_remedy_yields = nil. It stops when a round adds no doses, or when the instruction sets carried (all of them, read again) have too few uses left for the extra crafts (ask Nezhiri for another copy, then ;taskmaster nezhiri finish); still short after that, it stops and ;taskmaster nezhiri finish makes the rest. Another item with the remedy's noun in crafting_container (another potion, say) is named once and left there: taskmaster gets its own stacks out by id, or by the remedy's whole name ("get my deep-sea draught from my duffel bag"); the game matches the start of each word, so anything else that brings (a "scaled ... moisturizer" for "scale moisturizer") is put back and the second, third and so on is asked for, up to the twentieth (lich-5's ordinals); it stops when a get brings nothing, or after the twentieth, so a stack behind twenty such items stays in the bag and the run stops, saying what the gets brought. A remedy run that stops part way (or a crash) leaves the mortar or bowl in hand: a run or a finish looks in it, and carries an unfinished remedy on once with remedy's continue form (buying brine or a coal nugget first when none is left, then crafting where it crafts), takes a finished one out as a made stack, puts a herb back in crafting_container, and puts an empty vessel away; anything else, or a continue run that again ends without the remedy, stops with the vessel in hand. A vessel left on the ground is not looked for. remedy.lic must handle the brine prompt (with a remedy that does not, each craft stops part way, the continue run stops at the same prompt, and the task stops) ##
+  ## Nezhiri's tasks: taskmaster buys brewer's brine on Andreshlew (room 51102), then in Crossing the herbs (one 25-piece stack per craft), a coal nugget when the ones carried have too few rubs left for the crafts (TAP shows the size: tiny lasts one craft, small two, and so on; should one run out all the same, remedy stops with the vessel in hand and the carry-on below buys another here), and water and alcohol when none is on hand (none of her remedies uses them, and her crafts tell remedy the supplies are stocked, so it does not look for them (a remedy.lic older than this taskmaster does not take that word: taskmaster says so and crafts without it, and remedy then checks them on every craft); but the carry-on of an unfinished remedy, below, runs without that word, and remedy then buys any that is missing, at your crafting town's shop, in the middle of the task; the wait before the task looks for them, and with no wait the crafting bag's INVENTORY or a TAP does). It looks over the brine, coal, herbs, alchemy tools and copper during that wait, so the task starts sooner after her accept. task_hometown is not needed for her. crafting_container holds the brine, the herbs and her remedies: doses left from earlier tasks count toward the next, every stack is combined into one, and the hand-in cuts it to the doses she asked for, putting the rest back. It plans one craft per 6 doses still owed, but a craft can make fewer, and how many has differed between characters (the cause is unknown): so it remembers, for each remedy, the fewest doses one craft made the last time you crafted it (UserVars.taskmaster_remedy_yields, kept per character across runs; each run whose crafts add doses replaces it, and a finish counts as such a run), and plans the next task's crafts at that many doses each, never more than 6. Crafting stops once the doses owed are made, so crafts planned for a yield since outgrown are not made: the herbs, brine and coal bought for them stay in crafting_container and the next task's purchases count them. Extra doses made are not lost either: they stay in crafting_container and count toward the next task. When the crafts planned fall short it makes enough more crafts for the doses still owed, counting each at the fewest doses one craft made this run (never more than 6), buying their supplies first, up to 2 such rounds. To forget the remembered yields, ;e UserVars.taskmaster_remedy_yields = nil. It stops when a round adds no doses, or when the instruction sets carried (all of them, read again) have too few uses left for the extra crafts (ask Nezhiri for another copy, then ;taskmaster nezhiri finish); still short after that, it stops and ;taskmaster nezhiri finish makes the rest. Another item with the remedy's noun in crafting_container (another potion, say) is named once and left there: taskmaster gets its own stacks out by id, or by the remedy's whole name ("get my deep-sea draught from my duffel bag"); the game matches the start of each word, so anything else that brings (a "scaled ... moisturizer" for "scale moisturizer") is put back and the second, third and so on is asked for, up to the twentieth (lich-5's ordinals); it stops when a get brings nothing, or after the twentieth, so a stack behind twenty such items stays in the bag and the run stops, saying what the gets brought. A remedy run that stops part way (or a crash) leaves the mortar or bowl in hand: a run or a finish looks in it, and carries an unfinished remedy on once with remedy's continue form (buying brine or a coal nugget first when none is left, then crafting where it crafts), takes a finished one out as a made stack, puts a herb back in crafting_container, and puts an empty vessel away; anything else, or a continue run that again ends without the remedy, stops with the vessel in hand. A vessel left on the ground is not looked for. remedy.lic must handle the brine prompt (with a remedy that does not, each craft stops part way, the continue run stops at the same prompt, and the task stops) ##
   enchanting_room: <room number> # Dorhum's tasks enchant in task_crafting_room, else here; with neither, where they stand if you carry a brazier, else at a Crossing brazier room. Outside tasks, enchanting uses enchanting_room as before
   ## Dorhum's tasks need task_loot_bag set to a container other than crafting_container: his finished items keep the base item's noun (a spongestone is still a rock) and wait there apart from the unworked ones. A task stops before buying anything if task_loot_bag already holds that noun, since the hand-in would give those first ##
   ## For Dorhum's tasks make task_crafting_room a room of your own (a private forge): each finished item is picked up off the floor by its noun, so another rock or shell lying there could be taken instead. A rented room's notice is read before enchanting and the rental renewed when under ten minutes are left ##
@@ -3652,12 +3652,56 @@ class TaskMaster
   # stops remedy with the vessel in hand (remedy.lic STOCKED_ARG), and
   # remedy_left_in_vessel buys one in Crossing and carries the remedy on.
   # remedy_continue_args leaves the word out, so the carry-on run checks
-  # for itself.
+  # for itself. So does a remedy.lic that does not take the word
+  # (remedy_takes_stocked?): it would print its help and craft nothing.
   #
   # @param recipe [Hash] the task's recipe
   # @return [Array<String>]
   def remedy_args(recipe)
-    ['instructions', recipe[:herb], NEZHIRI_CATALYST, recipe[:vessel], recipe[:noun], NEZHIRI_HERB_STACK.to_s, 'stocked']
+    args = ['instructions', recipe[:herb], NEZHIRI_CATALYST, recipe[:vessel], recipe[:noun], NEZHIRI_HERB_STACK.to_s]
+    remedy_takes_stocked? ? args + ['stocked'] : args
+  end
+
+  # Whether the remedy.lic Lich would run takes the instructions form's
+  # stocked word (remedy.lic STOCKED_ARG), read once a run from that file.
+  # taskmaster and remedy ship together, but one can be updated alone, and
+  # an older remedy prints its help on the word and crafts nothing, after
+  # the task was taken and its supplies bought. Without a sign of the word,
+  # or with no file read, the crafts go without it, as before the word:
+  # remedy checks the supplies itself (a TAP each) and buys any missing at
+  # its own shop town. taskmaster says so once, to update remedy.lic.
+  #
+  # @return [Boolean]
+  def remedy_takes_stocked?
+    return @remedy_takes_stocked unless @remedy_takes_stocked.nil?
+
+    file = remedy_script_file
+    @remedy_takes_stocked = !file.nil? && File.binread(file).include?('STOCKED_ARG'.b)
+    note_remedy_without_stocked unless @remedy_takes_stocked
+    @remedy_takes_stocked
+  rescue SystemCallError, IOError
+    note_remedy_without_stocked
+    @remedy_takes_stocked = false
+  end
+
+  # Says that remedy is run without the stocked word (remedy_takes_stocked?).
+  #
+  # @return [void]
+  def note_remedy_without_stocked
+    DRC.message('Your remedy.lic does not take the stocked word (it is older than this taskmaster, or could not be read), so remedy checks the water, alcohol and coal on every craft. Update remedy.lic to skip those checks.')
+  end
+
+  # The file Lich runs for ;remedy: its own lookup (Script.__find_script_file,
+  # lich-5 lib/common/script.rb, which looks in custom/ before the scripts
+  # folder), so a custom remedy is the one read.
+  #
+  # @return [String, nil] the path; nil when Lich finds none or its lookup
+  #   is not there to call
+  def remedy_script_file
+    found = Script.send(:__find_script_file, 'remedy')
+    found && File.join(SCRIPT_DIR, found)
+  rescue NameError
+    nil
   end
 
   # Gets the stack made before out of the crafting bag by its id and

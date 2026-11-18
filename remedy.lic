@@ -561,7 +561,7 @@ class Remedy
   # taskmaster's continue run keeps it as the guard of its recovery.
   STOCKED_ARG = {
     name: 'stocked', regex: /\Astocked\z/i, optional: true,
-    description: 'The caller has checked water, alcohol and the coal nugget are on hand: skip the check at the start and buy none of them.'
+    description: 'The caller has checked water, alcohol and the coal nugget are on hand: skip the check of loose ones at the start and buy none of them (a water_container or alcohol_container is still got, counted and refilled). A catalyst that cannot be got stops remedy with the vessel in hand, for the caller to carry on (taskmaster looks in the held vessel and runs the continue form).'
   }.freeze
 
   # The recipe names the book form accepts: letters, whitespace, hyphens and
