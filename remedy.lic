@@ -50,13 +50,16 @@
 # (taskmaster.lic's Nezhiri crafts do, and none of her recipes uses water
 # or alcohol), so remedy skips its own check of loose water, alcohol and
 # coal at the start (a TAP each, see Buying supplies), and buys none of
-# them; a water_container or alcohol_container is still got, counted and
-# refilled when empty, as on every run. Should the game then ask for a
+# them; a water_container or alcohol_container is still got and counted,
+# and when it holds none remedy tries to refill it (rubs it, then puts in
+# liquid from the crafting container), going on with the plain liquid if
+# that finds none, as on every run. Should the game then ask for a
 # catalyst that cannot be got, remedy stops with the vessel in hand, as it
-# always has, and prints the ;remedy continue line: the caller buys the
-# nugget where it shops and carries the remedy on (taskmaster's continue
-# run). Without stocked remedy checks and buys at the start, as it always
-# has.
+# always has, and prints the ;remedy continue line. taskmaster then checks
+# your hands for the remedy; finding none, it looks in the held vessel,
+# buys the nugget where it shops and carries an unfinished remedy on with
+# the continue form. Without stocked remedy checks and buys at the start,
+# as it always has.
 #   ;remedy instructions georin "coal nugget" mortar glop 25 stocked
 #
 # == Brewer's brine
@@ -141,8 +144,9 @@
 # uses them, unless the instructions form says stocked: then it looks for
 # none of them and buys nothing, and a catalyst that cannot be got stops
 # it with the vessel in hand. A water_container or alcohol_container is
-# got, counted and refilled when empty at the start of every run, stocked
-# or not, then put away.
+# got and counted at the start of every run, stocked or not; when it holds
+# none remedy tries to refill it, goes on with the plain liquid if that
+# finds none, and puts the vessel away.
 
 # Crafts one alchemy remedy from a recipe book or from crafting
 # instructions, or resumes one in progress.
@@ -561,7 +565,7 @@ class Remedy
   # taskmaster's continue run keeps it as the guard of its recovery.
   STOCKED_ARG = {
     name: 'stocked', regex: /\Astocked\z/i, optional: true,
-    description: 'The caller has checked water, alcohol and the coal nugget are on hand: skip the check of loose ones at the start and buy none of them (a water_container or alcohol_container is still got, counted and refilled). A catalyst that cannot be got stops remedy with the vessel in hand, for the caller to carry on (taskmaster looks in the held vessel and runs the continue form).'
+    description: 'The caller has checked water, alcohol and the coal nugget are on hand: skip the check of loose ones at the start and buy none of them (a water_container or alcohol_container is still got and counted, and remedy tries to refill it when empty). A catalyst that cannot be got stops remedy with the vessel in hand, for the caller to carry on (taskmaster checks your hands for the remedy, then looks in the held vessel and runs the continue form).'
   }.freeze
 
   # The recipe names the book form accepts: letters, whitespace, hyphens and
