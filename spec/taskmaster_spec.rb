@@ -1518,6 +1518,42 @@ RSpec.describe TaskMaster do
           expect(tm.boost_task).to be(true)
         end
 
+        # A different method from the cases above: every note time over two
+        # days (7-minute steps) against a set of later times, checked against
+        # a minute-by-minute walk for a rollover time (05:00, 05:05, 06:00,
+        # 06:05 UTC) in between.
+        it 'lapses exactly when a rollover time lies after the note and by now, swept over two days' do
+          tm = boosted(task_boosts: ['haste'])
+          start = at('2026-11-18 00:00:00').to_i
+          turns = [[5, 0], [5, 5], [6, 0], [6, 5]]
+          oracle = lambda do |noted, now|
+            minute = (noted / 60) + 1
+            minute += 1 while minute * 60 <= now && !turns.include?([Time.at(minute * 60).utc.hour, Time.at(minute * 60).utc.min])
+            minute * 60 > now
+          end
+          checked = 0
+          (0...(2 * 1440)).step(7) do |offset|
+            noted = start + (offset * 60) + 17
+            [1, 3, 4, 5, 6, 30, 59, 60, 61, 64, 65, 66, 300, 1439, 1440, 1441].each do |later|
+              now = noted + (later * 60)
+              $taskmaster_boost_unavailable = { 'haste' => noted }
+              allow(Time).to receive(:now).and_return(Time.at(now))
+              expect([Time.at(noted).utc, Time.at(now).utc, tm.boost_spent?('haste')]).to eq([Time.at(noted).utc, Time.at(now).utc, oracle.call(noted, now)])
+              checked += 1
+            end
+          end
+          expect(checked).to eq(412 * 16)
+        end
+
+        # A reply in the minutes after the hour may predate the reward (they
+        # come within two minutes of it): it lapses again at 05:05 or 06:05.
+        it 'asks again at 06:05 after a no-credits reply at 06:00:20, before the reward came' do
+          $taskmaster_boost_unavailable = { 'task' => at('2026-11-18 06:00:20').to_i }
+          allow(Time).to receive(:now).and_return(at('2026-11-18 06:04:59'), at('2026-11-18 06:05:00'))
+          tm = boosted(task_boosts: ['task'])
+          expect([tm.boost_spent?('task'), tm.boost_spent?('task')]).to eq([true, false])
+        end
+
         it 'asks again for a note left by an older taskmaster in the same process (true, no time)' do
           $taskmaster_boost_unavailable = { 'haste' => true }
           expect(boosted(task_boosts: ['haste']).boost_spent?('haste')).to be(false)
@@ -1530,7 +1566,10 @@ RSpec.describe TaskMaster do
         reply_with(activated)
         tm.refresh_haste
         expect(DRC).to have_received(:bput).with('boost haste', any_args)
-        expect(tm.instance_variable_get(:@boost)).to be(false)
+        # The run stays armed: whether the task boost is spent is asked at the
+        # cooldown (get_task), where it is skipped while the note holds.
+        expect([tm.instance_variable_get(:@boost), tm.boost_spent?('task')]).to eq([true, true])
+        expect(DRC).not_to have_received(:bput).with('boost task', any_args)
       end
 
       it 'notes nothing for an activation, another answer or none, so the next hour asks again' do
@@ -2479,6 +2518,22 @@ RSpec.describe TaskMaster do
             run = build(settings: { task_use_boost: true })
             run.send(:configure_boosts)
             expect(run.instance_variable_get(:@boost)).to be(true)
+          end
+
+          # OSXLich-Doug's sequence on #8122: the run starts before the
+          # rollover with the task boost noted spent, and its first cooldown
+          # comes after the login reward. The note is asked at the cooldown.
+          it 'sends BOOST TASK at a cooldown after the rollover, though the run started while the note held' do
+            noted = Time.utc(2026, 11, 18, 5, 50).to_i
+            $taskmaster_boost_unavailable = { 'task' => noted }
+            allow(Time).to receive(:now).and_return(Time.utc(2026, 11, 18, 5, 58))
+            _, events, = asking([wait, offer], boost_reply: boosted) do |run|
+              run.instance_variable_set(:@settings, OpenStruct.new(task_boosts: %w[task]))
+              run.send(:configure_boosts)
+              allow(Time).to receive(:now).and_return(Time.utc(2026, 11, 18, 6, 3))
+            end
+
+            expect(events).to eq([:find, :ask, :boost, [:pause, 2], *accepted])
           end
 
           it 'waits the poll interval for every taskmaster when the run was started with the boost already spent' do
