@@ -70,6 +70,14 @@ class Almanac
     pause 1
     clear
 
+    # should_not_use_almanac? checked the no-use scripts before the pause, but a
+    # script can start in between (taskmaster starting remedy). It isn't in the
+    # pause list, so it keeps running and loses a hand to the almanac.
+    if running_no_use_scripts?
+      DRC.safe_unpause_list(scripts_to_unpause)
+      return
+    end
+
     unless DRCI.get_item_if_not_held?(@almanac) && DRCI.in_hands?(@almanac)
       if DRCI.exists?(@almanac)
         DRC.message('Hands full, will try again later')
