@@ -9382,11 +9382,31 @@ RSpec.describe TaskMaster do
 
         # None of her four remedies uses water or alcohol: every logged READ
         # lists a herb, a splash of brewer's brine and a catalyst (the reads
-        # let), and remedy buys a missing one itself.
-        it 'neither looks for nor buys water and alcohol after her accept, with or without a survey, even when none is carried' do
+        # let). remedy buys a missing one all the same, mid-task, at the
+        # crafting town's shop (remedy.lic Supplies#buy_missing), so with no
+        # answer from the wait (no wait, a finish, a survey made with a
+        # water_container set) they are looked for and bought on the way.
+        it 'looks for water and alcohol when the wait gave no answer for them, and buys those not found, though her remedies use neither' do
           reads.each_value { |lines| expect(lines.map(&:text).grep(/\(\d+\) (?!prepared herb|splash of brewer's brine|catalyst material)/)).to eq([]) }
           [nil, { coal_rubs: 4 }].each do |survey|
             tm = maker(stock_survey: survey)
+            game, commons = shop_world([['large coal nugget', 'duffel bag']])
+            game.script('tap my first coal nugget', ReplayGame.log('6100:8910'))
+
+            expect(tm.missing_remedy_supplies(3).map { |supply| supply[:name] }).to eq(%w[water alcohol])
+            expect(commons.calls.select { |name, *| name == 'DRCI.exists?' }.map { |call| call[1] }).to eq(%w[water alcohol])
+          end
+
+          # Found by TAP (in another container, say): none bought.
+          tm = maker
+          game, = shop_world([['large coal nugget', 'duffel bag'], ['water', 'traveler\'s pack'], ['grain alcohol', 'traveler\'s pack']])
+          game.script('tap my first coal nugget', ReplayGame.log('6100:8910'))
+          expect(tm.missing_remedy_supplies(3)).to eq([])
+        end
+
+        it 'never looks for water or alcohol when water_container and alcohol_container name vessels, with or without a survey' do
+          [nil, { coal_rubs: 4 }].each do |survey|
+            tm = maker(settings: settings.merge(water_container: 'jug', alcohol_container: 'flask'), stock_survey: survey)
             game, = shop_world([['large coal nugget', 'duffel bag']])
             game.script('tap my first coal nugget', ReplayGame.log('6100:8910'))
 
@@ -10244,7 +10264,7 @@ RSpec.describe TaskMaster do
               sent << command
               { 'tap my first coal nugget' => coal_tap('massive'), 'tap my second coal nugget' => coal_tap('large') }.fetch(command, '')
             })
-            coal = ->(survey, crafts) { maker(stock_survey: survey).missing_remedy_supplies(crafts).map { |supply| supply[:name] } }
+            coal = ->(survey, crafts) { maker(stock_survey: survey.merge(water: true, alcohol: true)).missing_remedy_supplies(crafts).map { |supply| supply[:name] } }
 
             # Two rubs, all the nuggets carried: a nugget for three crafts, no TAP.
             expect([coal.call({ coal_rubs: 2 }, 3), sent]).to eq([['coal nugget'], []])
@@ -10297,14 +10317,33 @@ RSpec.describe TaskMaster do
             expect(asked.size).to eq(3)
           end
 
-          it 'buys water or alcohol only when the wait found none, once' do
+          it 'takes what the wait found of water and alcohol for the first check, and taps afresh for the next' do
             tm = maker(stock_survey: { water: false, alcohol: true, coal_rubs: 6 })
+            taps = []
+            allow(DRCI).to receive(:exists?) { |item| taps << item && true }
 
             expect(tm.missing_remedy_supplies(1).map { |supply| supply[:name] }).to eq(['water'])
-            allow(DRCI).to receive(:exists?)
+            expect(taps).to eq([])
             game('tap my' => coal_tap('massive'))
             expect(tm.missing_remedy_supplies(1)).to eq([])
-            expect(DRCI).not_to have_received(:exists?)
+            expect(taps).to eq(%w[water alcohol])
+          end
+
+          # With no wait (a finish, her timer already out), the first round
+          # reads them off the INVENTORY taken for the doses on hand, as
+          # Gnarta's listed "some water" and "some grain alcohol" (16:16:51).
+          it "with no survey, taps only the water or alcohol the bag's INVENTORY does not list, and takes no unsure line for either" do
+            taps = []
+            allow(DRCI).to receive(:exists?) { |item| taps << item && false }
+            supplies = ->(listing) { maker.missing_remedy_supplies(1, listing).map { |supply| supply[:name] } }
+
+            expect([supplies.call(gnarta_bag), taps]).to eq([[], []])
+            expect([supplies.call(gnarta_bag - ['some grain alcohol']), taps]).to eq([['alcohol'], ['alcohol']])
+            taps.clear
+            # "some water lily" holds the word but is a lily, not water.
+            expect([supplies.call((gnarta_bag - ['some water']) + ['some water lily']), taps]).to eq([['water'], ['water']])
+            taps.clear
+            expect([supplies.call(nil), taps]).to eq([%w[coal\ nugget water alcohol], ['water', 'alcohol']])
           end
         end
 
@@ -10348,8 +10387,14 @@ RSpec.describe TaskMaster do
             _, taps = tooled(draught_recipe, listing: gnarta_bag - ['a trapezoidal loimic wire sieve'])
             expect(taps).to eq(['sieve'])
 
-            # A line whose noun is not the tool's is not taken for it.
+            # A line holding the tool's name only inside another word
+            # ("bowl-shaped") is not sorted at all.
             _, taps = tooled(draught_recipe, listing: ['a bowl-shaped charm', 'a grooved agonite mixing stick', 'a trapezoidal loimic wire sieve'])
+            expect(taps).to eq(['bowl'])
+
+            # A line holding every word of the tool's name whose noun is
+            # another's (sort_listed's unsure: "polish") is not taken for it.
+            _, taps = tooled(draught_recipe, listing: ['some bowl polish', 'a grooved agonite mixing stick', 'a trapezoidal loimic wire sieve'])
             expect(taps).to eq(['bowl'])
 
             _, taps = tooled(draught_recipe)
@@ -10392,6 +10437,8 @@ RSpec.describe TaskMaster do
             game.script('count my first junliar', ReplayGame.log('6100:8793'))
             tm.buy_remedy_supplies(draught_recipe, 1)
             expect(game.sent.last(4)).to eq(['count my first brine', 'count my second brine', 'tap my first coal nugget', 'count my first junliar'])
+            # The listing is used once: the next round taps the water and alcohol.
+            expect(commons.calls.select { |name, *| name == 'DRCI.exists?' }.map { |call| call[1] }).to eq(%w[sieve water alcohol])
             expect([game.clock, game.diagnostics]).to eq([0.0, []])
           end
         end
@@ -11366,7 +11413,7 @@ RSpec.describe TaskMaster do
 
             expect(game.sent).to eq(['inventory duffel bag', 'look in my bowl', 'get my aevaes from my bowl', *supply_checks, 'count my first aevaes', 'count my second aevaes'])
             expect(DRCT).to have_received(:order_item).twice
-            expect(commons.calls.select { |name, *| name == 'DRCI.exists?' }.map { |call| call[1] }).to eq(['bowl', 'mixing stick', 'sieve'])
+            expect(commons.calls.select { |name, *| name == 'DRCI.exists?' }.map { |call| call[1] }).to eq(['bowl', 'mixing stick', 'sieve', 'water', 'alcohol'])
             expect(commons.calls).to include(['DRCM.ensure_copper_on_hand', (2 * 537) + 7500, 'Crossing'])
             expect(tm.instance_variable_get(:@stock_survey)).to be_nil
           end
