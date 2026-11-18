@@ -1554,6 +1554,98 @@ RSpec.describe TaskMaster do
         expect(UserVars.taskmaster_last_seen['zasele']).to eq(16_150)
       end
 
+      # Saelia, 2026-11-18 09:58:20-23: go2 walked her through Upper Dock,
+      # where Nezhiri stood, on the way to other rooms on the list. The stream
+      # gives each room's title (subtitle) before its room objects.
+      describe 'a taskmaster in a room walked through' do
+        let(:titles) do
+          { 16_145 => '[Andreshlew, Palace Road]', 16_146 => '[Andreshlew, West Dock]',
+            16_148 => '[Andreshlew, East Dock]', 16_150 => '[Andreshlew, Upper Dock]',
+            16_153 => '[Andreshlew, Dock Walk]', 16_154 => '[Andreshlew, Dock Walk]' }
+        end
+
+        def subtitle(title)
+          %(<streamWindow id='room' title='Room' subtitle=" - #{title} (**)"/>)
+        end
+
+        def objs(*names)
+          "<component id='room objs'>You also see #{names.join(', ')}.</component>"
+        end
+
+        # path: room => the rooms walked through on the way there (title, and
+        # whether Nezhiri's link is in its room objects), fed to the hooks.
+        def walk_world(nezhiri_in:, path: {}, start_in: 16_936)
+          tm = build(npc: 'nezhiri')
+          here = start_in
+          walked = []
+          map = titles
+          # Map titles carry a second pair of brackets, as XMLData.room_title
+          # does (lich-5 xml_delta.rb main_subtitle): "[[Andreshlew, Upper Dock]]".
+          stub_const('Map', Class.new { define_singleton_method(:[]) { |id| map[id] && OpenStruct.new(title: ["[#{map[id]}]"]) } })
+          allow(Room).to receive(:current) { OpenStruct.new(id: here) }
+          allow(DRRoom).to receive(:npcs) { here == nezhiri_in ? ['Nezhiri'] : [] }
+          allow(DRRoom).to receive(:room_objs) { [] }
+          allow(DRCT).to receive(:walk_to) do |room|
+            walked << room
+            Array(path[room]).each do |id|
+              DownstreamHook.run(subtitle(titles[id]))
+              DownstreamHook.run(objs(id == nezhiri_in ? '<a exist="76006" noun="Nezhiri">Potion Peddler Nezhiri</a>' : 'a woven sack'))
+            end
+            DownstreamHook.run(subtitle(titles[room])) if titles[room]
+            here = room
+          end
+          tm.find_npc(titles.keys, 'nezhiri')
+          walked
+        end
+
+        it 'goes back to the room she was passed in, instead of searching on' do
+          walked = walk_world(nezhiri_in: 16_150, path: { 16_145 => [16_148, 16_150] })
+
+          expect(walked).to eq([16_145, 16_150])
+          expect(UserVars.taskmaster_last_seen['nezhiri']).to eq(16_150)
+        end
+
+        it 'searches the list as before when she was not seen on the way' do
+          walked = walk_world(nezhiri_in: 16_150, path: { 16_145 => [16_148] })
+
+          expect(walked).to eq([16_145, 16_146, 16_148, 16_150])
+        end
+
+        it 'tries each listed room of the title she was seen under' do
+          walked = walk_world(nezhiri_in: 16_154, path: { 16_145 => [16_154] })
+
+          expect(walked).to eq([16_145, 16_153, 16_154])
+        end
+
+        def noting(*lines)
+          tm = build(npc: 'nezhiri')
+          allow(DRCT).to receive(:walk_to) { lines.each { |line| DownstreamHook.run(line) } }
+          tm.walk_noting('nezhiri', 16_145)
+        end
+
+        it 'notes the title of the room whose objects name her' do
+          expect(noting(subtitle('[Andreshlew, East Dock]'), objs('a woven sack'),
+                        subtitle('[Andreshlew, Upper Dock]'), objs('<a exist="76006" noun="Nezhiri">Potion Peddler Nezhiri</a>'),
+                        subtitle('[Andreshlew, Palace Road]'), objs('a woven sack'))).to eq('[[Andreshlew, Upper Dock]]')
+        end
+
+        it 'pairs her with her own room when one chunk carries several rooms' do
+          chunk = [subtitle('[Andreshlew, Palace Road]'), objs('a woven sack'),
+                   subtitle('[Andreshlew, Upper Dock]'), objs('<a exist="76006" noun="Nezhiri">Potion Peddler Nezhiri</a>')].join("\n")
+          expect(noting(chunk)).to eq('[[Andreshlew, Upper Dock]]')
+        end
+
+        it 'does not take an item named for her for her' do
+          expect(noting(subtitle('[Andreshlew, East Dock]'), objs("some Nezhiri's potion instructions"))).to be_nil
+        end
+
+        it 'stops watching the stream once the walk ends' do
+          walk_world(nezhiri_in: 16_150, path: { 16_145 => [16_150] })
+
+          expect(DownstreamHook.ordered_hook_names).not_to include(TaskMaster::FIND_NPC_HOOK)
+        end
+      end
+
       it 'remembers each taskmaster separately' do
         UserVars.taskmaster_last_seen = { 'poltu' => 16_290 }
         search(zasele_in: 16_146, start_in: 16_936)
@@ -1602,7 +1694,9 @@ RSpec.describe TaskMaster do
       # given), walking changes the room. Walks and commands go to `events`
       # in the order they happen.
       # With moves: false every walk fails and the character stays put.
-      def search(room_data:, start_in:, moves: true)
+      # stream: room => lines the walk there sends through the downstream
+      # hooks (walk_noting's), as the game streams each room passed.
+      def search(room_data:, start_in:, moves: true, stream: {})
         tm = build
         here = start_in
         allow(Room).to receive(:current) { OpenStruct.new(id: here) }
@@ -1611,6 +1705,7 @@ RSpec.describe TaskMaster do
         allow(DRCT).to receive(:walk_to) do |room|
           events << [:walk, room]
           here = room if moves
+          Array(stream[room]).each { |line| DownstreamHook.run(line) }
         end
         allow(DRC).to receive(:bput) do |*args|
           events << [:send, args.first, here]
@@ -1626,6 +1721,19 @@ RSpec.describe TaskMaster do
           expect(events).to eq([[:walk, 16_145], [:walk, 16_146], [:walk, 16_148], [:send, 'look', 16_148]])
           expect(UserVars.taskmaster_last_seen['zasele']).to eq(16_148)
         end
+      end
+
+      # mrhoribu on #8116: the walk there saw her in the room's objects, then a
+      # cut-short refresh (#7993) left her out of DRRoom. The LOOK that finds
+      # her ends the search; a second check of the room would not LOOK again
+      # and would walk on past her.
+      it 'stops at the LOOK that finds her when the walk there also saw her' do
+        game.script('look', *described_look)
+        search(room_data: { 16_148 => cut_short }, start_in: 16_936,
+               stream: { 16_148 => [%(<streamWindow id='room' title='Room' subtitle=" - [Lithralia Street] (**)"/>),
+                                    %(<component id='room objs'>You also see <a exist="76029" noun="Zasele">Seamstress Zasele</a>.</component>)] })
+        expect(events).to eq([[:walk, 16_145], [:walk, 16_146], [:walk, 16_148], [:send, 'look', 16_148]])
+        expect(UserVars.taskmaster_last_seen['zasele']).to eq(16_148)
       end
 
       it 'sends nothing extra when DRRoom lists her (as it will once Lich reads the full listing)' do
@@ -9793,6 +9901,126 @@ RSpec.describe TaskMaster do
 
           expect(game.sent).not_to include('give my potion to nezhiri')
           expect(DRC).to have_received(:message).with('Could not get another potion to hand in and the task is not finished, stopping.')
+        end
+
+        # Gorkus, 2026-11-18 06:39:41-46: the stack was cut in the crafting
+        # room and carried on the walk to her, where bescort's STOW RIGHT took
+        # it. It now waits in the crafting bag for the walk
+        # (set_aside_remedy_hand_in) and is got from there by its id.
+        describe 'the stack on the walk to her' do
+          let(:potion_count) { ReplayGame.code('You count out 14 uses remaining.', from: 'Gorkus 2026-11-18 06:39:43') }
+
+          def potion_hand_in(tm)
+            game, commons, hand_in = handing_in(tm, kit + [['landsickness potion', 'duffel bag', '7701']], 14)
+            game.script('inventory duffel bag', *bag_listed('some landsickness potion'))
+            game.script('count #7701', potion_count)
+            [game, commons, hand_in]
+          end
+
+          def taken(game, commons)
+            game.script('give my potion to nezhiri', ReplayGame.log('6101:3623'), ReplayGame.log('6101:3626'), after: ->(_) { commons.release('#7701') })
+          end
+
+          def stack_calls(commons, name)
+            commons.calls.select { |call| call[0] == name && call[1] == '#7701' }
+          end
+
+          it 'puts the stack in the crafting bag for the walk, and gets it from there by its id once she is found' do
+            tm = maker(task_product: 'landsickness potion', task_item: 'potion')
+            game, commons, hand_in = potion_hand_in(tm)
+            DRRoom.npcs = []
+            walk = nil
+            allow(tm).to receive(:find_npc) do
+              walk = { held: tm.send(:hand_ids), calls: commons.calls.dup }
+              DRRoom.npcs = ['Nezhiri']
+            end
+            taken(game, commons)
+
+            hand_in.call
+
+            expect(walk[:held]).not_to include('7701')
+            expect(walk[:calls]).to include(['DRCI.put_away_item?', '#7701', 'duffel bag'])
+            expect(walk[:calls]).not_to include(['DRCI.get_item?', '#7701', 'duffel bag'])
+            expect(stack_calls(commons, 'DRCI.get_item?')).to eq([['DRCI.get_item?', '#7701', 'duffel bag']])
+            expect(game.sent).to eq(['inventory duffel bag', 'count #7701', 'give my potion to nezhiri', 'dump junk'])
+            expect(commons.inventory.map(&:name)).not_to include('landsickness potion')
+            expect([game.clock, game.diagnostics]).to eq([0.0, []])
+          end
+
+          it 'keeps the stack in hand when she is in the room already' do
+            tm = maker(task_product: 'landsickness potion', task_item: 'potion')
+            game, commons, hand_in = potion_hand_in(tm)
+            held_on_walk = nil
+            allow(tm).to receive(:find_npc) { held_on_walk = tm.send(:hand_ids) }
+            taken(game, commons)
+
+            hand_in.call
+
+            expect(held_on_walk).to include('7701')
+            expect(stack_calls(commons, 'DRCI.put_away_item?')).to eq([])
+            expect(stack_calls(commons, 'DRCI.get_item?')).to eq([])
+            expect([game.clock, game.diagnostics]).to eq([0.0, []])
+          end
+
+          it 'puts it back in the bag again when she wandered off before the give, and gets it back for the next' do
+            tm = maker(task_product: 'landsickness potion', task_item: 'potion')
+            game, commons, hand_in = potion_hand_in(tm)
+            held_on_walks = []
+            allow(tm).to receive(:find_npc) do
+              held_on_walks << tm.send(:hand_ids)
+              DRRoom.npcs = ['Nezhiri']
+            end
+            game.script('give my potion to nezhiri', ReplayGame.code(missed_give, from: 'taskmaster.lic GIVE_MISSED'), after: ->(_) { DRRoom.npcs = [] })
+            taken(game, commons)
+
+            hand_in.call
+
+            expect(held_on_walks.map { |held| held.include?('7701') }).to eq([true, false])
+            expect(stack_calls(commons, 'DRCI.put_away_item?')).to eq([['DRCI.put_away_item?', '#7701', 'duffel bag']])
+            expect(stack_calls(commons, 'DRCI.get_item?')).to eq([['DRCI.get_item?', '#7701', 'duffel bag']])
+            expect(game.sent.count('give my potion to nezhiri')).to eq(2)
+            expect(commons.inventory.map(&:name)).not_to include('landsickness potion')
+            expect([game.clock, game.diagnostics]).to eq([0.0, []])
+          end
+
+          it 'carries the stack as before when it will not go in the bag' do
+            tm = maker(task_product: 'landsickness potion', task_item: 'potion')
+            game, commons, hand_in = potion_hand_in(tm)
+            DRRoom.npcs = []
+            allow(DRCI).to receive(:put_away_item?).with('#7701', 'duffel bag').and_return(false)
+            held_on_walk = nil
+            allow(tm).to receive(:find_npc) do
+              held_on_walk = tm.send(:hand_ids)
+              DRRoom.npcs = ['Nezhiri']
+            end
+            taken(game, commons)
+
+            hand_in.call
+
+            expect(held_on_walk).to include('7701')
+            expect(stack_calls(commons, 'DRCI.get_item?')).to eq([])
+            expect(game.sent).to eq(['inventory duffel bag', 'count #7701', 'give my potion to nezhiri', 'dump junk'])
+            expect([game.clock, game.diagnostics]).to eq([0.0, []])
+          end
+
+          it 'gets it by its id from wherever it went when it is no longer in the bag' do
+            tm = maker(task_product: 'landsickness potion', task_item: 'potion')
+            game, commons, hand_in = potion_hand_in(tm)
+            DRRoom.npcs = []
+            allow(tm).to receive(:find_npc) do
+              commons.get_item?('#7701', 'duffel bag') # moved on the walk,
+              commons.put_away_item?('#7701', 'rucksack') # to the rucksack
+              DRRoom.npcs = ['Nezhiri']
+            end
+            taken(game, commons)
+
+            hand_in.call
+
+            expect(stack_calls(commons, 'DRCI.get_item?').last).to eq(['DRCI.get_item?', '#7701', nil])
+            expect(game.sent).to eq(['inventory duffel bag', 'count #7701', 'give my potion to nezhiri', 'dump junk'])
+            expect(commons.inventory.map(&:name)).not_to include('landsickness potion')
+            expect([game.clock, game.diagnostics]).to eq([0.0, []])
+          end
         end
 
         # 6106:1800-1839: "ignores your offer", then the same stack is given
