@@ -1532,3 +1532,185 @@ RSpec.describe StatusMonitor::Monitor do
     expect(monitor.spam_line).to be_nil
   end
 end
+
+# ---------------------------------------------------------------------------
+# Window -- native WebUI window state, geometry and rendering
+# ---------------------------------------------------------------------------
+RSpec.describe StatusMonitor::Window do
+  # Records the components a render asks for, as the WebUI builder would.
+  let(:recorder_class) do
+    Class.new do
+      attr_reader :calls
+
+      def initialize
+        @calls = []
+      end
+
+      %i[stack log progress].each do |type|
+        define_method(type) do |**props, &block|
+          @calls << [type, props]
+          block&.call
+        end
+      end
+    end
+  end
+
+  let(:saved) { {} }
+  let(:owner) { Object.new }
+  let(:api) do
+    Module.new do
+      class << self
+        attr_accessor :open_result, :pages, :refreshes, :terminated
+      end
+      self.pages = []
+      self.refreshes = 0
+      self.terminated = []
+      def self.webui_page(**options, &block) = pages << options.merge(builder: block) && :page
+      def self.webui_refresh(_page) = self.refreshes += 1
+      def self.webui_start = nil
+      def self.webui_open(**) = open_result
+      def self.webui_terminate_owner(owner) = terminated << owner
+    end
+  end
+  let(:window) { described_class.new(owner, 'Testchar Status', saved) }
+
+  before { stub_const('Lich::API', api) }
+
+  def rendered(window)
+    recorder = recorder_class.new
+    window.render(recorder)
+    recorder.calls
+  end
+
+  describe '.available?' do
+    it 'is false when Lich has no WebUI' do
+      hide_const('Lich::WebUI')
+      expect(described_class.available?).to be(false)
+    end
+
+    it 'is false when presentation is disabled' do
+      stub_const('Lich::WebUI', Module.new { def self.presentation_enabled? = false })
+      expect(described_class.available?).to be(false)
+    end
+
+    it 'is true when presentation is enabled and the page API exists' do
+      stub_const('Lich::WebUI', Module.new { def self.presentation_enabled? = true })
+      expect(described_class.available?).to be(true)
+    end
+  end
+
+  describe '.health_tone' do
+    it 'is positive at 75 and above' do
+      expect(described_class.health_tone(75)).to eq('positive')
+      expect(described_class.health_tone(100)).to eq('positive')
+    end
+
+    it 'is danger below 75 and before health is known' do
+      expect(described_class.health_tone(74)).to eq('danger')
+      expect(described_class.health_tone(nil)).to eq('danger')
+    end
+  end
+
+  describe '.saved_geometry' do
+    it 'keeps a size above 100 and an on-screen position' do
+      expect(described_class.saved_geometry(width: 480, height: 340, position: [20, 30]))
+        .to eq('window_position' => [20, 30], 'window_width' => 480, 'window_height' => 340)
+    end
+
+    it 'drops sizes at or below 100 and negative or malformed positions, as the GTK window did' do
+      expect(described_class.saved_geometry(width: 100, height: 99, position: [-5, 10])).to eq({})
+      expect(described_class.saved_geometry(width: nil, height: nil, position: [1])).to eq({})
+      expect(described_class.saved_geometry({})).to eq({})
+    end
+  end
+
+  describe '#open' do
+    it 'opens a pinned window with the default size when nothing is saved' do
+      api.open_result = true
+      expect(window.open).to be(true)
+      props = api.pages.first[:props]
+      expect(props[:size]).to eq([300, 100])
+      expect(props[:presentation]).to eq(always_on_top: true)
+      expect(props).not_to have_key(:position)
+    end
+
+    it 'restores the saved size and position' do
+      saved.merge!('window_width' => 480, 'window_height' => 340, 'window_position' => [20, 30])
+      api.open_result = true
+      window.open
+      expect(api.pages.first[:props]).to include(size: [480, 340], position: [20, 30])
+    end
+
+    it 'reports failure when no window opens' do
+      api.open_result = false
+      expect(window.open).to be(false)
+    end
+  end
+
+  describe 'close and configure callbacks' do
+    it 'marks the window closed from the close event' do
+      api.open_result = true
+      window.open
+      expect(window.closed?).to be(false)
+      api.pages.first[:on][:close].call(nil)
+      expect(window.closed?).to be(true)
+    end
+
+    it 'saves the last reported geometry on shutdown and releases the owner' do
+      api.open_result = true
+      window.open
+      event = Struct.new(:payload).new({ width: 480, height: 340, position: [20, 30] })
+      api.pages.first[:on][:configure].call(event)
+      window.shutdown
+      expect(saved).to eq('window_position' => [20, 30], 'window_width' => 480, 'window_height' => 340)
+      expect(api.terminated).to eq([owner])
+    end
+
+    it 'does not overwrite saved geometry when the window never reported any' do
+      saved['window_width'] = 480
+      window.shutdown
+      expect(saved).to eq('window_width' => 480)
+    end
+  end
+
+  describe '#append and #health=' do
+    it 'keeps at most MAX_LINES, dropping the oldest' do
+      (described_class::MAX_LINES + 3).times { |i| window.append("line #{i}") }
+      expect(window.lines.size).to eq(described_class::MAX_LINES)
+      expect(window.lines.first).to eq('line 3')
+    end
+
+    it 'does not refresh a closed window' do
+      api.open_result = true
+      window.open
+      api.pages.first[:on][:close].call(nil)
+      before = api.refreshes
+      window.append('late line')
+      window.health = 50
+      expect(api.refreshes).to eq(before)
+    end
+  end
+
+  describe '#render' do
+    it 'shows lines and an unknown health as an empty bar' do
+      window.append("new:'a line'")
+      calls = rendered(window)
+      log = calls.find { |type, _| type == :log }.last
+      bar = calls.find { |type, _| type == :progress }.last
+      expect(log[:lines]).to eq(["new:'a line'"])
+      expect(bar).to include(value: 0.0, label: '', tone: 'danger')
+    end
+
+    it 'shows health as a percentage with its tone' do
+      window.health = 90
+      bar = rendered(window).find { |type, _| type == :progress }.last
+      expect(bar).to include(value: 0.9, label: '90%', tone: 'positive')
+    end
+
+    it 'clamps out-of-range health for the bar but labels the reported value' do
+      window.health = 120
+      bar = rendered(window).find { |type, _| type == :progress }.last
+      expect(bar).to include(value: 1.0, label: '120%')
+    end
+  end
+end

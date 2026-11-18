@@ -22,12 +22,6 @@ arg_definitions = [
 args = parse_args(arg_definitions)
 
 nowindow = args.nowindow || get_settings.status_monitor_no_window
-# Without GTK (e.g. a headless host), run headless instead of exiting.
-unless nowindow || HAVE_GTK
-  echo 'ruby-gtk bindings are not installed or failed to load; running without a window.'
-  nowindow = true
-end
-
 require 'sqlite3'
 require 'fileutils'
 
@@ -934,18 +928,154 @@ module StatusMonitor
       []
     end
   end
-end
 
-# @param entry [Gtk::Entry] health bar widget to update
-# @return [void]
-def update_health_bar(entry)
-  hp = health
-  if hp >= 75
-    entry.override_background_color(:normal, Gdk::RGBA.parse('green'))
-  else
-    entry.override_background_color(:normal, Gdk::RGBA.parse('red'))
+  # Native WebUI window: new lines on top, health below. Callbacks run on the
+  # WebUI host thread and only record state; the script thread does the rest.
+  class Window
+    PAGE_ID = 'status-monitor'
+    # Lines kept on screen; older ones scroll off.
+    MAX_LINES = 500
+    # Health at or above this shows as healthy (the old green bar).
+    HEALTHY = 75
+    DEFAULT_WIDTH = 300
+    DEFAULT_HEIGHT = 100
+    # Saved sizes at or below this are ignored, as the GTK window did.
+    MIN_SAVED_SIZE = 100
+
+    # @return [Boolean] true when this Lich can show native WebUI windows
+    def self.available?
+      (defined?(Lich::WebUI) && Lich::WebUI.respond_to?(:presentation_enabled?) && Lich::WebUI.presentation_enabled? &&
+        defined?(Lich::API) && Lich::API.respond_to?(:webui_page)) ? true : false
+    end
+
+    # Width, height and position worth saving, or nil for each value that is not.
+    #
+    # @param geometry [Hash] :width, :height, :position as reported by the window
+    # @return [Hash{String => Object}] CharSettings keys to write
+    def self.saved_geometry(geometry)
+      saved = {}
+      position = geometry[:position]
+      saved['window_position'] = position if position.is_a?(Array) && position.size == 2 && position.all? { |v| v.is_a?(Integer) && v >= 0 }
+      saved['window_width'] = geometry[:width] if geometry[:width].is_a?(Integer) && geometry[:width] > MIN_SAVED_SIZE
+      saved['window_height'] = geometry[:height] if geometry[:height].is_a?(Integer) && geometry[:height] > MIN_SAVED_SIZE
+      saved
+    end
+
+    # @param hp [Integer, nil] health percent
+    # @return [String] contract tone for the health bar
+    def self.health_tone(hp)
+      hp.to_i >= HEALTHY ? 'positive' : 'danger'
+    end
+
+    attr_reader :lines, :health
+
+    # @param owner [Lich::Common::Script] owning script
+    # @param title [String] window title
+    # @param saved [Hash] CharSettings-like store holding window_position/width/height
+    def initialize(owner, title, saved)
+      @owner = owner
+      @title = title
+      @saved = saved
+      @lines = []
+      @health = nil
+      @closed = false
+      @geometry = {}
+      @mutex = Mutex.new
+      @page = nil
+    end
+
+    # Opens the window.
+    #
+    # @return [Boolean] false if no window could be opened
+    def open
+      window = self
+      size = [@saved['window_width'] || DEFAULT_WIDTH, @saved['window_height'] || DEFAULT_HEIGHT]
+      position = @saved['window_position']
+      props = { size: size, bare: true, density: :compact, viewport: true, presentation: { always_on_top: true } }
+      props[:position] = position if position.is_a?(Array) && position.size == 2
+      @page = Lich::API.webui_page(owner: @owner, id: PAGE_ID, title: @title, props: props,
+                                   on: { close: ->(_ev) { window.closed! },
+                                         configure: ->(ev) { window.configured(ev.payload) } }) do |ui|
+        window.render(ui)
+      end
+      Lich::API.webui_refresh(@page)
+      Lich::API.webui_start
+      Lich::API.webui_open(page: @page) ? true : false
+    end
+
+    # @return [Boolean] true once the user has closed the window
+    def closed?
+      @mutex.synchronize { @closed }
+    end
+
+    # Close event callback.
+    # @return [void]
+    def closed!
+      @mutex.synchronize { @closed = true }
+    end
+
+    # Configure event callback: remembers the latest size and position.
+    # @param payload [Hash] width, height, position
+    # @return [void]
+    def configured(payload)
+      @mutex.synchronize { @geometry = { width: payload[:width], height: payload[:height], position: payload[:position] } }
+    end
+
+    # Writes the last known good geometry to the settings store.
+    # @return [void]
+    def save_geometry
+      geometry = @mutex.synchronize { @geometry.dup }
+      self.class.saved_geometry(geometry).each { |key, value| @saved[key] = value }
+    end
+
+    # @param hp [Integer] health percent
+    # @return [void]
+    def health=(hp)
+      @mutex.synchronize { @health = hp }
+      redraw
+    end
+
+    # Adds a line to the window.
+    # @param text [String]
+    # @return [void]
+    def append(text)
+      @mutex.synchronize do
+        @lines << text.to_s
+        @lines.shift while @lines.size > MAX_LINES
+      end
+      redraw
+    end
+
+    # Closes the window and releases this script's WebUI resources.
+    # @return [void]
+    def shutdown
+      save_geometry
+      Lich::API.webui_terminate_owner(@owner)
+    rescue StandardError
+      nil
+    end
+
+    # @return [void]
+    def redraw
+      Lich::API.webui_refresh(@page) if @page && !closed?
+    end
+
+    # Page builder.
+    # @param ui [Lich::WebUI::TreeBuilder]
+    # @return [void]
+    def render(ui)
+      # The builder block runs with the builder as self, so take values first.
+      lines, hp = @mutex.synchronize { [@lines.dup, @health] }
+      value = hp ? hp.clamp(0, 100) / 100.0 : 0.0
+      label = hp ? "#{hp}%" : ''
+      tone = self.class.health_tone(hp)
+      max_lines = MAX_LINES
+      ui.stack(key: 'root', gap: 2, margin: 2) do
+        ui.log(key: 'messages', lines: lines, max_lines: max_lines, follow: true)
+        ui.progress(key: 'health', value: value, label: label, tone: tone)
+      end
+    end
   end
-  entry.text = "#{hp}%"
 end
 
 # @param raw [String, nil] original raw line as received from the game stream
@@ -968,7 +1098,8 @@ before_dying do
   monitor.shutdown
 end
 
-if nowindow
+# Without a window, the monitor keeps running on game lines alone.
+run_headless = lambda do
   loop do
     line = script.gets
     if monitor.process(line) && args.debug
@@ -978,85 +1109,37 @@ if nowindow
   end
 end
 
-window = nil
-window_done = false
-load_window_position = CharSettings['window_position'] || []
-load_window_width    = CharSettings['window_width'] || 300
-load_window_height   = CharSettings['window_height'] || 100
-window_title = "#{checkname} Status"
-save_window_position = nil
-save_window_width    = nil
-save_window_height   = nil
-healthbar_et = nil
-messages_tv = nil
+unless nowindow || StatusMonitor::Window.available?
+  echo 'status-monitor: this Lich cannot open WebUI windows; running without a window.'
+  nowindow = true
+end
+run_headless.call if nowindow
+
+window = StatusMonitor::Window.new(Script.current, "#{checkname} Status", CharSettings)
 
 before_dying do
-  CharSettings['window_position'] = save_window_position if (save_window_position.class == Array) && (save_window_position[0].to_i >= 0) && (save_window_position[1].to_i >= 0)
-  CharSettings['window_width']    = save_window_width    if (save_window_width.class == Integer) && (save_window_width > 100)
-  CharSettings['window_height']   = save_window_height   if (save_window_height.class == Integer) && (save_window_height > 100)
-  Gtk.queue { window.destroy }
+  window.shutdown
 end
 
-begin
-  Gtk.queue do
-    messages_tv = Gtk::TextView.new
-    messages_tv.editable = false
-    messages_tv.cursor_visible = false
+unless window.open
+  echo 'status-monitor: could not open a window; running without a window.'
+  run_headless.call
+end
 
-    messages_sw = Gtk::ScrolledWindow.new
-    messages_sw.add(messages_tv)
-    messages_sw.set_policy(:automatic, :automatic)
-
-    healthbar_et = Gtk::Entry.new
-    healthbar_et.editable = false
-    healthbar_et.xalign = 0.5
-    health_font = Pango::FontDescription.new
-    health_font.weight = :bold
-    healthbar_et.override_font(health_font)
-
-    vbox = Gtk::Box.new(:vertical, 0)
-    vbox.pack_start(messages_sw)
-    vbox.pack_start(healthbar_et, :expand => false)
-
-    window              = Gtk::Window.new
-    window.title        = window_title
-    window.keep_above = true
-    window.border_width = 1
-    window.resize(load_window_width, load_window_height)
-    unless load_window_position.empty?
-      window.move(load_window_position[0], load_window_position[1])
-    end
-    window.add(vbox)
-
-    window.signal_connect('delete_event') do
-      save_window_position = window.position
-      save_window_width    = window.allocation.width
-      save_window_height   = window.allocation.height
-      window_done = true
-    end
-    window.show_all
+prev_health = nil
+loop do
+  line = script.gets?
+  if prev_health != health
+    prev_health = health
+    window.health = prev_health
   end
-  prev_health = 0
-
-  loop do
-    line = script.gets?
-    if prev_health != health
-      prev_health = health
-      Gtk.queue { update_health_bar(healthbar_et) }
-    end
-    if monitor.process(line)
-      write_debug_log(line, monitor.last_clean_line, monitor.last_player_line) if args.debug
-    else
-      pause 0.1 unless args.debug && line
-    end
-    if (spam = monitor.consume_spam_line)
-      Gtk.queue do
-        text_buffer = messages_tv.buffer
-        text_buffer.insert(text_buffer.end_iter, "new:'#{spam}'")
-        text_buffer.insert(text_buffer.end_iter, "\r\n")
-        messages_tv.scroll_to_iter(text_buffer.end_iter, 0.0, true, 0, 0)
-      end
-    end
-    break if window_done
+  if monitor.process(line)
+    write_debug_log(line, monitor.last_clean_line, monitor.last_player_line) if args.debug
+  else
+    pause 0.1 unless args.debug && line
   end
+  if (spam = monitor.consume_spam_line)
+    window.append("new:'#{spam}'")
+  end
+  break if window.closed?
 end
