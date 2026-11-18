@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require 'tmpdir'
 require_relative 'spec_helper'
 
 load_lic_class('inventory-manager.lic', 'InventoryManager')
@@ -562,26 +563,6 @@ RSpec.describe InventoryManagerGui do
   end
 
   describe '#refill' do
-    # Stands in for Gtk::TreeStore: append_row only needs append to hand back
-    # something it can index, so each appended row is a plain hash.
-    let(:store) do
-      Class.new do
-        attr_reader :rows
-
-        def initialize
-          @rows = []
-        end
-
-        def clear
-          @rows.clear
-        end
-
-        def append(_parent)
-          {}.tap { |iter| @rows << iter }
-        end
-      end.new
-    end
-    let(:status) { Struct.new(:text).new }
     let(:row) { described_class::Row }
     let(:rows) do
       [
@@ -590,11 +571,14 @@ RSpec.describe InventoryManagerGui do
         row.new('Beta', 'vault', 'a Blue sack', nil, false, false, nil, '')
       ]
     end
-    let(:gui) { described_class.allocate.tap { |g| g.instance_variable_set(:@rows, rows) } }
+    let(:gui) { described_class.new('unused.yaml', :version).tap { |g| g.instance_variable_set(:@rows, rows) } }
+
+    def view_for(query, character: nil, nest: false)
+      gui.refill(query: query, character: character, nest: nest)
+    end
 
     def items_for(query)
-      gui.refill(store, status, query: query, character: nil, nest: false)
-      store.rows.select { |iter| iter[described_class::COL_KIND] == 'item' }.map { |iter| iter[described_class::COL_LABEL] }
+      view_for(query).rows.select { |tree_row| tree_row.kind == 'item' }.map(&:label)
     end
 
     it 'shows every item for an empty query' do
@@ -619,16 +603,237 @@ RSpec.describe InventoryManagerGui do
 
     it 'keeps a half-typed pattern as a substring search without raising' do
       expect(items_for('/gem(')).to be_empty
-      expect(status.text).to eq('0 matches for "/gem("')
+      expect(view_for('/gem(').status).to eq('0 matches for "/gem("')
     end
 
     it 'flags a runaway pattern in the status line' do
       stub_const('InventoryManager::SEARCH_REGEX_TIMEOUT', 0.01)
       rows << row.new('Beta', 'vault', "#{'a' * 30}!", nil, false, false, nil, '')
 
-      items_for('/^(a+)+\\1$/')
+      expect(view_for('/^(a+)+\\1$/').status).to end_with('(pattern took too long, results incomplete)')
+    end
 
-      expect(status.text).to end_with('(pattern took too long, results incomplete)')
+    it 'groups by character, then source, with counts' do
+      view = view_for('')
+      headings = view.rows.reject { |tree_row| tree_row.kind == 'item' }
+
+      expect(headings.map { |tree_row| [tree_row.kind, tree_row.label, tree_row.detail] }).to eq(
+        [['character', 'Alpha', '2 items'], ['source', 'Carried & Worn', '2 items'],
+         ['character', 'Beta', '1 item'], ['source', 'Vault', '1 item']]
+      )
+      expect(view.status).to eq('3 items across 2 characters')
+    end
+
+    it 'shows only the chosen character' do
+      view = view_for('', character: 'Beta')
+
+      expect(view.rows.map(&:label)).to eq(['Beta', 'Vault', 'a Blue sack'])
+      expect(view.status).to eq('1 items across 1 character')
+    end
+
+    it 'nests an item under the container that holds it' do
+      view = view_for('', nest: true)
+      by_label = view.rows.to_h { |tree_row| [tree_row.label, tree_row] }
+
+      expect(by_label['a backpack'].kind).to eq('container')
+      expect(by_label['a backpack'].detail).to eq('container, worn')
+      expect(by_label['a red gem pouch'].parent).to eq(by_label['a backpack'].key)
+      expect(by_label['a backpack'].parent).to eq(by_label['Carried & Worn'].key)
+    end
+
+    it 'gives every row a unique key that names an earlier row as its parent' do
+      rows << row.new('Alpha', 'character', 'a red gem pouch', 'a backpack', false, false, nil, '')
+      view = view_for('', nest: true)
+      seen = []
+
+      view.rows.each do |tree_row|
+        expect(tree_row.key).to match(/\A[A-Za-z0-9_.:-]{1,128}\z/)
+        expect(seen).to include(tree_row.parent) if tree_row.parent
+        seen << tree_row.key
+      end
+      expect(seen.uniq.length).to eq(seen.length)
+    end
+
+    it 'keeps the same keys from one redraw to the next' do
+      expect(view_for('', nest: true).rows.map(&:key)).to eq(view_for('', nest: true).rows.map(&:key))
+    end
+
+    it 'caps a huge tree without orphaning rows' do
+      stub_const('InventoryManagerGui::MAX_TABLE_ROWS', 4)
+      view = view_for('')
+
+      expect(view.rows.length).to eq(4)
+      expect(view.rows.map(&:parent).compact - view.rows.map(&:key)).to be_empty
+      expect(view.status).to end_with('showing the first 4 rows, search to narrow it')
+    end
+  end
+
+  describe '.table_rows' do
+    let(:tree_row) { described_class::TreeRow }
+    let(:view) do
+      described_class::View.new([tree_row.new('c', nil, 'Alpha', '1 item', 'character', ''),
+                                 tree_row.new('s', 'c', 'Vault', '1 item', 'source', ''),
+                                 tree_row.new('i', 's', 'a sack', 'in vault', 'item', 'a sack')], '')
+    end
+
+    def expanded(expansion, query)
+      described_class.table_rows(view, expansion, query).select { |entry| entry[:expanded] }.map { |entry| entry[:key] }
+    end
+
+    it 'maps tree rows to table rows with their parents and cells' do
+      expect(described_class.table_rows(view, :default, '')).to eq(
+        [{ key: 'c', cells: { 'item' => 'Alpha', 'details' => '1 item' }, expanded: true },
+         { key: 's', cells: { 'item' => 'Vault', 'details' => '1 item' }, parent: 'c' },
+         { key: 'i', cells: { 'item' => 'a sack', 'details' => 'in vault' }, parent: 's' }]
+      )
+    end
+
+    it 'expands only the characters while idle and everything while searching' do
+      expect(expanded(:default, '')).to eq(['c'])
+      expect(expanded(:default, 'sack')).to eq(%w[c s])
+    end
+
+    it 'follows Expand all and Collapse all' do
+      expect(expanded(:all, '')).to eq(%w[c s])
+      expect(expanded(:none, 'sack')).to be_empty
+    end
+  end
+
+  describe 'window state' do
+    let(:gui) do
+      described_class.new('unused.yaml', :version).tap do |g|
+        g.instance_variable_set(:@rows, [described_class.parse_row('Alpha', 'a steel sword (in vault) (vault)'),
+                                         described_class.parse_row('Beta', 'a silk sack (in vault) (vault)')])
+        g.synchronize { g.redraw_view }
+      end
+    end
+    let(:messages) { [] }
+
+    before { allow(DRC).to receive(:message) { |text| messages << text } }
+
+    def key_for(label)
+      gui.snapshot[:view].rows.find { |tree_row| tree_row.label == label }.key
+    end
+
+    it 'filters on a search and resets the expansion' do
+      revision = gui.snapshot[:tree_revision]
+      gui.search_changed('silk')
+
+      expect(gui.snapshot[:view].rows.map(&:label)).to eq(['Beta', 'Vault', 'a silk sack'])
+      expect(gui.snapshot[:status]).to eq('1 match for "silk"')
+      expect(gui.snapshot[:tree_revision]).to eq(revision + 1)
+    end
+
+    it 'looks up the selected item on Elanthipedia through the system opener' do
+      allow(gui).to receive(:open_via_os).and_return(true)
+      gui.row_selected(key_for('a steel sword'))
+
+      gui.open_wiki(gui.selected_term)
+
+      expect(gui).to have_received(:open_via_os).with('https://elanthipedia.play.net/index.php?search=steel%20sword')
+      expect(messages).to eq(['Elanthipedia lookup: steel sword'])
+    end
+
+    it 'asks for a selection before a lookup of a heading' do
+      gui.row_selected(key_for('Alpha'))
+
+      gui.open_wiki(gui.selected_term)
+
+      expect(messages).to eq(['Select an item first.'])
+    end
+
+    it 'falls back to a copyable box and the game window for Copy name' do
+      gui.row_selected(key_for('a silk sack'))
+
+      gui.copy_to_clipboard(gui.selected_term)
+
+      expect(gui.snapshot[:copied]).to eq('a silk sack')
+      expect(gui.snapshot[:status]).to eq('Copy the name from the box below the list.')
+      expect(messages).to eq(['Item name: a silk sack'])
+    end
+  end
+
+  describe 'scans' do
+    let(:manager) { instance_double(InventoryManager) }
+    let(:gui) { described_class.new('unused.yaml', :version, manager) }
+
+    before { allow(DRC).to receive(:message) }
+
+    it 'only queues the picks for the script thread' do
+      allow(manager).to receive(:add_current_inv)
+      gui.instance_variable_set(:@scan_picks, { add_current_inv: true, add_home: false })
+
+      gui.scans_answered(Struct.new(:button, :reason).new('run', nil))
+
+      expect(manager).not_to have_received(:add_current_inv)
+      expect(gui.next_job[:method]).to eq(:add_current_inv)
+      expect(gui.next_job).to be_nil
+      expect(gui.snapshot[:scanning]).to be(true)
+    end
+
+    it 'queues nothing when the dialog is cancelled' do
+      gui.instance_variable_set(:@scan_picks, { add_current_inv: true })
+
+      gui.scans_answered(Struct.new(:button, :reason).new(nil, :cancelled))
+
+      expect(gui.next_job).to be_nil
+    end
+
+    it 'treats a save method that exits as skipped' do
+      allow(manager).to receive(:add_shadow_servant) { exit }
+
+      expect(gui.run_scan_method(described_class::SCANS.find { |scan| scan[:method] == :add_shadow_servant })).to eq(:skipped)
+    end
+  end
+
+  describe 'export' do
+    let(:gui) do
+      described_class.new('unused.yaml', :version).tap do |g|
+        g.instance_variable_set(:@rows, [described_class.parse_row('Beta', 'a bundle of arrows, fletched (in container - a quiver) (character)'),
+                                         described_class.parse_row('Beta', 'an agonite ingot (deed page 7, Metal - 3V 98Q) (register)'),
+                                         described_class.parse_row('Alpha', 'a steel sword (in vault) (vault)')])
+      end
+    end
+
+    it 'writes the chosen columns for the chosen character as RFC 4180 CSV' do
+      Dir.mktmpdir do |dir|
+        path = File.join(dir, 'out.csv')
+        columns = described_class::EXPORT_COLUMNS.select { |column| %i[character name container note].include?(column[:key]) }
+
+        gui.write_csv(path, gui.rows_for_export('Beta'), columns)
+
+        expect(File.read(path)).to eq(<<~CSV)
+          Character,Item,Container,Note
+          Beta,"a bundle of arrows, fletched",a quiver,
+          Beta,an agonite ingot,,"page 7, Metal - 3V 98Q"
+        CSV
+      end
+    end
+
+    it 'exports nothing when the dialog is cancelled' do
+      allow(gui).to receive(:export_rows)
+
+      gui.export_answered('Beta', [], described_class::EXPORT_COLUMNS, Struct.new(:button, :reason).new('cancel', nil))
+
+      expect(gui).not_to have_received(:export_rows)
+    end
+  end
+end
+
+RSpec.describe InventoryManager do
+  describe '#launch_gui' do
+    let(:manager) { described_class.allocate }
+    let(:messages) { [] }
+
+    before { allow(DRC).to receive(:message) { |text| messages << text } }
+
+    it 'explains, and points at the text commands, when WebUI cannot open a window' do
+      allow(InventoryManagerGui).to receive(:available?).and_return(false)
+
+      manager.launch_gui
+
+      expect(messages).to eq(['The GUI needs Lich WebUI with its windows enabled, which this Lich session does not have.',
+                              'The text commands still work: ;inventory-manager list <name>, ;inventory-manager search <item>'])
     end
   end
 end

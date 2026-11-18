@@ -890,12 +890,12 @@ class InventoryManager
     item
   end
 
-  # The GUI is strictly opt-in via ;inventory-manager gui. HAVE_GTK is only
-  # touched here so the text commands keep working on installs without the
-  # ruby-gtk bindings.
+  # The GUI is strictly opt-in via ;inventory-manager gui. WebUI is only checked
+  # here so the text commands keep working on a Lich without it, or one started
+  # with --no-gui.
   def launch_gui
-    unless defined?(HAVE_GTK) && HAVE_GTK
-      DRC.message('The GUI needs the ruby-gtk bindings, which are not available in this Lich install.')
+    unless InventoryManagerGui.available?
+      DRC.message('The GUI needs Lich WebUI with its windows enabled, which this Lich session does not have.')
       DRC.message('The text commands still work: ;inventory-manager list <name>, ;inventory-manager search <item>')
       return
     end
@@ -922,23 +922,15 @@ class InventoryManager
   end
 end
 
-# Graphical browser for the saved inventory database.
+# Graphical browser for the saved inventory database, drawn with Lich's native
+# WebUI.
 #
-# A read-only view: scanning stays with the text commands, and this window shows
-# what they have already saved. Reads the same data/inventory.yaml, so it needs
-# no game interaction and is safe to leave open. Built against the GTK3 bindings
-# Lich ships: every widget call must happen inside Gtk.queue because Lich owns
-# the GTK main loop on its own thread.
+# Reads the same data/inventory.yaml the text commands write, so browsing,
+# filtering and exporting never touch the game. Scan is the one part that does:
+# WebUI callbacks run on a host thread, where game commands and pause are not
+# available, so they only queue the chosen save methods. The script thread
+# runs them, exactly as the text commands would.
 class InventoryManagerGui
-  COL_LABEL  = 0
-  COL_TERM   = 1
-  COL_DETAIL = 2
-  COL_KIND   = 3
-  COL_WEIGHT = 4
-
-  WEIGHT_NORMAL = 400
-  WEIGHT_BOLD   = 700
-
   # Guards against a container cycle in hand-edited data.
   MAX_NESTING = 8
 
@@ -1118,30 +1110,106 @@ class InventoryManagerGui
     text.to_s.gsub(/[^a-zA-Z0-9\-_.~]/) { |char| char.bytes.map { |byte| format('%%%02X', byte) }.join }
   end
 
+  PAGE_ID          = 'inventory-manager'
+  EXPORT_DIALOG_ID = 'inventory-export'
+  SCAN_DIALOG_ID   = 'inventory-scans'
+
+  # Window size, in pixels, until the first close remembers one.
+  DEFAULT_SIZE = [760, 560].freeze
+
+  # The whole table goes to the window on every redraw, so a huge database is
+  # capped rather than refused. The search box and the character filter still
+  # reach every row.
+  MAX_TABLE_ROWS = 5000
+
+  # One line of the tree: an id unique within the table, the id of the line it
+  # sits under (nil at the top), what it shows, and the name a wiki lookup or a
+  # copy acts on (empty for the character and source headings).
+  TreeRow = Struct.new(:key, :parent, :label, :detail, :kind, :term)
+
+  # The tree for the current filters and the status line that describes it.
+  View = Struct.new(:rows, :status)
+
+  # Whether this Lich can draw the window: WebUI is loaded and graphical
+  # presentation has not been turned off (--no-gui).
+  def self.available?
+    return false unless defined?(Lich::WebUI) && Lich::WebUI.respond_to?(:presentation_enabled?)
+    return false unless Lich::WebUI.presentation_enabled?
+
+    defined?(Lich::API) && Lich::API.respond_to?(:webui_page) ? true : false
+  end
+
+  # Which rows start expanded: everything while searching, otherwise just the
+  # characters, unless Expand all or Collapse all said otherwise since.
+  def self.expand_row?(row, expansion, query)
+    case expansion
+    when :all  then true
+    when :none then false
+    else query.to_s.strip.empty? ? row.kind == 'character' : true
+    end
+  end
+
+  # The table rows for a view. Only a row with something under it can expand.
+  def self.table_rows(view, expansion, query)
+    parents = view.rows.each_with_object({}) { |row, found| found[row.parent] = true if row.parent }
+    view.rows.map do |row|
+      entry = { key: row.key, cells: { 'item' => row.label.to_s, 'details' => row.detail.to_s } }
+      entry[:parent] = row.parent if row.parent
+      entry[:expanded] = true if parents.key?(row.key) && expand_row?(row, expansion, query)
+      entry
+    end
+  end
+
   def initialize(db_path, version_key, manager = nil)
     @db_path = db_path
     @version_key = version_key.to_s
     @manager = manager
-    # Scan requests cross threads: queued by GTK signal handlers, drained here by
+    # Scan requests cross threads: queued by WebUI callbacks, drained here by
     # the script thread.
     @jobs = Queue.new
     @rows = []
-    @window = nil
     @done = false
+    @page = nil
+    @owner = nil
+    # Callbacks and the script thread both change what the window shows.
+    @lock = Monitor.new
+    @query = ''
+    @character = ALL_CHARACTERS
+    @nest = true
+    @expansion = :default
+    # Part of the table's key. A new key makes the window take the expansion
+    # this script asks for instead of keeping what the viewer last clicked.
+    @tree_revision = 0
+    @selected_key = nil
+    @terms = {}
+    @status = ''
+    @export_link = nil
+    @copied = nil
+    @copy_revision = 0
+    @scanning = false
+    @dialogs = {}
+    @scan_picks = {}
+    @scan_revision = 0
+    @geometry = nil
+    @view = View.new([], '')
   end
 
   def run
+    @owner = Script.current
     load_rows
     DRC.message('No saved inventory yet -- use Scan, or the ;inventory-manager save commands.') if @rows.empty?
-
-    build_window
+    synchronize { redraw_view }
+    return unless open_window
 
     # Scans must execute on this thread. They issue game commands and block
-    # waiting on game output, which would deadlock the GTK main loop.
+    # waiting on game output, which a WebUI callback must never do.
     until @done
       job = next_job
       job ? perform_scan(job) : pause(0.2)
     end
+    remember_geometry
+  ensure
+    close_window
   end
 
   def next_job
@@ -1156,6 +1224,10 @@ class InventoryManagerGui
     dropped = 0
     dropped += 1 while next_job
     DRC.message("inventory-manager: dropped #{dropped} queued scan#{dropped == 1 ? '' : 's'}.") if dropped.positive?
+  end
+
+  def synchronize(&block)
+    @lock.synchronize(&block)
   end
 
   def load_rows
@@ -1181,222 +1253,274 @@ class InventoryManagerGui
     @characters ||= @rows.map(&:character).uniq.sort
   end
 
-  def build_window
-    saved_width    = CharSettings['gui_width'] || 760
-    saved_height   = CharSettings['gui_height'] || 560
-    saved_position = CharSettings['gui_position'] || []
+  # Window -------------------------------------------------------------------
 
-    # Only reached when the script is killed with the window still open. Closing
-    # the window clears @window first, because GTK has already destroyed it by
-    # then and touching it again raises "destroyed GLib::Object".
-    before_dying do
-      Gtk.queue do
-        begin
-          @window.destroy if @window
-        rescue StandardError
-          nil
-        end
-      end
+  def open_window
+    gui = self
+    width  = CharSettings['gui_width'].to_i
+    height = CharSettings['gui_height'].to_i
+    position = CharSettings['gui_position']
+    props = { size: [width.positive? ? width : DEFAULT_SIZE[0], height.positive? ? height : DEFAULT_SIZE[1]],
+              density: :compact, viewport: true, bare: true }
+    props[:position] = position.map(&:to_i) if position.is_a?(Array) && position.length == 2
+
+    @page = Lich::API.webui_page(owner: @owner, id: PAGE_ID, title: 'Inventory Manager', props: props,
+                                 on: { close: ->(_event) { gui.window_closed },
+                                       configure: ->(event) { gui.window_moved(event.payload) } }) do |ui|
+      gui.render(ui)
     end
+    Lich::API.webui_refresh(@page)
+    Lich::API.webui_start
+    return true if Lich::API.webui_open(page: @page)
 
-    Gtk.queue do
-      store = Gtk::TreeStore.new(String, String, String, String, Integer)
+    DRC.message('inventory-manager: could not open a window for the GUI.')
+    false
+  end
 
-      view = Gtk::TreeView.new(store)
-      view.enable_tree_lines = true
-      view.search_column = COL_LABEL
-      view.selection.mode = :single
+  # The window's own close button. Runs on a host thread, so the geometry is
+  # saved by the script thread once the loop ends.
+  def window_closed
+    @done = true
+    drain_jobs
+  end
 
-      item_column = Gtk::TreeViewColumn.new('Item', Gtk::CellRendererText.new, text: COL_LABEL, weight: COL_WEIGHT)
-      item_column.resizable = true
-      item_column.expand = true
-      view.append_column(item_column)
+  def window_moved(payload)
+    @geometry = { width: payload[:width], height: payload[:height], position: payload[:position] }
+  end
 
-      detail_column = Gtk::TreeViewColumn.new('Details', Gtk::CellRendererText.new, text: COL_DETAIL)
-      detail_column.resizable = true
-      view.append_column(detail_column)
+  def remember_geometry
+    geometry = @geometry
+    return unless geometry && geometry[:width].to_i.positive? && geometry[:height].to_i.positive?
 
-      scroller = Gtk::ScrolledWindow.new
-      scroller.set_policy(:automatic, :automatic)
-      scroller.add(view)
+    CharSettings['gui_position'] = geometry[:position] if geometry[:position]
+    CharSettings['gui_width']    = geometry[:width]
+    CharSettings['gui_height']   = geometry[:height]
+  rescue StandardError
+    nil
+  end
 
-      search_entry = Gtk::SearchEntry.new
-      search_entry.placeholder_text = 'Search items and containers (/regex/ works too)'
+  # Retires this script's pages and any open dialog. Script death does the
+  # same, so this only matters when run returns without the script ending.
+  def close_window
+    @done = true
+    Lich::API.webui_terminate_owner(@owner) if @owner && @page
+  rescue StandardError
+    nil
+  end
 
-      character_combo = Gtk::ComboBoxText.new
-      character_combo.append_text(ALL_CHARACTERS)
-      characters.each { |name| character_combo.append_text(name) }
-      character_combo.active = 0
-
-      nesting_toggle = Gtk::CheckButton.new('Nest containers')
-      nesting_toggle.active = true
-
-      export_button   = Gtk::Button.new(label: 'Export to CSV')
-      scan_button     = Gtk::Button.new(label: 'Scan')
-      reload_button   = Gtk::Button.new(label: 'Reload')
-      expand_button   = Gtk::Button.new(label: 'Expand all')
-      collapse_button = Gtk::Button.new(label: 'Collapse all')
-      wiki_button     = Gtk::Button.new(label: 'Elanthipedia')
-
-      scan_button.sensitive = !@manager.nil?
-      scan_button.tooltip_text = @manager ? 'Choose which saves to run in the game' : 'Scanning is unavailable'
-      export_button.tooltip_text = 'Export everything for whichever character the dropdown is showing'
-      reload_button.tooltip_text = 'Re-read the database from disk'
-
-      status = Gtk::Label.new('')
-      status.xalign = 0
-      # Makes the exported file path clickable. Returning true stops GTK also
-      # running its own default handler for the link.
-      status.signal_connect('activate-link') do |_label, uri|
-        open_uri(uri)
-        true
-      end
-
-      @status = status
-      @scan_button = scan_button
-
-      # A scan can introduce the first character into an empty database, so keep
-      # the filter list in step without clobbering the current selection.
-      sync_characters = lambda do
-        next if @listed_characters == characters
-
-        previous = character_combo.active_text
-        @syncing = true
-        character_combo.remove_all
-        character_combo.append_text(ALL_CHARACTERS)
-        characters.each { |name| character_combo.append_text(name) }
-        index = characters.index(previous)
-        character_combo.active = index ? index + 1 : 0
-        @listed_characters = characters
-        @syncing = false
-      end
-
-      redraw = lambda do
-        sync_characters.call
-        refill(store, status,
-               query: search_entry.text,
-               character: character_combo.active_text,
-               nest: nesting_toggle.active?)
-        # A search is only useful expanded; the idle view stays tidy.
-        if search_entry.text.to_s.strip.empty?
-          view.collapse_all
-          expand_top_level(view, store)
-        else
-          view.expand_all
-        end
-      end
-
-      @redraw = redraw
-
-      search_entry.signal_connect('search-changed') { redraw.call }
-      character_combo.signal_connect('changed') { redraw.call unless @syncing }
-      nesting_toggle.signal_connect('toggled') { redraw.call }
-      expand_button.signal_connect('clicked') { view.expand_all }
-      collapse_button.signal_connect('clicked') { view.collapse_all }
-      wiki_button.signal_connect('clicked') { open_wiki(selected_term(view)) }
-      scan_button.signal_connect('clicked') { show_scan_dialog }
-      export_button.signal_connect('clicked') { show_export_dialog(character_combo.active_text) }
-      reload_button.signal_connect('clicked') do
-        load_rows
-        redraw.call
-      end
-
-      view.signal_connect('row-activated') do |_widget, path, _column|
-        term = store.get_iter(path)[COL_TERM].to_s
-        if term.empty?
-          view.row_expanded?(path) ? view.collapse_row(path) : view.expand_row(path, false)
-        else
-          open_wiki(term)
-        end
-      end
-
-      view.signal_connect('button-press-event') do |widget, event|
-        if event.button == 3
-          show_context_menu(widget, store, event)
-          true
-        else
-          false
-        end
-      end
-
-      controls = Gtk::Box.new(:horizontal, 4)
-      controls.pack_start(search_entry, expand: true, fill: true, padding: 0)
-      controls.pack_start(character_combo, expand: false, fill: false, padding: 0)
-      # Sits against the dropdown so it reads as "export what this is showing".
-      controls.pack_start(export_button, expand: false, fill: false, padding: 0)
-      controls.pack_start(nesting_toggle, expand: false, fill: false, padding: 0)
-      controls.pack_start(Gtk::Separator.new(:vertical), expand: false, fill: false, padding: 2)
-      controls.pack_start(scan_button, expand: false, fill: false, padding: 0)
-      controls.pack_start(reload_button, expand: false, fill: false, padding: 0)
-
-      actions = Gtk::Box.new(:horizontal, 4)
-      actions.pack_start(status, expand: true, fill: true, padding: 4)
-      actions.pack_start(expand_button, expand: false, fill: false, padding: 0)
-      actions.pack_start(collapse_button, expand: false, fill: false, padding: 0)
-      actions.pack_start(wiki_button, expand: false, fill: false, padding: 0)
-
-      layout = Gtk::Box.new(:vertical, 4)
-      layout.pack_start(controls, expand: false, fill: false, padding: 0)
-      layout.pack_start(scroller, expand: true, fill: true, padding: 0)
-      layout.pack_start(actions, expand: false, fill: false, padding: 0)
-
-      @window = Gtk::Window.new
-      @window.title = 'Inventory Manager'
-      @window.border_width = 4
-      @window.resize(saved_width, saved_height)
-      @window.move(saved_position[0], saved_position[1]) if saved_position.length == 2
-      @window.add(layout)
-
-      @window.signal_connect('delete_event') do
-        remember_geometry
-        # Returning false lets GTK destroy the window, so drop our handle to it
-        # before before_dying can try to destroy it a second time.
-        @window = nil
-        @done = true
-        drain_jobs
-        false
-      end
-
-      redraw.call
-      @window.show_all
+  # Wraps a WebUI callback. A failure is reported rather than left to the host
+  # dispatcher, and the window is redrawn afterwards unless redraw is false.
+  def cb(redraw: true, &block)
+    gui = self
+    lambda do |event|
+      block.call(event)
+    rescue StandardError => e
+      DRC.message("inventory-manager gui: #{e.class}: #{e.message}")
+    ensure
+      gui.refresh if redraw
     end
   end
+
+  def refresh
+    page = @page
+    return if page.nil? || @done
+
+    Lich::API.webui_refresh(page)
+  rescue StandardError => e
+    DRC.message("inventory-manager gui: #{e.class}: #{e.message}") unless @done
+  end
+
+  # Redraws one open dialog, for the controls that change its checkboxes.
+  def refresh_dialog(id)
+    page = Lich::WebUI.service.registry.pages_for(@owner).find { |candidate| candidate.id == id }
+    Lich::API.webui_refresh(page) if page
+  end
+
+  # Rebuilds the tree for the current filters. Callers hold the lock.
+  def redraw_view
+    @view = refill(query: @query, character: @character, nest: @nest)
+    @terms = @view.rows.to_h { |row| [row.key, row.term.to_s] }
+    @selected_key = nil unless @terms.key?(@selected_key)
+    @status = @view.status
+    @export_link = nil
+  end
+
+  def snapshot
+    synchronize do
+      { view: @view, query: @query, character: @character, nest: @nest, expansion: @expansion,
+        tree_revision: @tree_revision, selected: @selected_key, status: @status, export_link: @export_link,
+        copied: @copied, copy_revision: @copy_revision, scanning: @scanning }
+    end
+  end
+
+  def render(ui)
+    gui = self
+    state = snapshot
+    # The builder evaluates each block with itself as self, so nothing below
+    # may read this object's instance variables directly.
+    can_scan = !@manager.nil?
+    options = [{ value: ALL_CHARACTERS, label: ALL_CHARACTERS }] + characters.map { |name| { value: name, label: name } }
+
+    ui.stack(key: 'inventory', gap: 4, margin: 4, fill: true) do
+      ui.columns(key: 'controls', count: 6, weights: [6, 2, 2, 2, 1, 1], compact: true, row_align: :end, gap: 4) do
+        ui.text_input(slot: '0', key: 'search', search: true, value: state[:query], change_mode: :input,
+                      placeholder: 'Search items and containers (/regex/ works too)',
+                      on: { change: gui.cb { |event| gui.search_changed(event.payload[:value]) } })
+        ui.select(slot: '1', key: 'character', options: options, value: state[:character],
+                  on: { change: gui.cb { |event| gui.character_changed(event.payload[:value]) } })
+        # Sits against the dropdown so it reads as "export what this is showing".
+        ui.button(slot: '2', key: 'export', label: 'Export to CSV',
+                  tooltip: 'Export everything for whichever character the dropdown is showing',
+                  on: { activate: gui.cb(redraw: false) { gui.show_export_dialog } })
+        ui.checkbox(slot: '3', key: 'nest', label: 'Nest containers', checked: state[:nest],
+                    on: { change: gui.cb { |event| gui.nest_changed(event.payload[:value]) } })
+        ui.button(slot: '4', key: 'scan', label: 'Scan', disabled: !can_scan || state[:scanning],
+                  tooltip: can_scan ? 'Choose which saves to run in the game' : 'Scanning is unavailable',
+                  on: { activate: gui.cb(redraw: false) { gui.show_scan_dialog } })
+        ui.button(slot: '5', key: 'reload', label: 'Reload', tooltip: 'Re-read the database from disk',
+                  on: { activate: gui.cb { gui.reload } })
+      end
+      # Right-clicking the tree opens item-menu, which acts on the selected row.
+      ui.group(key: 'tree-box', context_menu: 'item-menu', fill: true, border_width: 0) do
+        ui.table(key: "tree-#{state[:tree_revision]}", headers: true, selection: :single, fill: true,
+                 search_column: 'item',
+                 columns: [{ key: 'item', label: 'Item', expand: true, resizable: true },
+                           { key: 'details', label: 'Details', resizable: true }],
+                 rows: InventoryManagerGui.table_rows(state[:view], state[:expansion], state[:query]),
+                 selected: state[:selected] ? [state[:selected]] : [],
+                 on: { selection_change: gui.cb(redraw: false) { |event| gui.row_selected(Array(event.payload[:rows]).first) },
+                       row_activate: gui.cb(redraw: false) { |event| gui.row_activated(event.payload[:row]) },
+                       # Bound so the host records what the viewer opened and
+                       # keeps it open across redraws; nothing else to do.
+                       row_toggle: ->(_event) {} })
+      end
+      ui.columns(key: 'actions', count: 5, weights: [8, 1, 1, 1, 1], compact: true, row_align: :center, gap: 4) do
+        ui.text(slot: '0', key: 'status', content: state[:status].to_s, wrap: true)
+        ui.button(slot: '1', key: 'open-export', label: 'Open file', hidden: state[:export_link].nil?,
+                  tooltip: 'Open the exported file', on: { activate: gui.cb(redraw: false) { gui.open_export } })
+        ui.button(slot: '2', key: 'expand-all', label: 'Expand all', on: { activate: gui.cb { gui.expand_all(true) } })
+        ui.button(slot: '3', key: 'collapse-all', label: 'Collapse all', on: { activate: gui.cb { gui.expand_all(false) } })
+        ui.button(slot: '4', key: 'wiki', label: 'Elanthipedia',
+                  on: { activate: gui.cb(redraw: false) { gui.open_wiki(gui.selected_term) } })
+      end
+      if state[:copied]
+        ui.text_input(key: "copied-#{state[:copy_revision]}", label: 'Name to copy', value: state[:copied], read_only: true)
+      end
+      ui.group(key: 'item-menu', menu: :context) do
+        ui.button(key: 'menu-wiki', label: 'Look up on Elanthipedia',
+                  on: { activate: gui.cb(redraw: false) { gui.open_wiki(gui.selected_term) } })
+        ui.button(key: 'menu-copy', label: 'Copy name', on: { activate: gui.cb { gui.copy_to_clipboard(gui.selected_term) } })
+      end
+    end
+  end
+
+  # Filters ------------------------------------------------------------------
+
+  def search_changed(text)
+    synchronize do
+      @query = text.to_s
+      reset_expansion
+      redraw_view
+    end
+  end
+
+  def character_changed(name)
+    synchronize do
+      @character = name.to_s.empty? ? ALL_CHARACTERS : name.to_s
+      reset_expansion
+      redraw_view
+    end
+  end
+
+  def nest_changed(value)
+    synchronize do
+      @nest = value ? true : false
+      reset_expansion
+      redraw_view
+    end
+  end
+
+  def reload
+    synchronize do
+      load_rows
+      reset_expansion
+      redraw_view
+    end
+  end
+
+  def expand_all(expanded)
+    synchronize do
+      @expansion = expanded ? :all : :none
+      @tree_revision += 1
+    end
+  end
+
+  # A search is only useful expanded; the idle view stays tidy.
+  def reset_expansion
+    @expansion = :default
+    @tree_revision += 1
+  end
+
+  def row_selected(key)
+    synchronize { @selected_key = key }
+  end
+
+  def selected_term
+    synchronize { @terms[@selected_key].to_s }
+  end
+
+  # Double-clicking an item or container looks it up. The headings expand from
+  # their arrow instead.
+  def row_activated(key)
+    term = synchronize { @terms[key].to_s }
+    open_wiki(term) unless term.empty?
+  end
+
+  # Export -------------------------------------------------------------------
 
   # Scope deliberately follows the character dropdown and nothing else. Someone
   # exporting a character wants everything on that character, not whatever the
   # search box happens to be narrowing the tree to, so the dialog says as much.
-  def show_export_dialog(scope)
+  def show_export_dialog
+    return if @dialogs[EXPORT_DIALOG_ID]
+
+    gui = self
+    scope = synchronize { @character }
     rows = rows_for_export(scope)
     named_scope = all_characters?(scope) ? 'all characters' : scope.to_s
+    chosen = EXPORT_COLUMNS.to_h { |column| [column[:key], true] }
+    @dialogs[EXPORT_DIALOG_ID] = true
 
-    dialog = Gtk::Dialog.new(title: 'Export to CSV', parent: @window)
-    dialog.modal = true
-    dialog.set_default_size(440, 420)
-    dialog.add_button('Cancel', Gtk::ResponseType::CANCEL)
-    dialog.add_button('Export', Gtk::ResponseType::ACCEPT)
-
-    intro = Gtk::Label.new("Exporting #{rows.length} item#{rows.length == 1 ? '' : 's'} for #{named_scope}.\nScope follows the character dropdown. The search box does not limit the export.")
-    intro.xalign = 0
-    dialog.content_area.pack_start(intro, expand: false, fill: false, padding: 6)
-
-    columns = Gtk::Label.new
-    columns.xalign = 0
-    columns.markup = '<b>Columns</b>'
-    dialog.content_area.pack_start(columns, expand: false, fill: false, padding: 4)
-
-    checks = EXPORT_COLUMNS.map do |column|
-      check = Gtk::CheckButton.new(column[:label])
-      check.active = true
-      dialog.content_area.pack_start(check, expand: false, fill: false, padding: 0)
-      [column, check]
+    future = Lich::API.webui_modal(
+      owner: @owner, id: EXPORT_DIALOG_ID, title: 'Export to CSV',
+      body: "Exporting #{rows.length} item#{rows.length == 1 ? '' : 's'} for #{named_scope}.\n" \
+            'Scope follows the character dropdown. The search box does not limit the export.',
+      buttons: [{ id: 'cancel', label: 'Cancel' }, { id: 'export', label: 'Export', variant: :primary }],
+      no_viewer: :abort, default_button: 'cancel', props: { cancel_button: 'cancel' }
+    ) do |ui|
+      ui.text(key: 'columns-heading', content: 'Columns', emphasis: :strong)
+      EXPORT_COLUMNS.each do |column|
+        ui.checkbox(key: "column-#{column[:key]}", label: column[:label], checked: true,
+                    on: { change: gui.cb(redraw: false) { |event| chosen[column[:key]] = event.payload[:value] ? true : false } })
+      end
     end
-
-    dialog.signal_connect('response') do |_widget, response|
-      export_rows(scope, rows, checks.select { |_column, check| check.active? }.map(&:first)) if response == Gtk::ResponseType::ACCEPT
-      dialog.destroy
+    future.then do |result|
+      gui.export_answered(scope, rows, EXPORT_COLUMNS.select { |column| chosen[column[:key]] }, result)
     end
+  rescue StandardError
+    @dialogs.delete(EXPORT_DIALOG_ID)
+    raise
+  end
 
-    dialog.show_all
+  # Cancel, Escape, closing the window and a missing viewer all export nothing.
+  def export_answered(scope, rows, columns, result)
+    @dialogs.delete(EXPORT_DIALOG_ID)
+    return unless result.button == 'export'
+
+    export_rows(scope, rows, columns)
+    refresh
+  rescue StandardError => e
+    DRC.message("inventory-manager gui: #{e.class}: #{e.message}")
   end
 
   def all_characters?(scope)
@@ -1429,25 +1553,27 @@ class InventoryManagerGui
     end
 
     DRC.message("inventory-manager: exported #{rows.length} rows to #{path}")
-    show_status_link("Exported #{rows.length} rows to", file_uri(path), path)
+    show_status_link("Exported #{rows.length} rows to #{path}", file_uri(path))
   end
 
-  # The full path, as a link that opens the file. Written as markup, so plain
-  # status updates have to turn markup back off again -- see show_status.
-  def show_status_link(text, uri, label)
-    return unless @status
-    return show_status("#{text} #{label}") unless @status.respond_to?(:markup=)
-
-    @status.markup = "#{escape_markup(text)} <a href=\"#{escape_markup(uri)}\">#{escape_markup(label)}</a>"
+  # The status line names the file, and Open file beside it opens it.
+  def show_status_link(text, uri)
+    synchronize do
+      @status = text
+      @export_link = uri
+    end
   end
 
   def show_status(text)
-    return unless @status
+    synchronize do
+      @status = text
+      @export_link = nil
+    end
+  end
 
-    # A search containing & or < would fail to render if markup were still on
-    # from a previous export.
-    @status.use_markup = false if @status.respond_to?(:use_markup=)
-    @status.text = text
+  def open_export
+    link = synchronize { @export_link }
+    open_uri(link) if link
   end
 
   # Lich sets DATA_DIR absolutely, honouring a --data= override, so exports land
@@ -1468,10 +1594,6 @@ class InventoryManagerGui
   def file_uri(path)
     escaped = path.to_s.tr('\\', '/').gsub(/[ #?%]/) { |char| format('%%%02X', char.ord) }
     "file:///#{escaped.sub(%r{\A/+}, '')}"
-  end
-
-  def escape_markup(text)
-    text.to_s.gsub('&', '&amp;').gsub('<', '&lt;').gsub('>', '&gt;').gsub('"', '&quot;')
   end
 
   def write_csv(path, rows, columns)
@@ -1501,58 +1623,76 @@ class InventoryManagerGui
     %("#{text.gsub('"', '""')}")
   end
 
-  # Runs on the GTK thread from the Scan button. Nothing here touches the game --
+  # Scans --------------------------------------------------------------------
+
+  # Runs on a host thread from the Scan button. Nothing here touches the game --
   # picks are pushed onto @jobs and executed by the script thread.
   def show_scan_dialog
-    dialog = Gtk::Dialog.new(title: 'Run inventory scans', parent: @window)
-    dialog.modal = true
-    dialog.set_default_size(540, 520)
-    dialog.add_button('Cancel', Gtk::ResponseType::CANCEL)
-    dialog.add_button('Run selected', Gtk::ResponseType::ACCEPT)
+    return if @manager.nil? || @dialogs[SCAN_DIALOG_ID]
 
-    intro = Gtk::Label.new("These send commands to the game. Make sure your character is idle and in\nposition for any scan that needs it. Selected scans run one at a time, with a\nshort pause between each, and one that fails is reported and skipped.")
-    intro.xalign = 0
-    dialog.content_area.pack_start(intro, expand: false, fill: false, padding: 6)
+    gui = self
+    @scan_picks = SCANS.to_h { |scan| [scan[:method], false] }
+    @dialogs[SCAN_DIALOG_ID] = true
 
-    list = Gtk::Box.new(:vertical, 2)
-    checks = []
-    SCAN_GROUPS.each do |group|
-      entries = SCANS.select { |scan| scan[:group] == group }
-      next if entries.empty?
+    future = Lich::API.webui_modal(
+      owner: @owner, id: SCAN_DIALOG_ID, title: 'Run inventory scans',
+      body: 'These send commands to the game. Make sure your character is idle and in position for any scan ' \
+            'that needs it. Selected scans run one at a time, with a short pause between each, and one that ' \
+            'fails is reported and skipped.',
+      buttons: [{ id: 'cancel', label: 'Cancel' }, { id: 'run', label: 'Run selected', variant: :primary }],
+      no_viewer: :abort, default_button: 'cancel', props: { cancel_button: 'cancel' }
+    ) do |ui|
+      gui.render_scan_choices(ui)
+    end
+    future.then { |result| gui.scans_answered(result) }
+  rescue StandardError
+    @dialogs.delete(SCAN_DIALOG_ID)
+    raise
+  end
 
-      heading = Gtk::Label.new
-      heading.xalign = 0
-      heading.markup = "<b>#{group}</b>"
-      list.pack_start(heading, expand: false, fill: false, padding: 4)
+  def render_scan_choices(ui)
+    gui = self
+    picks = @scan_picks
+    revision = @scan_revision
+    ui.scroll(key: 'scan-list', max_height: 360) do
+      ui.stack(key: 'scan-groups', gap: 2) do
+        SCAN_GROUPS.each do |group|
+          entries = SCANS.select { |scan| scan[:group] == group }
+          next if entries.empty?
 
-      entries.each do |scan|
-        check = Gtk::CheckButton.new("#{scan[:label]} -- #{scan[:note]}")
-        check.tooltip_text = scan[:warning] if scan[:warning]
-        list.pack_start(check, expand: false, fill: false, padding: 0)
-        checks << [scan, check]
+          ui.text(key: "group-#{group.downcase.gsub(/[^a-z0-9]+/, '-')}", content: group, emphasis: :strong)
+          entries.each do |scan|
+            extra = scan[:warning] ? { tooltip: scan[:warning] } : {}
+            ui.checkbox(key: "scan-#{scan[:method]}-r#{revision}", label: "#{scan[:label]} -- #{scan[:note]}",
+                        checked: picks[scan[:method]] ? true : false, **extra,
+                        on: { change: gui.cb(redraw: false) { |event| picks[scan[:method]] = event.payload[:value] ? true : false } })
+          end
+        end
       end
     end
-
-    scroller = Gtk::ScrolledWindow.new
-    scroller.set_policy(:never, :automatic)
-    scroller.add(list)
-    dialog.content_area.pack_start(scroller, expand: true, fill: true, padding: 4)
-
-    toggles = Gtk::Box.new(:horizontal, 4)
-    select_all = Gtk::Button.new(label: 'Select all')
-    clear_all = Gtk::Button.new(label: 'Clear')
-    select_all.signal_connect('clicked') { checks.each { |_scan, check| check.active = true } }
-    clear_all.signal_connect('clicked') { checks.each { |_scan, check| check.active = false } }
-    toggles.pack_start(select_all, expand: false, fill: false, padding: 0)
-    toggles.pack_start(clear_all, expand: false, fill: false, padding: 0)
-    dialog.content_area.pack_start(toggles, expand: false, fill: false, padding: 4)
-
-    dialog.signal_connect('response') do |_widget, response|
-      queue_scans(checks.select { |_scan, check| check.active? }.map(&:first)) if response == Gtk::ResponseType::ACCEPT
-      dialog.destroy
+    ui.columns(key: 'scan-toggles', count: 2, compact: true, gap: 4) do
+      ui.button(slot: '0', key: 'select-all', label: 'Select all', on: { activate: gui.cb(redraw: false) { gui.pick_all_scans(true) } })
+      ui.button(slot: '1', key: 'clear-all', label: 'Clear', on: { activate: gui.cb(redraw: false) { gui.pick_all_scans(false) } })
     end
+  end
 
-    dialog.show_all
+  # Select all and Clear set every box. A checkbox keeps what its viewer last
+  # clicked across redraws, so new keys make the dialog show the new state.
+  def pick_all_scans(picked)
+    @scan_picks.each_key { |method| @scan_picks[method] = picked }
+    @scan_revision += 1
+    refresh_dialog(SCAN_DIALOG_ID)
+  end
+
+  # Cancel, Escape, closing the window and a missing viewer all queue nothing.
+  def scans_answered(result)
+    @dialogs.delete(SCAN_DIALOG_ID)
+    return unless result.button == 'run'
+
+    queue_scans(SCANS.select { |scan| @scan_picks[scan[:method]] })
+    refresh
+  rescue StandardError => e
+    DRC.message("inventory-manager gui: #{e.class}: #{e.message}")
   end
 
   def queue_scans(selected)
@@ -1562,8 +1702,8 @@ class InventoryManagerGui
     end
 
     selected.each { |scan| @jobs << scan }
-    # Re-enabled by perform_scan once the queue drains.
-    @scan_button.sensitive = false if @scan_button
+    # Cleared by perform_scan once the queue drains.
+    synchronize { @scanning = true }
     show_status("Queued #{selected.length} scan#{selected.length == 1 ? '' : 's'}...")
     DRC.message("inventory-manager: queued #{selected.map { |scan| scan[:label] }.join(', ')}")
   end
@@ -1580,15 +1720,15 @@ class InventoryManagerGui
     outcome = run_scan_method(scan)
     report_outcome(scan, outcome)
 
-    load_rows
     remaining = @jobs.size
-
-    Gtk.queue do
-      @redraw&.call
-      # refill rewrites the status line, so the result goes on after it.
-      show_status(outcome_text(scan, outcome))
-      @scan_button.sensitive = true if @scan_button && remaining.zero?
+    synchronize do
+      load_rows
+      redraw_view
+      # redraw_view rewrites the status line, so the result goes on after it.
+      @status = outcome_text(scan, outcome)
+      @scanning = false if remaining.zero?
     end
+    refresh
 
     # Let the game settle before driving it again. The outcome stays in the
     # message so the result of the scan just finished is not lost behind it.
@@ -1629,11 +1769,17 @@ class InventoryManagerGui
   end
 
   def set_status(text)
-    Gtk.queue { show_status(text) }
+    show_status(text)
+    refresh
   end
 
-  def refill(store, status, query:, character:, nest:)
-    store.clear
+  # Tree ---------------------------------------------------------------------
+
+  # Builds the tree for one set of filters: character, then source, then (when
+  # nesting) the containers recorded in the database, then items.
+  def refill(query:, character:, nest:)
+    tree = []
+    keys = {}
     needle = query.to_s.strip.downcase
     # Live search sees every keystroke, so a half-typed /pattern( just falls
     # back to substring matching until it compiles. Only a runaway pattern is
@@ -1647,7 +1793,7 @@ class InventoryManagerGui
     grouped.keys.sort.each do |char_name|
       next if character && character != ALL_CHARACTERS && character != char_name
 
-      char_iter = nil
+      char_node = nil
       char_total = 0
       by_source = grouped[char_name].group_by { |row| row.source.to_s }
 
@@ -1660,8 +1806,8 @@ class InventoryManagerGui
                   end
         next if visible.empty?
 
-        char_iter ||= append_row(store, nil, label: char_name, kind: 'character', weight: WEIGHT_BOLD)
-        source_iter = append_row(store, char_iter, label: source_label(source), detail: count_label(visible.length), kind: 'source', weight: WEIGHT_BOLD)
+        char_node ||= add_tree_row(tree, keys, nil, label: char_name, kind: 'character')
+        source_node = add_tree_row(tree, keys, char_node, label: source_label(source), detail: count_label(visible.length), kind: 'source')
 
         # An item that holds other items becomes a container node instead of a
         # duplicate leaf, so each item appears exactly once.
@@ -1675,49 +1821,54 @@ class InventoryManagerGui
 
         visible.sort_by { |row| row.name.to_s.downcase }.each do |row|
           if nest && holders.key?(row.name)
-            ensure_container_node(store, source_iter, index, nodes, row.name)
+            ensure_container_node(tree, keys, source_node, index, nodes, row.name)
           else
-            parent = nest ? ensure_container_node(store, source_iter, index, nodes, row.container) : source_iter
-            append_row(store, parent, label: row.name, detail: detail_for(row, nest), kind: 'item', term: row.name)
+            parent = nest ? ensure_container_node(tree, keys, source_node, index, nodes, row.container) : source_node
+            add_tree_row(tree, keys, parent, label: row.name, detail: detail_for(row, nest), kind: 'item', term: row.name)
           end
           shown += 1
           char_total += 1
         end
       end
 
-      next unless char_iter
+      next unless char_node
 
-      char_iter[COL_DETAIL] = count_label(char_total)
+      char_node.detail = count_label(char_total)
       shown_characters += 1
     end
 
     # Counts describe what is actually on screen, so they stay in step with the
     # character filter and the search box.
-    # Same markup reset as show_status: a search for "&" must not break the label.
-    status.use_markup = false if status.respond_to?(:use_markup=)
-    status.text = if needle.empty?
-                    "#{shown} items across #{shown_characters} character#{'s' unless shown_characters == 1}"
-                  else
-                    "#{shown} match#{shown == 1 ? '' : 'es'} for \"#{query.to_s.strip}\"" \
-                      "#{' (pattern took too long, results incomplete)' if timed_out}"
-                  end
+    status = if needle.empty?
+               "#{shown} items across #{shown_characters} character#{'s' unless shown_characters == 1}"
+             else
+               "#{shown} match#{shown == 1 ? '' : 'es'} for \"#{query.to_s.strip}\"" \
+                 "#{' (pattern took too long, results incomplete)' if timed_out}"
+             end
+    # Parents always come before their children, so cutting the tail never
+    # leaves a row pointing at a parent that was cut.
+    if tree.length > MAX_TABLE_ROWS
+      tree = tree.first(MAX_TABLE_ROWS)
+      status = "#{status} -- showing the first #{MAX_TABLE_ROWS} rows, search to narrow it"
+    end
+    View.new(tree, status)
   end
 
   # Containers become their own nodes, re-parented under whatever holds them so
   # the nesting recorded in the database shows up as real hierarchy.
-  def ensure_container_node(store, source_iter, index, nodes, name, depth = 0)
-    return source_iter if name.nil? || name.to_s.empty?
+  def ensure_container_node(tree, keys, source_node, index, nodes, name, depth = 0)
+    return source_node if name.nil? || name.to_s.empty?
     return nodes[name] if nodes.key?(name)
-    return source_iter if depth > MAX_NESTING
+    return source_node if depth > MAX_NESTING
 
     record = index[name]
     parent = if record && record.container && record.container != name
-               ensure_container_node(store, source_iter, index, nodes, record.container, depth + 1)
+               ensure_container_node(tree, keys, source_node, index, nodes, record.container, depth + 1)
              else
-               source_iter
+               source_node
              end
 
-    nodes[name] = append_row(store, parent, label: name, detail: container_detail(record), kind: 'container', weight: WEIGHT_BOLD, term: name)
+    nodes[name] = add_tree_row(tree, keys, parent, label: name, detail: container_detail(record), kind: 'container', term: name)
   end
 
   # A container node still needs to say whether it is worn, since promoting it
@@ -1726,14 +1877,21 @@ class InventoryManagerGui
     record && record.worn ? 'container, worn' : 'container'
   end
 
-  def append_row(store, parent, label:, kind:, detail: '', weight: WEIGHT_NORMAL, term: '')
-    iter = store.append(parent)
-    iter[COL_LABEL]  = label.to_s
-    iter[COL_TERM]   = term.to_s
-    iter[COL_DETAIL] = detail.to_s
-    iter[COL_KIND]   = kind.to_s
-    iter[COL_WEIGHT] = weight
-    iter
+  # Appends one line. Its key comes from its parent and its own text, so the
+  # same line keeps the same key from one redraw to the next and the window
+  # keeps it expanded; a repeat of the same item gets a numbered key.
+  def add_tree_row(tree, keys, parent, label:, kind:, detail: '', term: '')
+    base = "n#{[parent&.key, kind, label].join("\x1F").hash.to_s(36)}"
+    key = base
+    count = 1
+    while keys.key?(key)
+      count += 1
+      key = "#{base}-#{count}"
+    end
+    keys[key] = true
+    row = TreeRow.new(key, parent&.key, label.to_s, detail.to_s, kind.to_s, term.to_s)
+    tree << row
+    row
   end
 
   def detail_for(row, nest)
@@ -1758,47 +1916,7 @@ class InventoryManagerGui
     source.to_s.empty? ? 'Unsorted' : source.to_s.tr('_', ' ').capitalize
   end
 
-  def expand_top_level(view, store)
-    iter = store.iter_first
-    return unless iter
-
-    loop do
-      view.expand_row(iter.path, false)
-      break unless iter.next!
-    end
-  end
-
-  def selected_term(view)
-    iter = view.selection.selected
-    iter.nil? ? '' : iter[COL_TERM].to_s
-  end
-
-  def show_context_menu(view, store, event)
-    located = view.get_path_at_pos(event.x, event.y)
-    return if located.nil?
-
-    path = located.first
-    view.selection.select_path(path)
-    term = store.get_iter(path)[COL_TERM].to_s
-
-    menu = Gtk::Menu.new
-    lookup = Gtk::MenuItem.new(label: 'Look up on Elanthipedia')
-    lookup.sensitive = !term.empty?
-    lookup.signal_connect('activate') { open_wiki(term) }
-    menu.append(lookup)
-
-    copy = Gtk::MenuItem.new(label: 'Copy name')
-    copy.sensitive = !term.empty?
-    copy.signal_connect('activate') { copy_to_clipboard(term) }
-    menu.append(copy)
-
-    menu.show_all
-    begin
-      menu.popup_at_pointer(event)
-    rescue StandardError
-      menu.popup(nil, nil, event.button, event.time)
-    end
-  end
+  # Lookup and copy ----------------------------------------------------------
 
   def open_wiki(name)
     term = self.class.wiki_term(name)
@@ -1811,19 +1929,12 @@ class InventoryManagerGui
     open_uri("#{WIKI_SEARCH}#{self.class.url_escape(term)}")
   end
 
-  # Shared by the wiki lookup and the exported-file link.
+  # Shared by the wiki lookup and the exported file. The window is a browser
+  # page, so links are handed to the system's own opener.
   def open_uri(uri)
-    return if open_via_gtk(uri)
     return if open_via_os(uri)
 
     DRC.message("Could not open #{uri}")
-  end
-
-  def open_via_gtk(url)
-    Gtk.show_uri_on_window(@window, url, 0)
-    true
-  rescue StandardError
-    false
   end
 
   def open_via_os(url)
@@ -1841,21 +1952,21 @@ class InventoryManagerGui
     false
   end
 
+  # The script cannot reach the system clipboard through the window, so the
+  # name goes into a read-only box under the tree to copy from, and into the
+  # game window as before.
   def copy_to_clipboard(text)
-    Gtk::Clipboard.get_default(Gdk::Display.default).text = text
-    DRC.message("Copied: #{text}")
-  rescue StandardError
+    if text.to_s.empty?
+      DRC.message('Select an item first.')
+      return
+    end
+
+    synchronize do
+      @copied = text.to_s
+      @copy_revision += 1
+    end
     DRC.message("Item name: #{text}")
-  end
-
-  def remember_geometry
-    return unless @window
-
-    CharSettings['gui_position'] = @window.position
-    CharSettings['gui_width']    = @window.allocation.width
-    CharSettings['gui_height']   = @window.allocation.height
-  rescue StandardError
-    nil
+    show_status('Copy the name from the box below the list.')
   end
 end
 
