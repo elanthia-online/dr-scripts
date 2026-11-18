@@ -81,13 +81,19 @@
 # book form with a base-recipes.yaml recipe; create_remedies runs the
 # instructions form instead for a recipe marked `instructions: true`
 # (CreateRemedies#remedy_args). taskmaster.lic runs the instructions form
-# with stocked for Nezhiri's remedies (Taskmaster#remedy_args), after it
-# has bought what the crafts need, and the continue form, without it, to
-# carry an unfinished one on. Lich gives no exit status: the
-# finished remedy is left in hand, the tools and the vessel are put away,
-# the product is counted (`count my <noun>`, after the mark's roundtime) and
-# the script ends. The product in hand is the success signal; each caller
-# checks DRCI.in_hands?(noun) after remedy and stops when it is missing.
+# for Nezhiri's remedies (Taskmaster#remedy_args), after it has bought what
+# the crafts need, with stocked when this remedy.lic takes the word, and
+# the continue form, without it, to carry an unfinished one on. Lich gives
+# no exit status: the finished remedy is left in hand, the tools and the
+# vessel are put away, the product is counted (`count my <noun>`, after
+# the mark's roundtime) and the script ends. The product in hand is the
+# success signal. workorders, craft and create_remedies check
+# DRCI.in_hands?(noun) after remedy and stop when it is missing
+# (workorders.lic:854, craft.lic:697, create_remedies.lic:57). taskmaster
+# checks the hands for the remedy (Taskmaster#held_remedy_ids); finding
+# none, it looks in a vessel left in hand and carries an unfinished remedy
+# on once with the continue form, or takes a finished one out
+# (Taskmaster#remedy_left_in_vessel), and stops only when that fails.
 # remedy prints a bold "Remedy:" line and exits with no product when the
 # game refuses the herb ("You need a more suitable type of herb", or more
 # pieces of it), when the studied instructions fade before crafting begins,
