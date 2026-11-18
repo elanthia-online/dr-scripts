@@ -6,7 +6,7 @@
   task_get_tools_on_completion: true/false # If you want taskmaster to pickup any remaining tools in the repair shop. Useful if you're using clerk-tools after each task
   task_use_boost: true/false # use boost to eliminate task cooldowns, useful if you have a few and you're doing a lot of tasks
   task_cooldown_poll: 15 # seconds between asks while the taskmaster makes you wait (minimum 3)
-  task_boosts: [task, haste] # boosts to use. task: BOOST TASK when a task is on cooldown (same as task_use_boost). haste: keep BOOST HASTE (1 hour, roundtimes -1 second) running between tasks
+  task_boosts: [task, haste] # boosts to use. task: BOOST TASK when a task is on cooldown (same as task_use_boost). haste: keep BOOST HASTE (1 hour, roundtimes -1 second) running between tasks. Once the game says you have no credits for one, it is not asked for again until your next login
   task_keep_list: list of items to keep. See default in base.yaml
   task_junk_list: list of items to throw away; everything else is kept. String entries match whole words only ('steel' does not match silversteel); regexps match as written. When set (non-empty) it replaces task_keep_list, so a prize nobody has listed yet is kept rather than binned
   task_slack_keepers: true/false # send a Slack message (slack_username) for each keeper
@@ -26,7 +26,7 @@
   alchemy_tools: [bowl, mixing stick, mortar, pestle, sieve] # Nezhiri's tasks use the mortar and pestle or the bowl and mixing stick (whichever her remedy needs) and the sieve; the two used go to Rangu after each task (task_no_repair / task_self_repair as usual)
   alchemy_belt: # the toolbelt the alchemy tools are tied to, if any
   alchemy_room: <room number> # Nezhiri's remedies are crafted here; unset, in the Crossing alchemy supplies (8862), where the herbs are bought
-  ## Nezhiri's tasks: taskmaster buys brewer's brine on Andreshlew (room 51102), then in Crossing the herbs (one 25-piece stack per craft), a coal nugget when the ones carried have too few rubs left for the crafts (TAP shows the size: tiny lasts one craft, small two, and so on), and water and alcohol when none is on hand, so remedy never shops elsewhere. task_hometown is not needed for her. crafting_container holds the brine, the herbs and her remedies: doses left from earlier tasks count toward the next, every stack is combined into one, and the hand-in cuts it to the doses she asked for, putting the rest back. It plans one craft per 6 doses still owed, but a craft can make fewer, and how many has differed between characters (the cause is unknown): so it remembers, for each remedy, the fewest doses one craft made the last time you crafted it (UserVars.taskmaster_remedy_yields, kept per character across runs; each run whose crafts add doses replaces it, and a finish counts as such a run), and plans the next task's crafts at that many doses each, never more than 6. Crafting stops once the doses owed are made, so crafts planned for a yield since outgrown are not made: the herbs, brine and coal bought for them stay in crafting_container and the next task's purchases count them. Extra doses made are not lost either: they stay in crafting_container and count toward the next task. When the crafts planned fall short it makes enough more crafts for the doses still owed, counting each at the fewest doses one craft made this run (never more than 6), buying their supplies first, up to 2 such rounds. To forget the remembered yields, ;e UserVars.taskmaster_remedy_yields = nil. It stops when a round adds no doses, or when the instruction sets carried (all of them, read again) have too few uses left for the extra crafts (ask Nezhiri for another copy, then ;taskmaster nezhiri finish); still short after that, it stops and ;taskmaster nezhiri finish makes the rest. Another item with the remedy's noun in crafting_container (another potion, say) is named once and left there: taskmaster gets its own stacks out by id, or by the remedy's whole name ("get my deep-sea draught from my duffel bag"), and stops if that brings anything else. A remedy run that stops part way (or a crash) leaves the mortar or bowl in hand: a run or a finish looks in it, and carries an unfinished remedy on once with remedy's continue form (buying brine or a coal nugget first when none is left, then crafting where it crafts), takes a finished one out as a made stack, puts a herb back in crafting_container, and puts an empty vessel away; anything else, or a continue run that again ends without the remedy, stops with the vessel in hand. A vessel left on the ground is not looked for. remedy.lic must handle the brine prompt (with a remedy that does not, each craft stops part way, the continue run stops at the same prompt, and the task stops) ##
+  ## Nezhiri's tasks: taskmaster buys brewer's brine on Andreshlew (room 51102), then in Crossing the herbs (one 25-piece stack per craft), a coal nugget when the ones carried have too few rubs left for the crafts (TAP shows the size: tiny lasts one craft, small two, and so on), and water and alcohol when none was found while she made you wait for the task (none of her remedies uses them, but remedy buys any that is missing, at your crafting town's shop; with no wait they are not looked for). It looks over the brine, coal, herbs, alchemy tools and copper during that wait, so the task starts sooner after her accept. task_hometown is not needed for her. crafting_container holds the brine, the herbs and her remedies: doses left from earlier tasks count toward the next, every stack is combined into one, and the hand-in cuts it to the doses she asked for, putting the rest back. It plans one craft per 6 doses still owed, but a craft can make fewer, and how many has differed between characters (the cause is unknown): so it remembers, for each remedy, the fewest doses one craft made the last time you crafted it (UserVars.taskmaster_remedy_yields, kept per character across runs; each run whose crafts add doses replaces it, and a finish counts as such a run), and plans the next task's crafts at that many doses each, never more than 6. Crafting stops once the doses owed are made, so crafts planned for a yield since outgrown are not made: the herbs, brine and coal bought for them stay in crafting_container and the next task's purchases count them. Extra doses made are not lost either: they stay in crafting_container and count toward the next task. When the crafts planned fall short it makes enough more crafts for the doses still owed, counting each at the fewest doses one craft made this run (never more than 6), buying their supplies first, up to 2 such rounds. To forget the remembered yields, ;e UserVars.taskmaster_remedy_yields = nil. It stops when a round adds no doses, or when the instruction sets carried (all of them, read again) have too few uses left for the extra crafts (ask Nezhiri for another copy, then ;taskmaster nezhiri finish); still short after that, it stops and ;taskmaster nezhiri finish makes the rest. Another item with the remedy's noun in crafting_container (another potion, say) is named once and left there: taskmaster gets its own stacks out by id, or by the remedy's whole name ("get my deep-sea draught from my duffel bag"), and stops if that brings anything else. A remedy run that stops part way (or a crash) leaves the mortar or bowl in hand: a run or a finish looks in it, and carries an unfinished remedy on once with remedy's continue form (buying brine or a coal nugget first when none is left, then crafting where it crafts), takes a finished one out as a made stack, puts a herb back in crafting_container, and puts an empty vessel away; anything else, or a continue run that again ends without the remedy, stops with the vessel in hand. A vessel left on the ground is not looked for. remedy.lic must handle the brine prompt (with a remedy that does not, each craft stops part way, the continue run stops at the same prompt, and the task stops) ##
   enchanting_room: <room number> # Dorhum's tasks enchant in task_crafting_room, else here; with neither, where they stand if you carry a brazier, else at a Crossing brazier room. Outside tasks, enchanting uses enchanting_room as before
   ## Dorhum's tasks need task_loot_bag set to a container other than crafting_container: his finished items keep the base item's noun (a spongestone is still a rock) and wait there apart from the unworked ones. A task stops before buying anything if task_loot_bag already holds that noun, since the hand-in would give those first ##
   ## For Dorhum's tasks make task_crafting_room a room of your own (a private forge): each finished item is picked up off the floor by its noun, so another rock or shell lying there could be taken instead. A rented room's notice is read before enchanting and the rental renewed when under ten minutes are left ##
@@ -37,7 +37,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.18.7'
+  VERSION = '2026.11.18.8'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -261,7 +261,9 @@ class TaskMaster
   # call. cycle picks a new taskmaster after each task. A task already open
   # when it asks is finished by get_task (resume_task); with repeat or cycle
   # that counts as the iteration's task, and the loop goes on to its usual
-  # checks and asks again, where a single task run ends there.
+  # checks and asks again, where a single task run ends there. A Rangu
+  # ticket is looked for before each ask, and the tools left with Rangu are
+  # picked up once a task is accepted.
   #
   # @param args [OpenStruct] parsed arguments; reads cycle and repeat
   # @return [void]
@@ -276,11 +278,15 @@ class TaskMaster
     loop do
       @dispose, @remainder = [false, false]
       prepare_for_task
+      # The ticket is looked for before asking, in the taskmaster's cooldown,
+      # not after the accept, where every command delays the task; the
+      # pickup itself (a walk to Rangu) still waits for the task.
+      ticket = !@self_repair && DRCI.exists?("rangu ticket")
       # nil: a task already open was finished and handed in by get_task.
       task = get_task(exit_after_resume: !looping)
       if task
         item, count, volume_per_item, base, type = task
-        tool_pickup if !@self_repair && DRCI.exists?("rangu ticket") # picks up any tools that you dropped off previous and stows them appropriately
+        tool_pickup if ticket # picks up any tools that you dropped off previous and stows them appropriately
         send(@npc.to_sym, item, count, volume_per_item, base, type)
         complete_task(item, count)
       end
@@ -699,36 +705,84 @@ class TaskMaster
   HASTE_RECHECK_SECONDS = 600
   # BOOST HASTE reply when a credit was spent.
   HASTE_ACTIVATED = /You've activated the Minor Haste boost/
-  # BOOST HASTE reply with no credits left.
+  # BOOST HASTE reply with no credits left: "You don't have enough credits
+  # for the Minor Haste boost.  You currently have 0 available but need 1."
+  # (Holdigor 2026-11-18 15:26:44).
   HASTE_NO_CREDITS = /You don't have enough credits for the Minor Haste boost/
+  # BOOST TASK reply when a credit was spent (task-forage.lic reads the same
+  # line).
+  TASK_BOOST_ACTIVATED = /You've activated the Task Master boost/
+  # BOOST TASK reply with no credits left: "You don't have enough credits for
+  # the Task Master boost.  You currently have 0 available but need 1."
+  # (Holdigor 2026-11-18 15:26:47; every one of the 40 Nezhiri cycles
+  # sampled on 2026-11-18 got it).
+  TASK_BOOST_NO_CREDITS = /You don't have enough credits for the Task Master boost/
 
   # Reads task_boosts (and the older task_use_boost, which means the task
-  # boost) into @boosts, and arms the one task boost per run in @boost.
+  # boost) into @boosts, and arms the one task boost per run in @boost,
+  # unless this login has already run out of task boosts (boost_spent?).
   #
   # @return [void]
   def configure_boosts
     @boosts = Array(@settings.task_boosts).map { |boost| boost.to_s.downcase }
     @boosts |= ['task'] if @settings.task_use_boost
-    @boost = @boosts.include?('task')
+    @boost = @boosts.include?('task') && !boost_spent?('task')
+  end
+
+  # Whether the game has said this login has no credits left for a boost
+  # (note_boost_spent). Boost credits are counted at login and only change
+  # at the next one, and each login starts a new Lich process, so the
+  # answer is kept in a process global, $taskmaster_boost_unavailable: it
+  # outlives the runs t2 starts for each task and ends with the login.
+  #
+  # @param boost [String] 'task' or 'haste'
+  # @return [Boolean]
+  def boost_spent?(boost)
+    ($taskmaster_boost_unavailable || {})[boost] ? true : false
+  end
+
+  # Notes that this login has no credits left for a boost, so it is not
+  # asked for again until the next login (boost_spent?).
+  #
+  # @param boost [String] 'task' or 'haste'
+  # @return [void]
+  def note_boost_spent(boost)
+    $taskmaster_boost_unavailable ||= {}
+    $taskmaster_boost_unavailable[boost] = true
+  end
+
+  # BOOST TASK, the one task boost of a run (@boost, which this disarms).
+  # No credits left notes it for the rest of the login (note_boost_spent).
+  #
+  # @return [Boolean] false when there were no credits, else true (an
+  #   activation, or a reply it does not know, as BOOST TASK was always
+  #   taken to have worked)
+  def boost_task
+    @boost = false
+    return true unless DRC.bput('boost task', TASK_BOOST_ACTIVATED, TASK_BOOST_NO_CREDITS, /Task Master boost/).match?(TASK_BOOST_NO_CREDITS)
+
+    note_boost_spent('task')
+    false
   end
 
   # Keeps BOOST HASTE running. Its expiry is kept in UserVars because t2 can
   # start this script once per task, so the hour outlives any single run.
-  # Out of credits costs one command per task and picks up new credits by
-  # itself.
+  # Out of credits, it is not asked for again until the next login
+  # (note_boost_spent), as only a login brings new credits.
   #
   # @note The expiry lives in UserVars.taskmaster_haste_expires, which
   #   persists across runs, since t2 relaunches this script for each task.
   # @return [void]
   def refresh_haste
     return unless @boosts.include?('haste')
+    return if boost_spent?('haste')
     return if Time.now.to_i < UserVars.taskmaster_haste_expires.to_i
 
     case DRC.bput('boost haste', HASTE_ACTIVATED, HASTE_NO_CREDITS, /Minor Haste/)
     when HASTE_ACTIVATED
       UserVars.taskmaster_haste_expires = Time.now.to_i + HASTE_SECONDS
     when HASTE_NO_CREDITS
-      nil
+      note_boost_spent('haste')
     else
       UserVars.taskmaster_haste_expires = Time.now.to_i + HASTE_RECHECK_SECONDS
     end
@@ -1621,13 +1675,17 @@ class TaskMaster
   # and any still missing stop the run with their names, rather than buying
   # supplies and spending an instructions use on an item that cannot be made.
   # Tools left with Rangu were already collected before the task started.
+  # A tool the crafting bag's INVENTORY lists (listed) needs no TAP; after
+  # the clerk, every tool still missing is looked for afresh.
   #
   # @param tools [Array<String>] tool names as in the settings
   # @param discipline [String] clerk-tools toolset, e.g. 'enchanting'
+  # @param listed [Array<String>, nil] inventory_listing's lines for the
+  #   crafting bag, taken since the tools last moved; nil to TAP each
   # @return [void]
   # @raise [SystemExit] when a tool cannot be found
-  def ensure_tools(tools, discipline)
-    missing = missing_tools(tools)
+  def ensure_tools(tools, discipline, listed: nil)
+    missing = missing_tools(tools, listed)
     return if missing.empty?
 
     DRC.message("Missing #{missing.join(', ')}; asking the #{discipline} clerk.")
@@ -1640,10 +1698,33 @@ class TaskMaster
     exit
   end
 
+  # A tool counts as carried when it is in hand, when the crafting bag's
+  # INVENTORY (listed) has a line of its kind (sort_listed: every word of
+  # its name, and its noun read off the line, so a "wire sieve" is listed by
+  # "a trapezoidal loimic wire sieve"), or else when TAP finds it. A line
+  # sort_listed is unsure of is not taken: the tool is tapped, which also
+  # finds one on a belt or in another container (INVENTORY lists only the
+  # crafting bag, and nothing inside a container in it).
+  #
   # @param tools [Array<String>]
-  # @return [Array<String>] the tools neither in hand nor anywhere TAP finds them
-  def missing_tools(tools)
-    Array(tools).compact.reject { |tool| DRCI.in_hands?(tool) || DRCI.exists?(tool) }
+  # @param listed [Array<String>, nil] inventory_listing's lines for the
+  #   crafting bag; nil to TAP each tool not in hand
+  # @return [Array<String>] the tools neither in hand, listed nor anywhere
+  #   TAP finds them
+  def missing_tools(tools, listed = nil)
+    Array(tools).compact.reject { |tool| DRCI.in_hands?(tool) || listed_tool?(listed, tool) || DRCI.exists?(tool) }
+  end
+
+  # Whether the crafting bag's INVENTORY lists a tool by its kind
+  # (sort_listed).
+  #
+  # @param listed [Array<String>, nil] inventory_listing's lines, or nil
+  # @param tool [String] the tool's name as in the settings
+  # @return [Boolean]
+  def listed_tool?(listed, tool)
+    return false unless listed
+
+    !sort_listed(listed, tool)[:of_kind].empty?
   end
 
   # Carries amount copper (Kronars), from the bank when short, or stops.
@@ -2429,6 +2510,9 @@ class TaskMaster
   # The replies TAP of a coal nugget waits for: its size, or none there
   # ("I could not find what you were referring to.", 6100:225).
   COAL_TAP_REPLIES = [COAL_TAPPED, /^I could not find/, /^What were you referring to/].freeze
+  # A coal nugget's line in INVENTORY: "a medium coal nugget" (Gnarta
+  # 2026-11-18 16:16:51). Captures its size.
+  COAL_LISTED = /\b(\w+) coal nugget\b/
   # Crafts a coal nugget of each size still has in it. A craft rubs the
   # nugget once, and below massive each rub takes it down one size: huge,
   # then large (6100:680, 839), large, medium, small (6100:9143, 9318,
@@ -2440,6 +2524,15 @@ class TaskMaster
   # Kronars kept back on top of what a task's supplies cost: 5 gold for the
   # next task's fee and 2500 for repairs, as the other tasks keep.
   NEZHIRI_SPARE_COPPER = 7500
+  # Kronars her accept takes: "I'll have those 5 gold coins now, if I may."
+  # WEALTH read 55442323 before the accept and 55437323 after it (Holdigor
+  # 2026-11-18 15:26:43, 15:27:07, 15:27:15).
+  NEZHIRI_TASK_FEE = 5000
+  # Rubs of coal the wait before her task counts up to (survey_remedy_supplies).
+  # Her tasks asked for 12 to 15 doses in the logs, 3 crafts at 5 or 6 doses a
+  # craft, so this covers the first round; a round with more crafts than the
+  # rubs counted, when the count reached this, taps the coal afresh.
+  NEZHIRI_SURVEY_RUBS = 6
   # The tools each vessel is worked with: a mortar with a pestle, a bowl
   # with a mixing stick (remedy picks them the same way). A task needs its
   # vessel's two, and the sieve when the game asks for it; Rangu repaired
@@ -2472,7 +2565,8 @@ class TaskMaster
 
   # Works one of Nezhiri's remedy tasks: counts the doses already in the
   # crafting bag, then, for the crafts still needed, gets the tools, buys
-  # brine (Andreshlew), herbs, water, alcohol and a coal nugget (Crossing),
+  # brine (Andreshlew), herbs and a coal nugget (and water or alcohol when
+  # the wait before the task found none: survey_remedy_supplies) (Crossing),
   # crafts each with remedy's instructions form, combining every new stack
   # into one, and leaves the mortar and pestle (or bowl and stick) with
   # Rangu. The hand-in (give_item) makes the stack the size she asked for.
@@ -2490,7 +2584,11 @@ class TaskMaster
   # first (clear_held_vessel), and an unfinished remedy in it carried on; so
   # is one a craft leaves (remedy_left_in_vessel). A finish (resume_task)
   # runs this too: the doses on hand are counted afresh here, so the ones
-  # made before the finish count once.
+  # made before the finish count once. What the wait before the task found
+  # (survey_remedy_supplies) answers the first round's tool, coal, brine,
+  # herb and copper checks, and the crafting bag's INVENTORY taken for the
+  # doses on hand (@bag_listing) its tool and coal checks, in place of a
+  # TAP, COUNT or WEALTH each (surveyed, buy_remedy_supplies).
   #
   # Notes the instructions studied this run in @remedy_studies and the
   # fewest doses one craft made in @remedy_yield, which brew_remedies
@@ -2519,7 +2617,10 @@ class TaskMaster
 
     check_remedy_uses(item, recipe, crafts)
     tools = remedy_tools(recipe)
-    ensure_tools(tools, 'alchemy')
+    # The tools the wait before the task found missing (survey_remedy_supplies);
+    # with none of this task's among them, nothing is tapped again.
+    missing = surveyed(:missing_tools) { nil }
+    ensure_tools(tools, 'alchemy', listed: @bag_listing) unless missing && (missing & tools).empty?
     added = brew_remedy_round(recipe, doses, crafts)
     top_up_remedies(item, doses, recipe, added)
     repair(tools.grep(REMEDY_VESSEL_TOOLS[recipe[:vessel]]), @settings.alchemy_belt)
@@ -2822,6 +2923,8 @@ class TaskMaster
   #   bag, where it counts as a stack carried, and the vessel is put away;
   # - nothing: the vessel is put away.
   # Anything else, or no answer, stops the run with the vessel in hand.
+  # With a vessel in hand, what the wait before the task found
+  # (@stock_survey) and the INVENTORY taken (@bag_listing) are forgotten.
   #
   # @param recipe [Hash] the task's recipe
   # @return [void]
@@ -2832,6 +2935,11 @@ class TaskMaster
     held = held_vessel(recipe)
     return unless held
 
+    # Whatever is done with the vessel can change the bag (a herb put back,
+    # a continue's purchases and craft), so every check after this one is
+    # made afresh, not from the wait before the task or the INVENTORY taken.
+    @stock_survey = nil
+    @bag_listing = nil
     contents = look_in_vessel(recipe)
     case vessel_state(recipe, contents)
     when :unfinished
@@ -3001,7 +3109,9 @@ class TaskMaster
   # every glop, moisturizer, potion and draught logged in November 2026
   # right. An INVENTORY with no answer is asked once more; unanswered twice
   # it stops the run, since taking it for an empty bag would craft doses
-  # already made, or leave them out of the hand-in.
+  # already made, or leave them out of the hand-in. The lines are kept in
+  # @bag_listing, so the first round's tool and coal checks read them
+  # instead of tapping each (missing_tools, coal_rubs).
   #
   # @param recipe [Hash] the task's recipe
   # @return [Integer] stacks of the remedy in the bag
@@ -3012,6 +3122,7 @@ class TaskMaster
     lines = container_listing(@bag)
     lines = container_listing(@bag) if lines.nil?
     stop_stock("Could not look for #{product} in your #{@bag}: INVENTORY went unanswered twice.") if lines.nil?
+    @bag_listing = lines
     ours = sort_listed(lines, product)
     sorted = sort_listed(lines, noun)
     note_other_remedies(recipe, sorted[:of_kind] - ours[:of_kind], sorted[:unread] - ours[:unread], ours[:unread])
@@ -3154,14 +3265,67 @@ class TaskMaster
     stop_stock("Could not put the #{product} (#{ref}) in your #{@bag}.")
   end
 
+  # Spent on Nezhiri's first "you must wait" in place of the poll's pause
+  # (get_task): her supplies are looked over (survey_remedy_supplies) while
+  # her timer runs, rather than after her accept, where each TAP, COUNT and
+  # WEALTH delayed the task (about 4 s a task in the 40 cycles sampled on
+  # 2026-11-18, all of which waited). The pause after it is what is left of
+  # the poll interval, so the asks keep their rhythm.
+  #
+  # @return [void]
+  def nezhiri_wait_chores
+    started = Time.now
+    survey_remedy_supplies
+    pause [@cooldown_poll - (Time.now - started), 0].max
+  end
+
+  # What any of her tasks will check, whichever remedy she gives, kept in
+  # @stock_survey for the first round of the task (surveyed): the brine
+  # parts carried, the coal's rubs (up to NEZHIRI_SURVEY_RUBS), the pieces of
+  # each of her remedies' herbs, the alchemy_tools missing, water and
+  # alcohol (unless a water_container or alcohol_container is set) and,
+  # last, the copper on hand. One INVENTORY of the crafting bag answers the
+  # tools and the coal it lists (missing_tools, coal_rubs).
+  #
+  # @return [void]
+  def survey_remedy_supplies
+    listed = container_listing(@bag)
+    survey = {
+      brine_parts: DRCI.count_item_parts('brine'),
+      coal_rubs: coal_rubs(NEZHIRI_SURVEY_RUBS, listed),
+      herb_parts: NEZHIRI_ITEMS.values.map { |recipe| recipe[:stock] }.uniq.to_h { |stock| [stock, DRCI.count_item_parts(stock)] },
+      missing_tools: missing_tools(@settings.alchemy_tools, listed)
+    }
+    survey[:water] = DRCI.exists?('water') if @settings.water_container.nil?
+    survey[:alcohol] = DRCI.exists?('alcohol') if @settings.alcohol_container.nil?
+    survey[:copper] = DRCM.wealth(NEZHIRI_SUPPLY_TOWN)
+    @stock_survey = survey
+  end
+
+  # One answer of the wait before the task (survey_remedy_supplies), used
+  # once: the first check of it gets the answer and every later one (a top
+  # up round, a craft carried on) the block's, a check made afresh. With no
+  # survey (no wait, a finish, a held vessel dealt with), the block's.
+  #
+  # @param key [Symbol] e.g. :brine_parts
+  # @yieldreturn [Object] the answer without the survey
+  # @return [Object]
+  def surveyed(key)
+    return yield unless @stock_survey&.key?(key)
+
+    @stock_survey.delete(key)
+  end
+
   # Buys what the crafts need and are not on hand, after one check that the
   # money is there: brine on Andreshlew, until its parts cover a splash per
   # craft; then in Crossing a coal nugget when the ones carried have too
-  # few rubs left for the crafts, and water and alcohol when missing
-  # (remedy would otherwise buy them at the hometown's shop, which may be a
-  # long way off, even when the remedy does not use them), and one 25-piece
-  # herb stack per craft, less the full stacks carried. Each goes in the
-  # crafting bag.
+  # few rubs left for the crafts, water and alcohol when the wait before
+  # the task found none (missing_remedy_supplies), and one 25-piece herb
+  # stack per craft, less the full stacks carried. Each goes in the
+  # crafting bag. The first round reads what the wait found (surveyed) and
+  # the INVENTORY taken for the doses on hand (@bag_listing, used once)
+  # where it can; the copper check is left out when the copper the wait
+  # found, less her fee, covers the cost and NEZHIRI_SPARE_COPPER.
   #
   # @param recipe [Hash] the task's recipe; reads :stock, :order, :price
   # @param crafts [Integer] crafts to make
@@ -3172,15 +3336,27 @@ class TaskMaster
   # @return [void]
   # @raise [SystemExit] when the money can't be had or a purchase fails
   def buy_remedy_supplies(recipe, crafts, herbs: true, keep: [])
+    listed = @bag_listing
+    @bag_listing = nil
+    copper = surveyed(:copper) { nil }
     brines = brines_to_buy(crafts)
-    supplies = missing_remedy_supplies(crafts)
-    stacks = herbs ? [crafts - (DRCI.count_item_parts(recipe[:stock]) / NEZHIRI_HERB_STACK), 0].max : 0
+    supplies = missing_remedy_supplies(crafts, listed)
+    stacks = herbs ? [crafts - (herb_pieces(recipe[:stock]) / NEZHIRI_HERB_STACK), 0].max : 0
     cost = (brines * BRINE_PRICE) + (stacks * recipe[:price].to_i) + supplies.sum { |supply| supply[:price] }
     note = kept_vessel_note(recipe) unless keep.empty?
-    afford(cost + NEZHIRI_SPARE_COPPER, keep_hands: !keep.empty?, note: note) if cost.positive?
+    afford(cost + NEZHIRI_SPARE_COPPER, keep_hands: !keep.empty?, note: note) if cost.positive? && !(copper && copper - NEZHIRI_TASK_FEE >= cost + NEZHIRI_SPARE_COPPER)
     buy_brines(brines, keep: keep, note: note)
     supplies.each { |supply| order_remedy_supply(supply[:room], supply[:number], supply[:name], keep: keep, note: note) }
     stacks.times { order_remedy_supply(remedy_shop['stock-room'], recipe[:order], recipe[:stock]) }
+  end
+
+  # Herb pieces carried, as the wait before the task counted them for each
+  # of her herbs (survey_remedy_supplies), else counted now.
+  #
+  # @param stock [String] the herb's stock name, e.g. 'red flowers'
+  # @return [Integer]
+  def herb_pieces(stock)
+    surveyed(:herb_parts) { {} }.fetch(stock) { DRCI.count_item_parts(stock) }
   end
 
   # What to do about the vessel a continue keeps in hand when a purchase
@@ -3201,42 +3377,75 @@ class TaskMaster
 
   # Brines to buy so the parts carried cover a splash for each craft.
   # DRCI.count_item_parts adds up every brine carried ("There is only one
-  # part left of the brewer's brine.", 6100:8665).
+  # part left of the brewer's brine.", 6100:8665); the first round takes the
+  # count the wait before the task made (surveyed).
   #
   # @param crafts [Integer] crafts to make
   # @return [Integer]
   def brines_to_buy(crafts)
-    short = crafts - DRCI.count_item_parts('brine')
+    short = crafts - surveyed(:brine_parts) { DRCI.count_item_parts('brine') }
     short.positive? ? (short + BRINE_PARTS - 1) / BRINE_PARTS : 0
   end
 
   # The Crossing supplies remedy would buy itself because none is on hand:
-  # plain water and alcohol (none when water_container or
-  # alcohol_container names a vessel, which remedy fills instead), and the
-  # coal nugget. A coal nugget is bought too when the ones carried have
-  # fewer rubs left than crafts (coal_rubs): one runs out part way, and
-  # remedy would then buy one at the hometown's shop. The coal nugget comes
-  # first, so the walk ends at the alchemy supplies, where the herbs are
-  # ordered.
+  # the coal nugget, when the ones carried have fewer rubs left than crafts
+  # (remedy_coal_rubs): one runs out part way, and remedy would then buy one
+  # at the hometown's shop. Then plain water and alcohol, only when the wait
+  # before the task found none (survey_remedy_supplies, which leaves them
+  # alone when water_container or alcohol_container names a vessel, which
+  # remedy fills instead). None of her four remedies uses either: every
+  # READ of their instructions lists a herb, a splash of brewer's brine and
+  # a catalyst only, and no craft in the 40 cycles sampled on 2026-11-18
+  # asked for water or alcohol. remedy buys any that is missing all the
+  # same, at the crafting town's shop (remedy.lic Supplies#buy_missing), so
+  # one the wait found missing is bought here, while no round looks for
+  # them after her accept. The coal nugget comes first, so the walk ends at
+  # the alchemy supplies, where the herbs are ordered.
   #
   # @param crafts [Integer] crafts to make, one rub of coal each
+  # @param listed [Array<String>, nil] the crafting bag's INVENTORY lines,
+  #   or nil (coal_rubs)
   # @return [Array<Hash>] each with :name, :room, :number and :price
-  def missing_remedy_supplies(crafts)
+  def missing_remedy_supplies(crafts, listed = nil)
     shop = remedy_shop
     wanted = []
-    wanted << { name: NEZHIRI_CATALYST, room: shop['catalyst-room'], number: shop['catalyst_number'], stock: 'coal' } if coal_rubs(crafts) < crafts
-    wanted << { name: 'water', room: shop['stock-room'], number: shop['stock-number'], stock: 'water' } if @settings.water_container.nil? && !DRCI.exists?('water')
-    wanted << { name: 'alcohol', room: shop['stock-room'], number: shop['stock-number-a'], stock: 'alcohol' } if @settings.alcohol_container.nil? && !DRCI.exists?('alcohol')
+    wanted << { name: NEZHIRI_CATALYST, room: shop['catalyst-room'], number: shop['catalyst_number'], stock: 'coal' } if remedy_coal_rubs(crafts, listed) < crafts
+    wanted << { name: 'water', room: shop['stock-room'], number: shop['stock-number'], stock: 'water' } unless surveyed(:water) { true }
+    wanted << { name: 'alcohol', room: shop['stock-room'], number: shop['stock-number-a'], stock: 'alcohol' } unless surveyed(:alcohol) { true }
     wanted.each { |supply| supply[:price] = @stockdata.dig(supply[:stock], 'stock-value').to_i }
   end
 
-  # Rubs left in the coal nuggets carried, from the size TAP shows
-  # (COAL_RUBS), tapping the first, the second and so on until none is
-  # found or the rubs cover the crafts. A TAP with no answer ends the count.
+  # Rubs left in the coal nuggets for a round's crafts: the wait before the
+  # task counted them up to NEZHIRI_SURVEY_RUBS (surveyed), which answers
+  # when the count stopped short of that (every nugget was tapped) or covers
+  # the crafts; otherwise they are counted now (coal_rubs).
   #
   # @param crafts [Integer] crafts to make
+  # @param listed [Array<String>, nil] the crafting bag's INVENTORY lines,
+  #   or nil
+  # @return [Integer]
+  def remedy_coal_rubs(crafts, listed)
+    rubs = surveyed(:coal_rubs) { nil }
+    return rubs if rubs && (rubs >= crafts || rubs < NEZHIRI_SURVEY_RUBS)
+
+    coal_rubs(crafts, listed)
+  end
+
+  # Rubs left in the coal nuggets carried, from their sizes (COAL_RUBS).
+  # Those the crafting bag's INVENTORY lists (listed) are read off it, as
+  # "a medium coal nugget"; when they cover the crafts nothing is tapped.
+  # Otherwise TAP counts them all afresh, the first, the second and so on,
+  # until none is found or the rubs cover the crafts, which also finds a
+  # nugget kept outside the bag. A TAP with no answer ends the count.
+  #
+  # @param crafts [Integer] crafts to make
+  # @param listed [Array<String>, nil] inventory_listing's lines for the
+  #   crafting bag; nil to TAP
   # @return [Integer] rubs counted, 0 with no nugget
-  def coal_rubs(crafts)
+  def coal_rubs(crafts, listed = nil)
+    rubs = sort_listed(listed, NEZHIRI_CATALYST)[:of_kind].sum { |line| COAL_RUBS.fetch(line[COAL_LISTED, 1], 1) }
+    return rubs if rubs >= crafts && rubs.positive?
+
     rubs = 0
     $ORDINALS.each do |ordinal|
       size = DRC.bput("tap my #{ordinal} #{NEZHIRI_CATALYST}", *COAL_TAP_REPLIES)[COAL_TAPPED, 1]
@@ -4012,6 +4221,8 @@ class TaskMaster
     DRC.message("#{@npc.capitalize} has given you all the tasks allowed today; working one of #{fallback.capitalize}'s instead (the next run asks #{@npc.capitalize} again).")
     @primary_npc ||= @npc
     @npc = fallback
+    # What Nezhiri's wait found is not for another taskmaster's task.
+    @stock_survey = nil
   end
 
   # task_fallback_npc when it names a taskmaster this script does that is not
@@ -4035,6 +4246,10 @@ class TaskMaster
   # when this returns nil so the caller's loop goes on to its end-of-task
   # checks and asks again. Another taskmaster's task that had to be
   # cancelled sends this round to ask its own taskmaster again.
+  # The first "you must wait" boosts (BOOST TASK) when the run has the task
+  # boost armed; without one, or with no credits for it, Nezhiri's first
+  # one is spent on her supplies (nezhiri_wait_chores) and the others, like
+  # every other taskmaster's, wait the poll interval.
   # A while loop, not Kernel#loop: loop would swallow a StopIteration raised
   # inside it and return nil, where the old recursion let it propagate.
   #
@@ -4051,6 +4266,8 @@ class TaskMaster
   #   MAX_UNKNOWN_TASK_REPLIES replies in a row it does not know
   def get_task(exit_after_resume: true)
     unknown_replies = 0
+    @stock_survey = nil
+    chores_done = false
     while true
       find_npc(@rooms, @npc)
       reply = DRC.bput("ask #{@npc} for task", /if you agree to (his|her) terms/, /You may accept by typing ACCEPT TASK/, /utterly ignoring you/, /you must wait before I can give you a task/, /You are already on a task/, /give you a chance a little later/, TASK_UNRELIABLE, TASK_DAILY_MAX, /^To whom are you speaking/)
@@ -4059,6 +4276,7 @@ class TaskMaster
       when /if you agree to (his|her) terms/, /To whom are you speaking/
         next
       when /You are already on a task/
+        @stock_survey = nil
         catch(FOREIGN_TASK_CANCELLED) do
           resume_task(exit_when_done: exit_after_resume)
           # Handed in, and the run goes on: its loop asks for the next task.
@@ -4070,10 +4288,11 @@ class TaskMaster
         DRC.message("Task on cooldown or recently canceled a task, either way, going to have to wait.")
         pause @cooldown_poll
       when /you must wait before I can give you a task/
-        if @boost
-          fput("boost task")
+        if @boost && boost_task
           pause 2
-          @boost = false
+        elsif @npc == 'nezhiri' && !chores_done
+          chores_done = true
+          nezhiri_wait_chores
         else
           pause @cooldown_poll
         end

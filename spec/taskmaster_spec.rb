@@ -21,6 +21,9 @@ RSpec.describe TaskMaster do
 
   before do
     allow(DRC).to receive(:message)
+    # A boost the game said this login has no credits for is remembered for
+    # the Lich process (boost_spent?): forget it so no example sees another's.
+    $taskmaster_boost_unavailable = nil
   end
 
   # A bare instance: initialize runs the whole script, so each example builds
@@ -611,6 +614,67 @@ RSpec.describe TaskMaster do
       expect { tm.run(OpenStruct.new(npc: 'bradyn', find: true)) }.to raise_error(SystemExit)
       expect(tm).to have_received(:find_npc).with(described_class::ROOMS, 'bradyn')
       expect(tm).not_to have_received(:parse_args)
+    end
+
+    describe 'the Rangu ticket, looked for before the ask' do
+      let(:offer) { 'You may accept by typing ACCEPT TASK.' }
+      let(:on_task) { 'You are already on a task.' }
+
+      # One pass of run_tasks for any taskmaster, every step recorded: each
+      # TAP (DRCI.exists?), get_task's result from tasks, or the real
+      # get_task with asks as ASK FOR TASK's replies.
+      def ticket_run(npc: 'zasele', ticket: true, tasks: [rope_task], asks: nil, **ivars)
+        tm = build(npc: npc, cooldown_poll: 7, **ivars)
+        events = []
+        allow(tm).to receive(:reconcile_hands)
+        allow(tm).to receive(:prepare_for_task) { events << :prepare }
+        allow(DRCI).to receive(:exists?) do |item|
+          events << [:tap, item]
+          ticket
+        end
+        if asks
+          allow(tm).to receive(:find_npc)
+          allow(tm).to receive(:pause)
+          game("ask #{npc} for task" => lambda { |*|
+            events << :ask
+            asks.shift || raise('asked again after the last reply')
+          }, 'accept task' => 'You can check your progress with the TASK verb.')
+          allow(tm).to receive(:finish) { events << :finish && rope_task }
+          allow(tm).to receive(:resume_task) do
+            events << :resume
+            throw TaskMaster::FOREIGN_TASK_CANCELLED
+          end
+        else
+          allow(tm).to receive(:get_task) { events << :get_task && tasks.shift }
+        end
+        allow(tm).to receive(:tool_pickup) { events << :tool_pickup }
+        allow(tm).to receive(npc.to_sym) { events << :work }
+        allow(tm).to receive(:complete_task) { events << :complete }
+        tm.run_tasks(OpenStruct.new)
+        events
+      end
+
+      it 'taps for it after the before scripts and before asking, and picks the tools up only once a task is accepted' do
+        %w[zasele poltu bradyn dorhum nezhiri].each do |npc|
+          expect(ticket_run(npc: npc)).to eq([:prepare, [:tap, 'rangu ticket'], :get_task, :tool_pickup, :work, :complete]), npc
+        end
+      end
+
+      it 'picks nothing up without a ticket' do
+        expect(ticket_run(ticket: false)).to eq([:prepare, [:tap, 'rangu ticket'], :get_task, :work, :complete])
+      end
+
+      it 'picks nothing up when get_task finished a task already open (resume_task picks up its own)' do
+        expect(ticket_run(tasks: [nil])).to eq([:prepare, [:tap, 'rangu ticket'], :get_task])
+      end
+
+      it 'does not tap for it at all with task_self_repair' do
+        expect(ticket_run(self_repair: true)).to eq(%i[prepare get_task work complete])
+      end
+
+      it "taps once and picks up after the accept when another taskmaster's task was cancelled first" do
+        expect(ticket_run(asks: [on_task, offer])).to eq([:prepare, [:tap, 'rangu ticket'], :ask, :resume, :ask, :finish, :tool_pickup, :work, :complete])
+      end
     end
 
     describe 'one task' do
@@ -1414,11 +1478,33 @@ RSpec.describe TaskMaster do
         expect(DRC).to have_received(:bput).with('boost haste', any_args)
       end
 
-      it 'leaves the expiry alone when out of credits, so the next task tries again' do
+      it 'leaves the expiry alone when out of credits, and asks no more in that login, not even from a new run' do
         tm = boosted(task_boosts: ['haste'])
         reply_with(no_credits)
         tm.refresh_haste
-        expect(UserVars.taskmaster_haste_expires).to be_nil
+        expect([UserVars.taskmaster_haste_expires, $taskmaster_boost_unavailable]).to eq([nil, { 'haste' => true }])
+
+        # t2 starts a new run for the next task, in the same Lich process.
+        [tm, boosted(task_boosts: ['haste'])].each(&:refresh_haste)
+        expect(DRC).to have_received(:bput).with('boost haste', any_args).once
+      end
+
+      it 'still asks for haste when only the task boost has run out' do
+        $taskmaster_boost_unavailable = { 'task' => true }
+        tm = boosted(task_boosts: %w[task haste])
+        reply_with(activated)
+        tm.refresh_haste
+        expect(DRC).to have_received(:bput).with('boost haste', any_args)
+        expect(tm.instance_variable_get(:@boost)).to be(false)
+      end
+
+      it 'notes nothing for an activation, another answer or none, so the next hour asks again' do
+        [activated, 'You already have an active Minor Haste boost.', ''].each do |reply|
+          UserVars.taskmaster_haste_expires = nil
+          reply_with(reply)
+          boosted(task_boosts: ['haste']).refresh_haste
+        end
+        expect($taskmaster_boost_unavailable).to be_nil
       end
 
       it 'backs off for ten minutes after any other answer, such as haste already running' do
@@ -2049,11 +2135,27 @@ RSpec.describe TaskMaster do
 
         it 'keeps polling the ordinary cooldown instead of falling back' do
           wait = 'Potion Peddler Nezhiri says, "I am sorry, you must wait before I can give you a task."'
-          tm, events = limited({ 'nezhiri' => [wait, offer] })
+          tm, events = limited({ 'nezhiri' => [wait, wait, offer] })
+          allow(tm).to receive(:nezhiri_wait_chores) { events << :chores }
 
           expect(tm.get_task).to eq(:accepted)
-          expect(events).to eq([[:find, 'nezhiri'], [:ask, 'nezhiri'], [:pause, 7], [:find, 'nezhiri'], [:ask, 'nezhiri'], :finish])
+          expect(events).to eq([[:find, 'nezhiri'], [:ask, 'nezhiri'], :chores, [:find, 'nezhiri'], [:ask, 'nezhiri'], [:pause, 7],
+                                [:find, 'nezhiri'], [:ask, 'nezhiri'], :finish])
           expect(tm.instance_variable_get(:@npc)).to eq('nezhiri')
+        end
+
+        it "forgets what Nezhiri's wait found when it falls back, so the fallback's task is not worked from it" do
+          wait = 'Potion Peddler Nezhiri says, "I am sorry, you must wait before I can give you a task."'
+          tm, events = limited({ 'nezhiri' => [wait, daily_max], 'zasele' => [offer] })
+          allow(tm).to receive(:nezhiri_wait_chores) do
+            events << :chores
+            tm.instance_variable_set(:@stock_survey, { copper: 50_000, missing_tools: [] })
+          end
+          allow(tm).to receive(:finish) { events << [:finish, tm.instance_variable_get(:@stock_survey)] && :accepted }
+
+          expect(tm.get_task).to eq(:accepted)
+          expect(events.values_at(2, -3, -2, -1)).to eq([:chores, [:find, 'zasele'], [:ask, 'zasele'], [:finish, nil]])
+          expect(tm.instance_variable_get(:@npc)).to eq('zasele')
         end
 
         it 'goes back to the first taskmaster after the fallback task' do
@@ -2139,16 +2241,24 @@ RSpec.describe TaskMaster do
         let(:wait) { 'Seamstress Zasele says, "I am sorry, you must wait before I can give you a task."' }
         let(:on_task) { 'You are already on a task.' }
 
+        # BOOST TASK's replies: the start of the activation line task-forage.lic
+        # reads (the rest of it is not in the logs at hand), and the no-credits
+        # line (Holdigor 2026-11-18 15:26:47).
+        let(:boosted) { "You've activated the Task Master boost" }
+        let(:no_boosts) { "You don't have enough credits for the Task Master boost.  You currently have 0 available but need 1." }
+
         # Plays the replies in order and records each search, ask, pause and
-        # command. Accepting returns finish's (stubbed) result; an ongoing
-        # task calls the stubbed resume_task, and get_task then returns nil.
-        # Returns get_task's result, the steps and the instance.
-        def asking(replies, boost: false, **get_task_args)
-          tm = reader(boost: boost, cooldown_poll: 7)
+        # command, BOOST TASK answered with boost_reply. Accepting returns
+        # finish's (stubbed) result; an ongoing task calls the stubbed
+        # resume_task, and get_task then returns nil. Returns get_task's
+        # result, the steps and the instance.
+        def asking(replies, boost: false, boost_reply: boosted, npc: 'zasele', **get_task_args)
+          tm = reader(boost: boost, cooldown_poll: 7, npc: npc)
           events = []
           allow(tm).to receive(:find_npc) { events << :find }
           allow(tm).to receive(:pause) { |seconds| events << [:pause, seconds] }
           allow(tm).to receive(:fput) { |command| events << [:fput, command] }
+          allow(tm).to receive(:nezhiri_wait_chores) { events << :chores }
           allow(tm).to receive(:finish) do
             events << :finish
             :accepted
@@ -2170,7 +2280,11 @@ RSpec.describe TaskMaster do
             events << :accept
             'You can check your progress with the TASK verb.'
           end
-          game('ask zasele for task' => ask, 'accept task' => accept)
+          boost_task = lambda do |*|
+            events << :boost
+            boost_reply
+          end
+          game("ask #{npc} for task" => ask, 'accept task' => accept, 'boost task' => boost_task)
           yield tm if block_given?
           [tm.get_task(**get_task_args), events, tm]
         end
@@ -2212,12 +2326,12 @@ RSpec.describe TaskMaster do
 
         it 'boosts once on a cooldown, waits two seconds and asks again' do
           result, events, tm = asking([wait, offer], boost: true)
-          expect([result, events]).to eq([:accepted, [:find, :ask, [:fput, 'boost task'], [:pause, 2], *accepted]])
+          expect([result, events]).to eq([:accepted, [:find, :ask, :boost, [:pause, 2], *accepted]])
           expect(tm.instance_variable_get(:@boost)).to be(false)
         end
 
         it 'waits the poll interval on a second cooldown instead of boosting again' do
-          expect(asking([wait, wait, offer], boost: true)[1]).to eq([:find, :ask, [:fput, 'boost task'], [:pause, 2], :find, :ask, [:pause, 7], *accepted])
+          expect(asking([wait, wait, offer], boost: true)[1]).to eq([:find, :ask, :boost, [:pause, 2], :find, :ask, [:pause, 7], *accepted])
         end
 
         it 'does not boost again on a later ask from the same run' do
@@ -2252,7 +2366,103 @@ RSpec.describe TaskMaster do
 
         it 'mixes replies in any order, asking until there is an offer' do
           expect(asking([terms, ignored, wait, nobody, offer], boost: true)[1])
-            .to eq([:find, :ask, :find, :ask, cooldown_message, [:pause, 7], :find, :ask, [:fput, 'boost task'], [:pause, 2], :find, :ask, *accepted])
+            .to eq([:find, :ask, :find, :ask, cooldown_message, [:pause, 7], :find, :ask, :boost, [:pause, 2], :find, :ask, *accepted])
+        end
+
+        describe 'with no credits for the task boost' do
+          it 'notes it for the login and waits the poll interval at once, rather than asking again in two seconds' do
+            result, events, tm = asking([wait, offer], boost: true, boost_reply: no_boosts)
+
+            expect([result, events]).to eq([:accepted, [:find, :ask, :boost, [:pause, 7], *accepted]])
+            expect([tm.instance_variable_get(:@boost), $taskmaster_boost_unavailable]).to eq([false, { 'task' => true }])
+          end
+
+          it 'sends no BOOST TASK in a later run of the same login, whose settings ask for it' do
+            asking([wait, offer], boost: true, boost_reply: no_boosts)
+
+            _, events, = asking([wait, offer]) do |run|
+              run.instance_variable_set(:@settings, OpenStruct.new(task_boosts: ['task'], task_use_boost: true))
+              run.send(:configure_boosts)
+            end
+
+            expect(events).to eq([:find, :ask, [:pause, 7], *accepted])
+          end
+
+          it 'boosts as before after an activation, or a reply it does not know, which note nothing' do
+            [boosted, ''].each do |reply|
+              _, events, tm = asking([wait, wait, offer], boost: true, boost_reply: reply)
+
+              expect(events).to eq([:find, :ask, :boost, [:pause, 2], :find, :ask, [:pause, 7], *accepted])
+              expect([tm.instance_variable_get(:@boost), $taskmaster_boost_unavailable]).to eq([false, nil])
+            end
+            run = build(settings: { task_use_boost: true })
+            run.send(:configure_boosts)
+            expect(run.instance_variable_get(:@boost)).to be(true)
+          end
+
+          it 'waits the poll interval for every taskmaster when the run was started with the boost already spent' do
+            $taskmaster_boost_unavailable = { 'task' => true }
+            _, events, = asking([wait, offer]) do |run|
+              run.instance_variable_set(:@settings, OpenStruct.new(task_boosts: %w[task haste]))
+              run.send(:configure_boosts)
+            end
+
+            expect(events).to eq([:find, :ask, [:pause, 7], *accepted])
+          end
+        end
+
+        describe "Nezhiri's supplies looked over during her wait" do
+          it 'spends her first wait without a boost on them, once, and polls through the rest' do
+            _, events, = asking([wait, wait, wait, terms, offer], boost: true, npc: 'nezhiri')
+
+            expect(events).to eq([:find, :ask, :boost, [:pause, 2], :find, :ask, :chores, :find, :ask, [:pause, 7], :find, :ask, *accepted])
+          end
+
+          it 'never for any other taskmaster' do
+            _, events, = asking([wait, wait, wait, terms, offer], boost: true)
+
+            expect(events).to eq([:find, :ask, :boost, [:pause, 2], :find, :ask, [:pause, 7], :find, :ask, [:pause, 7], :find, :ask, *accepted])
+          end
+
+          it 'on her first wait when the run has no boost' do
+            expect(asking([wait, wait, offer], npc: 'nezhiri')[1]).to eq([:find, :ask, :chores, :find, :ask, [:pause, 7], *accepted])
+          end
+
+          it 'on the same wait when the boost had no credits' do
+            expect(asking([wait, wait, offer], boost: true, boost_reply: no_boosts, npc: 'nezhiri')[1])
+              .to eq([:find, :ask, :boost, :chores, :find, :ask, [:pause, 7], *accepted])
+          end
+
+          it 'not after a cancel or "a little later", only on "you must wait"' do
+            expect(asking([ignored, later, wait, offer], npc: 'nezhiri')[1])
+              .to eq([:find, :ask, cooldown_message, [:pause, 7], :find, :ask, cooldown_message, [:pause, 7], :find, :ask, :chores, *accepted])
+          end
+
+          it 'again for the next task, which starts with nothing left from the last survey' do
+            seen = []
+            _, _, tm = asking([wait, offer, offer], npc: 'nezhiri') do |run|
+              allow(run).to receive(:nezhiri_wait_chores) { run.instance_variable_set(:@stock_survey, { copper: 50_000 }) }
+              allow(run).to receive(:finish) { seen << run.instance_variable_get(:@stock_survey) }
+            end
+
+            tm.get_task
+
+            expect(seen).to eq([{ copper: 50_000 }, nil])
+          end
+
+          it 'is forgotten for a task already in progress, which resume_task finishes with every check made afresh' do
+            seen = []
+            asking([wait, on_task], npc: 'nezhiri') do |run|
+              allow(run).to receive(:nezhiri_wait_chores) { run.instance_variable_set(:@stock_survey, { copper: 50_000 }) }
+              allow(run).to receive(:resume_task) { seen << run.instance_variable_get(:@stock_survey) }
+            end
+            asking([on_task], npc: 'nezhiri') do |run|
+              run.instance_variable_set(:@stock_survey, { brine_parts: 30 }) # a survey left from an earlier get_task
+              allow(run).to receive(:resume_task) { seen << run.instance_variable_get(:@stock_survey) }
+            end
+
+            expect(seen).to eq([nil, nil])
+          end
         end
 
         it 'keeps asking through a long cooldown without growing the stack' do
@@ -8094,15 +8304,17 @@ RSpec.describe TaskMaster do
         expect([game.clock, game.diagnostics, tm.instance_variable_get(:@boost)]).to eq([2.0, [], false])
       end
 
-      it 'waits the poll interval instead when it has no boost, then takes the same offer' do
+      it 'spends the poll interval on her supplies instead when it has no boost, then takes the same offer' do
         tm = nezhiri_tm(boost: false, cooldown_poll: 15)
         game, = replay
         transcript('2026-11-06_6100_boost_draught')
           .script(game, commands: /\A(?:ask nezhiri for task|accept task|task|read my draught instructions)\z/)
+        allow(tm).to receive(:survey_remedy_supplies) { game.record_call('survey_remedy_supplies') }
 
         expect(tm.get_task.first(2)).to eq(['draught', 13])
         expect(game.sent).not_to include('boost task')
-        expect(game.clock).to eq(15.0)
+        expect(game.timeline.first(3)).to eq(['>> ask nezhiri for task', '** survey_remedy_supplies', '>> ask nezhiri for task'])
+        expect(game.clock).to be_within(1).of(15.0)
       end
     end
 
@@ -9126,8 +9338,8 @@ RSpec.describe TaskMaster do
           expect(commons.calls.map(&:first)).not_to include('DRCT.buy_item')
         end
 
-        it 'buys the coal nugget at the forging supplies, then water and alcohol at the alchemy supplies, only when none is carried' do
-          tm = maker(task_product: 'gill glop')
+        it 'buys the coal nugget at the forging supplies, then water and alcohol at the alchemy supplies, only when the wait before the task found none' do
+          tm = maker(task_product: 'gill glop', stock_survey: { water: false, alcohol: false })
           game, commons = shop_world(kit.reject { |name, _| name =~ /water|alcohol|coal/ }, shop: :model)
           game.script('inventory duffel bag', *bag_listed)
           game.script('count my first brine', ReplayGame.log('6100:8800'))
@@ -9153,12 +9365,34 @@ RSpec.describe TaskMaster do
           expect(commons.inventory.map(&:name)).to include('large coal nugget', 'water', 'grain alcohol', 'dried georin')
         end
 
-        it 'leaves water and alcohol to remedy when water_container and alcohol_container name vessels' do
+        it 'leaves water and alcohol to remedy when water_container and alcohol_container name vessels: the wait does not look for them' do
           tm = maker(settings: settings.merge(water_container: 'jug', alcohol_container: 'flask'))
-          game, = shop_world([])
-          game.script('tap my first coal nugget', ReplayGame.log('6100:225'))
+          shop_world([])
+          inventory_replies({})
           allow(DRCI).to receive(:exists?).and_return(false)
+          allow(DRCM).to receive(:wealth).and_return(0)
+
+          tm.survey_remedy_supplies
+
+          expect(tm.instance_variable_get(:@stock_survey).keys).to eq(%i[brine_parts coal_rubs herb_parts missing_tools copper])
+          expect(DRCI).not_to have_received(:exists?).with('water')
+          expect(DRCI).not_to have_received(:exists?).with('alcohol')
           expect(tm.missing_remedy_supplies(1).map { |supply| supply[:name] }).to eq(['coal nugget'])
+        end
+
+        # None of her four remedies uses water or alcohol: every logged READ
+        # lists a herb, a splash of brewer's brine and a catalyst (the reads
+        # let), and remedy buys a missing one itself.
+        it 'neither looks for nor buys water and alcohol after her accept, with or without a survey, even when none is carried' do
+          reads.each_value { |lines| expect(lines.map(&:text).grep(/\(\d+\) (?!prepared herb|splash of brewer's brine|catalyst material)/)).to eq([]) }
+          [nil, { coal_rubs: 4 }].each do |survey|
+            tm = maker(stock_survey: survey)
+            game, = shop_world([['large coal nugget', 'duffel bag']])
+            game.script('tap my first coal nugget', ReplayGame.log('6100:8910'))
+
+            expect(tm.missing_remedy_supplies(3)).to eq([])
+            expect(DRCI).not_to have_received(:exists?)
+          end
         end
 
         # A coal nugget shrinks a size a rub and a tiny one is used up
@@ -9902,6 +10136,263 @@ RSpec.describe TaskMaster do
               expect(bought).to eq([4, 3])
               expect(UserVars.taskmaster_remedy_yields).to eq('gill glop' => 1)
             end
+          end
+        end
+      end
+
+      describe 'what the wait before her task found, and the INVENTORY taken for the doses on hand' do
+        # Gnarta's crafting bag as INVENTORY listed it (2026-11-18 16:16:51).
+        let(:gnarta_bag) do
+          ['some deep-sea draught', 'a large purpleheart bowl edged with ivory', 'a grooved agonite mixing stick', 'a medium coal nugget',
+           "some brewer's brine", 'some deep-sea draught instructions', 'a trapezoidal loimic wire sieve', 'some gill glop',
+           'a polished belzune stone mortar', 'a loimic grooved pestle', 'some dried georin', 'some landsickness potion', 'some grain alcohol', 'some water']
+        end
+        let(:herb_pieces) { { 'georin' => 25, 'red flowers' => 0, 'aevaes' => 0, 'junliar' => 50 } }
+        # TAP of a coal nugget, shaped like 6100:3154 ("You tap a tiny coal
+        # nugget inside your leather satchel.") with each size.
+        def coal_tap(size)
+          "You tap a #{size} coal nugget inside your duffel bag."
+        end
+
+        # Runs survey_remedy_supplies with every game step recorded in order:
+        # the INVENTORY (nil: unanswered), each COUNT (parts by item), each
+        # tool, water and alcohol TAP (all found), each coal TAP (taps by
+        # command, else none found) and the WEALTH.
+        def surveying(tm, listing: gnarta_bag, taps: {}, wealth: 55_437_323, brine: 8, missing: [])
+          steps = []
+          inventory_replies('inventory duffel bag' => lambda { |command|
+            steps << command
+            listing && inventoried(listing)
+          })
+          parts = herb_pieces.merge('brine' => brine)
+          allow(DRCI).to receive(:count_item_parts) { |item| steps << "count #{item}" && parts.fetch(item) }
+          allow(DRCI).to receive(:in_hands?).and_return(false)
+          allow(DRCI).to receive(:exists?) { |item| steps << "tap #{item}" && !missing.include?(item) }
+          allow(DRCM).to receive(:wealth) { |town| steps << "wealth #{town}" && wealth }
+          game('tap my' => ->(command, *) { steps << command && taps.fetch(command, 'I could not find what you were referring to.') })
+          tm.survey_remedy_supplies
+          steps
+        end
+
+        describe '#survey_remedy_supplies' do
+          it "counts the brine, the coal and all four herbs, reads the tools off the bag's INVENTORY, taps water and alcohol, and reads the copper last" do
+            tm = maker
+            steps = surveying(tm, taps: { 'tap my first coal nugget' => coal_tap('medium') })
+
+            # The medium nugget listed has 3 rubs, short of 6: every nugget is
+            # tapped, as one may be kept outside the bag.
+            expect(steps).to eq(['inventory duffel bag', 'count brine', 'tap my first coal nugget', 'tap my second coal nugget',
+                                 'count georin', 'count red flowers', 'count aevaes', 'count junliar', 'tap water', 'tap alcohol', 'wealth Crossing'])
+            expect(tm.instance_variable_get(:@stock_survey))
+              .to eq(brine_parts: 8, coal_rubs: 3, herb_parts: herb_pieces, missing_tools: [], water: true, alcohol: true, copper: 55_437_323)
+          end
+
+          it 'taps no coal when the nuggets listed already have six rubs' do
+            tm = maker
+            steps = surveying(tm, listing: gnarta_bag.map { |line| line.sub('medium', 'massive') })
+
+            expect(steps.grep(/coal/)).to eq([])
+            expect(tm.instance_variable_get(:@stock_survey)[:coal_rubs]).to eq(6)
+          end
+
+          it 'taps a tool the bag does not list (on a belt, in another container) and finds one missing' do
+            tm = maker
+            steps = surveying(tm, listing: gnarta_bag - ['a loimic grooved pestle', 'a trapezoidal loimic wire sieve'], missing: ['sieve'])
+
+            expect(steps.grep(/\Atap (?!my )/)).to eq(['tap pestle', 'tap sieve', 'tap water', 'tap alcohol'])
+            expect(tm.instance_variable_get(:@stock_survey)[:missing_tools]).to eq(['sieve'])
+          end
+
+          it 'taps every tool and the coal when INVENTORY goes unanswered' do
+            steps = surveying(maker, listing: nil, taps: { 'tap my first coal nugget' => coal_tap('massive') })
+
+            expect(steps).to eq(['inventory duffel bag', 'count brine', 'tap my first coal nugget', 'count georin', 'count red flowers', 'count aevaes', 'count junliar',
+                                 'tap bowl', 'tap mixing stick', 'tap mortar', 'tap pestle', 'tap sieve', 'tap water', 'tap alcohol', 'wealth Crossing'])
+          end
+        end
+
+        describe '#nezhiri_wait_chores' do
+          it 'pauses what is left of the poll interval after the survey, and not at all when the survey took longer' do
+            [[4.5, 2.5], [9, 0]].each do |took, left|
+              tm = maker(cooldown_poll: 7)
+              start = Time.at(1_000)
+              times = [start, start + took]
+              allow(Time).to receive(:now) { times.shift || (start + took) }
+              allow(tm).to receive(:survey_remedy_supplies)
+              allow(tm).to receive(:pause)
+
+              tm.nezhiri_wait_chores
+
+              expect(tm).to have_received(:survey_remedy_supplies).ordered
+              expect(tm).to have_received(:pause).with(left).ordered
+            end
+          end
+        end
+
+        describe 'using each answer once' do
+          it 'takes the brine count the wait made for the first check, and counts afresh for the next' do
+            tm = maker(stock_survey: { brine_parts: 1 })
+            allow(DRCI).to receive(:count_item_parts).with('brine').and_return(30)
+
+            expect([tm.brines_to_buy(3), tm.brines_to_buy(3)]).to eq([1, 0])
+            expect(DRCI).to have_received(:count_item_parts).once
+          end
+
+          it 'takes the coal the wait counted when it stopped short of six rubs or covers the crafts, and taps afresh when the crafts need more' do
+            sent = []
+            game('tap my' => lambda { |command, *|
+              sent << command
+              { 'tap my first coal nugget' => coal_tap('massive'), 'tap my second coal nugget' => coal_tap('large') }.fetch(command, '')
+            })
+            coal = ->(survey, crafts) { maker(stock_survey: survey).missing_remedy_supplies(crafts).map { |supply| supply[:name] } }
+
+            # Two rubs, all the nuggets carried: a nugget for three crafts, no TAP.
+            expect([coal.call({ coal_rubs: 2 }, 3), sent]).to eq([['coal nugget'], []])
+            # Six or more cover three crafts.
+            expect([coal.call({ coal_rubs: 6 }, 3), sent]).to eq([[], []])
+            # Six may be more than counted: seven crafts tap afresh, and the
+            # massive and large nuggets carried cover them.
+            expect([coal.call({ coal_rubs: 6 }, 7), sent]).to eq([[], ['tap my first coal nugget', 'tap my second coal nugget']])
+          end
+
+          it 'leaves the herb count for the first round with herbs when a craft carried on buys none, then counts afresh' do
+            tm = maker(stock_survey: { herb_parts: { 'georin' => 50 } })
+            allow(tm).to receive(:brines_to_buy).and_return(0)
+            allow(tm).to receive(:missing_remedy_supplies).and_return([])
+            allow(DRCI).to receive(:count_item_parts).and_return(0)
+            ordered = []
+            allow(tm).to receive(:order_remedy_supply) { |_room, number, *| ordered << number }
+            allow(DRCM).to receive(:ensure_copper_on_hand).and_return(true)
+
+            tm.buy_remedy_supplies(glop_recipe, 1, herbs: false)
+            tm.buy_remedy_supplies(glop_recipe, 3)
+            # 50 pieces carried: two stacks of the three, so one is ordered.
+            expect(ordered).to eq([7])
+            expect(DRCI).not_to have_received(:count_item_parts)
+            tm.buy_remedy_supplies(glop_recipe, 3)
+            expect(DRCI).to have_received(:count_item_parts).with('georin').once
+            expect(ordered).to eq([7, 7, 7, 7])
+          end
+
+          it "skips the first round's WEALTH only when the copper the wait found, less her 5 gold fee, covers the cost and the spare" do
+            asked = []
+            allow(DRCM).to receive(:ensure_copper_on_hand) { |amount, *| asked << amount && true }
+            survey = ->(copper) { { herb_parts: { 'georin' => 0 }, copper: copper }.compact }
+            buy = lambda do |tm|
+              allow(tm).to receive(:order_remedy_supply)
+              allow(tm).to receive(:brines_to_buy).and_return(0)
+              allow(tm).to receive(:missing_remedy_supplies).and_return([])
+              tm.buy_remedy_supplies(glop_recipe, 3)
+            end
+
+            # Three stacks of georin, 1311 Kronars, and 7500 spare: 13811
+            # carried before the fee covers them.
+            buy.call(maker(stock_survey: survey.call(13_811)))
+            expect(asked).to eq([])
+            [13_810, nil].each { |copper| buy.call(maker(stock_survey: survey.call(copper))) }
+            expect(asked).to eq([1311 + 7500] * 2)
+            # The answer is used once: a later round checks.
+            tm = maker(stock_survey: survey.call(1_000_000))
+            2.times { buy.call(tm) }
+            expect(asked.size).to eq(3)
+          end
+
+          it 'buys water or alcohol only when the wait found none, once' do
+            tm = maker(stock_survey: { water: false, alcohol: true, coal_rubs: 6 })
+
+            expect(tm.missing_remedy_supplies(1).map { |supply| supply[:name] }).to eq(['water'])
+            allow(DRCI).to receive(:exists?)
+            game('tap my' => coal_tap('massive'))
+            expect(tm.missing_remedy_supplies(1)).to eq([])
+            expect(DRCI).not_to have_received(:exists?)
+          end
+        end
+
+        describe "the task's tools" do
+          # nezhiri with everything but the tool check stubbed; every TAP
+          # recorded, each tool found unless missing names it.
+          def tooled(recipe, survey: nil, listing: nil, missing: [])
+            tm = maker(task_product: recipe[:product], stock_survey: survey, bag_listing: listing)
+            allow(tm).to receive(:remedy_doses_on_hand).and_return(0)
+            allow(tm).to receive(:check_remedy_uses)
+            allow(tm).to receive(:brew_remedy_round).and_return(18)
+            allow(tm).to receive(:top_up_remedies)
+            allow(tm).to receive(:repair)
+            allow(tm).to receive(:put_hands_away)
+            allow(tm).to receive(:ensure_tools).and_call_original
+            allow(DRC).to receive(:wait_for_script_to_complete) { missing.clear }
+            taps = []
+            allow(DRCI).to receive(:in_hands?).and_return(false)
+            allow(DRCI).to receive(:exists?) { |item| taps << item && !missing.include?(item) }
+            tm.nezhiri(recipe[:noun], 13, recipe.merge(uses: 13))
+            [tm, taps]
+          end
+
+          it 'taps none when the wait found none of them missing, nor when the one missing is the other vessel' do
+            [[], ['bowl', 'mixing stick']].each do |missing|
+              tm, taps = tooled(glop_recipe, survey: { missing_tools: missing })
+              expect(taps).to eq([])
+              expect(tm).not_to have_received(:ensure_tools)
+            end
+          end
+
+          it 'checks them all afresh, and asks the clerk, when the wait found one of them missing' do
+            tm, taps = tooled(glop_recipe, survey: { missing_tools: ['sieve'] }, missing: ['sieve'])
+
+            expect(taps).to eq(%w[mortar pestle sieve sieve])
+            expect(DRC).to have_received(:wait_for_script_to_complete).with('clerk-tools', %w[alchemy get])
+            expect(tm).to have_received(:ensure_tools).with(%w[mortar pestle sieve], 'alchemy', listed: nil)
+          end
+
+          it "with no survey, taps only those the bag's INVENTORY does not list" do
+            _, taps = tooled(draught_recipe, listing: gnarta_bag - ['a trapezoidal loimic wire sieve'])
+            expect(taps).to eq(['sieve'])
+
+            # A line whose noun is not the tool's is not taken for it.
+            _, taps = tooled(draught_recipe, listing: ['a bowl-shaped charm', 'a grooved agonite mixing stick', 'a trapezoidal loimic wire sieve'])
+            expect(taps).to eq(['bowl'])
+
+            _, taps = tooled(draught_recipe)
+            expect(taps).to eq(['bowl', 'mixing stick', 'sieve'])
+          end
+
+          it "leaves Dorhum's tools to TAP, as before" do
+            tm = build(npc: 'dorhum', settings: { enchanting_tools: ['brazier', 'burin'] }, bag_listing: ['a brazier', 'a burin'])
+            taps = []
+            allow(DRCI).to receive(:in_hands?).and_return(false)
+            allow(DRCI).to receive(:exists?) { |item| taps << item && true }
+
+            tm.ensure_tools(%w[brazier burin], 'enchanting')
+
+            expect(taps).to eq(%w[brazier burin])
+          end
+        end
+
+        describe 'a whole first round read off the INVENTORY taken for the doses on hand' do
+          it 'taps neither the listed tools nor the coal, and the next round taps the coal afresh (draught, 6100:8800, 6100:8910)' do
+            tm = maker(task_product: 'deep-sea draught')
+            game, commons = shop_world(kit, shop: :model)
+            game.script('inventory duffel bag', *bag_listed("a khor'vela medicine bowl", 'a purpleheart mixing stick', 'a large coal nugget', 'some water', 'some grain alcohol'))
+            game.script('count my first brine', ReplayGame.log('6100:8800'))
+            game.script('count my second brine', ReplayGame.log('6100:8793'))
+            game.script('count my first junliar', ReplayGame.log('6100:8793'))
+            game.script('tap my first coal nugget', ReplayGame.log('6100:8910'))
+            allow(tm).to receive(:brew_remedies).and_return(0)
+            allow(tm).to receive(:top_up_remedies)
+            allow(tm).to receive(:repair)
+
+            tm.nezhiri('draught', 13, draught_recipe.merge(uses: 14))
+
+            expect(game.sent).to eq(['inventory duffel bag', 'count my first brine', 'count my second brine', 'count my first junliar'])
+            expect(commons.calls.select { |name, *| name == 'DRCI.exists?' }.map { |call| call[1] }).to eq(['sieve'])
+            expect(commons.calls.select { |name, *| name == 'DRCT.order_item' }).to eq([['DRCT.order_item', 8862, 9]] * 3)
+
+            game.script('count my first brine', ReplayGame.log('6100:8800'))
+            game.script('count my second brine', ReplayGame.log('6100:8793'))
+            game.script('count my first junliar', ReplayGame.log('6100:8793'))
+            tm.buy_remedy_supplies(draught_recipe, 1)
+            expect(game.sent.last(4)).to eq(['count my first brine', 'count my second brine', 'tap my first coal nugget', 'count my first junliar'])
+            expect([game.clock, game.diagnostics]).to eq([0.0, []])
           end
         end
       end
@@ -10851,6 +11342,50 @@ RSpec.describe TaskMaster do
             expect(commons.inventory.select { |item| item.name == 'crushed aevaes' }.map(&:to_a)).to contain_exactly(['crushed aevaes', 'duffel bag', '8107'],
                                                                                                                      ['crushed aevaes', 'duffel bag', '8110'], ['crushed aevaes', 'duffel bag', '8120'])
             expect(commons.location_of('#6002')).to eq('duffel bag')
+          end
+
+          # What the wait before the task found was true before the herb went
+          # back in the bag: taken as it is, it would buy a stack too many.
+          it 'forgets what the wait before the task found once the herb is back in the bag, counting it afresh (6103:355, 6100:4595)' do
+            survey = { brine_parts: 30, coal_rubs: 6, herb_parts: { 'aevaes' => 0, 'junliar' => 0, 'georin' => 0, 'red flowers' => 0 }, missing_tools: [],
+                       water: true, alcohol: true, copper: 10_000_000 }
+            tm = maker(task_product: 'landsickness potion', stock_survey: survey)
+            game, commons = holding(bowl, '6002')
+            game.script('inventory duffel bag', *bag_listed)
+            game.script('look in my bowl', ReplayGame.code('In the medicine bowl you see some crushed aevaes.', from: "6101:4236 (crushed aevaes in a stone mortar) with the potion task's khor'vela medicine bowl"))
+            game.script('get my aevaes from my bowl', ReplayGame.log('6103:355'), after: ->(_) { commons.hold('crushed aevaes', id: '8107') })
+            supplies_on_hand(game)
+            game.script('count my first aevaes', ReplayGame.log('6100:4595')) # 25 pieces
+            game.script('count my second aevaes', ReplayGame.log('6100:8793'))
+            allow(DRCT).to receive(:order_item) { |*| commons.hold('crushed aevaes', id: '8110') && nil }
+            allow(tm).to receive(:brew_remedies)
+            allow(tm).to receive(:top_up_remedies)
+            allow(tm).to receive(:repair)
+
+            tm.nezhiri('potion', 15, potion_recipe.merge(uses: 16))
+
+            expect(game.sent).to eq(['inventory duffel bag', 'look in my bowl', 'get my aevaes from my bowl', *supply_checks, 'count my first aevaes', 'count my second aevaes'])
+            expect(DRCT).to have_received(:order_item).twice
+            expect(commons.calls.select { |name, *| name == 'DRCI.exists?' }.map { |call| call[1] }).to eq(['bowl', 'mixing stick', 'sieve'])
+            expect(commons.calls).to include(['DRCM.ensure_copper_on_hand', (2 * 537) + 7500, 'Crossing'])
+            expect(tm.instance_variable_get(:@stock_survey)).to be_nil
+          end
+
+          it 'checks the supplies afresh for a craft carried on, and for the round after it, whatever the wait before the task found (6101:3436)' do
+            tm = maker(task_product: 'scale moisturizer', stock_survey: { brine_parts: 0, coal_rubs: 0, copper: 0 })
+            game, commons = holding(mortar, '6001')
+            remedy_does(commons, 'scale moisturizer', 'mortar', %w[7001])
+            game.script('inventory duffel bag', *bag_listed('a large coal nugget'))
+            game.script('look in my mortar', unfinished)
+            supplies_on_hand(game)
+            game.script('count #7001', ReplayGame.log('6101:3613'))
+
+            expect(tm.remedy_doses_on_hand(moisturizer_recipe)).to eq(6)
+
+            # Taken as found, no brine and no coal would have been bought.
+            expect(game.sent).to eq(['inventory duffel bag', 'look in my mortar', *supply_checks, 'count #7001'])
+            expect(commons.calls.map(&:first)).not_to include('DRCT.buy_item', 'DRCT.order_item')
+            expect([tm.instance_variable_get(:@stock_survey), tm.instance_variable_get(:@bag_listing)]).to eq([nil, nil])
           end
 
           it 'puts an empty bowl away and goes on (6101:5693)' do
