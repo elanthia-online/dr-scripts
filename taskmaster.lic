@@ -37,7 +37,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.18.9'
+  VERSION = '2026.11.18.10'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -3024,7 +3024,9 @@ class TaskMaster
   end
 
   # What remedy's continue form is run with: herb2 na, the coal nugget, the
-  # vessel and the noun (remedy.lic CONTINUE_FORM).
+  # vessel and the noun (remedy.lic CONTINUE_FORM), without stocked
+  # (remedy_args): the form takes no such word, and remedy checks the
+  # supplies itself on the carry-on.
   #
   # @param recipe [Hash] the task's recipe
   # @return [Array<String>]
@@ -3562,12 +3564,21 @@ class TaskMaster
   end
 
   # What remedy is run with: its instructions form, the herb, the coal
-  # nugget, the vessel, the noun and a 25-piece herb stack.
+  # nugget, the vessel, the noun, a 25-piece herb stack and the word
+  # stocked. Every craft follows buy_remedy_supplies for its round (or
+  # continue_remedy's, for the crafts after a carry-on), which checked the
+  # water, the alcohol and the coal nugget's rubs for every craft of it, so
+  # stocked tells remedy not to look for them again (a TAP each, every run,
+  # in all 40 cycles sampled on 2026-11-18; none of her recipes uses water
+  # or alcohol). A nugget that runs out all the same (a rub count misread)
+  # is bought by remedy at the catalyst step (remedy.lic STOCKED_ARG).
+  # remedy_continue_args leaves the word out, so the carry-on run checks
+  # for itself.
   #
   # @param recipe [Hash] the task's recipe
   # @return [Array<String>]
   def remedy_args(recipe)
-    ['instructions', recipe[:herb], NEZHIRI_CATALYST, recipe[:vessel], recipe[:noun], NEZHIRI_HERB_STACK.to_s]
+    ['instructions', recipe[:herb], NEZHIRI_CATALYST, recipe[:vessel], recipe[:noun], NEZHIRI_HERB_STACK.to_s, 'stocked']
   end
 
   # Gets the stack made before out of the crafting bag by its id and

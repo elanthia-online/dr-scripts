@@ -4296,7 +4296,7 @@ RSpec.describe Remedy do
       it 'has no book, chapter or recipe name, and reads herb2 as na' do
         expect(order_from('instructions marram "pewter ingot" mortar salve').to_h)
           .to eq(mode: :instructions, book_type: nil, chapter: nil, recipe_name: nil, herb1: 'marram', herb2: 'na',
-                 catalyst: 'pewter ingot', container_request: 'mortar', noun: 'salve', herb_quantity: nil)
+                 catalyst: 'pewter ingot', container_request: 'mortar', noun: 'salve', herb_quantity: nil, stocked: false)
       end
 
       it 'names the instructions "<noun> instructions" and needs no second herb' do
@@ -4310,6 +4310,28 @@ RSpec.describe Remedy do
 
       it 'carries on in the continue form, with herb2 na' do
         expect(order_from('instructions marram "pewter ingot" mortar salve').continue_command).to eq(';remedy continue na "pewter ingot" mortar salve')
+      end
+
+      # Layer 06 of the Nezhiri stack.
+      it 'is stocked only when the word is given, with or without a herb quantity' do
+        stocked = order_from('instructions georin "coal nugget" mortar glop 25 stocked')
+        alone = order_from('instructions georin "coal nugget" mortar glop stocked')
+        plain = order_from('instructions georin "coal nugget" mortar glop 25')
+        expect([stocked.stocked?, stocked.herb_quantity]).to eq([true, 25])
+        expect([alone.stocked?, alone.herb_quantity]).to eq([true, nil])
+        expect([plain.stocked?, plain.herb_quantity]).to eq([false, 25])
+      end
+
+      it 'never makes a book or continue order stocked, nor an order built without the word' do
+        book = order_from('remedies 3 "some head unguent" nemoih na "coal nugget" mortar unguent 25')
+        continuing = order_from('continue na "coal nugget" mortar glop')
+        built = Remedy::Order.new(mode: :instructions, book_type: nil, chapter: nil, recipe_name: nil, herb1: 'georin', herb2: 'na',
+                                  catalyst: 'coal nugget', container_request: 'mortar', noun: 'glop')
+        expect([book.stocked?, continuing.stocked?, built.stocked?]).to eq([false, false, false])
+      end
+
+      it 'prints a continue line without the word: the run that carries it on checks the supplies again' do
+        expect(order_from('instructions georin "coal nugget" mortar glop 25 stocked').continue_command).to eq(';remedy continue na "coal nugget" mortar glop')
       end
 
       it 'leaves the book and continue forms without instructions, their missing second herb worded by the herb2 typed' do
@@ -4376,13 +4398,39 @@ RSpec.describe Remedy do
         expect(parse('instructions marram "pewter ingot" mortar salve 50').herb_quantity).to eq('50')
       end
 
+      # Layer 06 of the Nezhiri stack: the optional word stocked, after or
+      # before the herb quantity, or alone.
+      {
+        'instructions georin "coal nugget" mortar glop 25 stocked' => ['25', 'stocked'],
+        'instructions georin "coal nugget" mortar glop stocked 25' => ['25', 'stocked'],
+        'instructions georin "coal nugget" mortar glop Stocked'    => [nil, 'stocked'],
+        'instructions georin "coal nugget" mortar glop 25'         => ['25', nil]
+      }.each do |line, (quantity, stocked)|
+        it "reads the herb quantity #{quantity.inspect} and stocked #{stocked.inspect} from ;remedy #{line}" do
+          parsed = parse(line)
+          expect([parsed.herb_quantity, parsed.stocked]).to eq([quantity, stocked])
+          expect([parsed.herb1, parsed.catalyst, parsed.container, parsed.noun]).to eq(['georin', 'coal nugget', 'mortar', 'glop'])
+        end
+      end
+
+      it 'takes a herb1 named stocked as the herb, not as the word: the required arguments are matched first' do
+        parsed = parse('instructions stocked "coal nugget" mortar glop')
+        expect([parsed.herb1, parsed.stocked]).to eq(['stocked', nil])
+      end
+
       [
         'instruction marram "pewter ingot" mortar salve',               # not the whole word
         'instructionsx marram "pewter ingot" mortar salve',             # more than the word
         '"salve instructions" marram "pewter ingot" mortar salve',      # the item's name, not the word
         'instructions marram na "pewter ingot" mortar salve',           # a herb2, as in the book form
         'instructions marram "pewter ingot" mortar',                    # no noun
-        'instructions marram "pewter ingot" mortar salve 50x'           # a quantity that is no number
+        'instructions marram "pewter ingot" mortar salve 50x',          # a quantity that is no number
+        'instructions marram "pewter ingot" mortar salve stockedx',     # more than the word stocked
+        'instructions marram "pewter ingot" mortar salve stock',        # less than the word
+        'instructions marram "pewter ingot" mortar salve 25 stocked 5', # a second quantity
+        'remedies 3 "some head unguent" nemoih na "coal nugget" mortar unguent stocked',    # the book form takes no stocked
+        'remedies 3 "some head unguent" nemoih na "coal nugget" mortar unguent 25 stocked', # nor after its quantity
+        'continue na "coal nugget" mortar glop stocked' # nor does the continue form
       ].each do |line|
         it "matches no form for ;remedy #{line}" do
           expect(parse(line)).to be_nil
@@ -4392,9 +4440,12 @@ RSpec.describe Remedy do
 
       it 'is matched by no list the book or continue form matches, so no list matches two forms' do
         lists = [%w[remedies 3 x nemoih na pewter mortar unguent], %w[continue na pewter mortar unguent], %w[instructions marram pewter mortar salve],
-                 %w[instructions marram pewter mortar salve 50], %w[continue marram pewter mortar salve 50]]
+                 %w[instructions marram pewter mortar salve 50], %w[continue marram pewter mortar salve 50],
+                 %w[instructions marram pewter mortar salve 50 stocked], %w[instructions marram pewter mortar salve stocked 50],
+                 %w[instructions marram pewter mortar salve stocked], %w[continue na pewter mortar unguent stocked],
+                 %w[remedies 3 x nemoih na pewter mortar unguent stocked]]
         counts = lists.map { |list| Remedy::ARG_DEFINITIONS.count { |form| ArgParserModel.check_match(form, list.dup, false) } }
-        expect(counts).to eq([1, 1, 1, 1, 0])
+        expect(counts).to eq([1, 1, 1, 1, 0, 1, 1, 1, 0, 0])
       end
     end
   end
@@ -4576,6 +4627,115 @@ RSpec.describe Remedy do
         expect(remedy_messages.last).to eq('Remedy: made 6 uses of gill glop.')
         expect(game.diagnostics).to be_empty
         expect(game.clock).to eq(0.2)
+      end
+
+      # Layer 06 of the Nezhiri stack: taskmaster runs this form with the
+      # word stocked, having checked the water, the alcohol and the coal
+      # nugget seconds before, so remedy no longer looks for them itself
+      # (one TAP each, every run, in all 40 cycles sampled on 2026-11-18;
+      # DRCI.exists? sends the TAP, at API level here). Without the word
+      # remedy looks, and buys, as it always has.
+      context 'with and without the word stocked (layer 06 of the Nezhiri stack)' do
+        let(:settings) { super().merge(alchemy_room: 8859) }
+        let(:stocked_line) { typed('instructions georin "coal nugget" mortar glop 25 stocked') }
+        let(:expected_sends) { logged_sends(glop, own, without: [685, 731]).insert(5, brine_put) }
+
+        # @return [Array<String>] the supplies DRCI.exists? was asked about
+        def supply_checks
+          commons.calls.filter_map { |name, item, *| item if name == 'DRCI.exists?' && ['water', 'alcohol', 'coal nugget'].include?(item) }
+        end
+
+        # @return [Array<Array>] the bank and travel calls, in order
+        def purchase_calls
+          commons.calls.select { |name, *| name.start_with?('DRCM.', 'DRCT.') }
+        end
+
+        it 'looks for the water, the alcohol and the coal nugget at the start without the word, as it always has' do
+          script_glop
+          expect(run_remedy(glop_line)).to eq(:exited)
+          expect(supply_checks).to eq(['water', 'alcohol', 'coal nugget'])
+          expect(game.sent).to eq(expected_sends), game.report
+        end
+
+        it 'looks for none of them with the word, and crafts exactly as without it, to 6 uses' do
+          script_glop
+          expect(run_remedy(stocked_line)).to eq(:exited)
+          expect(supply_checks).to be_empty
+          expect(purchase_calls).to be_empty
+          expect(game.sent).to eq(expected_sends), game.report
+          expect(remedy_messages).to eq(['Remedy: 12 uses left on the glop instructions.', 'Remedy: made 6 uses of gill glop.'])
+          expect(game.diagnostics).to be_empty
+          expect(nezhiri_tools.keys.to_h { |tool| [tool, commons.location_of(tool)] }).to eq(nezhiri_tools)
+        end
+
+        context 'with no water and no alcohol on hand (the recipe uses neither)' do
+          let(:inventory) { super().except('water', 'grain alcohol') }
+          let(:orders) { { 1 => 'water', 2 => 'alcohol' } }
+
+          it 'buys both at the start without the word, as it always has' do
+            script_glop
+            expect(run_remedy(glop_line)).to eq(:exited)
+            expect(purchase_calls).to eq([['DRCM.get_money_from_bank', '5 silver'], ['DRCT.order_item', 8862, 1], ['DRCT.walk_to', 8859],
+                                          ['DRCM.get_money_from_bank', '5 silver'], ['DRCT.order_item', 8862, 2], ['DRCT.walk_to', 8859]])
+          end
+
+          it 'buys neither with the word, and crafts to 6 uses all the same' do
+            script_glop
+            expect(run_remedy(stocked_line)).to eq(:exited)
+            expect(purchase_calls).to be_empty
+            expect(game.sent).to eq(expected_sends), game.report
+            expect(remedy_messages.last).to eq('Remedy: made 6 uses of gill glop.')
+          end
+        end
+
+        context 'with no coal nugget on hand' do
+          let(:inventory) { super().except('massive coal nugget') }
+          let(:orders) { { [8775, 2] => 'coal nugget' } }
+          let(:coal_purchase) { [['DRCM.get_money_from_bank', '5 silver'], ['DRCT.order_item', 8775, 2], ['DRCT.walk_to', 8859]] }
+
+          it 'buys one at the start without the word, before anything is sent, as it always has' do
+            script_glop
+            expect(run_remedy(glop_line)).to eq(:exited)
+            expect(purchase_calls).to eq(coal_purchase)
+            expect(commons.moves.first(2)).to eq(['coal nugget: shop -> hand', "coal nugget: hand -> #{haversack}"])
+            expect(remedy_messages).not_to include('Remedy: no coal nugget on hand for the catalyst; buying one.')
+          end
+
+          it 'buys one with the word only when the game asks for the catalyst, the mortar in hand, says so, and crafts on to 6 uses' do
+            script_glop
+            expect(run_remedy(stocked_line)).to eq(:exited)
+            expect(purchase_calls).to eq(coal_purchase)
+            expect(game.sent).to eq(expected_sends), game.report
+            # Bought after the herb went in, the mortar picked up and the
+            # brine added: the pestle is put away, the get brings nothing,
+            # and the nugget bought goes in the haversack and is got from
+            # it; the pestle comes back once the nugget is put away.
+            bought_at = commons.moves.index('coal nugget: shop -> hand')
+            expect(commons.moves[0...bought_at]).to include('dried georin: hand -> game', 'rustic mortar: ground -> hand', brine_moves.last)
+            expect(commons.moves[bought_at - 1, 6]).to eq(["rustic pestle: hand -> #{toolstrap}", 'coal nugget: shop -> hand', "coal nugget: hand -> #{haversack}",
+                                                           "coal nugget: #{haversack} -> hand", "coal nugget: hand -> #{haversack}", "rustic pestle: #{toolstrap} -> hand"])
+            expect(commons.moves.grep(/rustic mortar/)).to eq(["rustic mortar: #{toolstrap} -> hand", 'rustic mortar: hand -> ground', 'rustic mortar: ground -> hand',
+                                                               "rustic mortar: hand -> #{toolstrap}"])
+            expect(remedy_messages).to eq(['Remedy: 12 uses left on the glop instructions.', 'Remedy: no coal nugget on hand for the catalyst; buying one.',
+                                           'Remedy: made 6 uses of gill glop.'])
+            expect(game.diagnostics).to be_empty
+          end
+
+          it 'stops with the word when the purchase leaves none on hand, puts no coal in, and prints the continue line' do
+            orders.clear
+            script_glop
+            outcome = run_remedy(stocked_line) { allow(DRC).to receive(:beep) }
+            expect(outcome).to eq(:exited)
+            expect(purchase_calls).to eq(coal_purchase)
+            expect(game.sent).not_to include('put my coal nugget in my rustic mortar')
+            expect(remedy_messages.last(3)).to eq(['Remedy: no coal nugget on hand for the catalyst; buying one.',
+                                                   'Remedy: could not buy coal nugget at the Crossing alchemy shop; crafting on without it.',
+                                                   'Remedy: could not get coal nugget. Stopping.'])
+            exit_hooks.each(&:call)
+            expect(remedy_messages.last).to eq(continue_line)
+            expect(commons.location_of('rustic mortar')).to eq('left').or eq('right')
+          end
+        end
       end
     end
 
@@ -5239,10 +5399,10 @@ RSpec.describe 'Remedy patterns, Flags and entry' do
   end
 
   describe 'Remedy::ARG_DEFINITIONS' do
-    it 'offers the book form, with the optional herb quantity last (layer 19), the continue form and the instructions form (layer 20), in that order' do
+    it 'offers the book form, with the optional herb quantity last (layer 19), the continue form and the instructions form (layer 20, stocked last: layer 06 of the Nezhiri stack), in that order' do
       expect(Remedy::ARG_DEFINITIONS.map { |form| form.map { |definition| definition[:name] } })
         .to eq([%w[book_type chapter recipe_name herb1 herb2 catalyst container noun herb_quantity], %w[continue herb2 catalyst container noun],
-                %w[instructions herb1 catalyst container noun herb_quantity]])
+                %w[instructions herb1 catalyst container noun herb_quantity stocked]])
     end
 
     it 'gives both forms the same herb2, catalyst, container and noun definitions' do
@@ -5253,10 +5413,12 @@ RSpec.describe 'Remedy patterns, Flags and entry' do
     # Layer 19: the herb quantity is the one optional definition, so every
     # argument list that matched a form before still matches it with the
     # same fields (the C14 contract). Layer 20's instructions form takes it
-    # too, as the book form does.
-    it 'makes only the herb quantity optional, in the book form (layer 19) and the instructions form (layer 20)' do
+    # too, as the book form does, and layer 06 of the Nezhiri stack gives
+    # that form alone the optional word stocked; the continue form, the
+    # recovery run of taskmaster, keeps none.
+    it 'makes the herb quantity optional in the book form (layer 19) and the instructions form (layer 20), and stocked in the instructions form only' do
       optional = Remedy::ARG_DEFINITIONS.map { |form| form.select { |definition| definition[:optional] }.map { |definition| definition[:name] } }
-      expect(optional).to eq([['herb_quantity'], [], ['herb_quantity']])
+      expect(optional).to eq([['herb_quantity'], [], %w[herb_quantity stocked]])
     end
 
     # Layer 14 (H11): every ASCII character, one at the
@@ -5408,7 +5570,7 @@ RSpec.describe 'Remedy order, tools and inventory' do
     it 'reads every field of the workorders.lic:818 call for some head unguent (base-recipes.yaml:8520)' do
       order = Remedy::Order.from_args(parsed_call(['remedies', 3, 'some head unguent', 'nemoih', 'na', 'pewter ingot', 'mortar', 'unguent']))
       expect(order.to_h).to eq(mode: :book, book_type: 'remedies', chapter: '3', recipe_name: 'some head unguent', herb1: 'nemoih',
-                               herb2: 'na', catalyst: 'pewter ingot', container_request: 'mortar', noun: 'unguent', herb_quantity: nil)
+                               herb2: 'na', catalyst: 'pewter ingot', container_request: 'mortar', noun: 'unguent', herb_quantity: nil, stocked: false)
       expect(order).not_to be_continue
     end
 
@@ -5437,7 +5599,7 @@ RSpec.describe 'Remedy order, tools and inventory' do
       order = Remedy::Order.from_args(parsed_typed('continue none "pewter ingot" mortar unguent'))
       expect(order).to be_continue
       expect(order.to_h).to eq(mode: :continue, book_type: nil, chapter: nil, recipe_name: nil, herb1: nil,
-                               herb2: 'none', catalyst: 'pewter ingot', container_request: 'mortar', noun: 'unguent', herb_quantity: nil)
+                               herb2: 'none', catalyst: 'pewter ingot', container_request: 'mortar', noun: 'unguent', herb_quantity: nil, stocked: false)
       expect(order.herbs).to eq([nil, 'none'])
     end
 
@@ -6391,6 +6553,95 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
       expect(DRCI).to have_received(:in_hands?).with('ingot').ordered
       expect(DRCI).to have_received(:in_hands?).with('pestle').ordered
       expect(Flags['remedy-catalyst']).to be(false)
+    end
+
+    # Layer 06 of the Nezhiri stack: a stocked order (taskmaster checked the
+    # coal nugget's rubs before the run) buys a coal nugget at the catalyst
+    # step when the get brings none; every other order stops there, as
+    # remedy always has, though Remedy#craft hands every Handlers the
+    # Supplies.
+    describe 'the catalyst get of a stocked order (layer 06 of the Nezhiri stack)' do
+      let(:supplies) { instance_double(Remedy::Supplies) }
+      let(:messages) { [] }
+      # The coal nugget is in a hand once +bought+ is true, never before.
+      let(:bought) { [] }
+
+      before do
+        allow(supplies).to receive(:buys?) { |catalyst| Remedy::Supplies::COAL.include?(catalyst) }
+        allow(supplies).to receive(:buy_catalyst) { calls << [:buy_catalyst] && bought << true }
+        allow(DRCI).to receive(:in_hands?) { |noun| noun != 'nugget' || !bought.empty? }
+        allow(DRC).to receive(:message) { |text| messages << text }
+        allow(DRC).to receive(:beep)
+        add_remedy_flags
+        game_says(log('25:11049'))
+        $left_hand = 'rounded pestle'
+      end
+
+      # @param catalyst [String]
+      # @param stocked [Boolean]
+      # @return [Remedy::Handlers]
+      def catalyst_handlers(catalyst, stocked:)
+        Remedy::Handlers.new(order: order.with(catalyst: catalyst, stocked: stocked), tools: mortar, inventory: inventory,
+                             water: plain_water, alcohol: plain_alcohol, supplies: supplies)
+      end
+
+      # @return [Array<Array>] the gets of the catalyst and the purchases, in order
+      def catalyst_calls
+        calls.select { |name, item, *| name == :buy_catalyst || (name == :get && item != 'rounded pestle') }
+      end
+
+      it 'buys a coal nugget when the get brings none, gets it again, puts it in and gets the pestle back' do
+        game.script('put my coal nugget in my large mortar', log('25:11081'))
+        catalyst_handlers('coal nugget', stocked: true).run('remedy-catalyst')
+        expect(catalyst_calls).to eq([[:get, 'coal nugget', toolbag, bag_items, toolstrap, true], [:buy_catalyst],
+                                      [:get, 'coal nugget', toolbag, bag_items, toolstrap, true]])
+        expect(game.sent.last).to eq('put my coal nugget in my large mortar')
+        expect(calls.last).to eq([:get, 'rounded pestle', toolbag, bag_items, toolstrap, true])
+        expect(messages).to be_empty
+      end
+
+      it 'buys nothing when the first get brings the nugget' do
+        bought << true
+        game.script('put my coal nugget in my large mortar', log('25:11081'))
+        catalyst_handlers('coal nugget', stocked: true).run('remedy-catalyst')
+        expect(catalyst_calls).to eq([[:get, 'coal nugget', toolbag, bag_items, toolstrap, true]])
+        expect(supplies).not_to have_received(:buy_catalyst)
+      end
+
+      it 'buys for the catalyst "nugget" too, the other name Supplies buys a coal nugget for' do
+        game.script('put my nugget in my large mortar', log('25:11081'))
+        catalyst_handlers('nugget', stocked: true).run('remedy-catalyst')
+        expect(supplies).to have_received(:buy_catalyst).once
+      end
+
+      it 'stops, no put sent, when the nugget bought cannot be got either' do
+        allow(supplies).to receive(:buy_catalyst) { calls << [:buy_catalyst] }
+        expect { catalyst_handlers('coal nugget', stocked: true).run('remedy-catalyst') }.to raise_error(SystemExit)
+        expect(catalyst_calls.map(&:first)).to eq(%i[get buy_catalyst get])
+        expect(messages).to eq(['Remedy: could not get coal nugget. Stopping.'])
+        expect(game.sent).not_to include('put my coal nugget in my large mortar')
+      end
+
+      it 'stops at the first failed get, buying nothing, when the order is not stocked: remedy looked for the coal at the start' do
+        expect { catalyst_handlers('coal nugget', stocked: false).run('remedy-catalyst') }.to raise_error(SystemExit)
+        expect(supplies).not_to have_received(:buy_catalyst)
+        expect(catalyst_calls).to eq([[:get, 'coal nugget', toolbag, bag_items, toolstrap, true]])
+        expect(messages).to eq(['Remedy: could not get coal nugget. Stopping.'])
+      end
+
+      it 'stops at the first failed get, buying nothing, for a stocked catalyst remedy never buys (a pewter ingot)' do
+        allow(DRCI).to receive(:in_hands?) { |noun| noun != 'ingot' }
+        expect { catalyst_handlers('pewter ingot', stocked: true).run('remedy-catalyst') }.to raise_error(SystemExit)
+        expect(supplies).not_to have_received(:buy_catalyst)
+        expect(messages).to eq(['Remedy: could not get pewter ingot. Stopping.'])
+      end
+
+      it 'stops at the first failed get, as before, when it is given no Supplies' do
+        stocked = Remedy::Handlers.new(order: order.with(catalyst: 'coal nugget', stocked: true), tools: mortar, inventory: inventory,
+                                       water: plain_water, alcohol: plain_alcohol)
+        expect { stocked.run('remedy-catalyst') }.to raise_error(SystemExit)
+        expect(messages).to eq(['Remedy: could not get coal nugget. Stopping.'])
+      end
     end
 
     it 'adds plain water (25:50210) with "put water in", and nothing more when the game takes it (26:10830)' do

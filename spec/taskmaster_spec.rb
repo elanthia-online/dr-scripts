@@ -6,6 +6,7 @@ require 'yaml'
 require_relative 'spec_helper'
 
 load_lic_class('taskmaster.lic', 'TaskMaster')
+load_lic_class('remedy.lic', 'Remedy')
 
 RSpec.describe TaskMaster do
   # The script's own stack map, so no example runs against a copy that has
@@ -8757,6 +8758,31 @@ RSpec.describe TaskMaster do
               keeplist_regex: /leather|stack/, **ivars)
       end
 
+      # The arguments read as remedy.lic reads them: Lich joins a caller's
+      # list (ArgParserModel.caller_vars), remedy's forms match it and
+      # Remedy::Order.from_args builds the order. Layer 06 of the Nezhiri
+      # stack: every craft says stocked (buy_remedy_supplies checked the
+      # water, the alcohol and the coal for it), so remedy taps none of them
+      # again; the carry-on does not, so remedy checks them itself there.
+      describe "the arguments remedy is run with, read by remedy.lic's forms" do
+        # @param args [Array<String>]
+        # @return [Remedy::Order]
+        def remedy_order(args)
+          Remedy::Order.from_args(ArgParserModel.parse(Remedy::ARG_DEFINITIONS, ArgParserModel.caller_vars(args).drop(1)))
+        end
+
+        %i[moisturizer_recipe draught_recipe glop_recipe potion_recipe].each do |name|
+          it "crafts the #{name.to_s.delete_suffix('_recipe')} stocked in the instructions form, and carries one on unstocked in the continue form" do
+            recipe = send(name)
+            craft = remedy_order(maker.remedy_args(recipe))
+            carry = remedy_order(maker.remedy_continue_args(recipe))
+            expect([craft.mode, craft.stocked?, craft.herb1, craft.catalyst, craft.container_request, craft.noun, craft.herb_quantity])
+              .to eq([:instructions, true, recipe[:herb], 'coal nugget', recipe[:vessel], recipe[:noun], 25])
+            expect([carry.mode, carry.stocked?, carry.catalyst, carry.container_request, carry.noun]).to eq([:continue, false, 'coal nugget', recipe[:vessel], recipe[:noun]])
+          end
+        end
+      end
+
       # The game, the commons model with shops answered through the game,
       # and Nezhiri in the room.
       def shop_world(inventory, shop: :game)
@@ -8865,7 +8891,7 @@ RSpec.describe TaskMaster do
              '>> swap', '>> give my glop to nezhiri',
              '>> get coin from #7900', '>> get coin from #7900', '>> get coin from #7900', '>> get coin from #7900', '>> look in #7900', '>> dump junk']
           )
-          expect(runs.select { |name, _| name == 'remedy' }).to eq([['remedy', ['instructions', 'georin', 'coal nugget', 'mortar', 'glop', '25']]] * 3)
+          expect(runs.select { |name, _| name == 'remedy' }).to eq([['remedy', ['instructions', 'georin', 'coal nugget', 'mortar', 'glop', '25', 'stocked']]] * 3)
           calls = commons.calls.map(&:first)
           expect(commons.calls).to include(['DRCM.ensure_copper_on_hand', (1 * 50) + (3 * 437) + 7500, 'Crossing'], ['DRCT.buy_item', 51_102, 'brine'],
                                            ['DRCT.walk_to', 7896], ['DRCT.walk_to', 19_209])
@@ -8936,7 +8962,7 @@ RSpec.describe TaskMaster do
              '>> give my draught to nezhiri',
              '>> get coin from #7900', '>> get coin from #7900', '>> get coin from #7900', '>> get coin from #7900', '>> look in #7900', '>> dump junk']
           )
-          expect(runs.select { |name, _| name == 'remedy' }).to eq([['remedy', ['instructions', 'junliar', 'coal nugget', 'bowl', 'draught', '25']]] * 2)
+          expect(runs.select { |name, _| name == 'remedy' }).to eq([['remedy', ['instructions', 'junliar', 'coal nugget', 'bowl', 'draught', '25', 'stocked']]] * 2)
           expect(commons.calls.map(&:first)).not_to include('DRCT.buy_item')
           expect(commons.calls).to include(['DRCM.ensure_copper_on_hand', (2 * 531) + 212 + 7500, 'Crossing'])
           expect(commons.calls.select { |name, *| name == 'DRCT.order_item' }).to eq([['DRCT.order_item', 8775, 2]] + ([['DRCT.order_item', 8862, 9]] * 2))
@@ -11626,8 +11652,8 @@ RSpec.describe TaskMaster do
                'look in my mortar', *supply_checks, 'count #7001', 'combine #7001 with #7002', 'count #7003',
                'inventory duffel bag', 'count #7003', 'give my moisturizer to nezhiri', 'dump junk']
             )
-            expect(runs).to eq([['instructions', 'red flower', 'coal nugget', 'mortar', 'moisturizer', '25'], continued,
-                                ['instructions', 'red flower', 'coal nugget', 'mortar', 'moisturizer', '25']])
+            expect(runs).to eq([['instructions', 'red flower', 'coal nugget', 'mortar', 'moisturizer', '25', 'stocked'], continued,
+                                ['instructions', 'red flower', 'coal nugget', 'mortar', 'moisturizer', '25', 'stocked']])
             expect(DRC).to have_received(:message).with(carrying_on)
             expect(DRC).to have_received(:message).with('12 doses of scale moisturizer made and combined into one.')
             expect(tm).to have_received(:task_handed_in).with('moisturizer')
@@ -11683,7 +11709,7 @@ RSpec.describe TaskMaster do
 
             expect { tm.nezhiri('moisturizer', 12, moisturizer) }.to raise_error(SystemExit)
 
-            expect(runs).to eq([['instructions', 'red flower', 'coal nugget', 'mortar', 'moisturizer', '25'], continued])
+            expect(runs).to eq([['instructions', 'red flower', 'coal nugget', 'mortar', 'moisturizer', '25', 'stocked'], continued])
             expect(game.sent.count('look in my mortar')).to eq(1)
             expect(commons.location_of('#6001')).to eq('right')
             expect(DRC).to have_received(:message).with(/\Aremedy's continue run left no scale moisturizer in your hands either/)
