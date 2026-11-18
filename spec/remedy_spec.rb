@@ -4728,9 +4728,11 @@ RSpec.describe Remedy do
             expect(outcome).to eq(:exited)
             expect(purchase_calls).to eq(coal_purchase)
             expect(game.sent).not_to include('put my coal nugget in my rustic mortar')
-            expect(remedy_messages.last(3)).to eq(['Remedy: no coal nugget on hand for the catalyst; buying one.',
-                                                   'Remedy: could not buy coal nugget at the Crossing alchemy shop; crafting on without it.',
-                                                   'Remedy: could not get coal nugget. Stopping.'])
+            # One stop line naming the shop: no "crafting on without it"
+            # report the next line would contradict.
+            expect(remedy_messages.last(2)).to eq(['Remedy: no coal nugget on hand for the catalyst; buying one.',
+                                                   'Remedy: could not buy coal nugget at the Crossing alchemy shop for the catalyst. Stopping.'])
+            expect(remedy_messages).not_to include(a_string_matching(/crafting on without it/))
             exit_hooks.each(&:call)
             expect(remedy_messages.last).to eq(continue_line)
             expect(commons.location_of('rustic mortar')).to eq('left').or eq('right')

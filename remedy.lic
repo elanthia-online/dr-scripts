@@ -1941,10 +1941,15 @@ class Remedy
     # the walk back).
     #
     # @return [void]
-    # @raise [SystemExit] when no town has a shop ({#buy})
+    # @raise [SystemExit] when no town has a shop ({#buy}), or when the
+    #   purchase leaves no nugget on hand: one stop line naming the shop,
+    #   not the "crafting on without it" report the start-of-run purchases
+    #   give, since the craft cannot go on without its catalyst
     def buy_catalyst
       DRC.message('Remedy: no coal nugget on hand for the catalyst; buying one.')
-      buy('coal')
+      buy('coal', report: false)
+      item = ORDERS['coal'][:item]
+      Remedy.stop("could not buy #{item} at the #{@town} alchemy shop for the catalyst.") unless DRCI.exists?(item)
     end
 
     private
@@ -1953,20 +1958,23 @@ class Remedy
     # away, checks it is on hand and walks back ({Supplies}).
     #
     # @param supply [String] a key of {ORDERS}
+    # @param report [Boolean] report a purchase that leaves nothing on hand
+    #   ({#report_not_bought}); false when the caller stops on it instead
+    #   ({#buy_catalyst})
     # @return [void]
     # @raise [SystemExit] when no town has a shop ({#stop_no_shop})
     # @note A purchase that leaves nothing on hand (the bank had no coins
     #   for it, or the walk failed) is reported and remedy carries on, as it
     #   always has: the recipe may not use that supply (H20), and
     #   one that does stops at the guarded get of it.
-    def buy(supply)
+    def buy(supply, report: true)
       order = ORDERS[supply]
       stop_no_shop(order[:item]) unless @stock
 
       DRCM.get_money_from_bank(WITHDRAWAL, @settings, @town)
       DRCT.order_item(@stock[order[:room]], @stock[order[:number]])
       @inventory.stow(order[:item])
-      report_not_bought(order[:item]) unless DRCI.exists?(order[:item])
+      report_not_bought(order[:item]) if report && !DRCI.exists?(order[:item])
       DRCT.walk_to(@return_room)
     end
 
