@@ -37,7 +37,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.18.6'
+  VERSION = '2026.11.18.7'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -2983,7 +2983,9 @@ class TaskMaster
   # "an ojhenik draught" on a deep-sea draught task) is not counted, and
   # is named once a run (one message, not repeated at the hand-in for the
   # same items) and left there; so is an item whose name holds the noun but
-  # with no noun read off it at all (unread in sort_listed). It used to stop
+  # with no noun read off it at all (unread in sort_listed). One of those
+  # that holds every word of the remedy's name is named as uncounted: the
+  # run may craft more than is owed (note_other_remedies). It used to stop
   # the run, which left Defileous relaunching into the stop for about 26
   # minutes and Kvofe binning the item by hand (2026-11-18). taskmaster gets
   # its own stacks out by id, or by the whole name (get_remedy_stack), and
@@ -3010,25 +3012,31 @@ class TaskMaster
     lines = container_listing(@bag)
     lines = container_listing(@bag) if lines.nil?
     stop_stock("Could not look for #{product} in your #{@bag}: INVENTORY went unanswered twice.") if lines.nil?
-    ours = sort_listed(lines, product)[:of_kind]
+    ours = sort_listed(lines, product)
     sorted = sort_listed(lines, noun)
-    note_other_remedies(recipe, sorted[:of_kind] - ours, sorted[:unread])
-    ours.size
+    note_other_remedies(recipe, sorted[:of_kind] - ours[:of_kind], sorted[:unread] - ours[:unread], ours[:unread])
+    ours[:of_kind].size
   end
 
   # Names, once a run, the items in the crafting bag that hold the remedy's
-  # noun but are not the remedy (remedy_stacks_in_bag): those of the noun,
-  # and those with no noun read off them. The same items for the same
+  # noun but are not counted as the remedy (remedy_stacks_in_bag): those of
+  # the noun, and those with no noun read off them. An unread one that
+  # holds every word of the remedy's name may be the remedy itself, so it is
+  # named apart: not counted, so the run may craft more than is owed, and
+  # nothing is got or combined for it. The same items for the same
   # remedy are not named again (the hand-in reads the bag a second time).
   #
   # @param recipe [Hash] the task's recipe; reads :noun and :product
   # @param others [Array<String>] INVENTORY lines of the noun, not the remedy
-  # @param unread [Array<String>] INVENTORY lines with no noun read off them
+  # @param unread [Array<String>] INVENTORY lines with no noun read off
+  #   them, without every word of the remedy's name
+  # @param uncounted [Array<String>] INVENTORY lines with no noun read off
+  #   them that hold every word of the remedy's name
   # @return [void]
-  def note_other_remedies(recipe, others, unread)
-    return if others.empty? && unread.empty?
+  def note_other_remedies(recipe, others, unread, uncounted)
+    return if others.empty? && unread.empty? && uncounted.empty?
 
-    noted = [recipe[:product], others, unread]
+    noted = [recipe[:product], others, unread, uncounted]
     return if @remedy_others_noted == noted
 
     @remedy_others_noted = noted
@@ -3039,7 +3047,14 @@ class TaskMaster
     text << "#{others.size} #{noun}#{others.size == 1 ? '' : 's'} that #{others.size == 1 ? 'is' : 'are'} not #{product} (#{quoted.call(others)})" unless others.empty?
     text << "#{unread.size} item#{unread.size == 1 ? '' : 's'} with no noun taskmaster can read (#{quoted.call(unread)})" unless unread.empty?
     many = others.size + unread.size > 1
-    DRC.message("Your #{@bag} also holds #{text.join(' and ')}. taskmaster gets the #{product} by its id or its whole name, and leaves #{many ? 'them' : 'it'} there.")
+    said = []
+    said << "Your #{@bag} also holds #{text.join(' and ')}. taskmaster gets the #{product} by its id or its whole name, and leaves #{many ? 'them' : 'it'} there." unless text.empty?
+    unless uncounted.empty?
+      one = uncounted.size == 1
+      said << "#{said.empty? ? "Your #{@bag} also holds" : 'It holds'} #{uncounted.size} item#{one ? '' : 's'} named #{product} with no noun taskmaster can read " \
+              "(#{quoted.call(uncounted)}). taskmaster does not count #{one ? 'it' : 'them'} as #{product}, so it may craft more than is owed."
+    end
+    DRC.message(said.join(' '))
   end
 
   # The ids of the stacks of a remedy in hand: the hand's GameObj noun is
