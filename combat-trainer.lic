@@ -2869,6 +2869,7 @@ class SpellProcess
     data = DRCMM.update_astral_data(data, @settings)
     if data # DRCMM.update_astral_data returns nil on failure
       check_invoke(game_state)
+      data = DRCA.check_discern(data, @settings, spell_is_sorcery?(data)) if data['use_auto_mana']
       DRCA.ritual(data, @settings)
     end
 
