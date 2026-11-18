@@ -8896,8 +8896,10 @@ RSpec.describe TaskMaster do
           game, commons = shop_world(kit + [['ojhenik draught', 'duffel bag', '7200'], ['deep-sea draught', 'duffel bag', '7101']])
           commons.hold('deep-sea draught', id: '7102')
           game.script('inventory duffel bag', *bag_listed('an ojhenik draught', 'some deep-sea draught'))
-          allow(DRCI).to receive(:get_item?).and_wrap_original do |real, item, container|
-            next real.call(item, container) unless item == 'deep-sea draught'
+          # Every other get goes to the ReplayCommons model shop_world
+          # installed (and_wrap_original would wrap the harness stub instead).
+          allow(DRCI).to receive(:get_item?) do |item, container|
+            next commons.get_item?(item, container) unless item == 'deep-sea draught'
 
             commons.calls << ['DRCI.get_item?', item, container]
             commons.inventory.reject! { |entry| entry.id == '7200' }
