@@ -9408,8 +9408,9 @@ RSpec.describe TaskMaster do
 
         # None of her four remedies uses water or alcohol: every logged READ
         # lists a herb, a splash of brewer's brine and a catalyst (the reads
-        # let). remedy buys a missing one all the same, mid-task, at the
-        # crafting town's shop (remedy.lic Supplies#buy_missing), so with no
+        # let). Her crafts run stocked, but the carry-on run does not, and
+        # remedy then buys a missing one, mid-task, at the crafting town's
+        # shop (remedy.lic Supplies#buy_missing), so with no
         # answer from the wait (no wait, a finish, a survey made with a
         # water_container set) they are looked for and bought on the way.
         it 'looks for water and alcohol when the wait gave no answer for them, and buys those not found, though her remedies use neither' do
