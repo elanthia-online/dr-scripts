@@ -8902,6 +8902,19 @@ RSpec.describe TaskMaster do
           expect(DRC).to have_received(:message).with(/also holds 1 potion that is not landsickness potion \("a healing potion"\)/).once
         end
 
+        # Two other items the whole name finds come back in front, turned
+        # around (get_remedy_stack); the hand-in's INVENTORY lists them so.
+        it 'names the same other items once when the bag lists them in another order' do
+          tm = maker(task_product: 'scale moisturizer')
+          game, = shop_world(kit)
+          game.script('inventory duffel bag', *bag_listed('some scaled moisturizer', 'a scalemail moisturizer', 'some scale moisturizer'))
+          game.script('inventory duffel bag', *bag_listed('a scalemail moisturizer', 'some scaled moisturizer', 'some scale moisturizer'))
+
+          2.times { tm.send(:remedy_stacks_in_bag, moisturizer_recipe) }
+
+          expect(DRC).to have_received(:message).with(/\AYour duffel bag also holds 2 moisturizers that are not scale moisturizer/).once
+        end
+
         # The crafting bag in order, front first, as the game keeps it: each
         # word of a name finds the start of a word ("scale" finds "scaled",
         # seen in game 2026-11-19), an ordinal picks among the items found,
