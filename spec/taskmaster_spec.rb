@@ -1525,8 +1525,54 @@ RSpec.describe TaskMaster do
 
       it 'ignores other players mentioning a boost while waiting for the reply' do
         tm = boosted(task_boosts: ['haste'])
-        expect(DRC).to receive(:bput).with('boost haste', TaskMaster::HASTE_ACTIVATED, TaskMaster::HASTE_NO_CREDITS, /Minor Haste/).and_return(activated)
+        expect(DRC).to receive(:bput).with('boost haste', TaskMaster::HASTE_ACTIVATED, TaskMaster::HASTE_NO_CREDITS, TaskMaster::HASTE_OTHER).and_return(activated)
         tm.refresh_haste
+      end
+
+      # lich-5 DRC.bput (common.rb:272-276) returns the text of the first
+      # pattern that matches the first line any pattern matches; this plays
+      # the lines the game sends through the patterns refresh_haste gives.
+      def bput_reading(*lines)
+        allow(DRC).to receive(:bput) do |_command, *patterns|
+          match = nil
+          lines.find { |line| match = patterns.filter_map { |pattern| line[pattern] }.first }
+          match || ''
+        end
+      end
+
+      [
+        ['the no-credit line', "Kvofe says, \"You don't have enough credits for the Minor Haste boost.\""],
+        ['the boost by name', 'Kvofe whispers, "Is your Minor Haste boost running?"'],
+        ['the no-credit line, as a thought', "Your mind hears Kvofe thinking, \"You don't have enough credits for the Minor Haste boost.\""]
+      ].each do |what, chatter|
+        it "takes the game's activation, not a player saying #{what} just before it" do
+          tm = boosted(task_boosts: ['haste'])
+          bput_reading(chatter, activated)
+          tm.refresh_haste
+          expect([UserVars.taskmaster_haste_expires, $taskmaster_boost_unavailable]).to match([be_within(5).of(Time.now.to_i + 3600), nil])
+        end
+      end
+
+      it "still takes the game's own no-credit line, and an unknown reply naming the boost" do
+        bput_reading(no_credits)
+        boosted(task_boosts: ['haste']).refresh_haste
+        expect($taskmaster_boost_unavailable).to eq({ 'haste' => true })
+
+        $taskmaster_boost_unavailable = nil
+        bput_reading('You already have an active Minor Haste boost.')
+        boosted(task_boosts: ['haste']).refresh_haste
+        expect([UserVars.taskmaster_haste_expires, $taskmaster_boost_unavailable]).to match([be_within(5).of(Time.now.to_i + 600), nil])
+      end
+
+      it "takes BOOST TASK's activation, not a player saying the no-credit line just before it" do
+        tm = boosted(task_boosts: ['task'])
+        bput_reading("Kvofe says, \"You don't have enough credits for the Task Master boost.\"", "You've activated the Task Master boost for 2 hours!  Check INFO to see your time remaining.")
+        expect(tm.boost_task).to be(true)
+        expect($taskmaster_boost_unavailable).to be_nil
+
+        bput_reading("You don't have enough credits for the Task Master boost.  You currently have 0 available but need 1.")
+        expect(boosted(task_boosts: ['task']).boost_task).to be(false)
+        expect($taskmaster_boost_unavailable).to eq({ 'task' => true })
       end
     end
 
