@@ -1484,15 +1484,50 @@ RSpec.describe TaskMaster do
         tm = boosted(task_boosts: ['haste'])
         reply_with(no_credits)
         tm.refresh_haste
-        expect([UserVars.taskmaster_haste_expires, $taskmaster_boost_unavailable]).to eq([nil, { 'haste' => true }])
+        expect([UserVars.taskmaster_haste_expires, $taskmaster_boost_unavailable]).to match([nil, { 'haste' => kind_of(Integer) }])
 
         # t2 starts a new run for the next task, in the same Lich process.
         [tm, boosted(task_boosts: ['haste'])].each(&:refresh_haste)
         expect(DRC).to have_received(:bput).with('boost haste', any_args).once
       end
 
+      # Login rewards add boosts in the middle of a login, at the game's
+      # daily rollover (Gorkus 2026-11-18: no credits at 05:56:48 UTC, "you
+      # have earned 2 2-Hours of No TASK Cooldown boosts" at 06:00:43, BOOST
+      # TASK activated at 06:04:35).
+      describe 'after the daily rollover' do
+        def at(text)
+          Time.utc(*text.split(/[- :]/).map(&:to_i))
+        end
+
+        it 'asks again once 05:00 or 06:00 UTC has passed since the no-credits reply, and not before' do
+          tm = boosted(task_boosts: ['haste'])
+          [['2026-11-18 05:56:48', '2026-11-18 05:59:59', true], ['2026-11-18 05:56:48', '2026-11-18 06:04:35', false],
+           ['2026-11-18 04:30:00', '2026-11-18 05:00:01', false], ['2026-11-18 07:00:00', '2026-11-19 04:59:59', true],
+           ['2026-11-18 07:00:00', '2026-11-19 05:00:00', false], ['2026-11-18 23:30:00', '2026-11-19 05:30:00', false]].each do |noted, now, spent|
+            $taskmaster_boost_unavailable = { 'haste' => at(noted).to_i }
+            allow(Time).to receive(:now).and_return(at(now))
+            expect([noted, now, tm.boost_spent?('haste')]).to eq([noted, now, spent])
+          end
+        end
+
+        it "sends BOOST TASK again after the rollover and takes the reward's activation" do
+          $taskmaster_boost_unavailable = { 'task' => at('2026-11-18 05:56:48').to_i }
+          allow(Time).to receive(:now).and_return(at('2026-11-18 06:04:35'))
+          tm = boosted(task_boosts: ['task'])
+          expect(tm.instance_variable_get(:@boost)).to be(true)
+          allow(DRC).to receive(:bput).with('boost task', any_args).and_return("You've activated the Task Master boost")
+          expect(tm.boost_task).to be(true)
+        end
+
+        it 'asks again for a note left by an older taskmaster in the same process (true, no time)' do
+          $taskmaster_boost_unavailable = { 'haste' => true }
+          expect(boosted(task_boosts: ['haste']).boost_spent?('haste')).to be(false)
+        end
+      end
+
       it 'still asks for haste when only the task boost has run out' do
-        $taskmaster_boost_unavailable = { 'task' => true }
+        $taskmaster_boost_unavailable = { 'task' => Time.now.to_i }
         tm = boosted(task_boosts: %w[task haste])
         reply_with(activated)
         tm.refresh_haste
@@ -1558,7 +1593,7 @@ RSpec.describe TaskMaster do
       it "still takes the game's own no-credit line, and an unknown reply naming the boost" do
         bput_reading(no_credits)
         boosted(task_boosts: ['haste']).refresh_haste
-        expect($taskmaster_boost_unavailable).to eq({ 'haste' => true })
+        expect($taskmaster_boost_unavailable).to match({ 'haste' => kind_of(Integer) })
 
         $taskmaster_boost_unavailable = nil
         bput_reading('You already have an active Minor Haste boost.')
@@ -1574,7 +1609,7 @@ RSpec.describe TaskMaster do
 
         bput_reading("You don't have enough credits for the Task Master boost.  You currently have 0 available but need 1.")
         expect(boosted(task_boosts: ['task']).boost_task).to be(false)
-        expect($taskmaster_boost_unavailable).to eq({ 'task' => true })
+        expect($taskmaster_boost_unavailable).to match({ 'task' => kind_of(Integer) })
       end
     end
 
@@ -2422,7 +2457,7 @@ RSpec.describe TaskMaster do
             result, events, tm = asking([wait, offer], boost: true, boost_reply: no_boosts)
 
             expect([result, events]).to eq([:accepted, [:find, :ask, :boost, [:pause, 7], *accepted]])
-            expect([tm.instance_variable_get(:@boost), $taskmaster_boost_unavailable]).to eq([false, { 'task' => true }])
+            expect([tm.instance_variable_get(:@boost), $taskmaster_boost_unavailable]).to match([false, { 'task' => kind_of(Integer) }])
           end
 
           it 'sends no BOOST TASK in a later run of the same login, whose settings ask for it' do
@@ -2449,7 +2484,7 @@ RSpec.describe TaskMaster do
           end
 
           it 'waits the poll interval for every taskmaster when the run was started with the boost already spent' do
-            $taskmaster_boost_unavailable = { 'task' => true }
+            $taskmaster_boost_unavailable = { 'task' => Time.now.to_i }
             _, events, = asking([wait, offer]) do |run|
               run.instance_variable_set(:@settings, OpenStruct.new(task_boosts: %w[task haste]))
               run.send(:configure_boosts)
