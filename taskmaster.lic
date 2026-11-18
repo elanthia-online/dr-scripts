@@ -37,7 +37,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.19.5'
+  VERSION = '2026.11.19.6'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -3128,7 +3128,7 @@ class TaskMaster
   # it stops the run, since taking it for an empty bag would craft doses
   # already made, or leave them out of the hand-in. The lines are kept in
   # @bag_listing, so the first round's tool and coal checks read them
-  # instead of tapping each (missing_tools, coal_rubs).
+  # instead of tapping each (missing_tools, coal_count).
   #
   # @param recipe [Hash] the task's recipe
   # @return [Integer] stacks of the remedy in the bag
@@ -3443,7 +3443,7 @@ class TaskMaster
   #
   # @param crafts [Integer] crafts to make, one rub of coal each
   # @param listed [Array<String>, nil] the crafting bag's INVENTORY lines,
-  #   or nil (coal_rubs, remedy_liquid_on_hand?)
+  #   or nil (coal_count, remedy_liquid_on_hand?)
   # @return [Array<Hash>] each with :name, :room, :number and :price
   def missing_remedy_supplies(crafts, listed = nil)
     shop = remedy_shop
@@ -3512,29 +3512,21 @@ class TaskMaster
     sort_listed(listed, NEZHIRI_CATALYST)[:of_kind].sum { |line| COAL_RUBS.fetch(line[COAL_LISTED, 1], 1) }
   end
 
-  # Rubs left in the coal nuggets carried, from their sizes (COAL_RUBS).
-  # Those the crafting bag's INVENTORY lists (listed) are read off it, as
-  # "a medium coal nugget"; when they cover the crafts nothing is tapped.
-  # Otherwise TAP counts them all afresh, the first, the second and so on,
-  # until none is found or the rubs cover the crafts, which also finds a
-  # nugget kept outside the bag. A TAP with no answer ends the count.
+  # Rubs left in the coal nuggets carried, from their sizes (COAL_RUBS),
+  # and whether the count is whole. Those the crafting bag's INVENTORY
+  # lists (listed) are read off it, as "a medium coal nugget"; when they
+  # cover the crafts nothing is tapped. Otherwise TAP counts them all
+  # afresh, the first, the second and so on, until none is found or the
+  # rubs cover the crafts, which also finds a nugget kept outside the bag.
+  # A TAP with no answer ends the count, which is then not whole: nuggets
+  # after it (or the one tapped) may not be counted, so a caller must not
+  # take the rubs as every nugget there is (remedy_coal_rubs).
   #
   # @param crafts [Integer] crafts to make
   # @param listed [Array<String>, nil] inventory_listing's lines for the
   #   crafting bag; nil to TAP
-  # @return [Integer] rubs counted, 0 with no nugget
-  def coal_rubs(crafts, listed = nil)
-    coal_count(crafts, listed).first
-  end
-
-  # coal_rubs, and whether the count is whole: false when a TAP went
-  # unanswered and ended it, so nuggets after it (or the one tapped) may
-  # not be counted.
-  #
-  # @param crafts [Integer] crafts to make
-  # @param listed [Array<String>, nil] inventory_listing's lines, or nil
-  # @return [Array(Integer, Boolean)] rubs counted, and whether every TAP
-  #   was answered
+  # @return [Array(Integer, Boolean)] rubs counted (0 with no nugget), and
+  #   whether every TAP was answered
   def coal_count(crafts, listed = nil)
     rubs = listed_coal_rubs(listed)
     return [rubs, true] if rubs >= crafts && rubs.positive?
