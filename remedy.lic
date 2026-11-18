@@ -48,11 +48,15 @@
 # stocked, before or after the herb quantity. It tells remedy the caller
 # has just checked the water, the alcohol and the coal nugget are on hand
 # (taskmaster.lic's Nezhiri crafts do, and none of her recipes uses water
-# or alcohol), so remedy skips its own check of them at the start (a TAP
-# each, see Buying supplies). Should the game then ask for a coal nugget
-# catalyst and none can be got, remedy buys one there and then, the
-# vessel in hand, instead of stopping. Without stocked remedy checks and
-# buys at the start, as it always has.
+# or alcohol), so remedy skips its own check of loose water, alcohol and
+# coal at the start (a TAP each, see Buying supplies), and buys none of
+# them; a water_container or alcohol_container is still got, counted and
+# refilled when empty, as on every run. Should the game then ask for a
+# catalyst that cannot be got, remedy stops with the vessel in hand, as it
+# always has, and prints the ;remedy continue line: the caller buys the
+# nugget where it shops and carries the remedy on (taskmaster's continue
+# run). Without stocked remedy checks and buys at the start, as it always
+# has.
 #   ;remedy instructions georin "coal nugget" mortar glop 25 stocked
 #
 # == Brewer's brine
@@ -132,12 +136,13 @@
 # hometown; hometown's shop when base-crafting.yaml has none for the
 # crafting town), with coins from that town's bank, then walks to
 # alchemy_room, or back to the room it was started in when alchemy_room is
-# not set. remedy never buys brewer's brine. It looks for all three at the
-# start of every run, whether or not the recipe uses them, unless the
-# instructions form says stocked: then it looks for none at the start,
-# and buys a coal nugget only when the game asks for the catalyst and none
-# can be got (it says so first, "Remedy: no coal nugget on hand for the
-# catalyst; buying one."), then walks back and crafts on.
+# not set. remedy never buys brewer's brine. It looks for loose water,
+# alcohol and coal at the start of every run, whether or not the recipe
+# uses them, unless the instructions form says stocked: then it looks for
+# none of them and buys nothing, and a catalyst that cannot be got stops
+# it with the vessel in hand. A water_container or alcohol_container is
+# got, counted and refilled when empty at the start of every run, stocked
+# or not, then put away.
 
 # Crafts one alchemy remedy from a recipe book or from crafting
 # instructions, or resumes one in progress.
@@ -556,7 +561,7 @@ class Remedy
   # taskmaster's continue run keeps it as the guard of its recovery.
   STOCKED_ARG = {
     name: 'stocked', regex: /\Astocked\z/i, optional: true,
-    description: 'The caller has checked water, alcohol and the coal nugget are on hand: skip the check at the start, buy a coal nugget only if the catalyst cannot be got.'
+    description: 'The caller has checked water, alcohol and the coal nugget are on hand: skip the check at the start and buy none of them.'
   }.freeze
 
   # The recipe names the book form accepts: letters, whitespace, hyphens and
@@ -815,8 +820,7 @@ class Remedy
 
     # Whether the caller has checked the water, the alcohol and the coal
     # nugget are on hand ({STOCKED_ARG}), so remedy does not look for them
-    # at the start ({Remedy#run}) and buys a coal nugget at the catalyst
-    # step instead of stopping when none can be got ({Handlers}).
+    # at the start, nor buy them ({Remedy#run}).
     #
     # @return [Boolean]
     def stocked?
@@ -1859,8 +1863,7 @@ class Remedy
   # DRCT.walk_to(nil), which stays in the shop: H29).
   #
   # A stocked order ({Order#stocked?}) skips the check at the start
-  # ({#buy_missing}); its coal nugget is bought only at the catalyst step,
-  # when none can be got there ({#buy_catalyst}).
+  # ({#buy_missing}) and buys nothing.
   #
   # @api private
   class Supplies
@@ -1926,34 +1929,7 @@ class Remedy
     def buy_missing(water:, alcohol:, catalyst:)
       buy('water') if water.plain? && !DRCI.exists?(water.source)
       buy('alcohol') if alcohol.plain? && !DRCI.exists?(alcohol.source)
-      buy('coal') if buys?(catalyst) && !DRCI.exists?(catalyst)
-    end
-
-    # Whether remedy buys this catalyst when none is on hand: a coal nugget
-    # ({COAL}). Sends nothing.
-    #
-    # @param catalyst [String] the catalyst the recipe names
-    # @return [Boolean]
-    def buys?(catalyst)
-      COAL.include?(catalyst)
-    end
-
-    # Buys a coal nugget at the catalyst step of a stocked order, when the
-    # game asks for the catalyst and none can be got ({Handlers}): says so,
-    # then buys it as {#buy_missing} would have at the start, the vessel
-    # kept in hand (the bank, the order into the free hand, the stow and
-    # the walk back).
-    #
-    # @return [void]
-    # @raise [SystemExit] when no town has a shop ({#buy}), or when the
-    #   purchase leaves no nugget on hand: one stop line naming the shop,
-    #   not the "crafting on without it" report the start-of-run purchases
-    #   give, since the craft cannot go on without its catalyst
-    def buy_catalyst
-      DRC.message('Remedy: no coal nugget on hand for the catalyst; buying one.')
-      buy('coal', report: false)
-      item = ORDERS['coal'][:item]
-      Remedy.stop("could not buy #{item} at the #{@town} alchemy shop for the catalyst.") unless DRCI.exists?(item)
+      buy('coal') if COAL.include?(catalyst) && !DRCI.exists?(catalyst)
     end
 
     private
@@ -1962,23 +1938,20 @@ class Remedy
     # away, checks it is on hand and walks back ({Supplies}).
     #
     # @param supply [String] a key of {ORDERS}
-    # @param report [Boolean] report a purchase that leaves nothing on hand
-    #   ({#report_not_bought}); false when the caller stops on it instead
-    #   ({#buy_catalyst})
     # @return [void]
     # @raise [SystemExit] when no town has a shop ({#stop_no_shop})
     # @note A purchase that leaves nothing on hand (the bank had no coins
     #   for it, or the walk failed) is reported and remedy carries on, as it
     #   always has: the recipe may not use that supply (H20), and
     #   one that does stops at the guarded get of it.
-    def buy(supply, report: true)
+    def buy(supply)
       order = ORDERS[supply]
       stop_no_shop(order[:item]) unless @stock
 
       DRCM.get_money_from_bank(WITHDRAWAL, @settings, @town)
       DRCT.order_item(@stock[order[:room]], @stock[order[:number]])
       @inventory.stow(order[:item])
-      report_not_bought(order[:item]) if report && !DRCI.exists?(order[:item])
+      report_not_bought(order[:item]) unless DRCI.exists?(order[:item])
       DRCT.walk_to(@return_room)
     end
 
@@ -2672,9 +2645,7 @@ class Remedy
   # One that brings an ingredient or the sieve puts away the stirrer, gets
   # the item, and gets the stirrer back afterwards. Every get but water's
   # and alcohol's is guarded ({Inventory#fetch!}); the catalyst and herb2 puts
-  # stop remedy when the game finds no such item. For a stocked order
-  # ({Order#stocked?}) a coal nugget catalyst that cannot be got is bought
-  # ({Supplies#buy_catalyst}) and got again before remedy stops.
+  # stop remedy when the game finds no such item.
   #
   # @api private
   class Handlers
@@ -2701,16 +2672,13 @@ class Remedy
     # @param alcohol [Liquid] where alcohol comes from
     # @param brine [Liquid, nil] where brewer's brine comes from; nil for the
     #   plain brine ({Liquid.plain}), the only kind there is
-    # @param supplies [Supplies, nil] buys a stocked order's missing coal
-    #   nugget at the catalyst step; nil buys nothing
-    def initialize(order:, tools:, inventory:, water:, alcohol:, brine: nil, supplies: nil)
+    def initialize(order:, tools:, inventory:, water:, alcohol:, brine: nil)
       @order = order
       @tools = tools
       @inventory = inventory
       @water = water
       @alcohol = alcohol
       @brine = brine || Liquid.plain('brine')
-      @supplies = supplies
     end
 
     # The first Flag in {TABLE} order that is set.
@@ -2781,29 +2749,13 @@ class Remedy
     # ingot alongside the mortar ..." (25:11081).
     #
     # @return [void]
-    # @raise [SystemExit] when the catalyst cannot be got (for a stocked
-    #   order's coal nugget, not even after buying one) or put in
+    # @raise [SystemExit] when the catalyst cannot be got or put in. For a
+    #   stocked order too: remedy buys nothing mid-craft, where its shop
+    #   town (force_crafting_town or hometown) may be far from the room it
+    #   crafts in, and the caller carries the remedy on (taskmaster buys
+    #   the nugget in Crossing, then runs the continue form).
     def add_catalyst
-      with_item(@order.catalyst, 'remedy-catalyst', get: method(:get_catalyst)) { put_ingredient(@order.catalyst) }
-    end
-
-    # Gets the catalyst, guarded ({Inventory#fetch!}). For a stocked order
-    # whose catalyst is a coal nugget ({Supplies#buys?}) a get that brings
-    # none buys one first ({Supplies#buy_catalyst}): the caller checked the
-    # nuggets' rubs before the run, so this is a miscount, and buying here
-    # keeps the craft going. Any other order stops on the first failed get,
-    # as remedy always has: it looked for the coal at the start.
-    #
-    # @return [true] when the catalyst is in hand
-    # @raise [SystemExit] when it is not ({Remedy.stop}), or when no town
-    #   has a shop to buy the nugget in
-    def get_catalyst
-      catalyst = @order.catalyst
-      return @inventory.fetch!(catalyst) unless @order.stocked? && @supplies&.buys?(catalyst)
-      return true if @inventory.fetch?(catalyst)
-
-      @supplies.buy_catalyst
-      @inventory.fetch!(catalyst)
+      with_item(@order.catalyst, 'remedy-catalyst') { put_ingredient(@order.catalyst) }
     end
 
     # Adds the second herb ({Patterns::NEED_HERB}). Stops, getting nothing,
@@ -2880,22 +2832,14 @@ class Remedy
     #   get ({Inventory#fetch!}); false for water's or alcohol's source
     # @param missing [String, nil] why remedy stops when a guarded get
     #   brings nothing; nil for "could not get <item>."
-    # @param get [#call, nil] gets the item instead of the guarded or
-    #   unguarded get ({#get_catalyst})
     # @yield sends the command
     # @return [void]
     # @raise [SystemExit] when the item (guarded) or the stirrer cannot be
     #   got, or when DRCC.get_crafting_item stops the script
-    def with_item(item, flag, guarded: true, missing: nil, get: nil)
+    def with_item(item, flag, guarded: true, missing: nil)
       waitrt?
       @inventory.stow_beside(@tools.container)
-      if get
-        get.call
-      elsif guarded
-        @inventory.fetch!(item, missing: missing)
-      else
-        @inventory.get(item)
-      end
+      guarded ? @inventory.fetch!(item, missing: missing) : @inventory.get(item)
       Flags.reset(flag)
       yield
       waitrt?
@@ -4053,7 +3997,6 @@ class Remedy
     @order = Order.from_args(args)
     @inventory = Inventory.new(settings, herbs: @order.herbs)
     @tools = nil
-    @supplies = nil
     @craft_loop = nil
     @blacksmithing = nil
     @stamp_repair = nil
@@ -4075,8 +4018,8 @@ class Remedy
     # character, so a purchase can walk back to it.
     crafting = get_data('crafting')
     @blacksmithing = crafting['blacksmithing']
-    @supplies = Supplies.new(settings: @settings, remedies: crafting['remedies'], inventory: @inventory,
-                             return_room: @settings.alchemy_room || Room.current&.id)
+    supplies = Supplies.new(settings: @settings, remedies: crafting['remedies'], inventory: @inventory,
+                            return_room: @settings.alchemy_room || Room.current&.id)
     REGISTERED_FLAGS.each { |name, patterns| Flags.add(name, *patterns) }
 
     @tools = Tools.resolve(@settings, @order)
@@ -4085,7 +4028,7 @@ class Remedy
     @alcohol = Liquid.find('alcohol', @settings.alcohol_container, @inventory)
     @brine = Liquid.plain('brine')
     # A stocked order's caller has just checked all three (Order#stocked?).
-    @supplies.buy_missing(water: @water, alcohol: @alcohol, catalyst: @order.catalyst) unless @order.stocked?
+    supplies.buy_missing(water: @water, alcohol: @alcohol, catalyst: @order.catalyst) unless @order.stocked?
     DRC.wait_for_script_to_complete('buff', ['remedy']) if buff_set?
 
     if @order.continue?
@@ -4233,7 +4176,7 @@ class Remedy
   # @raise [SystemExit] when the remedy is finished, when remedy stops, or
   #   when a commons helper stops the script
   def craft(command, studied: false)
-    handlers = Handlers.new(order: @order, tools: @tools, inventory: @inventory, water: @water, alcohol: @alcohol, brine: @brine, supplies: @supplies)
+    handlers = Handlers.new(order: @order, tools: @tools, inventory: @inventory, water: @water, alcohol: @alcohol, brine: @brine)
     @craft_loop = CraftLoop.new(tools: @tools, noun: @order.noun, handlers: handlers, magic: @magic)
     case @craft_loop.run(command, studied: studied)
     when :unsuitable_herb

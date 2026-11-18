@@ -9505,7 +9505,7 @@ RSpec.describe TaskMaster do
 
         # A coal nugget shrinks a size a rub and a tiny one is used up
         # (6100:3370-3372, then 6100:3501): one too small for the crafts runs
-        # out part way, and remedy then buys one at the hometown's shop.
+        # out part way, and remedy then stops with the vessel in hand.
         it 'buys a coal nugget when the one carried is tiny and two crafts need two rubs, and none for one craft (6100:10599)' do
           tm = maker(settings: settings.merge(water_container: 'jug', alcohol_container: 'flask'))
           game, = shop_world([])

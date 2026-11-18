@@ -4702,38 +4702,19 @@ RSpec.describe Remedy do
             expect(remedy_messages).not_to include('Remedy: no coal nugget on hand for the catalyst; buying one.')
           end
 
-          it 'buys one with the word only when the game asks for the catalyst, the mortar in hand, says so, and crafts on to 6 uses' do
-            script_glop
-            expect(run_remedy(stocked_line)).to eq(:exited)
-            expect(purchase_calls).to eq(coal_purchase)
-            expect(game.sent).to eq(expected_sends), game.report
-            # Bought after the herb went in, the mortar picked up and the
-            # brine added: the pestle is put away, the get brings nothing,
-            # and the nugget bought goes in the haversack and is got from
-            # it; the pestle comes back once the nugget is put away.
-            bought_at = commons.moves.index('coal nugget: shop -> hand')
-            expect(commons.moves[0...bought_at]).to include('dried georin: hand -> game', 'rustic mortar: ground -> hand', brine_moves.last)
-            expect(commons.moves[bought_at - 1, 6]).to eq(["rustic pestle: hand -> #{toolstrap}", 'coal nugget: shop -> hand', "coal nugget: hand -> #{haversack}",
-                                                           "coal nugget: #{haversack} -> hand", "coal nugget: hand -> #{haversack}", "rustic pestle: #{toolstrap} -> hand"])
-            expect(commons.moves.grep(/rustic mortar/)).to eq(["rustic mortar: #{toolstrap} -> hand", 'rustic mortar: hand -> ground', 'rustic mortar: ground -> hand',
-                                                               "rustic mortar: hand -> #{toolstrap}"])
-            expect(remedy_messages).to eq(['Remedy: 12 uses left on the glop instructions.', 'Remedy: no coal nugget on hand for the catalyst; buying one.',
-                                           'Remedy: made 6 uses of gill glop.'])
-            expect(game.diagnostics).to be_empty
-          end
-
-          it 'stops with the word when the purchase leaves none on hand, puts no coal in, and prints the continue line' do
-            orders.clear
+          # remedy's shop town is force_crafting_town or hometown, which may
+          # be far from the room it crafts in, so a stocked craft buys
+          # nothing mid-craft: it stops with the mortar in hand, as remedy
+          # always has, and taskmaster buys the nugget in Crossing and runs
+          # the continue form (Taskmaster#remedy_left_in_vessel).
+          it 'buys nothing with the word: when the game asks for the catalyst it stops, the mortar in hand, and prints the continue line' do
             script_glop
             outcome = run_remedy(stocked_line) { allow(DRC).to receive(:beep) }
             expect(outcome).to eq(:exited)
-            expect(purchase_calls).to eq(coal_purchase)
+            expect(purchase_calls).to be_empty
+            expect(commons.moves.grep(/shop -> hand/)).to be_empty
             expect(game.sent).not_to include('put my coal nugget in my rustic mortar')
-            # One stop line naming the shop: no "crafting on without it"
-            # report the next line would contradict.
-            expect(remedy_messages.last(2)).to eq(['Remedy: no coal nugget on hand for the catalyst; buying one.',
-                                                   'Remedy: could not buy coal nugget at the Crossing alchemy shop for the catalyst. Stopping.'])
-            expect(remedy_messages).not_to include(a_string_matching(/crafting on without it/))
+            expect(remedy_messages.last).to eq('Remedy: could not get coal nugget. Stopping.')
             exit_hooks.each(&:call)
             expect(remedy_messages.last).to eq(continue_line)
             expect(commons.location_of('rustic mortar')).to eq('left').or eq('right')
@@ -6556,95 +6537,6 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
       expect(DRCI).to have_received(:in_hands?).with('ingot').ordered
       expect(DRCI).to have_received(:in_hands?).with('pestle').ordered
       expect(Flags['remedy-catalyst']).to be(false)
-    end
-
-    # Layer 06 of the Nezhiri stack: a stocked order (taskmaster checked the
-    # coal nugget's rubs before the run) buys a coal nugget at the catalyst
-    # step when the get brings none; every other order stops there, as
-    # remedy always has, though Remedy#craft hands every Handlers the
-    # Supplies.
-    describe 'the catalyst get of a stocked order (layer 06 of the Nezhiri stack)' do
-      let(:supplies) { instance_double(Remedy::Supplies) }
-      let(:messages) { [] }
-      # The coal nugget is in a hand once +bought+ is true, never before.
-      let(:bought) { [] }
-
-      before do
-        allow(supplies).to receive(:buys?) { |catalyst| Remedy::Supplies::COAL.include?(catalyst) }
-        allow(supplies).to receive(:buy_catalyst) { calls << [:buy_catalyst] && bought << true }
-        allow(DRCI).to receive(:in_hands?) { |noun| noun != 'nugget' || !bought.empty? }
-        allow(DRC).to receive(:message) { |text| messages << text }
-        allow(DRC).to receive(:beep)
-        add_remedy_flags
-        game_says(log('25:11049'))
-        $left_hand = 'rounded pestle'
-      end
-
-      # @param catalyst [String]
-      # @param stocked [Boolean]
-      # @return [Remedy::Handlers]
-      def catalyst_handlers(catalyst, stocked:)
-        Remedy::Handlers.new(order: order.with(catalyst: catalyst, stocked: stocked), tools: mortar, inventory: inventory,
-                             water: plain_water, alcohol: plain_alcohol, supplies: supplies)
-      end
-
-      # @return [Array<Array>] the gets of the catalyst and the purchases, in order
-      def catalyst_calls
-        calls.select { |name, item, *| name == :buy_catalyst || (name == :get && item != 'rounded pestle') }
-      end
-
-      it 'buys a coal nugget when the get brings none, gets it again, puts it in and gets the pestle back' do
-        game.script('put my coal nugget in my large mortar', log('25:11081'))
-        catalyst_handlers('coal nugget', stocked: true).run('remedy-catalyst')
-        expect(catalyst_calls).to eq([[:get, 'coal nugget', toolbag, bag_items, toolstrap, true], [:buy_catalyst],
-                                      [:get, 'coal nugget', toolbag, bag_items, toolstrap, true]])
-        expect(game.sent.last).to eq('put my coal nugget in my large mortar')
-        expect(calls.last).to eq([:get, 'rounded pestle', toolbag, bag_items, toolstrap, true])
-        expect(messages).to be_empty
-      end
-
-      it 'buys nothing when the first get brings the nugget' do
-        bought << true
-        game.script('put my coal nugget in my large mortar', log('25:11081'))
-        catalyst_handlers('coal nugget', stocked: true).run('remedy-catalyst')
-        expect(catalyst_calls).to eq([[:get, 'coal nugget', toolbag, bag_items, toolstrap, true]])
-        expect(supplies).not_to have_received(:buy_catalyst)
-      end
-
-      it 'buys for the catalyst "nugget" too, the other name Supplies buys a coal nugget for' do
-        game.script('put my nugget in my large mortar', log('25:11081'))
-        catalyst_handlers('nugget', stocked: true).run('remedy-catalyst')
-        expect(supplies).to have_received(:buy_catalyst).once
-      end
-
-      it 'stops, no put sent, when the nugget bought cannot be got either' do
-        allow(supplies).to receive(:buy_catalyst) { calls << [:buy_catalyst] }
-        expect { catalyst_handlers('coal nugget', stocked: true).run('remedy-catalyst') }.to raise_error(SystemExit)
-        expect(catalyst_calls.map(&:first)).to eq(%i[get buy_catalyst get])
-        expect(messages).to eq(['Remedy: could not get coal nugget. Stopping.'])
-        expect(game.sent).not_to include('put my coal nugget in my large mortar')
-      end
-
-      it 'stops at the first failed get, buying nothing, when the order is not stocked: remedy looked for the coal at the start' do
-        expect { catalyst_handlers('coal nugget', stocked: false).run('remedy-catalyst') }.to raise_error(SystemExit)
-        expect(supplies).not_to have_received(:buy_catalyst)
-        expect(catalyst_calls).to eq([[:get, 'coal nugget', toolbag, bag_items, toolstrap, true]])
-        expect(messages).to eq(['Remedy: could not get coal nugget. Stopping.'])
-      end
-
-      it 'stops at the first failed get, buying nothing, for a stocked catalyst remedy never buys (a pewter ingot)' do
-        allow(DRCI).to receive(:in_hands?) { |noun| noun != 'ingot' }
-        expect { catalyst_handlers('pewter ingot', stocked: true).run('remedy-catalyst') }.to raise_error(SystemExit)
-        expect(supplies).not_to have_received(:buy_catalyst)
-        expect(messages).to eq(['Remedy: could not get pewter ingot. Stopping.'])
-      end
-
-      it 'stops at the first failed get, as before, when it is given no Supplies' do
-        stocked = Remedy::Handlers.new(order: order.with(catalyst: 'coal nugget', stocked: true), tools: mortar, inventory: inventory,
-                                       water: plain_water, alcohol: plain_alcohol)
-        expect { stocked.run('remedy-catalyst') }.to raise_error(SystemExit)
-        expect(messages).to eq(['Remedy: could not get coal nugget. Stopping.'])
-      end
     end
 
     it 'adds plain water (25:50210) with "put water in", and nothing more when the game takes it (26:10830)' do
