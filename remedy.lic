@@ -2160,6 +2160,7 @@ class Remedy
     #   DRCC.get_crafting_item stops the script
     def collect(herb, vessel)
       counted = summed = nil
+      stray = @inventory.held?(herb)
       @target.times do |fetch|
         routed = @inventory.get(herb) != Inventory::UNROUTED
         empty_handed(herb, vessel) if fetch.zero? && !@inventory.got?(herb, looks: Inventory::STOP_LOOKS)
@@ -2167,7 +2168,7 @@ class Remedy
         return gather_outside_bags(herb, vessel, fetch + 1) unless routed
 
         count = count_held(herb)
-        return count if first_stack_enough?(herb, fetch, count)
+        return count if first_stack_enough?(herb, fetch, count, stray: stray)
 
         reply = combine(herb)
         return one_stack_count(count, counted) if fetch.positive? && reply == HOLDING_BOTH
@@ -2470,9 +2471,12 @@ class Remedy
     end
 
     # Whether the first stack got from a bag ends the gathering before its
-    # combine: its count reached the target, and only one hand holds the
-    # herb, looked at once ({Inventory#got_second?} with no looks; it sends
-    # nothing).
+    # combine: no hand held the herb before that get (+stray+), its count
+    # reached the target, and only one hand holds the herb, looked at once
+    # ({Inventory#got_second?} with no looks; it sends nothing). The look
+    # before the get settles a stray stack whatever the timing: the second
+    # hand's tag for the stack just got may come in after its COUNT, and
+    # one look then would see only the stray.
     #
     # With one stack in hand the combine can only answer "You must be
     # holding both substances to combine them." (25:18266), and after that
@@ -2488,9 +2492,11 @@ class Remedy
     # @param herb [String] herb1
     # @param fetch [Integer] the gets made before this one
     # @param count [Integer, nil] this get's count
+    # @param stray [Boolean] whether a hand held the herb before the first
+    #   get ({Inventory#held?}, read before it)
     # @return [Boolean]
-    def first_stack_enough?(herb, fetch, count)
-      fetch.zero? && enough?(count) && !@inventory.got_second?(herb, looks: 0)
+    def first_stack_enough?(herb, fetch, count, stray: false)
+      fetch.zero? && !stray && enough?(count) && !@inventory.got_second?(herb, looks: 0)
     end
 
     # @param counted [Integer, nil] the pieces counted

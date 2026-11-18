@@ -7753,6 +7753,20 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
           expect(stows).to be_empty
         end
 
+        # The same stray stack, with the hand tag for the stack just got not
+        # yet in when the hands are looked at after its COUNT: the look
+        # before the get, which saw the stray, still sends the combine.
+        it 'is still sent when the other hand held a stack before the get, even if the new stack shows in hand late' do
+          commons.inventory << ReplayCommons::Item.new('dried nemoih', basket)
+          commons.hold('dried nemoih', hand: :left)
+          allow(inventory).to receive(:got_second?).and_return(false)
+          game.script('count my nemoih', log('25:33679'))
+          game.script('combine my nemoih', log('25:11425'), after: ->(_game) { commons.release('nemoih') })
+          script_put
+          expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+          expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', put])
+        end
+
         it 'is still sent when the count holds no number' do
           game.script('count my nemoih')
           game.script('combine my nemoih', log('25:104590'))

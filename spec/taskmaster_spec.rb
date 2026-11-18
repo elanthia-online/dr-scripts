@@ -9186,6 +9186,19 @@ RSpec.describe TaskMaster do
           expect(DRC).to have_received(:message).with(/also holds 1 potion that is not landsickness potion \("a healing potion"\)/).once
         end
 
+        # Two other items the whole name finds come back in front, turned
+        # around (get_remedy_stack); the hand-in's INVENTORY lists them so.
+        it 'names the same other items once when the bag lists them in another order' do
+          tm = maker(task_product: 'scale moisturizer')
+          game, = shop_world(kit)
+          game.script('inventory duffel bag', *bag_listed('some scaled moisturizer', 'a scalemail moisturizer', 'some scale moisturizer'))
+          game.script('inventory duffel bag', *bag_listed('a scalemail moisturizer', 'some scaled moisturizer', 'some scale moisturizer'))
+
+          2.times { tm.send(:remedy_stacks_in_bag, moisturizer_recipe) }
+
+          expect(DRC).to have_received(:message).with(/\AYour duffel bag also holds 2 moisturizers that are not scale moisturizer/).once
+        end
+
         # The crafting bag in order, front first, as the game keeps it: each
         # word of a name finds the start of a word ("scale" finds "scaled",
         # seen in game 2026-11-19), an ordinal picks among the items found,
@@ -10388,6 +10401,16 @@ RSpec.describe TaskMaster do
             expect(tm.instance_variable_get(:@stock_survey)[:missing_tools]).to eq(['sieve'])
           end
 
+          # A TAP with no answer may have left nuggets uncounted: the count is
+          # not kept, so the task counts again rather than buy on it.
+          it 'keeps no coal count when a TAP goes unanswered' do
+            tm = maker
+            steps = surveying(tm, taps: { 'tap my first coal nugget' => '' })
+
+            expect(steps.grep(/coal/)).to eq(['tap my first coal nugget'])
+            expect(tm.instance_variable_get(:@stock_survey)).to include(coal_rubs: nil)
+          end
+
           it 'taps every tool and the coal when INVENTORY goes unanswered' do
             steps = surveying(maker, listing: nil, taps: { 'tap my first coal nugget' => coal_tap('massive') })
 
@@ -10438,6 +10461,26 @@ RSpec.describe TaskMaster do
             # Six may be more than counted: seven crafts tap afresh, and the
             # massive and large nuggets carried cover them.
             expect([coal.call({ coal_rubs: 6 }, 7), sent]).to eq([[], ['tap my first coal nugget', 'tap my second coal nugget']])
+          end
+
+          # The wait's TAP of the medium nugget went unanswered; the round's
+          # INVENTORY lists it, and its 3 rubs cover three crafts.
+          it 'buys no coal when a fresh INVENTORY lists enough, whatever the wait counted' do
+            sent = []
+            game('tap my' => ->(command, *) { sent << command && '' })
+            listed = ['a medium coal nugget']
+            coal = ->(survey) { maker(stock_survey: survey.merge(water: true, alcohol: true)).missing_remedy_supplies(3, listed).map { |supply| supply[:name] } }
+
+            expect([coal.call({ coal_rubs: 0 }), coal.call({ coal_rubs: nil }), coal.call({}), sent]).to eq([[], [], [], []])
+          end
+
+          it 'counts the coal afresh when the wait kept no count, and buys on what that finds' do
+            sent = []
+            game('tap my' => ->(command, *) { sent << command && 'I could not find what you were referring to.' })
+            tm = maker(stock_survey: { coal_rubs: nil, water: true, alcohol: true })
+
+            expect(tm.missing_remedy_supplies(3).map { |supply| supply[:name] }).to eq(['coal nugget'])
+            expect(sent).to eq(['tap my first coal nugget'])
           end
 
           it 'leaves the herb count for the first round with herbs when a craft carried on buys none, then counts afresh' do
