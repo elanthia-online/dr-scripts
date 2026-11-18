@@ -9099,6 +9099,21 @@ RSpec.describe TaskMaster do
             .with('Your duffel bag also holds 2 draughts that are not deep-sea draught ("an ojhenik draught", "a murky draught"). taskmaster gets the deep-sea draught by its id or its whole name, and leaves them there.').once
         end
 
+        # With repeat one taskmaster works task after task: a deep-sea draught
+        # task, a landsickness potion one, then a deep-sea draught one again,
+        # the bag unchanged. Each remedy's other items are named once.
+        it 'names each remedy\'s other items once when tasks for different remedies alternate' do
+          tm = maker(task_product: 'deep-sea draught')
+          game, = shop_world(kit)
+          listed = bag_listed('an ojhenik draught', 'some deep-sea draught', 'a healing potion', 'some landsickness potion')
+          3.times { game.script('inventory duffel bag', *listed) }
+
+          [draught_recipe, potion_recipe, draught_recipe].each { |recipe| expect(tm.send(:remedy_stacks_in_bag, recipe)).to eq(1) }
+
+          expect(DRC).to have_received(:message).with(/also holds 1 draught that is not deep-sea draught \("an ojhenik draught"\)/).once
+          expect(DRC).to have_received(:message).with(/also holds 1 potion that is not landsickness potion \("a healing potion"\)/).once
+        end
+
         # The game takes an adjective and noun for that item only; should a
         # get by the whole name still bring another item of the noun, it
         # goes back by id and the run stops before it is combined with the
