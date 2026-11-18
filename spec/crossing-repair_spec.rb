@@ -1,4 +1,6 @@
+require 'fileutils'
 require 'ostruct'
+require 'tmpdir'
 
 require_relative 'spec_helper'
 
@@ -316,6 +318,146 @@ RSpec.describe CrossingRepair do
 
     it 'is not taken when the give gets no response' do
       expect(repair.turn_in_ticket('Granzer')).to be false
+    end
+  end
+end
+
+# Words after the town name settings files (args.flex), as in combat-trainer:
+# `crossing-repair Crossing task` reads <Character>-task.yaml as well, so a
+# profile can carry its own repair_timer.
+RSpec.describe 'CrossingRepair settings files named on the command line' do
+  # Setup file alone, and setup merged with Testchar-task.yaml, as Lich's
+  # get_settings returns them. The harness get_settings ignores its argument,
+  # so the stub below answers by file list: a spec passes only if the script
+  # asks for the files the command line named.
+  let(:setup_timer) { 10_800 }
+  let(:task_timer) { 43_200 }
+  let(:profiles_dir) { File.join(script_dir, 'profiles') }
+  let(:script_dir) { Dir.mktmpdir('crossing-repair-profiles') }
+
+  around do |example|
+    saved = $HOMETOWN_REGEX
+    $HOMETOWN_REGEX = /^(crossing|riverhaven|shard)$/i
+    example.run
+  ensure
+    $HOMETOWN_REGEX = saved
+  end
+
+  before do
+    reset_data
+    $settings_called_with = nil
+    $parse_args_model = true
+    stub_const('SCRIPT_DIR', script_dir)
+    FileUtils.mkdir_p(profiles_dir)
+    File.write(File.join(profiles_dir, 'Testchar-task.yaml'), "repair_timer: #{task_timer}\n")
+    allow(DRC).to receive(:message)
+    allow_any_instance_of(CrossingRepair).to receive(:repair_handler)
+    allow_any_instance_of(CrossingRepair).to receive(:start_script)
+    allow_any_instance_of(CrossingRepair).to receive(:get_settings) do |_repair, files|
+      $settings_called_with = files
+      timer = files == ['task'] ? task_timer : setup_timer
+      OpenStruct.new(repair_timer: timer, sell_loot_money_on_hand: '3 silver', hometown: 'Crossing', instrument: 'zills')
+    end
+    allow(EquipmentManager).to receive(:new).and_return(double('EquipmentManager', wear_equipment_set?: true, empty_hands: true))
+    $test_data = OpenStruct.new(town: { 'Crossing' => {} })
+    UserVars.repair_timer_snap = Time.now - (4 * 3600)
+  end
+
+  after { FileUtils.rm_rf(script_dir) }
+
+  it 'reads the settings files named after the town' do
+    $script_vars = ArgParserModel.script_vars('Crossing task')
+
+    expect { CrossingRepair.new }.to raise_error(SystemExit)
+
+    expect($settings_called_with).to eq(['task'])
+  end
+
+  it 'still takes the town, force and debug words as arguments, not as settings files' do
+    $script_vars = ArgParserModel.script_vars('Crossing force debug task')
+
+    CrossingRepair.new
+
+    expect($settings_called_with).to eq(['task'])
+  end
+
+  it 'reads only the setup file when no settings file is named' do
+    $script_vars = ArgParserModel.script_vars('Crossing')
+
+    CrossingRepair.new
+
+    expect($settings_called_with).to eq([])
+  end
+
+  # Same snap time (4 hours ago) in both: the setup file's 3-hour timer has run
+  # out, the task file's 12-hour one has not.
+  it "skips the repair while the named file's repair_timer has not run out" do
+    $script_vars = ArgParserModel.script_vars('Crossing task')
+    expect_any_instance_of(CrossingRepair).not_to receive(:repair_handler)
+
+    expect { CrossingRepair.new }.to raise_error(SystemExit)
+    expect($settings_called_with).to eq(['task'])
+  end
+
+  it "repairs on the setup file's timer when no settings file is named" do
+    $script_vars = ArgParserModel.script_vars('Crossing')
+
+    repair = CrossingRepair.new
+
+    expect(repair).to have_received(:repair_handler)
+  end
+
+  it "repairs once the named file's shorter repair_timer has run out" do
+    allow_any_instance_of(CrossingRepair).to receive(:get_settings) do |_repair, files|
+      $settings_called_with = files
+      OpenStruct.new(repair_timer: files == ['task'] ? 3600 : 43_200, sell_loot_money_on_hand: '3 silver', hometown: 'Crossing', instrument: 'zills')
+    end
+    $script_vars = ArgParserModel.script_vars('Crossing task')
+
+    repair = CrossingRepair.new
+
+    expect(repair).to have_received(:repair_handler)
+    expect($settings_called_with).to eq(['task'])
+  end
+
+  # The comment above the unrecognized-town check: a player who named a town may
+  # be far from home, and a typo must not walk them off to the default town.
+  describe 'a word that names no settings file' do
+    it 'stops without repairing when the town is mistyped' do
+      $script_vars = ArgParserModel.script_vars('Crosing')
+      expect_any_instance_of(CrossingRepair).not_to receive(:repair_handler)
+
+      expect { CrossingRepair.new }.to raise_error(SystemExit)
+      expect(DRC).to have_received(:message).with('Not a town or a settings file: Crosing')
+      expect($settings_called_with).to be_nil
+    end
+
+    it 'stops when the settings file name is mistyped after a town' do
+      $script_vars = ArgParserModel.script_vars('Crossing tsak')
+
+      expect { CrossingRepair.new }.to raise_error(SystemExit)
+      expect(DRC).to have_received(:message).with('Not a town or a settings file: tsak')
+      expect($settings_called_with).to be_nil
+    end
+
+    it 'names every unknown word but not the ones that exist' do
+      $script_vars = ArgParserModel.script_vars('task foo bar')
+
+      expect { CrossingRepair.new }.to raise_error(SystemExit)
+      expect(DRC).to have_received(:message).with('Not a town or a settings file: foo, bar')
+    end
+
+    it 'finds the file in the game-instance profile directory Lich uses' do
+      instance_dir = File.join(script_dir, 'data', 'DRX')
+      FileUtils.mkdir_p(instance_dir)
+      File.write(File.join(instance_dir, 'Testchar-hunt.yaml'), "repair_timer: 3600\n")
+      stub_const('DATA_DIR', File.join(script_dir, 'data'))
+      XMLData.game = 'DRX'
+      $script_vars = ArgParserModel.script_vars('Crossing hunt')
+
+      CrossingRepair.new
+
+      expect($settings_called_with).to eq(['hunt'])
     end
   end
 end
