@@ -37,7 +37,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.19.7'
+  VERSION = '2026.11.19.8'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -734,15 +734,16 @@ class TaskMaster
   TASK_BOOST_OTHER = /^[^"]*Task Master boost/
 
   # Reads task_boosts (and the older task_use_boost, which means the task
-  # boost) into @boosts, and arms the one task boost per run in @boost,
-  # unless the game has said there are no task boosts left since the last
-  # rollover (boost_spent?).
+  # boost) into @boosts, and arms the one task boost per run in @boost.
+  # Whether the game has said there are no task boosts left (boost_spent?)
+  # is asked at the cooldown, not here: a run that starts before the
+  # rollover can reach its first cooldown after a login reward.
   #
   # @return [void]
   def configure_boosts
     @boosts = Array(@settings.task_boosts).map { |boost| boost.to_s.downcase }
     @boosts |= ['task'] if @settings.task_use_boost
-    @boost = @boosts.include?('task') && !boost_spent?('task')
+    @boost = @boosts.include?('task')
   end
 
   # Whether the game has said there are no credits left for a boost since
@@ -755,7 +756,7 @@ class TaskMaster
   # boost" is another reward). So the answer is kept, with when it was
   # given, in a process global, $taskmaster_boost_unavailable: it outlives
   # the runs t2 starts for each task, ends with the login, and lapses once a
-  # rollover hour (BOOST_ROLLOVER_HOURS) has passed since. To ask again
+  # rollover time (BOOST_ROLLOVER_TIMES) has passed since. To ask again
   # sooner: ;e $taskmaster_boost_unavailable = nil.
   #
   # @param boost [String] 'task' or 'haste'
@@ -765,30 +766,33 @@ class TaskMaster
     noted.is_a?(Integer) && !boost_rollover_since?(noted)
   end
 
-  # The UTC hours the game's day can turn over: midnight US Central, 05:00
-  # UTC in daylight time and 06:00 UTC in standard time. Login rewards were
-  # given at 05:xx or 06:xx UTC to characters already logged in (8,185 of
-  # them in the logs since 2025-10-25; the others came with a first login
-  # later in the day). Both hours are kept, so no time zone data is needed;
-  # the other one costs at most one more ask a day.
-  BOOST_ROLLOVER_HOURS = [5, 6].freeze
+  # The UTC times, [hour, minute], a no-credits note lapses at. The game's
+  # day turns over at midnight US Central: 05:00 UTC in daylight time and
+  # 06:00 UTC in standard time. Both hours are kept, so no time zone data is
+  # needed. The rewards of characters already logged in come within two
+  # minutes of the hour (in the logs since 2025-10-25: 5,095 at 05:00-05:02
+  # and 3,078 at 06:00-06:02 UTC, against 15 later in the half hour, which
+  # were first logins), so a no-credits reply in those minutes may predate
+  # the reward: 05:05 and 06:05 let it lapse again. At most four more asks a
+  # day, with no credits.
+  BOOST_ROLLOVER_TIMES = [[5, 0], [5, 5], [6, 0], [6, 5]].freeze
 
-  # Whether a rollover hour (BOOST_ROLLOVER_HOURS) has come since +noted+.
+  # Whether a rollover time (BOOST_ROLLOVER_TIMES) has come since +noted+.
   #
   # @param noted [Integer] epoch seconds the no-credits reply was noted
   # @return [Boolean]
   def boost_rollover_since?(noted)
     from = Time.at(noted).utc
     now = Time.now.to_i
-    BOOST_ROLLOVER_HOURS.any? do |hour|
-      turn = Time.utc(from.year, from.month, from.day, hour)
+    BOOST_ROLLOVER_TIMES.any? do |hour, minute|
+      turn = Time.utc(from.year, from.month, from.day, hour, minute)
       turn += 86_400 if turn.to_i <= noted
       turn.to_i <= now
     end
   end
 
   # Notes, with the time, that the game said there are no credits left for
-  # a boost, so it is not asked for again until the next rollover hour or
+  # a boost, so it is not asked for again until the next rollover time or
   # login (boost_spent?).
   #
   # @param boost [String] 'task' or 'haste'
@@ -799,7 +803,7 @@ class TaskMaster
   end
 
   # BOOST TASK, the one task boost of a run (@boost, which this disarms).
-  # No credits left notes it until the next rollover hour or login
+  # No credits left notes it until the next rollover time or login
   # (note_boost_spent).
   #
   # @return [Boolean] false when there were no credits, else true (an
@@ -815,7 +819,7 @@ class TaskMaster
 
   # Keeps BOOST HASTE running. Its expiry is kept in UserVars because t2 can
   # start this script once per task, so the hour outlives any single run.
-  # Out of credits, it is not asked for again until the next rollover hour
+  # Out of credits, it is not asked for again until the next rollover time
   # or login (note_boost_spent), which can bring new credits.
   #
   # @note The expiry lives in UserVars.taskmaster_haste_expires, which
@@ -4408,7 +4412,7 @@ class TaskMaster
         DRC.message("Task on cooldown or recently canceled a task, either way, going to have to wait.")
         pause @cooldown_poll
       when /you must wait before I can give you a task/
-        if @boost && boost_task
+        if @boost && !boost_spent?('task') && boost_task
           pause 2
         elsif @npc == 'nezhiri' && !chores_done
           chores_done = true
