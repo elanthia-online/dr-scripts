@@ -12,9 +12,13 @@ class CrossingRepair
       ]
     ]
 
-    args = parse_args(arg_definitions)
+    # Any other argument names a settings file, as in combat-trainer: `crossing-repair Crossing task`
+    # also reads <Character>-task.yaml, last, so its repair_timer (or any other setting) wins over
+    # <Character>-setup.yaml. One script call can then repair on a different timer per profile.
+    # A word that is neither a town nor a profile is ignored, as get_settings skips missing files.
+    args = parse_args(arg_definitions, true)
     $debug_mode_crossing_repair = args.debug || UserVars.crossing_repair_debug
-    settings = get_settings
+    settings = get_settings(args.flex)
     town = DRC.get_town_name(args.town || settings.force_repair_town || settings.fang_cove_override_town)
 
     # If town argument is not recognized, choosing to exit the script with error

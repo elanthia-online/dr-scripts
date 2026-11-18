@@ -319,3 +319,68 @@ RSpec.describe CrossingRepair do
     end
   end
 end
+
+# Words after the town name settings files (args.flex), as in combat-trainer:
+# `crossing-repair Crossing task` reads <Character>-task.yaml as well, so a
+# profile can carry its own repair_timer.
+RSpec.describe 'CrossingRepair settings files named on the command line' do
+  around do |example|
+    saved = $HOMETOWN_REGEX
+    $HOMETOWN_REGEX = /^(crossing|riverhaven|shard)$/i
+    example.run
+  ensure
+    $HOMETOWN_REGEX = saved
+  end
+
+  before do
+    reset_data
+    $parse_args_model = true
+    allow(DRC).to receive(:message)
+    allow_any_instance_of(CrossingRepair).to receive(:repair_handler)
+    allow_any_instance_of(CrossingRepair).to receive(:start_script)
+    allow(EquipmentManager).to receive(:new).and_return(double('EquipmentManager', wear_equipment_set?: true, empty_hands: true))
+    $test_settings = OpenStruct.new(repair_timer: 43_200, sell_loot_money_on_hand: '3 silver', hometown: 'Crossing', instrument: 'zills')
+    $test_data = OpenStruct.new(town: { 'Crossing' => {} })
+    UserVars.repair_timer_snap = Time.now - (4 * 3600)
+  end
+
+  it 'reads the settings files named after the town' do
+    $script_vars = ArgParserModel.script_vars('Crossing task')
+
+    expect { CrossingRepair.new }.to raise_error(SystemExit)
+
+    expect($settings_called_with).to eq(['task'])
+  end
+
+  it 'still takes the town, force and debug words as arguments, not as settings files' do
+    $script_vars = ArgParserModel.script_vars('Crossing force debug task')
+
+    CrossingRepair.new
+
+    expect($settings_called_with).to eq(['task'])
+  end
+
+  it 'reads only the setup file when no settings file is named' do
+    $script_vars = ArgParserModel.script_vars('Crossing')
+
+    expect { CrossingRepair.new }.to raise_error(SystemExit)
+
+    expect($settings_called_with).to eq([])
+  end
+
+  it "skips the repair while the named file's repair_timer has not run out" do
+    $script_vars = ArgParserModel.script_vars('Crossing task')
+    expect_any_instance_of(CrossingRepair).not_to receive(:repair_handler)
+
+    expect { CrossingRepair.new }.to raise_error(SystemExit)
+  end
+
+  it "repairs once the named file's shorter repair_timer has run out" do
+    $test_settings.repair_timer = 10_800
+    $script_vars = ArgParserModel.script_vars('Crossing task')
+
+    repair = CrossingRepair.new
+
+    expect(repair).to have_received(:repair_handler)
+  end
+end
