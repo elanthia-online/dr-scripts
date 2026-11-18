@@ -6,7 +6,7 @@
   task_get_tools_on_completion: true/false # If you want taskmaster to pickup any remaining tools in the repair shop. Useful if you're using clerk-tools after each task
   task_use_boost: true/false # use boost to eliminate task cooldowns, useful if you have a few and you're doing a lot of tasks
   task_cooldown_poll: 15 # seconds between asks while the taskmaster makes you wait (minimum 3)
-  task_boosts: [task, haste] # boosts to use. task: BOOST TASK when a task is on cooldown (same as task_use_boost). haste: keep BOOST HASTE (1 hour, roundtimes -1 second) running between tasks. Once the game says you have no credits for one, it is not asked for again until your next login
+  task_boosts: [task, haste] # boosts to use. task: BOOST TASK when a task is on cooldown (same as task_use_boost). haste: keep BOOST HASTE (1 hour, roundtimes -1 second) running between tasks. Once the game says you have no credits for one, it is not asked for again until your next login (boost credits are counted at login; to ask again sooner, ;e $taskmaster_boost_unavailable = nil)
   task_keep_list: list of items to keep. See default in base.yaml
   task_junk_list: list of items to throw away; everything else is kept. String entries match whole words only ('steel' does not match silversteel); regexps match as written. When set (non-empty) it replaces task_keep_list, so a prize nobody has listed yet is kept rather than binned
   task_slack_keepers: true/false # send a Slack message (slack_username) for each keeper
@@ -37,7 +37,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.18.11'
+  VERSION = '2026.11.19.3'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -703,20 +703,35 @@ class TaskMaster
   # it restarts the hour and spends a credit is unknown; the stored expiry
   # keeps that to at most one credit when the expiry is lost.
   HASTE_RECHECK_SECONDS = 600
+  # The four boost replies below start their line ("You've activated the
+  # Minor Haste boost for an hour!", Aerithius 2026-11-04 18:00:05; "You've
+  # activated the Task Master boost for 2 hours!", 18:07:30; the two
+  # no-credit lines, Holdigor 2026-11-18 15:26:44 and 15:26:47), so they are
+  # anchored: someone in the room saying the same words ("Kvofe says, ...")
+  # cannot pass for the game's answer and stop the boost for the login. The
+  # catch-alls (HASTE_OTHER, TASK_BOOST_OTHER) take a line naming the boost
+  # only with no quote before the name: speech, whispers and thoughts quote
+  # what is said, and none of the game's boost replies has a quote in it.
+  #
   # BOOST HASTE reply when a credit was spent.
-  HASTE_ACTIVATED = /You've activated the Minor Haste boost/
+  HASTE_ACTIVATED = /^You've activated the Minor Haste boost/
   # BOOST HASTE reply with no credits left: "You don't have enough credits
   # for the Minor Haste boost.  You currently have 0 available but need 1."
   # (Holdigor 2026-11-18 15:26:44).
-  HASTE_NO_CREDITS = /You don't have enough credits for the Minor Haste boost/
+  HASTE_NO_CREDITS = /^You don't have enough credits for the Minor Haste boost/
   # BOOST TASK reply when a credit was spent (task-forage.lic reads the same
   # line).
-  TASK_BOOST_ACTIVATED = /You've activated the Task Master boost/
+  TASK_BOOST_ACTIVATED = /^You've activated the Task Master boost/
   # BOOST TASK reply with no credits left: "You don't have enough credits for
   # the Task Master boost.  You currently have 0 available but need 1."
   # (Holdigor 2026-11-18 15:26:47; every one of the 40 Nezhiri cycles
   # sampled on 2026-11-18 got it).
-  TASK_BOOST_NO_CREDITS = /You don't have enough credits for the Task Master boost/
+  TASK_BOOST_NO_CREDITS = /^You don't have enough credits for the Task Master boost/
+  # Any other BOOST HASTE reply that names the boost: haste is asked for
+  # again after HASTE_RECHECK_SECONDS.
+  HASTE_OTHER = /^[^"]*Minor Haste/
+  # Any other BOOST TASK reply that names the boost: taken to have worked.
+  TASK_BOOST_OTHER = /^[^"]*Task Master boost/
 
   # Reads task_boosts (and the older task_use_boost, which means the task
   # boost) into @boosts, and arms the one task boost per run in @boost,
@@ -733,7 +748,8 @@ class TaskMaster
   # (note_boost_spent). Boost credits are counted at login and only change
   # at the next one, and each login starts a new Lich process, so the
   # answer is kept in a process global, $taskmaster_boost_unavailable: it
-  # outlives the runs t2 starts for each task and ends with the login.
+  # outlives the runs t2 starts for each task and ends with the login. To
+  # ask again without a relog: ;e $taskmaster_boost_unavailable = nil.
   #
   # @param boost [String] 'task' or 'haste'
   # @return [Boolean]
@@ -759,7 +775,7 @@ class TaskMaster
   #   taken to have worked)
   def boost_task
     @boost = false
-    return true unless DRC.bput('boost task', TASK_BOOST_ACTIVATED, TASK_BOOST_NO_CREDITS, /Task Master boost/).match?(TASK_BOOST_NO_CREDITS)
+    return true unless DRC.bput('boost task', TASK_BOOST_ACTIVATED, TASK_BOOST_NO_CREDITS, TASK_BOOST_OTHER).match?(TASK_BOOST_NO_CREDITS)
 
     note_boost_spent('task')
     false
@@ -778,7 +794,7 @@ class TaskMaster
     return if boost_spent?('haste')
     return if Time.now.to_i < UserVars.taskmaster_haste_expires.to_i
 
-    case DRC.bput('boost haste', HASTE_ACTIVATED, HASTE_NO_CREDITS, /Minor Haste/)
+    case DRC.bput('boost haste', HASTE_ACTIVATED, HASTE_NO_CREDITS, HASTE_OTHER)
     when HASTE_ACTIVATED
       UserVars.taskmaster_haste_expires = Time.now.to_i + HASTE_SECONDS
     when HASTE_NO_CREDITS
@@ -3137,7 +3153,9 @@ class TaskMaster
   # holds every word of the remedy's name may be the remedy itself, so it is
   # named apart: not counted, so the run may craft more than is owed, and
   # nothing is got or combined for it. The same items for the same
-  # remedy are not named again (the hand-in reads the bag a second time).
+  # remedy are not named again (the hand-in reads the bag a second time),
+  # each remedy kept apart: with repeat, a deep-sea draught task after a
+  # landsickness potion one does not name the draught's items again.
   #
   # @param recipe [Hash] the task's recipe; reads :noun and :product
   # @param others [Array<String>] INVENTORY lines of the noun, not the remedy
@@ -3149,12 +3167,13 @@ class TaskMaster
   def note_other_remedies(recipe, others, unread, uncounted)
     return if others.empty? && unread.empty? && uncounted.empty?
 
-    noted = [recipe[:product], others, unread, uncounted]
-    return if @remedy_others_noted == noted
-
-    @remedy_others_noted = noted
-    noun = recipe[:noun]
     product = recipe[:product]
+    noted = [others, unread, uncounted]
+    @remedy_others_noted ||= {}
+    return if @remedy_others_noted[product] == noted
+
+    @remedy_others_noted[product] = noted
+    noun = recipe[:noun]
     quoted = ->(lines) { lines.map { |line| "\"#{line}\"" }.join(', ') }
     text = []
     text << "#{others.size} #{noun}#{others.size == 1 ? '' : 's'} that #{others.size == 1 ? 'is' : 'are'} not #{product} (#{quoted.call(others)})" unless others.empty?
@@ -3418,15 +3437,19 @@ class TaskMaster
     wanted.each { |supply| supply[:price] = @stockdata.dig(supply[:stock], 'stock-value').to_i }
   end
 
-  # Whether remedy will find the plain water or alcohol it looks for on a
-  # carry-on run (remedy_continue_args; remedy.lic Supplies#buy_missing,
-  # which a stocked craft skips): always, when a water_container or
-  # alcohol_container names a vessel, which remedy fills instead. Otherwise
-  # what the wait before the task found (surveyed); with no such answer
-  # (no wait, a finish, a later round), a line of its kind in the crafting
-  # bag's INVENTORY (sort_listed: "some water", "some grain alcohol"), or
-  # else TAP, which also finds one in another container. An unsure line
-  # ("some water lily") is not taken: it is tapped.
+  # Whether taskmaster can leave buying plain water or alcohol to remedy
+  # on a carry-on run (remedy_continue_args; remedy.lic
+  # Supplies#buy_missing, which a stocked craft skips). Always, when a
+  # water_container or alcohol_container names a vessel: remedy counts the
+  # liquid in it and refills it (Liquid.find); should both counts find
+  # none, remedy falls back to the plain liquid, and on a carry-on run buys
+  # it when none is on hand, at its own shop town, so this does not promise
+  # no shopping trip. Otherwise what the wait before the task found
+  # (surveyed); with no such answer (no wait, a finish, a later round), a
+  # line of its kind in the crafting bag's INVENTORY (sort_listed: "some
+  # water", "some grain alcohol"), or else TAP, which also finds one in
+  # another container. An unsure line ("some water lily") is not taken: it
+  # is tapped.
   #
   # @param liquid [String] 'water' or 'alcohol'
   # @param container [String, nil] the water_container or alcohol_container
