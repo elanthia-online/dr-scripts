@@ -37,7 +37,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.18.7'
+  VERSION = '2026.11.19.1'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -3024,7 +3024,9 @@ class TaskMaster
   # holds every word of the remedy's name may be the remedy itself, so it is
   # named apart: not counted, so the run may craft more than is owed, and
   # nothing is got or combined for it. The same items for the same
-  # remedy are not named again (the hand-in reads the bag a second time).
+  # remedy are not named again (the hand-in reads the bag a second time),
+  # each remedy kept apart: with repeat, a deep-sea draught task after a
+  # landsickness potion one does not name the draught's items again.
   #
   # @param recipe [Hash] the task's recipe; reads :noun and :product
   # @param others [Array<String>] INVENTORY lines of the noun, not the remedy
@@ -3036,12 +3038,13 @@ class TaskMaster
   def note_other_remedies(recipe, others, unread, uncounted)
     return if others.empty? && unread.empty? && uncounted.empty?
 
-    noted = [recipe[:product], others, unread, uncounted]
-    return if @remedy_others_noted == noted
-
-    @remedy_others_noted = noted
-    noun = recipe[:noun]
     product = recipe[:product]
+    noted = [others, unread, uncounted]
+    @remedy_others_noted ||= {}
+    return if @remedy_others_noted[product] == noted
+
+    @remedy_others_noted[product] = noted
+    noun = recipe[:noun]
     quoted = ->(lines) { lines.map { |line| "\"#{line}\"" }.join(', ') }
     text = []
     text << "#{others.size} #{noun}#{others.size == 1 ? '' : 's'} that #{others.size == 1 ? 'is' : 'are'} not #{product} (#{quoted.call(others)})" unless others.empty?
