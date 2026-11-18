@@ -1229,7 +1229,7 @@ class Remedy
     # every craft after the first sent a `get #<id>` that the game answered
     # "What were you referring to?" before the get by name
     # (deep-sea-draught-01-Mithandres: `put #57039206 in my bowl` at
-    # 13:16:05, `get #57039206` refused at 13:17:36; 67 of the 70 draught,
+    # 13:16:05, then `get #57039206` sent at 13:17:36 and refused; 67 of the 70 draught,
     # glop and landsickness crafts of the 2026-11-18 Nezhiri sessions).
     #
     # Nothing is forgotten while a hand still shows the id (a put that took
@@ -1911,12 +1911,13 @@ class Remedy
     end
   end
 
-  # Gathers herb1 into the lowered vessel: gets stacks and combines them
-  # until the counts reach the target, puts the stack in, puts away what is
-  # left and picks the vessel up again. The target is the herb quantity the
+  # Gathers herb1 into the lowered vessel: gets stacks, combining them only
+  # while the counts fall short of the target, puts the stack in, puts away
+  # whatever is left and picks the vessel up again. The target is the herb quantity the
   # book form was given ({Order#herb_quantity}), else {HANDFUL}.
   #
-  # A gathering sends the commands remedy has always sent for it:
+  # Apart from the three commands listed below that could do nothing, a
+  # gathering sends the commands remedy has always sent for it:
   # every count read after a get from herb_container or
   # the crafting container is added to the count so far, and after a
   # combine too large ("That stack of herbs is too large to add more to.",
