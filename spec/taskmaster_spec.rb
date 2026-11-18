@@ -8902,10 +8902,87 @@ RSpec.describe TaskMaster do
           expect(DRC).to have_received(:message).with(/also holds 1 potion that is not landsickness potion \("a healing potion"\)/).once
         end
 
-        # The game takes an adjective and noun for that item only; should a
-        # get by the whole name still bring another item of the noun, it
-        # goes back by id and the run stops before it is combined with the
-        # stack already held.
+        # The crafting bag in order, front first, as the game keeps it: each
+        # word of a name finds the start of a word ("scale" finds "scaled",
+        # seen in game 2026-11-19), an ordinal picks among the items found,
+        # and an item put back goes in front (read_carried_instructions).
+        # Gets by id, and puts into anything else, go to the ReplayCommons
+        # model.
+        def ordered_bag(commons, items)
+          bag = items.map(&:dup)
+          finds = lambda do |name, requested|
+            words = name.downcase.split
+            asked = requested.downcase.split
+            asked.all? { |word| words.any? { |own| own.start_with?(word) } } && words.last.start_with?(asked.last)
+          end
+          allow(DRCI).to receive(:get_item?) do |item, container|
+            next commons.get_item?(item, container) if item.start_with?('#')
+
+            commons.calls << ['DRCI.get_item?', item, container]
+            ordinal, rest = item.split(' ', 2)
+            place = $ORDINALS.index(ordinal)
+            found = bag.select { |name, _| finds.call(name, place ? rest : item) }[place || 0]
+            next false unless found
+
+            bag.delete(found)
+            commons.inventory.reject! { |entry| entry.id == found[1] }
+            commons.hold(found[0], id: found[1])
+            true
+          end
+          allow(DRCI).to receive(:put_away_item?) do |item, container|
+            held = [GameObj.right_hand, GameObj.left_hand].find { |obj| obj&.id && "##{obj.id}" == item }
+            bag.unshift([held.name, held.id]) if held && container == 'duffel bag'
+            commons.put_away_item?(item, container)
+          end
+          bag
+        end
+
+        # @return [Array<String>] the items DRCI.get_item? was asked for by name
+        def gets_by_name(commons)
+          commons.calls.select { |name, item, *| name == 'DRCI.get_item?' && !item.start_with?('#') }.map { |call| call[1] }
+        end
+
+        it 'puts back a "scaled" moisturizer the whole name brings and gets the stack as the second' do
+          tm = maker(task_product: 'scale moisturizer')
+          _, commons = shop_world(kit + [['scaled moisturizer', 'duffel bag', '7200'], ['scale moisturizer', 'duffel bag', '7101']])
+          bag = ordered_bag(commons, [['scaled moisturizer', '7200'], ['scale moisturizer', '7101']])
+
+          expect(tm.send(:get_remedy_stack, moisturizer_recipe, nil)).to eq('7101')
+
+          expect(gets_by_name(commons)).to eq(['scale moisturizer', 'second scale moisturizer'])
+          expect(commons.calls).to include(['DRCI.put_away_item?', '#7200', 'duffel bag'])
+          expect(bag).to eq([['scaled moisturizer', '7200']])
+          expect(DRC).not_to have_received(:message).with(/Stopping/)
+        end
+
+        it 'goes on to the third when two other items the whole name finds are ahead, each put back in front' do
+          tm = maker(task_product: 'scale moisturizer')
+          _, commons = shop_world(kit + [['scaled moisturizer', 'duffel bag', '7200'], ['scaled moisturizer', 'duffel bag', '7201'], ['scale moisturizer', 'duffel bag', '7101']])
+          bag = ordered_bag(commons, [['scaled moisturizer', '7200'], ['scaled moisturizer', '7201'], ['scale moisturizer', '7101']])
+
+          expect(tm.send(:get_remedy_stack, moisturizer_recipe, nil)).to eq('7101')
+
+          expect(gets_by_name(commons)).to eq(['scale moisturizer', 'second scale moisturizer', 'third scale moisturizer'])
+          expect(bag).to eq([['scaled moisturizer', '7201'], ['scaled moisturizer', '7200']])
+        end
+
+        it 'stops, with what came put back, once a get brings nothing and none was the remedy' do
+          tm = maker(task_product: 'scale moisturizer')
+          _, commons = shop_world(kit + [['scaled moisturizer', 'duffel bag', '7200']])
+          bag = ordered_bag(commons, [['scaled moisturizer', '7200']])
+
+          expect { tm.send(:get_remedy_stack, moisturizer_recipe, nil) }.to raise_error(SystemExit)
+
+          expect(gets_by_name(commons)).to eq(['scale moisturizer', 'second scale moisturizer'])
+          expect(bag).to eq([['scaled moisturizer', '7200']])
+          expect(DRC).to have_received(:message)
+            .with('Could not get the scale moisturizer out of your duffel bag: the gets brought only scaled moisturizer (#7200), put back there. Stopping.')
+        end
+
+        # A get by the whole name that brings another item of the noun puts
+        # it back by id and asks for the second; here (an ordinal the model
+        # does not place) that brings nothing, and the run stops before
+        # anything is combined with the stack already held.
         it 'stops, putting it back by id and combining nothing, when the get by the whole name brings another item of the noun' do
           tm = maker(task_product: 'deep-sea draught')
           game, commons = shop_world(kit + [['ojhenik draught', 'duffel bag', '7200'], ['deep-sea draught', 'duffel bag', '7101']])
@@ -8928,7 +9005,7 @@ RSpec.describe TaskMaster do
           expect(commons.calls).to include(['DRCI.put_away_item?', '#7200', 'duffel bag'])
           expect([commons.location_of('#7200'), commons.location_of('#7101'), commons.location_of('#7102')]).to eq(['duffel bag', 'duffel bag', 'duffel bag'])
           expect(DRC).to have_received(:message)
-            .with('Could not get the deep-sea draught out of your duffel bag: the get brought ojhenik draught (#7200) instead. Stopping.')
+            .with('Could not get the deep-sea draught out of your duffel bag: the gets brought only ojhenik draught (#7200), put back there. Stopping.')
         end
 
         # Each of Nezhiri's remedies, from a bag whose name has an
