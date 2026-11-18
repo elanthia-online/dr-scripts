@@ -9525,7 +9525,8 @@ RSpec.describe TaskMaster do
 
           tm.survey_remedy_supplies
 
-          expect(tm.instance_variable_get(:@stock_survey).keys).to eq(%i[brine_parts coal_rubs herb_parts missing_tools copper])
+          # The coal TAP goes unanswered here, so the count is marked not whole.
+          expect(tm.instance_variable_get(:@stock_survey).keys).to eq(%i[brine_parts coal_rubs herb_parts missing_tools coal_whole copper])
           expect(DRCI).not_to have_received(:exists?).with('water')
           expect(DRCI).not_to have_received(:exists?).with('alcohol')
           expect(tm.missing_remedy_supplies(1).map { |supply| supply[:name] }).to eq(['coal nugget'])
@@ -10374,14 +10375,21 @@ RSpec.describe TaskMaster do
             expect(tm.instance_variable_get(:@stock_survey)[:missing_tools]).to eq(['sieve'])
           end
 
-          # A TAP with no answer may have left nuggets uncounted: the count is
-          # not kept, so the task counts again rather than buy on it.
-          it 'keeps no coal count when a TAP goes unanswered' do
+          # A TAP with no answer may have left nuggets uncounted: the rubs the
+          # TAPs before it confirmed are kept, marked not whole.
+          it 'keeps the rubs a TAP confirmed, marked not whole, when a later TAP goes unanswered' do
             tm = maker
-            steps = surveying(tm, taps: { 'tap my first coal nugget' => '' })
+            steps = surveying(tm, taps: { 'tap my first coal nugget' => coal_tap('medium'), 'tap my second coal nugget' => '' })
 
-            expect(steps.grep(/coal/)).to eq(['tap my first coal nugget'])
-            expect(tm.instance_variable_get(:@stock_survey)).to include(coal_rubs: nil)
+            expect(steps.grep(/coal/)).to eq(['tap my first coal nugget', 'tap my second coal nugget'])
+            expect(tm.instance_variable_get(:@stock_survey)).to include(coal_rubs: 3, coal_whole: false)
+          end
+
+          it 'marks nothing when every TAP was answered' do
+            tm = maker
+            surveying(tm, taps: { 'tap my first coal nugget' => coal_tap('medium') })
+
+            expect(tm.instance_variable_get(:@stock_survey)).not_to have_key(:coal_whole)
           end
 
           it 'taps every tool and the coal when INVENTORY goes unanswered' do
@@ -10445,6 +10453,36 @@ RSpec.describe TaskMaster do
             coal = ->(survey) { maker(stock_survey: survey.merge(water: true, alcohol: true)).missing_remedy_supplies(3, listed).map { |supply| supply[:name] } }
 
             expect([coal.call({ coal_rubs: 0 }), coal.call({ coal_rubs: nil }), coal.call({}), sent]).to eq([[], [], [], []])
+          end
+
+          # OSXLich-Doug's sequence on #8122: a medium nugget kept outside the
+          # crafting bag, its TAP in the wait answered, the next one not, and
+          # every TAP after the accept unanswered too.
+          it 'buys no coal when the wait confirmed enough rubs, though its count was cut short and every TAP after goes unanswered' do
+            tm = maker
+            surveying(tm, listing: gnarta_bag.reject { |line| line.include?('coal') }, taps: { 'tap my first coal nugget' => coal_tap('medium'), 'tap my second coal nugget' => '' })
+            sent = []
+            game('tap my' => ->(command, *) { sent << command && '' })
+            tm.instance_variable_get(:@stock_survey).merge!(water: true, alcohol: true)
+
+            expect(tm.missing_remedy_supplies(3).map { |supply| supply[:name] }).to eq([])
+            expect(sent).to eq([])
+          end
+
+          it 'counts again when a cut-short count falls short, keeps the larger when that goes unanswered too, and goes by a whole recount' do
+            replies = {}
+            sent = []
+            game('tap my' => ->(command, *) { sent << command && replies.fetch(command, '') })
+            coal = ->(rubs, crafts) { maker(stock_survey: { coal_rubs: rubs, coal_whole: false, water: true, alcohol: true }).missing_remedy_supplies(crafts).map { |supply| supply[:name] } }
+
+            # Unanswered again: the wait's 3 confirmed rubs stand, short of 4.
+            expect([coal.call(3, 4), coal.call(3, 3)]).to eq([['coal nugget'], []])
+            # A whole recount answers, more or fewer than the wait's.
+            replies['tap my first coal nugget'] = coal_tap('large')
+            expect(coal.call(3, 4)).to eq([])
+            replies['tap my first coal nugget'] = 'I could not find what you were referring to.'
+            expect(coal.call(2, 3)).to eq(['coal nugget'])
+            expect(sent.count('tap my first coal nugget')).to eq(3)
           end
 
           it 'counts the coal afresh when the wait kept no count, and buys on what that finds' do

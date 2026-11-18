@@ -37,7 +37,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.19.4'
+  VERSION = '2026.11.19.5'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -3323,7 +3323,7 @@ class TaskMaster
   # alcohol (unless a water_container or alcohol_container is set) and,
   # last, the copper on hand. One INVENTORY of the crafting bag answers the
   # tools and the coal it lists (missing_tools, coal_count). A coal count a
-  # TAP left unanswered is kept as nil, so the task counts again.
+  # TAP left unanswered is kept with :coal_whole false (remedy_coal_rubs).
   #
   # @return [void]
   def survey_remedy_supplies
@@ -3332,12 +3332,13 @@ class TaskMaster
     rubs, whole = coal_count(NEZHIRI_SURVEY_RUBS, listed)
     survey = {
       brine_parts: brine_parts,
-      coal_rubs: whole ? rubs : nil,
+      coal_rubs: rubs,
       herb_parts: NEZHIRI_ITEMS.values.map { |recipe| recipe[:stock] }.uniq.to_h { |stock| [stock, DRCI.count_item_parts(stock)] },
       missing_tools: missing_tools(@settings.alchemy_tools, listed)
     }
     survey[:water] = DRCI.exists?('water') if @settings.water_container.nil?
     survey[:alcohol] = DRCI.exists?('alcohol') if @settings.alcohol_container.nil?
+    survey[:coal_whole] = false unless whole
     survey[:copper] = DRCM.wealth(NEZHIRI_SUPPLY_TOWN)
     @stock_survey = survey
   end
@@ -3479,10 +3480,13 @@ class TaskMaster
   # Rubs left in the coal nuggets for a round's crafts. The nuggets the
   # crafting bag's INVENTORY lists (listed) answer first when they cover the
   # crafts: that listing is newer than the wait's count. Otherwise the wait
-  # before the task counted them up to NEZHIRI_SURVEY_RUBS (surveyed), which
-  # answers when the count stopped short of that (every nugget was tapped)
-  # or covers the crafts; a count a TAP left unanswered was not kept (nil,
-  # survey_remedy_supplies). Otherwise they are counted now (coal_rubs).
+  # before the task counted them up to NEZHIRI_SURVEY_RUBS (surveyed). Its
+  # rubs were each confirmed by a TAP, so they answer when they cover the
+  # crafts, whole count or not; a whole count that stopped short of
+  # NEZHIRI_SURVEY_RUBS (every nugget was tapped) answers too. A count a TAP
+  # left unanswered (:coal_whole false, survey_remedy_supplies) is counted
+  # again (coal_count), and should that count go unanswered as well, the
+  # larger of the two is kept: each holds only rubs a TAP confirmed.
   #
   # @param crafts [Integer] crafts to make
   # @param listed [Array<String>, nil] the crafting bag's INVENTORY lines,
@@ -3490,11 +3494,13 @@ class TaskMaster
   # @return [Integer]
   def remedy_coal_rubs(crafts, listed)
     rubs = surveyed(:coal_rubs) { nil }
+    whole = surveyed(:coal_whole) { true }
     on_list = listed_coal_rubs(listed)
     return on_list if on_list.positive? && on_list >= crafts
-    return rubs if rubs && (rubs >= crafts || rubs < NEZHIRI_SURVEY_RUBS)
+    return rubs if rubs && (rubs >= crafts || (whole && rubs < NEZHIRI_SURVEY_RUBS))
 
-    coal_rubs(crafts, listed)
+    count, counted_whole = coal_count(crafts, listed)
+    counted_whole || rubs.nil? ? count : [count, rubs].max
   end
 
   # Rubs left in the coal nuggets the crafting bag's INVENTORY lists, from
