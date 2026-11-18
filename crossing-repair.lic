@@ -15,9 +15,19 @@ class CrossingRepair
     # Any other argument names a settings file, as in combat-trainer: `crossing-repair Crossing task`
     # also reads <Character>-task.yaml, last, so its repair_timer (or any other setting) wins over
     # <Character>-setup.yaml. One script call can then repair on a different timer per profile.
-    # A word that is neither a town nor a profile is ignored, as get_settings skips missing files.
     args = parse_args(arg_definitions, true)
     $debug_mode_crossing_repair = args.debug || UserVars.crossing_repair_debug
+
+    # get_settings skips missing files, so a mistyped town (`crossing-repair Crosing`) would
+    # otherwise be read as a settings file, ignored, and the character walked to the default
+    # town. Stop instead, for the same reason as the unrecognized-town check below.
+    unknown = args.flex.reject { |word| settings_file_exists?(word) }
+    unless unknown.empty?
+      DRC.message("Not a town or a settings file: #{unknown.join(', ')}")
+      DRC.message("To avoid ambiguity, please use the town's full name: https://elanthipedia.play.net/Category:Cities")
+      exit
+    end
+
     settings = get_settings(args.flex)
     town = DRC.get_town_name(args.town || settings.force_repair_town || settings.fang_cove_override_town)
 
@@ -282,6 +292,15 @@ class CrossingRepair
   # and any heuristics to check for gear damage.
   def should_repair?
     return should_repair_by_time? || should_repair_by_heuristic?
+  end
+
+  # Whether <Character>-<word>.yaml exists where get_settings looks for profiles: scripts/profiles,
+  # or the game-instance directory (DATA_DIR/<game>) that Lich uses when it has its own setup file.
+  def settings_file_exists?(word)
+    name = "#{checkname}-#{word}.yaml"
+    dirs = [File.join(SCRIPT_DIR, 'profiles')]
+    dirs << File.join(DATA_DIR, XMLData.game) if defined?(DATA_DIR) && XMLData.game
+    dirs.any? { |dir| File.exist?(File.join(dir, name)) }
   end
 
   # Returns true if enough time has elapsed since the last time
