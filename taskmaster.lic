@@ -37,7 +37,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.19.3'
+  VERSION = '2026.11.19.4'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -3322,14 +3322,17 @@ class TaskMaster
   # each of her remedies' herbs, the alchemy_tools missing, water and
   # alcohol (unless a water_container or alcohol_container is set) and,
   # last, the copper on hand. One INVENTORY of the crafting bag answers the
-  # tools and the coal it lists (missing_tools, coal_rubs).
+  # tools and the coal it lists (missing_tools, coal_count). A coal count a
+  # TAP left unanswered is kept as nil, so the task counts again.
   #
   # @return [void]
   def survey_remedy_supplies
     listed = container_listing(@bag)
+    brine_parts = DRCI.count_item_parts('brine')
+    rubs, whole = coal_count(NEZHIRI_SURVEY_RUBS, listed)
     survey = {
-      brine_parts: DRCI.count_item_parts('brine'),
-      coal_rubs: coal_rubs(NEZHIRI_SURVEY_RUBS, listed),
+      brine_parts: brine_parts,
+      coal_rubs: whole ? rubs : nil,
       herb_parts: NEZHIRI_ITEMS.values.map { |recipe| recipe[:stock] }.uniq.to_h { |stock| [stock, DRCI.count_item_parts(stock)] },
       missing_tools: missing_tools(@settings.alchemy_tools, listed)
     }
@@ -3473,10 +3476,13 @@ class TaskMaster
     surveyed(liquid.to_sym) { !sort_listed(listed, liquid)[:of_kind].empty? || DRCI.exists?(liquid) }
   end
 
-  # Rubs left in the coal nuggets for a round's crafts: the wait before the
-  # task counted them up to NEZHIRI_SURVEY_RUBS (surveyed), which answers
-  # when the count stopped short of that (every nugget was tapped) or covers
-  # the crafts; otherwise they are counted now (coal_rubs).
+  # Rubs left in the coal nuggets for a round's crafts. The nuggets the
+  # crafting bag's INVENTORY lists (listed) answer first when they cover the
+  # crafts: that listing is newer than the wait's count. Otherwise the wait
+  # before the task counted them up to NEZHIRI_SURVEY_RUBS (surveyed), which
+  # answers when the count stopped short of that (every nugget was tapped)
+  # or covers the crafts; a count a TAP left unanswered was not kept (nil,
+  # survey_remedy_supplies). Otherwise they are counted now (coal_rubs).
   #
   # @param crafts [Integer] crafts to make
   # @param listed [Array<String>, nil] the crafting bag's INVENTORY lines,
@@ -3484,9 +3490,20 @@ class TaskMaster
   # @return [Integer]
   def remedy_coal_rubs(crafts, listed)
     rubs = surveyed(:coal_rubs) { nil }
+    on_list = listed_coal_rubs(listed)
+    return on_list if on_list.positive? && on_list >= crafts
     return rubs if rubs && (rubs >= crafts || rubs < NEZHIRI_SURVEY_RUBS)
 
     coal_rubs(crafts, listed)
+  end
+
+  # Rubs left in the coal nuggets the crafting bag's INVENTORY lists, from
+  # their sizes ("a medium coal nugget", COAL_RUBS). Sends nothing.
+  #
+  # @param listed [Array<String>, nil] inventory_listing's lines, or nil
+  # @return [Integer] 0 with none listed
+  def listed_coal_rubs(listed)
+    sort_listed(listed, NEZHIRI_CATALYST)[:of_kind].sum { |line| COAL_RUBS.fetch(line[COAL_LISTED, 1], 1) }
   end
 
   # Rubs left in the coal nuggets carried, from their sizes (COAL_RUBS).
@@ -3501,18 +3518,33 @@ class TaskMaster
   #   crafting bag; nil to TAP
   # @return [Integer] rubs counted, 0 with no nugget
   def coal_rubs(crafts, listed = nil)
-    rubs = sort_listed(listed, NEZHIRI_CATALYST)[:of_kind].sum { |line| COAL_RUBS.fetch(line[COAL_LISTED, 1], 1) }
-    return rubs if rubs >= crafts && rubs.positive?
+    coal_count(crafts, listed).first
+  end
+
+  # coal_rubs, and whether the count is whole: false when a TAP went
+  # unanswered and ended it, so nuggets after it (or the one tapped) may
+  # not be counted.
+  #
+  # @param crafts [Integer] crafts to make
+  # @param listed [Array<String>, nil] inventory_listing's lines, or nil
+  # @return [Array(Integer, Boolean)] rubs counted, and whether every TAP
+  #   was answered
+  def coal_count(crafts, listed = nil)
+    rubs = listed_coal_rubs(listed)
+    return [rubs, true] if rubs >= crafts && rubs.positive?
 
     rubs = 0
     $ORDINALS.each do |ordinal|
-      size = DRC.bput("tap my #{ordinal} #{NEZHIRI_CATALYST}", *COAL_TAP_REPLIES)[COAL_TAPPED, 1]
+      reply = DRC.bput("tap my #{ordinal} #{NEZHIRI_CATALYST}", *COAL_TAP_REPLIES)
+      return [rubs, false] if reply.empty?
+
+      size = reply[COAL_TAPPED, 1]
       break unless size
 
       rubs += COAL_RUBS.fetch(size, 1)
       break if rubs >= crafts
     end
-    rubs
+    [rubs, true]
   end
 
   # Buys brines at the Andreshlew alchemists and puts each in the crafting
