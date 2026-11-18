@@ -8980,6 +8980,65 @@ RSpec.describe TaskMaster do
             .with("Your duffel bag also holds 1 item with no noun taskmaster can read (\"#{holster}\"). taskmaster gets the deep-sea draught by its id or its whole name, and leaves it there.")
         end
 
+        # An unread line holding every word of the remedy's name may be the
+        # remedy itself (no November 2026 line was: get_noun is made to read
+        # none off it). It is not counted, and the note says so rather than
+        # that the remedy is left behind; only the counted stack is got (one
+        # get by the whole name), counted and put back, and nothing combined.
+        it 'gets only the counted stack, and names as uncounted an item named as the remedy with no noun read off it' do
+          tm = maker(task_product: 'deep-sea draught')
+          game, commons = shop_world(kit + [['deep-sea draught', 'duffel bag', '7101'], ['fresh deep-sea draught', 'duffel bag', '7103']])
+          2.times { game.script('inventory duffel bag', *bag_listed('some deep-sea draught', 'some fresh deep-sea draught')) }
+          game.script('count #7101', ReplayGame.log('6100:10519')) # 4 doses
+          allow(DRC).to(receive(:get_noun).and_wrap_original { |real, name| name == 'some fresh deep-sea draught' ? nil : real.call(name) })
+
+          expect(tm.send(:remedy_stacks_in_bag, draught_recipe)).to eq(1)
+          expect(tm.remedy_doses_on_hand(draught_recipe)).to eq(4)
+
+          expect(game.sent).to eq(['inventory duffel bag'] * 2 + ['count #7101'])
+          expect(commons.calls.select { |name, *| name == 'DRCI.get_item?' }.map { |call| call.drop(1) }).to eq([['deep-sea draught', 'duffel bag']])
+          expect(commons.calls.map(&:first).grep(/combine/i)).to eq([])
+          expect([commons.location_of('#7101'), commons.location_of('#7103')]).to eq(['duffel bag', 'duffel bag'])
+          expect(DRC).to have_received(:message)
+            .with('Your duffel bag also holds 1 item named deep-sea draught with no noun taskmaster can read ("some fresh deep-sea draught"). ' \
+                  'taskmaster does not count it as deep-sea draught, so it may craft more than is owed.').once
+          expect(DRC).not_to have_received(:message).with(/leaves it there/)
+        end
+
+        # Its only stack unread: none is counted, so nothing is got, combined
+        # or counted, and the run crafts all the doses owed.
+        it 'counts no doses and gets nothing when the only stack of the remedy has no noun read off it' do
+          tm = maker(task_product: 'deep-sea draught')
+          game, commons = shop_world(kit + [['deep-sea draught', 'duffel bag', '7101']])
+          game.script('inventory duffel bag', *bag_listed('some deep-sea draught'))
+          allow(DRC).to(receive(:get_noun).and_wrap_original { |real, name| name == 'some deep-sea draught' ? nil : real.call(name) })
+
+          expect(tm.remedy_doses_on_hand(draught_recipe)).to eq(0)
+
+          expect(game.sent).to eq(['inventory duffel bag'])
+          expect(commons.calls.map(&:first)).not_to include('DRCI.get_item?')
+          expect(commons.location_of('#7101')).to eq('duffel bag')
+          expect(tm.instance_variable_get(:@remedy_stack)).to be_nil
+          expect(DRC).to have_received(:message)
+            .with('Your duffel bag also holds 1 item named deep-sea draught with no noun taskmaster can read ("some deep-sea draught"). ' \
+                  'taskmaster does not count it as deep-sea draught, so it may craft more than is owed.')
+        end
+
+        it 'names the uncounted items after the others, in one message, plural when more than one' do
+          tm = maker(task_product: 'deep-sea draught')
+          game, = shop_world(kit)
+          unread = ['some deep-sea draught', 'a vial of deep-sea draught']
+          game.script('inventory duffel bag', *bag_listed('an ojhenik draught', *unread))
+          allow(DRC).to(receive(:get_noun).and_wrap_original { |real, name| unread.include?(name) ? nil : real.call(name) })
+
+          expect(tm.send(:remedy_stacks_in_bag, draught_recipe)).to eq(0)
+
+          expect(DRC).to have_received(:message)
+            .with('Your duffel bag also holds 1 draught that is not deep-sea draught ("an ojhenik draught"). taskmaster gets the deep-sea draught by its id or its whole name, ' \
+                  'and leaves it there. It holds 2 items named deep-sea draught with no noun taskmaster can read ("some deep-sea draught", "a vial of deep-sea draught"). ' \
+                  'taskmaster does not count them as deep-sea draught, so it may craft more than is owed.').once
+        end
+
         it 'stops before buying anything when the instructions have fewer uses than crafts' do
           tm = maker(task_product: 'scale moisturizer')
           game, commons = shop_world(kit)
