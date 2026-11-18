@@ -1,7 +1,9 @@
 =begin
   Documentation: https://elanthipedia.play.net/Lich_script_repository#touch
 
-  Empath healing window -- a GTK take on the Genie "Crutch" plugin.
+  Empath healing window -- a Lich WebUI take on the Genie "Crutch" plugin.
+  It needs a Lich with the WebUI window host; started with --no-gui, Lich
+  has no windows to show, and touch says so and stops.
 
     ;touch            open the window
     ;touch <player>   open the window and TOUCH <player>
@@ -273,7 +275,7 @@ class TouchPatient
            .map(&:first)
   end
 
-  # An independent copy for the GTK thread to draw from.
+  # An independent copy for the window to draw from.
   def snapshot
     {
       wounds: @wounds.transform_values(&:dup),
@@ -483,9 +485,10 @@ class TouchCommands
   end
 end
 
-# The GTK window. Every method here runs on the GTK thread (via Gtk.queue);
-# requests go back to the script as intents on the queue passed in, and the
-# script answers with show_patient / update_patient.
+# The window, drawn by Lich's WebUI. Its callbacks run on a WebUI host
+# thread, where there is no script context: they only record what was asked
+# and push intents onto the queue passed in. The script's own thread does all
+# game I/O and answers with show_patient / update_patient / show_activity.
 class TouchWindow
   # Tabs and figures are drawn on Genie Crutch's own grids and scaled to fit:
   # a tab is at least 165x322, a body figure 63x134.
@@ -521,500 +524,81 @@ class TouchWindow
     scar_internal: [:right, 175, 'Scar Internal']
   }.freeze
 
-  # Wound level 0 (none) through 11+, green to red.
+  # Wound level 0 (none) through 11+, green to red, as 0-255 RGB.
   LEVEL_COLORS = [
     [0, 0, 0], [0, 94, 32], [46, 121, 26], [98, 151, 20], [152, 182, 13], [206, 213, 6],
     [255, 242, 0], [255, 204, 0], [255, 153, 0], [255, 102, 0], [255, 51, 0], [255, 0, 0]
-  ].map { |rgb| rgb.map { |channel| channel / 255.0 } }.freeze
-  HOVER_COLOR = [127 / 255.0, 1.0, 212 / 255.0].freeze
-  # A darker shade of the hover color, shown for a moment on click.
-  PRESSED_COLOR = [32 / 255.0, 178 / 255.0, 150 / 255.0].freeze
+  ].freeze
+  # Shown for a moment on whatever was clicked, so a click visibly registers.
+  PRESSED_COLOR = [32, 178, 150].freeze
+  ALERT_COLOR = [255, 0, 0].freeze
+  WHITE = [255, 255, 255].freeze
+  EDGE_COLOR = [128, 128, 128].freeze
   # Wound level => severity name, for tooltips (1 is plain "insignificant").
   SEVERITY_NAMES = TouchParser::SEVERITIES.each_with_object({}) { |(severity, level), names| names[level] ||= severity }.freeze
-  ALERT_COLOR = [1.0, 0.0, 0.0].freeze
 
   # More > Cast On Self, in menu order.
   SPELLS = %w[heal regen refresh bs foc vh fp cd].map { |abbrev| [TouchCommands::SPELL_NAMES[abbrev], abbrev] }.freeze
+  # Take menu check items, in order; nil is a separator.
+  TAKE_OPTIONS = [
+    ['Including Internal', :include_internal], ['Including Scars', :include_scars], nil,
+    ['Quick', :quick], ['Half On Major', :half_on_major], ['Leave Bleeders', :leave_bleeders]
+  ].freeze
+  # Take > Left-Click Takes.
+  CLICK_AMOUNTS = [%w[Part part], %w[Half half], %w[Most most], %w[All all]].freeze
+  WOUND_METHODS = [['Take Part', 'part'], ['Take Half', 'half'], ['Take Most', 'most'], ['Take All', 'all']].freeze
 
-  DEFAULT_WIDTH = 260
-  DEFAULT_HEIGHT = 440
+  PAGE_ID = 'touch'.freeze
+  DEFAULT_WIDTH = 420
+  DEFAULT_HEIGHT = 640
+  # The toolbar needs this much width; a smaller saved size (such as one the
+  # GTK window left behind) is raised to it.
+  MIN_WIDTH = 400
+  MIN_HEIGHT = 420
+  # Window space the toolbar, tab headers and status strip take from the figures.
+  CHROME_WIDTH = 20
+  CHROME_HEIGHT = 112
+  PANEL_PADDING = 16
+  # Composite pixels per grid unit, so half units stay exact; the composite's
+  # own scale does the zooming.
+  UNIT = 2
+  # The thickest ring the composite draws; a larger round part is filled with
+  # rings inside one another.
+  MAX_RING = 16
+  # How long a clicked target is drawn pressed, in milliseconds.
+  FLASH_MS = 150
   # The status strip when nothing is queued or being cast.
   READY = 'Ready'.freeze
 
-  # Window position, size, pin and the Take menu toggles, for the script to
-  # save on exit. Replaced (never mutated) so another thread can read it.
-  attr_reader :state
-
-  # Text drawing options: lightly hinted, which sharpens glyph edges without
-  # moving where they are centered (no hinted metrics), and grayscale
-  # antialiased, since subpixel color fringes make small labels on colored
-  # fills look shifted. Built on first use, not when the script loads: Cairo
-  # is only there when Lich has GTK, and without it the script must still
-  # reach its own "no GTK" message.
-  def self.text_options
-    @text_options ||= Cairo::FontOptions.new.tap do |options|
-      options.hint_style = Cairo::HINT_STYLE_SLIGHT
-      options.hint_metrics = Cairo::HINT_METRICS_OFF
-      options.antialias = Cairo::ANTIALIAS_GRAY
-    end
+  # Whether this Lich can show native WebUI windows. Without it (an older
+  # Lich, or one started with --no-gui) the script says so and stops.
+  def self.available?
+    defined?(Lich::WebUI) && Lich::WebUI.respond_to?(:presentation_enabled?) && Lich::WebUI.presentation_enabled? &&
+      defined?(Lich::API) && Lich::API.respond_to?(:webui_page) ? true : false
   end
 
-  def initialize(intents, state)
-    @intents = intents
-    @state = state
-    @options = state['options'].transform_keys(&:to_sym)
-    @views = {}
-    @destroyed = false
-    build_window
+  # A component key for a patient: names may hold an apostrophe, which keys
+  # cannot.
+  def self.key_for(name)
+    name.to_s.gsub(/[^A-Za-z0-9_.:-]/) { |char| format('_%02x', char.ord) }
   end
 
-  def show_patient(name, snapshot)
-    add_view(name) unless @views[name]
-    update_patient(name, snapshot)
-    @notebook.page = @notebook.page_num(@views[name][:area])
-  end
-
-  def update_patient(name, snapshot)
-    view = @views[name]
-    return unless view
-
-    view[:snapshot] = snapshot
-    view[:area].queue_draw
-  end
-
-  # Updates the status strip: a spinner and a Stop link while running; the
-  # text dimmed once done or stopped, where it stays as the last thing Touch
-  # did.
+  # Where everything sits on the tab grid for a drawing area of the given
+  # size in pixels. One scale for both axes keeps the figures in proportion;
+  # any width beyond the 165-unit grid widens the vitality bar and spreads
+  # the two figure columns out. At exactly 165 wide this is Genie Crutch's
+  # own layout.
   #
-  # @param detail [String] the exact command or cast, for the tooltip
-  # @param state [Symbol] :running, :done or :stopped
-  def show_activity(text, detail, state)
-    @activity = state
-    running = state == :running
-    @status.text = text
-    @status.tooltip_text = running ? "#{text}\nNow: #{detail}" : text
-    if running
-      @status.style_context.remove_class('secondary')
-      @spinner.start
-    else
-      @status.style_context.add_class('secondary')
-      @spinner.stop
-    end
-    @spinner.visible = running
-    @stop.visible = running
-  end
-
-  def present
-    @window.present unless @destroyed
-  end
-
-  def destroy
-    @window.destroy unless @destroyed
-  end
-
-  private
-
-  def build_window
-    @window = Gtk::Window.new('Touch')
-    @window.set_default_size(@state['width'] || DEFAULT_WIDTH, @state['height'] || DEFAULT_HEIGHT)
-    # A saved spot on a monitor that is gone (or from a minimized window) is
-    # skipped, leaving the window where the system places new windows.
-    @window.move(@state['x'], @state['y']) if on_screen?(@state['x'], @state['y'])
-    @window.keep_above = @state['pinned'] ? true : false
-    @window.signal_connect('configure-event') do
-      remember_geometry
-      false
-    end
-    @window.signal_connect('delete-event') do
-      @intents << [:quit]
-      false
-    end
-    @window.signal_connect('destroy') { @destroyed = true }
-
-    @notebook = Gtk::Notebook.new
-    @notebook.scrollable = true
-    # The title names the patient on the tab being shown.
-    @notebook.signal_connect('switch-page') do |_notebook, page, _index|
-      name = @views.find { |_name, view| view[:area] == page }&.first
-      @window.title = name ? "Touch - #{name}" : 'Touch'
-    end
-    # Shown, centered, while there are no tabs.
-    @hint = Gtk::Label.new
-    @hint.markup = "<span size='large' weight='bold'>No patients yet</span>\n\n" \
-                   "TOUCH someone, or ;touch &lt;name&gt;.\nPERCEIVE HEALTH SELF opens your own tab."
-    @hint.justify = :center
-    @hint.line_wrap = true
-    @hint.style_context.add_class('dim-label')
-
-    box = Gtk::Box.new(:vertical, 2)
-    box.pack_start(build_toolbar, expand: false, fill: false, padding: 0)
-    box.pack_start(@hint, expand: true, fill: true, padding: 12)
-    box.pack_start(@notebook, expand: true, fill: true, padding: 0)
-    box.pack_end(build_status_strip, expand: false, fill: false, padding: 0)
-    @window.add(box)
-    @window.show_all
-    @notebook.hide
-    @spinner.hide
-    @stop.hide
-  end
-
-  # A one-line strip under the tabs saying what Touch is doing, with a Stop
-  # link while something runs. Its height never changes (the text is cut
-  # short rather than wrapped), so the tabs above keep their size.
-  def build_status_strip
-    # Running text in the normal text color; finished, stopped and "Ready" a
-    # softer shade that still reads easily. The same in and out of focus:
-    # GTK would otherwise fade both further when the window loses focus.
-    small = Gtk::CssProvider.new
-    small.load(data: <<~CSS)
-      label, label:backdrop { font-size: 9pt; color: @theme_fg_color; }
-      label.secondary, label.secondary:backdrop { color: alpha(@theme_fg_color, 0.75); }
-      button { padding: 0 6px; min-height: 0; font-size: 9pt; }
-    CSS
-
-    @spinner = Gtk::Spinner.new
-    @status = Gtk::Label.new(READY)
-    @status.xalign = 0
-    @status.single_line_mode = true
-    @status.ellipsize = :end
-    @status.style_context.add_class('secondary')
-    @stop = Gtk::Button.new(label: 'Stop')
-    @stop.relief = :none
-    @stop.tooltip_text = 'Stop what is queued or being cast (keeps the link)'
-    @stop.signal_connect('clicked') { @intents << [:stop] }
-    [@status, @stop].each { |widget| widget.style_context.add_provider(small, Gtk::StyleProvider::PRIORITY_APPLICATION) }
-
-    row = Gtk::Box.new(:horizontal, 6)
-    row.margin_start = 6
-    row.margin_end = 4
-    row.height_request = 24
-    row.pack_start(@spinner, expand: false, fill: false, padding: 0)
-    row.pack_start(@status, expand: true, fill: true, padding: 0)
-    row.pack_end(@stop, expand: false, fill: false, padding: 0)
-
-    strip = Gtk::Box.new(:vertical, 0)
-    strip.pack_start(Gtk::Separator.new(:horizontal), expand: false, fill: false, padding: 0)
-    strip.pack_start(row, expand: false, fill: false, padding: 0)
-    strip
-  end
-
-  # A minimized window reports a position far off-screen (about -32000 on
-  # Windows), which would reopen it where it cannot be seen; only positions
-  # on a monitor are remembered.
-  def remember_geometry
-    x, y = @window.position
-    width, height = @window.size
-    return unless on_screen?(x, y)
-
-    @state = @state.merge('x' => x, 'y' => y, 'width' => width, 'height' => height)
-  end
-
-  # Whether the window's top-left corner (its title bar) is on a monitor that
-  # is connected now.
-  def on_screen?(x, y)
-    return false unless x.is_a?(Integer) && y.is_a?(Integer)
-
-    display = Gdk::Display.default
-    (0...display.n_monitors).any? do |index|
-      area = display.get_monitor(index).geometry
-      (x + 40).between?(area.x, area.x + area.width) && (y + 10).between?(area.y, area.y + area.height)
-    end
-  end
-
-  def build_toolbar
-    bar = Gtk::Box.new(:horizontal, 2)
-
-    touch = Gtk::Button.new(label: 'Touch')
-    touch.tooltip_text = 'Touch the patient on this tab again. To add a patient: TOUCH <name> or ;touch <name>.'
-    touch.signal_connect('clicked') { on_touch }
-
-    breaker = Gtk::Button.new(label: 'Break')
-    breaker.tooltip_text = "Stop: cancel what is queued or being cast, and break the link to this patient.\n" \
-                           'Right-click: stop and LINK ALL CANCEL'
-    breaker.signal_connect('clicked') { @intents << [:break, selected_patient] }
-    breaker.signal_connect('button-press-event') do |_widget, event|
-      next false unless event.button == 3
-
-      @intents << [:break_all]
-      true
-    end
-
-    take = menu_button('Take', build_take_menu)
-    take.tooltip_text = 'Take Minor / Take All, and what they include'
-
-    all = Gtk::Button.new(label: 'All')
-    all.tooltip_text = 'Take everything the Take menu options allow'
-    all.signal_connect('clicked') { send_for_selected(:take_all) }
-
-    more = menu_button('More', build_more_menu)
-    more.tooltip_text = 'Perceive yourself, cast on yourself, reset the size'
-
-    compact = Gtk::CssProvider.new
-    compact.load(data: 'button { padding: 2px 7px; }')
-    [touch, breaker, take, all, more, build_pin_button].each do |button|
-      button.style_context.add_provider(compact, Gtk::StyleProvider::PRIORITY_APPLICATION)
-      bar.pack_start(button, expand: false, fill: false, padding: 0)
-    end
-    bar
-  end
-
-  # A toolbar button that drops a menu down on the first click. Gtk::MenuButton
-  # can't be used: on Windows, while the game client has focus, its first click
-  # only toggles the button on, and a second click is needed for the menu.
-  # Opening the menu from the press itself, with that event, avoids it.
-  def menu_button(label, menu)
-    button = Gtk::Button.new(label: label)
-    button.signal_connect('button-press-event') do |_widget, event|
-      next false unless event.button == 1
-
-      menu.popup_at_widget(button, :south_west, :north_west, event)
-      true
-    end
-    # Enter or Space on a focused button.
-    button.signal_connect('clicked') { menu.popup_at_widget(button, :south_west, :north_west, Gtk.current_event) }
-    button
-  end
-
-  # Keeps the window above the game client, which would otherwise cover it.
-  def build_pin_button
-    pin = Gtk::ToggleButton.new(label: 'Pin')
-    pin.tooltip_text = 'Keep this window in front of every other window'
-    pin.active = @state['pinned'] ? true : false
-    pin.signal_connect('toggled') do
-      @window.keep_above = pin.active?
-      @state = @state.merge('pinned' => pin.active?)
-    end
-    pin
-  end
-
-  def build_take_menu
-    menu = Gtk::Menu.new
-    add_item(menu, 'Take Minor') { send_for_selected(:take_minor) }
-    add_item(menu, 'Take All') { send_for_selected(:take_all) }
-    menu.append(Gtk::SeparatorMenuItem.new)
-    add_option(menu, 'Including Internal', :include_internal)
-    add_option(menu, 'Including Scars', :include_scars)
-    menu.append(Gtk::SeparatorMenuItem.new)
-    add_option(menu, 'Quick', :quick)
-    add_option(menu, 'Half On Major', :half_on_major)
-    add_option(menu, 'Leave Bleeders', :leave_bleeders)
-    menu.append(Gtk::SeparatorMenuItem.new)
-    add_click_amounts(menu)
-    menu.show_all
-    menu
-  end
-
-  def build_more_menu
-    menu = Gtk::Menu.new
-    add_item(menu, 'Perceive Health Self') { @intents << [:touch, TouchParser::SELF] }
-    menu.append(Gtk::SeparatorMenuItem.new)
-
-    spells = Gtk::Menu.new
-    SPELLS.each { |label, abbrev| add_item(spells, label) { @intents << [:cast, nil, abbrev] } }
-    spells_item = Gtk::MenuItem.new(label: 'Cast On Self')
-    spells_item.submenu = spells
-    menu.append(spells_item)
-    menu.append(Gtk::SeparatorMenuItem.new)
-
-    add_item(menu, 'Reset Size') { @window.resize(DEFAULT_WIDTH, DEFAULT_HEIGHT) }
-    menu.show_all
-    menu
-  end
-
-  def add_item(menu, label, &block)
-    item = Gtk::MenuItem.new(label: label)
-    item.signal_connect('activate') { block.call }
-    menu.append(item)
-    item
-  end
-
-  # Take > Left-Click Takes: how much a left-click on a wound takes.
-  def add_click_amounts(menu)
-    amounts = Gtk::Menu.new
-    previous = nil
-    [%w[Part part], %w[Half half], %w[Most most], %w[All all]].each do |label, amount|
-      item = Gtk::RadioMenuItem.new(previous, label)
-      item.active = @options[:click_amount] == amount
-      item.signal_connect('toggled') do
-        next unless item.active?
-
-        @options[:click_amount] = amount
-        @state = @state.merge('options' => @options.transform_keys(&:to_s))
-      end
-      amounts.append(item)
-      previous = item
-    end
-    parent = Gtk::MenuItem.new(label: 'Left-Click Takes')
-    parent.submenu = amounts
-    menu.append(parent)
-  end
-
-  def add_option(menu, label, key)
-    item = Gtk::CheckMenuItem.new(label: label)
-    item.active = @options[key] ? true : false
-    item.signal_connect('toggled') do
-      @options[key] = item.active?
-      @state = @state.merge('options' => @options.transform_keys(&:to_s))
-    end
-    menu.append(item)
-  end
-
-  # Retouches the patient on the open tab. With no tab open it says how to add
-  # one, on the status strip, rather than asking who: the "who?" dialog it
-  # used to open left the window unresponsive in game. While a step is
-  # running the strip is left alone, so its spinner and Stop link stay.
-  def on_touch
-    patient = selected_patient
-    return @intents << [:touch, patient] if patient
-    return if @activity == :running
-
-    show_activity('TOUCH <name> or ;touch <name> adds a tab', nil, :done)
-  end
-
-  def selected_patient
-    return nil if @notebook.n_pages.zero?
-
-    area = @notebook.get_nth_page(@notebook.page)
-    @views.find { |_name, view| view[:area] == area }&.first
-  end
-
-  def send_for_selected(kind)
-    patient = selected_patient
-    @intents << [kind, patient, @options.dup] if patient
-  end
-
-  def add_view(name)
-    area = Gtk::DrawingArea.new
-    area.set_size_request(120, 230)
-    area.add_events(%i[button_press_mask pointer_motion_mask leave_notify_mask])
-    @views[name] = { area: area, snapshot: nil, hover: nil, pressed: nil }
-
-    area.signal_connect('draw') do |widget, cr|
-      draw_tab(name, widget, cr)
-      true
-    end
-    area.has_tooltip = true
-    area.signal_connect('query-tooltip') do |widget, x, y, _keyboard, tooltip|
-      layout = tab_layout(widget)
-      text = tooltip_for(name, hit_test(name, layout, x / layout[:scale], y / layout[:scale]))
-      next false unless text
-
-      tooltip.text = text
-      true
-    end
-    area.signal_connect('motion-notify-event') do |widget, event|
-      layout = tab_layout(widget)
-      set_hover(name, hit_test(name, layout, *to_tab_grid(layout, event)))
-      false
-    end
-    area.signal_connect('leave-notify-event') do
-      set_hover(name, nil)
-      false
-    end
-    area.signal_connect('button-press-event') do |widget, event|
-      on_tab_click(name, widget, event)
-      true
-    end
-
-    label = Gtk::EventBox.new
-    label.visible_window = false
-    label.add(Gtk::Label.new(name))
-    label.signal_connect('button-press-event') { |_widget, event| on_tab_label_click(name, event) }
-    label.show_all
-
-    @notebook.append_page(area, label)
-    area.show
-    @hint.hide
-    @notebook.show
-  end
-
-  def close_view(name)
-    view = @views.delete(name)
-    return unless view
-
-    @notebook.remove_page(@notebook.page_num(view[:area]))
-    @intents << [:closed, name]
-    return unless @views.empty?
-
-    @notebook.hide
-    @hint.show
-    @window.title = 'Touch'
-  end
-
-  # Highlights whatever is under the pointer and shows a hand cursor over
-  # anything clickable.
-  def set_hover(name, target)
-    view = @views[name]
-    return if view.nil? || view[:hover] == target
-
-    view[:hover] = target
-    @hand_cursor ||= Gdk::Cursor.new(:hand2)
-    view[:area].window&.cursor = target ? @hand_cursor : nil
-    view[:area].queue_draw
-  end
-
-  # Briefly draws the clicked target pressed, so a click visibly registers.
-  def flash(name, target)
-    view = @views[name]
-    return unless view
-
-    view[:pressed] = target
-    view[:area].queue_draw
-    GLib::Timeout.add(150) do
-      view[:pressed] = nil
-      view[:area].queue_draw if @views[name].equal?(view)
-      false
-    end
-  end
-
-  # Hover text: what the target is and what a click does.
-  # The click lines are built from the very actions a click queues, so they
-  # always match what is sent.
-  def tooltip_for(name, target)
-    return nil unless target
-
-    snapshot = @views.dig(name, :snapshot) || {}
-    case target.first
-    when :close then 'Close this tab'
-    when :vitality then click_hint(TouchCommands.take_condition(name, 'vitality', @options))
-    when :poison
-      state = snapshot[:poison].to_i.positive? ? "Poisoned (#{snapshot[:poison]})" : 'No poison perceived'
-      "#{state}\n#{click_hint(TouchCommands.take_condition(name, 'poison', @options))}"
-    when :disease
-      state = snapshot[:disease] ? 'Diseased' : 'No disease perceived'
-      "#{state}\n#{click_hint(TouchCommands.take_condition(name, 'disease', @options))}"
-    when :part then wound_tooltip(name, snapshot, target[1], target[2])
-    end
-  end
-
-  def wound_tooltip(name, snapshot, type, part)
-    level = snapshot.dig(:wounds, type, part)
-    heading = "#{type.to_s.split('_').map(&:capitalize).join(' ')} #{TouchCommands.part_name(part)}"
-    return "#{heading}: no wound" unless level
-
-    hint = click_hint(TouchCommands.click_wound(name, type, part, level, @options))
-    hint += "\nRight-click: take part, half or most" unless name == TouchParser::SELF
-    "#{heading}: #{SEVERITY_NAMES[level]} (#{level}/13)\n#{hint}"
-  end
-
-  def click_hint(actions)
-    "Click: #{actions.map { |action| TouchCommands.describe(action) }.join(', then ')}"
-  end
-
-  # Where everything sits on the tab grid at the widget's current size. One
-  # scale for both axes keeps the figures in proportion; any width beyond the
-  # 165-unit grid widens the vitality bar and spreads the two figure columns
-  # out, so it is used rather than left as empty margins. At exactly 165 wide
-  # this is Genie Crutch's own layout.
-  #
-  # @return [Hash] :scale (pixels per grid unit), the :vitality, :close,
-  #   :poison and :disease boxes, and :figures (type => [x, y, caption])
-  def tab_layout(widget)
-    scale = [widget.allocated_width / TAB_WIDTH, widget.allocated_height / TAB_HEIGHT].min
-    width = widget.allocated_width / scale
+  # @return [Hash] :scale (pixels per grid unit), :width (grid units), the
+  #   :vitality, :close, :poison and :disease boxes, and :figures
+  #   (type => [x, y, caption])
+  def self.tab_layout(width_px, height_px)
+    scale = [width_px / TAB_WIDTH, height_px / TAB_HEIGHT].min.clamp(0.5, 6.0)
+    width = [width_px / scale, TAB_WIDTH].max
     columns = { left: width / 4.0 - FIGURE_WIDTH / 2.0, right: width * 3 / 4.0 - FIGURE_WIDTH / 2.0 }
     {
       scale: scale,
+      width: width,
       vitality: [5, 5, width - 30, 17],
       close: [width - 21, 5, 17, 17],
       poison: [width / 2.0 - 8, 27, 16, 17],
@@ -1023,308 +607,741 @@ class TouchWindow
     }
   end
 
-  def to_tab_grid(layout, event)
-    [event.x / layout[:scale], event.y / layout[:scale]]
+  # @return [Array, nil] [:close], [:vitality], [:poison], [:disease] or
+  #   [:part, type, part] for a region key
+  def self.target_for(region)
+    kind, first, second = region.to_s.split('.')
+    if kind == 'b' && %w[close vitality poison disease].include?(first)
+      [first.to_sym]
+    elsif kind == 'w' && TouchParser::WOUND_TYPES.include?(first&.to_sym) && FIGURE_PARTS.key?(second&.to_sym)
+      [:part, first.to_sym, second.to_sym]
+    end
   end
 
-  def on_tab_click(name, widget, event)
-    return unless event.event_type == Gdk::EventType::BUTTON_PRESS
+  def self.region_key(target)
+    target.first == :part ? "w.#{target[1]}.#{target[2]}" : "b.#{target.first}"
+  end
 
-    layout = tab_layout(widget)
-    target = hit_test(name, layout, *to_tab_grid(layout, event))
-    return unless target
-
-    if event.button == 3
-      return unless target.first == :part && name != TouchParser::SELF
-
-      flash(name, target)
-      popup_wound_menu(name, target, event)
-      return
-    end
-    return unless event.button == 1
-
-    flash(name, target) unless target.first == :close
+  # Hover text: what the target is and what a click does. The click lines are
+  # built from the very actions a click queues, so they always match what is
+  # sent.
+  def self.tooltip_for(name, target, snapshot, options)
     case target.first
-    when :close then close_view(name)
-    when :part then @intents << [:take_wound, name, target[1], target[2], 'auto', @options.dup]
-    else @intents << [:take_condition, name, target.first.to_s, @options.dup]
+    when :close then 'Close this tab'
+    when :vitality then click_hint(TouchCommands.take_condition(name, 'vitality', options))
+    when :poison
+      state = snapshot[:poison].to_i.positive? ? "Poisoned (#{snapshot[:poison]})" : 'No poison perceived'
+      "#{state}\n#{click_hint(TouchCommands.take_condition(name, 'poison', options))}"
+    when :disease
+      state = snapshot[:disease] ? 'Diseased' : 'No disease perceived'
+      "#{state}\n#{click_hint(TouchCommands.take_condition(name, 'disease', options))}"
+    when :part then wound_tooltip(name, snapshot, target[1], target[2], options)
     end
   end
 
-  # Shows a right-click menu. It is kept in @popup while open: a menu held
-  # only by a local variable can be garbage collected out from under GTK.
-  def popup(menu, event)
-    @popup = menu
-    menu.show_all
-    menu.popup_at_pointer(event)
+  def self.wound_tooltip(name, snapshot, type, part, options)
+    level = snapshot.dig(:wounds, type, part)
+    heading = "#{type.to_s.split('_').map(&:capitalize).join(' ')} #{TouchCommands.part_name(part)}"
+    return "#{heading}: no wound" unless level
+
+    hint = click_hint(TouchCommands.click_wound(name, type, part, level, options))
+    hint += "\nRight-click: take part, half or most" unless name == TouchParser::SELF
+    "#{heading}: #{SEVERITY_NAMES[level]} (#{level}/13)\n#{hint}"
   end
 
-  def popup_wound_menu(name, target, event)
-    _kind, type, part = target
-    menu = Gtk::Menu.new
-    [['Take Part', 'part'], ['Take Half', 'half'], ['Take Most', 'most'], ['Take All', 'all']].each do |label, method|
-      add_item(menu, label) { @intents << [:take_wound, name, type, part, method, @options.dup] }
-    end
-    popup(menu, event)
+  def self.click_hint(actions)
+    "Click: #{actions.map { |action| TouchCommands.describe(action) }.join(', then ')}"
   end
 
-  def on_tab_label_click(name, event)
-    if event.button == 3 && event.event_type == Gdk::EventType::BUTTON_PRESS && name != TouchParser::SELF
-      popup_link_menu(name, event)
-      true
-    elsif event.button == 1 && event.event_type == Gdk::EventType::DOUBLE_BUTTON_PRESS
-      popup_close_menu(name, event)
-      true
-    else
-      false
-    end
-  end
-
-  def popup_link_menu(name, event)
-    menu = Gtk::Menu.new
-    add_item(menu, 'Link Persistent') { @intents << [:link, name, 'persistent'] }
-    add_item(menu, 'Link Hodierna') { @intents << [:link, name, 'hodierna'] }
-    add_item(menu, 'Link Unity') { @intents << [:link, name, 'unity'] }
-    menu.append(Gtk::SeparatorMenuItem.new)
-    [['Take All', nil], ['Take Part', 'part'], ['Take Half', 'half'], ['Take Most', 'most']].each do |label, method|
-      add_item(menu, label) { @intents << [:link_take, name, method, @options.dup] }
-    end
-    popup(menu, event)
-  end
-
-  def popup_close_menu(name, event)
-    menu = Gtk::Menu.new
-    add_item(menu, 'Close Tab') { close_view(name) }
-    add_item(menu, 'Close Other Tabs') { (@views.keys - [name]).each { |other| close_view(other) } }
-    popup(menu, event)
-  end
-
-  # @return [Array, nil] [:close], [:vitality], [:poison], [:disease] or [:part, type, part]
-  def hit_test(name, layout, x, y)
-    %i[close vitality poison disease].each do |box|
-      return [box] if inside_box?(layout[box], x, y)
-    end
-
-    wounds = @views.dig(name, :snapshot, :wounds) || {}
-    layout[:figures].each do |type, (figure_x, figure_y, _caption)|
-      part = part_at(wounds[type] || {}, x - figure_x, y - figure_y)
-      return [:part, type, part] if part
-    end
-    nil
-  end
-
-  def part_at(levels, x, y)
-    FIGURE_PARTS.reverse_each do |part, (part_x, part_y, width, height, shape, _caption)|
-      next if part == :tail && !levels[:tail]
-      next unless inside_shape?(shape, part_x, part_y, width, height, x, y)
-
-      # Eyes sit on top of the head and are always their own target, even
-      # while an unhurt eye is drawn in the head's color.
-      return part
-    end
-    nil
-  end
-
-  def inside_box?(box, x, y)
-    inside_shape?(:square, *box, x, y)
-  end
-
-  def inside_shape?(shape, left, top, width, height, x, y)
-    return x.between?(left, left + width) && y.between?(top, top + height) if shape == :square
-
-    radius_x = width / 2.0
-    radius_y = height / 2.0
-    dx = (x - left - radius_x) / radius_x
-    dy = (y - top - radius_y) / radius_y
-    dx * dx + dy * dy <= 1.0
-  end
-
-  def draw_tab(name, widget, cr)
-    view = @views[name]
-    snapshot = view[:snapshot]
-    return unless snapshot
-
-    # The theme's own text color: the widget's current color fades to light
-    # grey whenever the window loses focus, which made the captions hard to read.
-    found, text_color = widget.style_context.lookup_color('theme_fg_color')
-    text_color = widget.style_context.get_color(:normal) unless found
-    layout = tab_layout(widget)
-    cr.scale(layout[:scale], layout[:scale])
-    cr.line_width = 0.75
-
-    draw_vitality(cr, layout[:vitality], snapshot, highlight(view, :vitality))
-    draw_close(cr, layout[:close], text_color, highlight(view, :close))
-    draw_marker(cr, layout[:poison], 'P', snapshot[:poison].positive?, highlight(view, :poison))
-    draw_marker(cr, layout[:disease], 'D', snapshot[:disease], highlight(view, :disease))
-    if snapshot[:poison] > 1
-      cr.set_source_rgba(text_color.red, text_color.green, text_color.blue, 1.0)
-      poison_x, poison_y, poison_width, = layout[:poison]
-      draw_text(cr, snapshot[:poison].to_s, poison_x + poison_width + 1, poison_y + 2, 10, 13, 10, bold: true)
-    end
-
-    layout[:figures].each do |type, (figure_x, figure_y, caption)|
-      cr.save
-      cr.translate(figure_x, figure_y)
-      draw_figure(cr, snapshot[:wounds][type], view, type, text_color)
-      cr.restore
-      cr.set_source_rgba(text_color.red, text_color.green, text_color.blue, 1.0)
-      draw_text(cr, caption, figure_x - 9, figure_y + 135, 82, 12, 10.5, bold: true)
-    end
-  end
-
-  # :pressed or :hover when the target of that kind (:vitality, :close,
-  # :poison, :disease) is pressed or under the pointer, otherwise nil.
-  def highlight(view, kind)
-    return :pressed if view[:pressed]&.first == kind
-
-    :hover if view[:hover]&.first == kind
-  end
-
-  # Strokes the current path as an edge: the idle color normally, a thicker
-  # hover or pressed color when highlighted.
-  def stroke_edge(cr, state, idle_color)
-    cr.save
-    cr.set_source_rgb(*{ pressed: PRESSED_COLOR, hover: HOVER_COLOR }.fetch(state, idle_color))
-    cr.line_width = 1.6 if state
-    cr.stroke
-    cr.restore
-  end
-
-  def draw_vitality(cr, box, snapshot, state)
-    x, y, width, height = box
-    percent = snapshot[:vitality]
-    cr.set_source_rgb(0, 0, 0)
-    cr.rectangle(x, y, width, height)
-    cr.fill
-    cr.set_source_rgb(*vitality_color(percent))
-    cr.rectangle(x, y, width * percent / 100.0, height)
-    cr.fill
-    cr.rectangle(x, y, width, height)
-    stroke_edge(cr, state, [0.5, 0.5, 0.5])
-    # The label spans the colored and the black part of the bar, so it is
-    # outlined rather than picking one text color.
-    label = snapshot[:dead] ? "DEAD #{percent}%" : "Vitality #{percent}%"
-    cr.set_source_rgb(1, 1, 1)
-    draw_text(cr, label, x, y, width, height, 11, outline: true, bold: true)
-  end
-
-  def vitality_color(percent)
+  def self.vitality_color(percent)
     return LEVEL_COLORS[1] if percent >= 100
 
     LEVEL_COLORS[(11 - (percent - 1).div(10)).clamp(2, 11)]
   end
 
-  def draw_close(cr, box, text_color, state)
-    x, y, width, height = box
-    if state
-      cr.set_source_rgba(*HOVER_COLOR, 0.45)
-      cr.rectangle(x, y, width, height)
-      cr.fill
-    end
-    cr.set_source_rgba(text_color.red, text_color.green, text_color.blue, 1.0)
-    cr.rectangle(x, y, width, height)
-    cr.stroke
-    cr.move_to(x + 4, y + 4)
-    cr.line_to(x + width - 4, y + height - 4)
-    cr.move_to(x + width - 4, y + 4)
-    cr.line_to(x + 4, y + height - 4)
-    cr.stroke
+  # Black or white, whichever reads better on the fill color.
+  def self.text_color_on(rgb)
+    red, green, blue = rgb.map { |channel| channel / 255.0 }
+    (0.299 * red) + (0.587 * green) + (0.114 * blue) > 0.55 ? [0, 0, 0] : WHITE
   end
 
-  def draw_marker(cr, box, letter, active, state)
+  def self.rgba(rgb, alpha = 1.0)
+    { r: rgb[0], g: rgb[1], b: rgb[2], a: alpha }
+  end
+
+  # Grid units to composite pixels.
+  def self.px(value)
+    (value * UNIT).round
+  end
+
+  # Every layer of one patient's tab: the vitality bar, close box, P and D
+  # markers, the four body figures, then one clickable region per target,
+  # which carries the target's tooltip.
+  #
+  # @param pressed [Array, nil] the target drawn pressed, if any
+  # @return [Array<Hash>] composite layers, in grid units times UNIT
+  def self.tab_layers(name, snapshot, layout, options, pressed = nil)
+    pressed_kind = pressed&.first
+    layers = vitality_layers(layout[:vitality], snapshot, pressed_kind == :vitality)
+    layers.concat(close_layers(layout[:close], pressed_kind == :close))
+    layers.concat(marker_layers(layout[:poison], 'P', snapshot[:poison].positive?, pressed_kind == :poison))
+    layers.concat(marker_layers(layout[:disease], 'D', snapshot[:disease], pressed_kind == :disease))
+    if snapshot[:poison] > 1
+      poison_x, poison_y, poison_width, = layout[:poison]
+      layers << label(poison_x + poison_width + 1, poison_y + 2, 10, 13, snapshot[:poison].to_s, 10)
+    end
+    layout[:figures].each do |type, (figure_x, figure_y, caption)|
+      layers.concat(figure_layers(snapshot[:wounds][type], type, figure_x, figure_y, pressed))
+      layers << label(figure_x - 9, figure_y + 135, 82, 12, caption, 10.5)
+    end
+    layers.concat(region_layers(name, snapshot, layout, options))
+  end
+
+  def self.vitality_layers(box, snapshot, pressed)
+    x, y, width, height = box
+    percent = snapshot[:vitality]
+    color = vitality_color(percent)
+    text = snapshot[:dead] ? "DEAD #{percent}%" : "Vitality #{percent}%"
+    # The label spans the colored and the black part of the bar; it takes
+    # the color that reads on whichever is under its middle.
+    under = percent >= 50 ? color : LEVEL_COLORS[0]
+    [
+      rect(x, y, width, height, LEVEL_COLORS[0]),
+      rect(x, y, width * percent / 100.0, height, color),
+      rect(x, y, width, height, pressed ? PRESSED_COLOR : EDGE_COLOR, mode: 'stroke', line: pressed ? 3 : 1.5),
+      label(x, y, width, height, text, 11, color: text_color_on(under))
+    ]
+  end
+
+  def self.close_layers(box, pressed)
+    x, y, width, height = box
+    layers = []
+    layers << rect(x, y, width, height, PRESSED_COLOR) if pressed
+    layers << rect(x, y, width, height, EDGE_COLOR, mode: 'stroke', line: 1.5)
+    layers << label(x, y, width, height, 'x', 13)
+  end
+
+  def self.marker_layers(box, letter, active, pressed)
     x, y, width, height = box
     fill = active ? ALERT_COLOR : LEVEL_COLORS[0]
-    shape_path(cr, :round, x, y, width, height)
-    cr.set_source_rgb(*fill)
-    cr.fill_preserve
-    stroke_edge(cr, state, [1, 1, 1])
-    cr.set_source_rgb(*text_color_on(fill))
-    draw_text(cr, letter, x, y, width, height, 10, bold: true)
+    disc(x, y, width, height, fill) +
+      [ring(x, y, width, height, pressed ? PRESSED_COLOR : WHITE, pressed ? 3 : 1.5),
+       label(x, y, width, height, letter, 10, color: text_color_on(fill))]
   end
 
-  def draw_figure(cr, levels, view, type, text_color)
+  def self.figure_layers(levels, type, figure_x, figure_y, pressed)
+    layers = []
     FIGURE_PARTS.each do |part, (x, y, width, height, shape, caption)|
       next if part == :tail && !levels[:tail]
 
-      fill = part_color(levels, view, type, part)
-      shape_path(cr, shape, x, y, width, height)
-      cr.set_source_rgb(*fill)
-      cr.fill_preserve
-      cr.set_source_rgb(1, 1, 1)
-      cr.stroke
-      next unless caption
-
-      cr.set_source_rgb(*text_color_on(fill))
-      draw_text(cr, caption, x, y, width, height, height * 0.6, bold: true)
+      fill = part_color(levels, type, part, pressed)
+      left = figure_x + x
+      top = figure_y + y
+      if shape == :square
+        layers << rect(left, top, width, height, fill)
+        layers << rect(left, top, width, height, WHITE, mode: 'stroke', line: 1.5)
+      else
+        layers.concat(disc(left, top, width, height, fill))
+        layers << ring(left, top, width, height, WHITE, 1.5)
+      end
+      layers << label(left, top, width, height, caption, height * 0.6, color: text_color_on(fill)) if caption
     end
-    cr.set_source_rgba(text_color.red, text_color.green, text_color.blue, 1.0)
-    draw_text(cr, 'R', 0, 26, 8, 12, 9.5, bold: true)
-    draw_text(cr, 'L', 55, 26, 8, 12, 9.5, bold: true)
+    layers << label(figure_x, figure_y + 26, 8, 12, 'R', 9.5)
+    layers << label(figure_x + 55, figure_y + 26, 8, 12, 'L', 9.5)
   end
 
-  def part_color(levels, view, type, part)
-    return PRESSED_COLOR if targets_part?(view[:pressed], levels, type, part)
-    return HOVER_COLOR if targets_part?(view[:hover], levels, type, part)
+  def self.part_color(levels, type, part, pressed)
+    return PRESSED_COLOR if targets_part?(pressed, levels, type, part)
 
     level = levels[part] || (%i[left_eye right_eye].include?(part) ? levels[:head] : nil) || 0
     LEVEL_COLORS[level.clamp(0, 11)]
   end
 
-  # Whether a hover or pressed target lights this part. An unhurt eye is drawn
-  # in the head's color, so it lights with the head too.
-  def targets_part?(target, levels, type, part)
+  # Whether a pressed target lights this part. An unhurt eye is drawn in the
+  # head's color, so it lights with the head too.
+  def self.targets_part?(target, levels, type, part)
     return false unless target&.first == :part && target[1] == type
     return true if target[2] == part
 
     %i[left_eye right_eye].include?(part) && target[2] == :head && !levels[part]
   end
 
-  def shape_path(cr, shape, x, y, width, height)
-    # show_text leaves a current point behind, and arc would draw a line from it.
-    cr.new_path
-    if shape == :square
-      cr.rectangle(x, y, width, height)
+  # One region per part (in drawing order, so an eye sits over the head),
+  # then the boxes. Every part has one, hurt or not, as the old window's hit
+  # test did: a click on an unhurt part says there is nothing to take.
+  def self.region_layers(name, snapshot, layout, options)
+    regions = []
+    layout[:figures].each do |type, (figure_x, figure_y, _caption)|
+      levels = snapshot[:wounds][type]
+      FIGURE_PARTS.each do |part, (x, y, width, height, _shape, _caption)|
+        next if part == :tail && !levels[:tail]
+
+        regions << region([:part, type, part], figure_x + x, figure_y + y, width, height, name, snapshot, options)
+      end
+    end
+    %i[vitality poison disease close].each do |box|
+      regions << region([box], *layout[box], name, snapshot, options)
+    end
+    regions
+  end
+
+  def self.region(target, x, y, width, height, name, snapshot, options)
+    { kind: 'region', key: region_key(target), x1: px(x), y1: px(y), x2: px(x + width), y2: px(y + height),
+      label: tooltip_for(name, target, snapshot, options), activates: true }
+  end
+
+  def self.rect(x, y, width, height, color, mode: 'fill', line: nil)
+    layer = { kind: 'rectangle', mode: mode, x: x * UNIT, y: y * UNIT, w: [width * UNIT, 0].max, h: [height * UNIT, 0].max, color: rgba(color) }
+    layer[:line_width] = line if line
+    layer
+  end
+
+  def self.ring(x, y, width, height, color, line)
+    { kind: 'marker', shape: 'ring', x: px(x), y: px(y), w: px(width), h: px(height), color: rgba(color), line_width: line }
+  end
+
+  # A filled circle or ellipse: rings no thicker than MAX_RING, each inside
+  # the last, until nothing is left in the middle.
+  def self.disc(x, y, width, height, color)
+    left = px(x)
+    top = px(y)
+    width = px(width)
+    height = px(height)
+    layers = []
+    while width.positive? && height.positive?
+      half = [width, height].min / 2.0
+      line = [half, MAX_RING].min
+      layers << { kind: 'marker', shape: 'ring', x: left, y: top, w: width, h: height, color: rgba(color), line_width: [line, 1].max }
+      break if half <= MAX_RING
+
+      left += MAX_RING
+      top += MAX_RING
+      width -= 2 * MAX_RING
+      height -= 2 * MAX_RING
+    end
+    layers
+  end
+
+  def self.label(x, y, width, height, text, size, color: nil)
+    layer = { kind: 'label', x: px(x), y: px(y), w: px(width), h: px(height), text: text, align: 'center',
+              emphasis: 'strong', font_size: (size * UNIT).round(1), font_unit: 'px' }
+    color ? layer.merge(foreground: rgba(color)) : layer
+  end
+
+  # Whether a reported window position is worth saving: a minimized window
+  # reports a position far off-screen (about -32000 on Windows), which would
+  # reopen it where it cannot be seen. When the host names its screens, the
+  # title bar must be on one of them.
+  def self.on_screen?(x, y, monitors = nil)
+    return false unless x.is_a?(Integer) && y.is_a?(Integer)
+    return false if x < -10_000 || y < -10_000
+
+    screens = monitors.is_a?(Hash) ? Array(monitors[:screens]) : []
+    return true if screens.empty?
+
+    screens.any? do |screen|
+      (x + 40).between?(screen[:x], screen[:x] + screen[:width]) && (y + 10).between?(screen[:y], screen[:y] + screen[:height])
+    end
+  end
+
+  # Window position, size, pin and the Take menu toggles, for the script to
+  # save on exit. Replaced (never mutated) so another thread can read it.
+  attr_reader :state
+
+  # Registers the page and opens the window.
+  #
+  # @param owner [Object] the running Script, which owns the page
+  # @param intents [Thread::Queue] where requests go for the script thread
+  # @param state [Hash] the saved window state (see #state)
+  # @raise [RuntimeError] if the window could not be opened
+  def initialize(owner, intents, state)
+    @owner = owner
+    @intents = intents
+    @state = state
+    @options = state['options'].transform_keys(&:to_sym)
+    @lock = Monitor.new
+    @views = {}
+    @selected = nil
+    @tabs_revision = 0
+    @menu_revision = 0
+    @tab_menu = nil
+    @right_target = nil
+    @activity = { text: READY, detail: nil, state: :done }
+    @size = [[(state['width'] || DEFAULT_WIDTH).to_i, MIN_WIDTH].max, [(state['height'] || DEFAULT_HEIGHT).to_i, MIN_HEIGHT].max]
+    @resize_id = 0
+    @closed = false
+    open_page
+  end
+
+  def show_patient(name, snapshot)
+    @lock.synchronize do
+      unless @views[name]
+        @views[name] = { snapshot: nil, pressed: nil }
+      end
+      @views[name][:snapshot] = snapshot
+      select_tab(name)
+    end
+    retitle
+    refresh
+  end
+
+  def update_patient(name, snapshot)
+    @lock.synchronize do
+      return unless @views[name]
+
+      @views[name][:snapshot] = snapshot
+    end
+    refresh
+  end
+
+  # Updates the status strip: a busy bar and a Stop button while running; the
+  # text dimmed once done or stopped, where it stays as the last thing Touch
+  # did.
+  #
+  # @param detail [String] the exact command or cast, for the tooltip
+  # @param state [Symbol] :running, :done or :stopped
+  def show_activity(text, detail, state)
+    @lock.synchronize { @activity = { text: text, detail: detail, state: state } }
+    refresh
+  end
+
+  # Brings the window forward (;touch with no name while it is open).
+  def present
+    Lich::API.webui_open(page: @page) unless @closed
+  rescue StandardError
+    nil
+  end
+
+  # Closes the window. The WebUI service is shared with other scripts, so the
+  # owner's pages are retired, never the service stopped.
+  def destroy
+    @closed = true
+    Lich::WebUI.terminate_owner(@owner)
+  rescue StandardError
+    nil
+  end
+
+  def selected_patient
+    @lock.synchronize { @selected if @views.key?(@selected) }
+  end
+
+  # Renders the page now. A refresh after the window has gone is ignored.
+  def refresh
+    Lich::API.webui_refresh(@page) if @page && !@closed
+  rescue Lich::WebUI::Error
+    nil
+  end
+
+  # Wraps a WebUI callback: an error is reported rather than lost on the host
+  # thread, and the page is redrawn afterwards unless redraw is false (a
+  # redraw between a press and its click would swallow the click).
+  def cb(redraw: true, &block)
+    window = self
+    lambda do |event|
+      block.call(event)
+    rescue StandardError => e
+      Lich::Messaging.msg('bold', "touch: window error: #{e.class}: #{e.message}")
+    ensure
+      window.refresh if redraw
+    end
+  end
+
+  # ---- page --------------------------------------------------------------
+
+  # Everything the page shows, read under the lock in one go so a render
+  # never sees half an update.
+  def model
+    @lock.synchronize do
+      area = [@size[0] - CHROME_WIDTH, @size[1] - CHROME_HEIGHT]
+      # Less the tab page's own padding, so the figures need no scrollbar.
+      layout = self.class.tab_layout(area[0] - PANEL_PADDING, area[1] - PANEL_PADDING)
+      tabs = @views.map do |name, view|
+        snapshot = view[:snapshot]
+        { name: name, key: self.class.key_for(name),
+          layers: snapshot ? self.class.tab_layers(name, snapshot, layout, @options, view[:pressed]) : [] }
+      end
+      {
+        layout: layout, area: area, tabs: tabs, selected: tabs.index { |tab| tab[:name] == @selected } || 0,
+        tabs_revision: @tabs_revision, menu_revision: @menu_revision, tab_menu: @tab_menu,
+        activity: @activity, options: @options.dup, pinned: @state['pinned'] ? true : false
+      }
+    end
+  end
+
+  # Builds the page. Component blocks run with the builder as self, so
+  # everything inside them goes through the locals ui, window and data.
+  def render(ui)
+    window = self
+    data = model
+    ui.facility(:presentation, { always_on_top: data[:pinned] })
+    ui.stack(key: 'body', gap: 2, fill: true) do
+      window.render_toolbar(ui, data)
+      if data[:tabs].empty?
+        ui.text(key: 'hint', emphasis: 'subtle', align: 'center', margin: 12, line_justify: :center,
+                content: "No patients yet\n\nTOUCH someone, or ;touch <name>.\nPERCEIVE HEALTH SELF opens your own tab.")
+      else
+        window.render_tabs(ui, data)
+      end
+      window.render_status(ui, data[:activity])
+    end
+    render_wound_menu(ui)
+    render_tab_menu(ui, data)
+  end
+
+  def render_toolbar(ui, data)
+    window = self
+    ui.stack(key: 'toolbar', orientation: 'horizontal', gap: 2) do
+      ui.button(key: 'touch', label: 'Touch',
+                tooltip: 'Touch the patient on this tab again. To add a patient: TOUCH <name> or ;touch <name>.',
+                on: { activate: window.cb { window.on_touch } })
+      ui.button(key: 'break', label: 'Break', pointer_events: true,
+                tooltip: "Stop: cancel what is queued or being cast, and break the link to this patient.\nRight-click: stop and LINK ALL CANCEL",
+                on: { activate: window.cb { window.on_break },
+                      pointer_press: window.cb(redraw: false) { |event| window.on_break_press(event.payload) } })
+      ui.group(key: 'take', label: 'Take', menu: :popover, tooltip: 'Take Minor / Take All, and what they include') do
+        ui.button(key: 'take-minor', label: 'Take Minor', on: { activate: window.cb { window.send_for_selected(:take_minor) } })
+        ui.button(key: 'take-all', label: 'Take All', on: { activate: window.cb { window.send_for_selected(:take_all) } })
+        ui.divider(key: 'take-sep-0')
+        TAKE_OPTIONS.each_with_index do |(label, option), index|
+          next ui.divider(key: "take-sep-#{index + 1}") unless label
+
+          ui.toggle(key: "opt-#{option}", label: label, appearance: :menu, checked: data[:options][option] ? true : false,
+                    on: { change: window.cb { |event| window.set_option(option, event.payload[:value]) } })
+        end
+        # Sections rather than nested submenus: a redraw while a take runs
+        # reopens the dropdown but would close a submenu inside it.
+        ui.divider(key: 'take-sep-amounts', label: 'Left-Click Takes')
+        CLICK_AMOUNTS.each do |label, amount|
+          ui.radio_option(key: "amount-#{amount}", label: label, appearance: :menu, group: 'click-amount',
+                          checked: data[:options][:click_amount] == amount,
+                          on: { change: window.cb { |event| window.set_click_amount(amount) if event.payload[:value] } })
+        end
+      end
+      ui.button(key: 'all', label: 'All', tooltip: 'Take everything the Take menu options allow',
+                on: { activate: window.cb { window.send_for_selected(:take_all) } })
+      ui.group(key: 'more', label: 'More', menu: :popover, tooltip: 'Perceive yourself, cast on yourself, reset the size') do
+        ui.button(key: 'perceive-self', label: 'Perceive Health Self',
+                  on: { activate: window.cb { window.push([:touch, TouchParser::SELF]) } })
+        ui.divider(key: 'more-sep-0', label: 'Cast On Self')
+        SPELLS.each do |label, abbrev|
+          ui.button(key: "cast-#{abbrev}", label: label, on: { activate: window.cb { window.push([:cast, nil, abbrev]) } })
+        end
+        ui.divider(key: 'more-sep-1')
+        ui.button(key: 'reset-size', label: 'Reset Size', on: { activate: window.cb { window.reset_size } })
+      end
+      ui.toggle(key: 'pin', label: 'Pin', appearance: :button, checked: data[:pinned],
+                tooltip: 'Keep this window in front of every other window',
+                on: { change: window.cb { |event| window.set_pinned(event.payload[:value]) } })
+    end
+  end
+
+  def render_tabs(ui, data)
+    window = self
+    layout = data[:layout]
+    tabs = data[:tabs]
+    ui.tabs(key: "patients-#{data[:tabs_revision]}", names: tabs.map { |tab| tab[:name] }, selected: data[:selected],
+            headers: tabs.map { |tab| { key: tab[:key], pointer_events: true } },
+            on: { select: window.cb { |event| window.on_select(event.payload) },
+                  tab_pointer: window.cb(redraw: false) { |event| window.on_tab_pointer(event.payload) } }) do
+      tabs.each do |tab|
+        name = tab[:name]
+        menu = name == TouchParser::SELF ? {} : { context_menu: 'wound-menu' }
+        # A scroller around the figures: a tab page itself would squeeze them.
+        ui.scroll(slot: name, key: "view-#{tab[:key]}", height: data[:area][1]) do
+          ui.composite(key: "figure-#{tab[:key]}", width: TouchWindow.px(layout[:width]), height: TouchWindow.px(TAB_HEIGHT),
+                       scale: (layout[:scale] / UNIT).clamp(0.1, 8.0), surface_events: true, layers: tab[:layers], **menu,
+                       on: { region_activate: window.cb { |event| window.on_region(name, event.payload[:region]) },
+                             surface_activate: window.cb(redraw: false) { |event| window.on_surface(name, event.payload) } })
+        end
+      end
+    end
+  end
+
+  def render_status(ui, activity)
+    window = self
+    running = activity[:state] == :running
+    tooltip = running ? "#{activity[:text]}\nNow: #{activity[:detail]}" : activity[:text]
+    ui.stack(key: 'status', orientation: 'horizontal', gap: 6, margin: { left: 6, right: 4 }) do
+      ui.progress(key: 'busy', indeterminate: true, hidden: !running, width: 24)
+      ui.text(key: 'activity', content: activity[:text], wrap: false, ellipsize: :end, tooltip: tooltip,
+              emphasis: running ? 'normal' : 'subtle')
+      ui.button(key: 'stop', label: 'Stop', hidden: !running, tooltip: 'Stop what is queued or being cast (keeps the link)',
+                on: { activate: window.cb { window.push([:stop]) } })
+    end
+  end
+
+  # The right-click menu on a patient's figures. The browser opens it at
+  # once, and reports which wound was under the pointer just before; the
+  # chosen item takes that wound.
+  def render_wound_menu(ui)
+    window = self
+    ui.group(key: 'wound-menu', menu: :context) do
+      WOUND_METHODS.each do |label, method|
+        ui.button(key: "wound-#{method}", label: label, on: { activate: window.cb { window.on_wound_menu(method) } })
+      end
+    end
+  end
+
+  # The tab header menus: right-click for link and take-all options,
+  # double-click to close tabs. Each is opened by the script where the
+  # pointer was, under a fresh key so it opens anew every time.
+  def render_tab_menu(ui, data)
+    menu = data[:tab_menu]
+    return unless menu
+
+    window = self
+    name = menu[:name]
+    ui.group(key: "tab-menu-#{data[:menu_revision]}", menu: :context, open: true, popup_position: menu[:at],
+             on: { dismiss: window.cb { window.dismiss_tab_menu } }) do
+      items = if menu[:kind] == :link
+                [['Link Persistent', [:link, name, 'persistent']], ['Link Hodierna', [:link, name, 'hodierna']],
+                 ['Link Unity', [:link, name, 'unity']], nil] +
+                  [['Take All', nil], ['Take Part', 'part'], ['Take Half', 'half'], ['Take Most', 'most']].map do |label, method|
+                    [label, [:link_take, name, method, :options]]
+                  end
+              else
+                [['Close Tab', [:close_tab, name]], ['Close Other Tabs', [:close_others, name]]]
+              end
+      items.each_with_index do |(label, intent), index|
+        next ui.divider(key: "tab-sep-#{index}") unless label
+
+        ui.button(key: "tab-item-#{index}", label: label, on: { activate: window.cb { window.on_tab_menu(intent) } })
+      end
+    end
+  end
+
+  # ---- callbacks (WebUI host thread) ---------------------------------------
+
+  def push(intent)
+    @intents << intent
+  end
+
+  # Retouches the patient on the open tab. With no tab open it says how to add
+  # one, on the status strip, rather than asking who. While a step is running
+  # the strip is left alone, so its busy bar and Stop stay.
+  def on_touch
+    patient = selected_patient
+    return push([:touch, patient]) if patient
+    return if @lock.synchronize { @activity[:state] == :running }
+
+    show_activity('TOUCH <name> or ;touch <name> adds a tab', nil, :done)
+  end
+
+  def on_break
+    push([:break, selected_patient])
+  end
+
+  # A right-press on Break: stop and LINK ALL CANCEL.
+  def on_break_press(payload)
+    push([:break_all]) if payload[:button] == 3
+  end
+
+  def send_for_selected(kind)
+    patient = selected_patient
+    push([kind, patient, options]) if patient
+  end
+
+  def options
+    @lock.synchronize { @options.dup }
+  end
+
+  def set_option(option, value)
+    @lock.synchronize do
+      @options[option] = value ? true : false
+      @state = @state.merge('options' => @options.transform_keys(&:to_s))
+    end
+  end
+
+  def set_click_amount(amount)
+    @lock.synchronize do
+      @options[:click_amount] = amount
+      @state = @state.merge('options' => @options.transform_keys(&:to_s))
+    end
+  end
+
+  def set_pinned(value)
+    @lock.synchronize { @state = @state.merge('pinned' => value ? true : false) }
+  end
+
+  def reset_size
+    @lock.synchronize do
+      @resize_id += 1
+      @size = [DEFAULT_WIDTH, DEFAULT_HEIGHT]
+    end
+    redefine
+  end
+
+  def on_select(payload)
+    @lock.synchronize do
+      name = @views.keys.find { |patient| self.class.key_for(patient) == payload[:tab] } || @views.keys[payload[:index].to_i]
+      @selected = name if name
+    end
+    retitle
+  end
+
+  def on_tab_pointer(payload)
+    name = @lock.synchronize { @views.keys.find { |patient| self.class.key_for(patient) == payload[:tab] } }
+    return unless name
+
+    kind = if payload[:button] == 3 && name != TouchParser::SELF
+             :link
+           elsif payload[:button] == 1 && payload[:click_count] == 2
+             :close
+           end
+    return unless kind
+
+    @lock.synchronize do
+      @menu_revision += 1
+      @tab_menu = { kind: kind, name: name, at: [payload[:x].to_i, payload[:y].to_i] }
+    end
+    refresh
+  end
+
+  def dismiss_tab_menu
+    @lock.synchronize { @tab_menu = nil }
+  end
+
+  def on_tab_menu(intent)
+    dismiss_tab_menu
+    case intent.first
+    when :close_tab then close_view(intent[1])
+    when :close_others then (@lock.synchronize { @views.keys } - [intent[1]]).each { |other| close_view(other) }
+    when :link_take then push(intent[0..2] + [options])
+    else push(intent)
+    end
+  end
+
+  # A left-click on a target.
+  def on_region(name, region)
+    target = self.class.target_for(region)
+    return unless target && @lock.synchronize { @views.key?(name) }
+
+    if target.first == :close
+      close_view(name)
       return
     end
-
-    cr.save
-    cr.translate(x + width / 2.0, y + height / 2.0)
-    cr.scale(width / 2.0, height / 2.0)
-    cr.arc(0, 0, 1, 0, 2 * Math::PI)
-    cr.restore
+    flash(name, target)
+    case target.first
+    when :part then push([:take_wound, name, target[1], target[2], 'auto', options])
+    else push([:take_condition, name, target.first.to_s, options])
+    end
   end
 
-  # Draws text centered in the box, with the current source color. With
-  # outline, the text gets a black edge that keeps it readable over any color.
-  def draw_text(cr, text, x, y, width, height, size, outline: false, bold: false)
-    cr.select_font_face('Sans', Cairo::FONT_SLANT_NORMAL, bold ? Cairo::FONT_WEIGHT_BOLD : Cairo::FONT_WEIGHT_NORMAL)
-    cr.set_font_size(size)
-    cr.font_options = self.class.text_options
-    extents = cr.text_extents(text)
-    # Centers the text's ink above the baseline, so descenders such as the y
-    # in "Vitality" hang below instead of pushing the label up. Cairo pads the
-    # ink box below the baseline even for an H; that padding is measured and
-    # treated as the bottom.
-    capital = cr.text_extents('H')
-    bottom = capital.height + capital.y_bearing
-    cr.move_to(x + (width - extents.width) / 2.0 - extents.x_bearing,
-               y + (height - extents.y_bearing - bottom) / 2.0)
-    return cr.show_text(text) unless outline
+  # Clicks on the figures outside a target are ignored; a right-click
+  # remembers which wound the menu it opens is for.
+  def on_surface(name, payload)
+    return unless payload[:button] == 'secondary'
 
-    cr.text_path(text)
-    cr.save
-    cr.set_source_rgb(0, 0, 0)
-    cr.line_width = size * 0.25
-    cr.line_join = Cairo::LINE_JOIN_ROUND
-    cr.stroke_preserve
-    cr.restore
-    cr.fill
+    target = self.class.target_for(payload[:region])
+    @lock.synchronize do
+      @right_target = target&.first == :part && name != TouchParser::SELF ? [name, target[1], target[2]] : nil
+    end
   end
 
-  # Black or white, whichever reads better on the fill color.
-  def text_color_on(rgb)
-    red, green, blue = rgb
-    (0.299 * red) + (0.587 * green) + (0.114 * blue) > 0.55 ? [0, 0, 0] : [1, 1, 1]
+  def on_wound_menu(method)
+    name, type, part = @lock.synchronize { @right_target }
+    return show_activity('Right-click a wound to take part of it', nil, :done) unless name
+
+    push([:take_wound, name, type, part, method, options])
+  end
+
+  # The browser reports the window's size and position as they change.
+  def on_configure(payload)
+    width = payload[:width].to_i
+    height = payload[:height].to_i
+    x, y = payload[:position]
+    resized = false
+    @lock.synchronize do
+      if width >= MIN_WIDTH / 2 && height >= MIN_HEIGHT / 2
+        resized = (width - @size[0]).abs > 4 || (height - @size[1]).abs > 4
+        @size = [width, height]
+        @state = @state.merge('width' => width, 'height' => height)
+      end
+      @state = @state.merge('x' => x, 'y' => y) if self.class.on_screen?(x, y, payload[:monitors])
+    end
+    refresh if resized
+  end
+
+  def on_close
+    @closed = true
+    push([:quit])
+  end
+
+  private
+
+  def open_page
+    window = self
+    @page_events = { close: ->(_event) { window.on_close },
+                     configure: window.cb(redraw: false) { |event| window.on_configure(event.payload) } }
+    @page_props = { bare: true, viewport: true, min_width: MIN_WIDTH, min_height: MIN_HEIGHT }
+    @page = Lich::API.webui_page(owner: @owner, id: PAGE_ID, title: 'Touch', props: @page_props, on: @page_events) do |ui|
+      window.render(ui)
+    end
+    Lich::API.webui_refresh(@page)
+    Lich::API.webui_start
+    geometry = { width: @size[0], height: @size[1] }
+    geometry[:position] = [@state['x'], @state['y']] if self.class.on_screen?(@state['x'], @state['y'])
+    # The geometry saved in Vars, as the old window restored it.
+    raise 'the window host refused to open it' unless Lich::WebUI.open(page: @page, geometry: geometry)
+  end
+
+  # Brings a tab forward. The tabs get a new key so every viewer shows the
+  # chosen tab rather than keeping its own pick. Called under the lock.
+  def select_tab(name)
+    @selected = name
+    @tabs_revision += 1
+  end
+
+  def close_view(name)
+    @lock.synchronize do
+      names = @views.keys
+      index = names.index(name)
+      return unless index
+
+      @views.delete(name)
+      if @selected == name || !@views.key?(@selected)
+        remaining = @views.keys
+        @selected = remaining[index] || remaining.last
+      end
+      @tabs_revision += 1
+      @right_target = nil if @right_target&.first == name
+    end
+    push([:closed, name])
+    retitle
+  end
+
+  # Briefly draws the clicked target pressed.
+  def flash(name, target)
+    @lock.synchronize do
+      view = @views[name]
+      return unless view
+
+      view[:pressed] = target
+    end
+    refresh
+    @scheduler ||= Lich::WebUI.callback_scheduler(owner: @owner)
+    @scheduler.schedule(FLASH_MS) do
+      @lock.synchronize { @views[name][:pressed] = nil if @views[name] }
+      refresh
+      false
+    end
+  rescue Lich::WebUI::Error
+    nil
+  end
+
+  # The title names the patient on the tab being shown.
+  def retitle
+    redefine
+  end
+
+  def redefine
+    title, props = @lock.synchronize do
+      name = @selected if @views.key?(@selected)
+      props = @page_props
+      props = props.merge(resize_request: { id: "reset-#{@resize_id}", size: [DEFAULT_WIDTH, DEFAULT_HEIGHT] }) if @resize_id.positive?
+      [name ? "Touch - #{name}" : 'Touch', props]
+    end
+    @page.refresh_definition(title: title, props: props, on: @page_events)
   end
 end
 
@@ -1378,8 +1395,8 @@ class Touch
       Lich::Messaging.msg('bold', "touch: only empaths can TOUCH to perceive wounds (Lich has you as #{DRStats.guild}).")
       exit
     end
-    unless defined?(Gtk)
-      Lich::Messaging.msg('bold', 'touch: this Lich has no GTK, so the window cannot open.')
+    unless TouchWindow.available?
+      Lich::Messaging.msg('bold', 'touch: this Lich cannot show WebUI windows (an older Lich, or one started with --no-gui), so the window cannot open.')
       exit
     end
 
@@ -1420,27 +1437,9 @@ class Touch
   end
 
   def open_window
-    ready = Thread::Queue.new
-    state = load_state
-    # Handing the window over and giving up each happen under this lock, so a
-    # window finished just as the wait times out is used rather than leaked.
-    handover = Mutex.new
-    gave_up = false
-    Gtk.queue do
-      window = TouchWindow.new(@intents, state)
-      # Too late: the script has already quit, so nothing would drive it.
-      handover.synchronize { gave_up ? window.destroy : ready << window }
-    rescue StandardError => e
-      ready << e
-    end
-    window = ready.pop(timeout: 15)
-    window ||= handover.synchronize do
-      gave_up = true
-      ready.empty? ? nil : ready.pop
-    end
-    return @window = window if window.is_a?(TouchWindow)
-
-    Lich::Messaging.msg('bold', "touch: could not open the window: #{window || 'GTK did not answer'}")
+    @window = TouchWindow.new(Script.current, @intents, load_state)
+  rescue StandardError => e
+    Lich::Messaging.msg('bold', "touch: could not open the window: #{e.message}")
     exit
   end
 
@@ -1481,8 +1480,7 @@ class Touch
   def show_status(step, state)
     text = TouchCommands.status_text(step, state)
     detail = TouchCommands.describe(step[:action])
-    window = @window
-    Gtk.queue { window.show_activity(text, detail, state) }
+    @window.show_activity(text, detail, state)
   end
 
   # Waits up to +seconds+, or until the block returns true, while still
@@ -1565,12 +1563,9 @@ class Touch
 
   # @param changed [Hash{String => Boolean}] patient name => whether to bring its tab forward
   def publish(changed)
-    window = @window
     changed.each do |name, bring_forward|
       snapshot = @patients[name].snapshot
-      Gtk.queue do
-        bring_forward ? window.show_patient(name, snapshot) : window.update_patient(name, snapshot)
-      end
+      bring_forward ? @window.show_patient(name, snapshot) : @window.update_patient(name, snapshot)
     end
   end
 
@@ -1609,9 +1604,7 @@ class Touch
     when :link then queue(TouchCommands.link(patient, details.first), label)
     when :link_take then queue(TouchCommands.link_take(patient, *details), label)
     when :cast then queue([[:spell, details.first, nil]], label)
-    when :present
-      window = @window
-      Gtk.queue { window.present }
+    when :present then @window.present
     when :closed then @patients.delete(patient)
     end
   end
@@ -1727,7 +1720,7 @@ class Touch
     return unless window
 
     Vars[STATE_KEY] = window.state
-    Gtk.queue { window.destroy }
+    window.destroy
   end
 end
 

@@ -1,9 +1,10 @@
 require 'spec_helper'
 
-# touch.lic is an empath healing window. The GTK window and the game loop need
-# the live runtime, so these specs cover the three pure pieces they are built
-# on: the TOUCH / PERCEIVE HEALTH parser, the per-patient wound model, and the
-# command builder that turns a click into TAKE / LINK / spell actions.
+# touch.lic is an empath healing window. The WebUI window and the game loop
+# need the live runtime, so these specs cover the pure pieces they are built
+# on: the TOUCH / PERCEIVE HEALTH parser, the per-patient wound model, the
+# command builder that turns a click into TAKE / LINK / spell actions, and the
+# window's layout, drawing and click handling.
 describe 'touch.lic' do
   before(:all) do
     load_lic_class('touch.lic', 'TouchParser')
@@ -592,47 +593,247 @@ describe 'touch.lic' do
     end
   end
 
-  # Regression (Mahtra's re-review): a Cairo constant built while the script
-  # loaded crashed a Lich started without GTK before it could print its own
-  # "no GTK" message. The spec suite has no GTK or Cairo, like that Lich.
-  describe 'TouchWindow without GTK' do
-    it 'loads without touching Cairo or GTK' do
-      expect(defined?(Cairo)).to be_nil
-      expect { load_lic_class('touch.lic', 'TouchWindow') }.not_to raise_error
-    end
-  end
-
-  # #7660 review: Touch with no tab open shows a hint instead of the removed
-  # "who?" dialog. The suite has no GTK, so the window's widgets are stand-ins.
-  describe 'TouchWindow#on_touch with no tab open' do
+  # The window is native WebUI; the suite has no WebUI runtime, so these
+  # cover the pure drawing and hit logic it renders from, and the callbacks
+  # that turn a click into an intent.
+  describe 'TouchWindow' do
     before(:all) { load_lic_class('touch.lic', 'TouchWindow') }
 
-    let(:intents) { Thread::Queue.new }
-    let(:window) do
-      instance = TouchWindow.allocate
-      instance.instance_variable_set(:@intents, intents)
-      instance.instance_variable_set(:@views, {})
-      instance.instance_variable_set(:@notebook, double('notebook', n_pages: 0))
-      %i[@status @spinner @stop].each { |name| instance.instance_variable_set(name, double(name.to_s).as_null_object) }
-      instance
+    let(:defaults) do
+      { include_internal: true, include_scars: true, quick: false, half_on_major: false, leave_bleeders: false, click_amount: 'all' }
+    end
+    let(:patient) do
+      TouchPatient.new('Navesi').tap do |model|
+        model.apply([:wound, 'Navesi', :fresh_external, :head, 4])
+        model.apply([:wound, 'Navesi', :scar_internal, :left_leg, 9])
+        model.apply([:vitality, 'Navesi', 63])
+        model.apply([:poison, 'Navesi', 2])
+      end
+    end
+    let(:layout) { TouchWindow.tab_layout(TouchWindow::TAB_WIDTH, TouchWindow::TAB_HEIGHT) }
+
+    it 'reports no window host when the WebUI is missing, without loading GTK' do
+      expect(defined?(Gtk)).to be_nil
+      expect(TouchWindow.available?).to be false
     end
 
-    it 'names both ways to add a patient on the status strip' do
-      allow(window).to receive(:show_activity).and_call_original
+    describe '.tab_layout' do
+      it 'is Genie Crutch\'s own layout at the 165-unit grid' do
+        expect(layout[:scale]).to eq(1.0)
+        expect(layout[:vitality]).to eq([5, 5, 135.0, 17])
+        expect(layout[:close]).to eq([144.0, 5, 17, 17])
+        expect(layout[:figures][:fresh_external]).to eq([9.75, 25, 'Fresh External'])
+        expect(layout[:figures][:scar_internal]).to eq([92.25, 175, 'Scar Internal'])
+      end
 
-      window.send(:on_touch)
+      it 'keeps the figures in proportion and spends extra width on the bar and columns' do
+        wide = TouchWindow.tab_layout(330 * 2, 326)
 
-      expect(window).to have_received(:show_activity).with('TOUCH <name> or ;touch <name> adds a tab', nil, :done)
-      expect(intents).to be_empty
+        expect(wide[:scale]).to eq(1.0)
+        expect(wide[:width]).to eq(660.0)
+        expect(wide[:vitality][2]).to eq(630.0)
+      end
     end
 
-    it 'leaves the strip, its spinner and Stop alone while a step is running' do
-      window.show_activity('Self: Cast Heal', 'cast Heal', :running)
-      allow(window).to receive(:show_activity)
+    describe '.target_for' do
+      it 'maps region keys back to targets and refuses anything else' do
+        expect(TouchWindow.target_for('w.scar_internal.left_leg')).to eq([:part, :scar_internal, :left_leg])
+        expect(TouchWindow.target_for('b.vitality')).to eq([:vitality])
+        expect(TouchWindow.target_for('w.fresh_external.wing')).to be_nil
+        expect(TouchWindow.target_for('b.eval')).to be_nil
+        expect(TouchWindow.target_for(nil)).to be_nil
+      end
 
-      window.send(:on_touch)
+      it 'round-trips every region key it draws' do
+        targets = [[:close], [:vitality], [:poison], [:disease], [:part, :fresh_internal, :right_eye]]
 
-      expect(window).not_to have_received(:show_activity)
+        expect(targets.map { |target| TouchWindow.target_for(TouchWindow.region_key(target)) }).to eq(targets)
+      end
+    end
+
+    describe '.tab_layers' do
+      subject(:layers) { TouchWindow.tab_layers('Navesi', patient.snapshot, layout, defaults) }
+
+      def region(key)
+        layers.find { |layer| layer[:kind] == 'region' && layer[:key] == key }
+      end
+
+      it 'has one clickable region per body part and box, the tail only when wounded' do
+        keys = layers.select { |layer| layer[:kind] == 'region' }.map { |layer| layer[:key] }
+
+        expect(keys.size).to eq(4 * 14 + 4)
+        expect(keys).not_to include('w.fresh_external.tail')
+        expect(keys.last(4)).to eq(%w[b.vitality b.poison b.disease b.close])
+      end
+
+      it 'puts the exact click command in each wound tooltip' do
+        expect(region('w.fresh_external.head')[:label]).to eq(
+          "Fresh External head: more than minor (4/13)\nClick: take Navesi head\nRight-click: take part, half or most"
+        )
+        expect(region('w.scar_internal.left_leg')[:label]).to include('Click: take Navesi left leg internal scar')
+        expect(region('w.fresh_external.chest')[:label]).to eq('Fresh External chest: no wound')
+        expect(region('b.vitality')[:label]).to eq('Click: take Navesi vitality')
+      end
+
+      it 'colors a wound by its level and the rest black' do
+        head = TouchWindow::FIGURE_PARTS[:head]
+        figure_x, figure_y, = layout[:figures][:fresh_external]
+        head_rings = layers.select do |layer|
+          layer[:kind] == 'marker' && layer[:x] == TouchWindow.px(figure_x + head[0]) && layer[:y] == TouchWindow.px(figure_y + head[1]) &&
+            layer[:color] != TouchWindow.rgba(TouchWindow::WHITE)
+        end
+
+        expect(head_rings.map { |layer| layer[:color] }.uniq).to eq([TouchWindow.rgba(TouchWindow::LEVEL_COLORS[4])])
+      end
+
+      it 'shows vitality and the poison count' do
+        texts = layers.select { |layer| layer[:kind] == 'label' }.map { |layer| layer[:text] }
+
+        expect(texts).to include('Vitality 63%', 'P', 'D', '2', 'Fresh External', 'Scar Internal', 'back', 'S')
+      end
+
+      it 'draws a pressed part in the pressed color, an unhurt eye with its head' do
+        pressed = TouchWindow.tab_layers('Navesi', patient.snapshot, layout, defaults, [:part, :fresh_external, :head])
+        pressed_color = TouchWindow.rgba(TouchWindow::PRESSED_COLOR)
+
+        expect(pressed.count { |layer| layer[:color] == pressed_color }).to be > layers.count { |layer| layer[:color] == pressed_color }
+      end
+
+      it 'stays inside the composite layer budget with every part wounded' do
+        TouchParser::WOUND_TYPES.each do |type|
+          TouchWindow::FIGURE_PARTS.each_key { |part| patient.apply([:wound, 'Navesi', type, part, 13]) }
+        end
+
+        expect(TouchWindow.tab_layers('Navesi', patient.snapshot, layout, defaults).size).to be < 512
+      end
+    end
+
+    describe '.disc' do
+      it 'fills a small circle with one ring and a large one with rings inside one another' do
+        expect(TouchWindow.disc(0, 0, 12, 12, [0, 0, 0]).map { |ring| ring.values_at(:x, :w, :line_width) }).to eq([[0, 24, 12.0]])
+        expect(TouchWindow.disc(0, 0, 34, 34, [0, 0, 0]).map { |ring| ring.values_at(:x, :w, :line_width) }).to eq([[0, 68, 16], [16, 36, 16], [32, 4, 2.0]])
+      end
+    end
+
+    describe '.on_screen?' do
+      it 'skips the far-off position of a minimized window and positions off every screen' do
+        screens = { source: 'native', screens: [{ x: 0, y: 0, width: 1920, height: 1080, primary: true, active: true }] }
+
+        expect(TouchWindow.on_screen?(100, 200, screens)).to be true
+        expect(TouchWindow.on_screen?(-32_000, -32_000)).to be false
+        expect(TouchWindow.on_screen?(2500, 200, screens)).to be false
+        expect(TouchWindow.on_screen?(nil, 200)).to be false
+      end
+    end
+
+    describe 'callbacks' do
+      let(:intents) { Thread::Queue.new }
+      let(:window) do
+        instance = TouchWindow.allocate
+        instance.instance_variable_set(:@intents, intents)
+        instance.instance_variable_set(:@lock, Monitor.new)
+        instance.instance_variable_set(:@views, {})
+        instance.instance_variable_set(:@options, defaults.dup)
+        instance.instance_variable_set(:@state, { 'options' => defaults.transform_keys(&:to_s) })
+        instance.instance_variable_set(:@activity, { text: 'Ready', detail: nil, state: :done })
+        instance.instance_variable_set(:@tabs_revision, 0)
+        %i[refresh retitle flash].each { |name| allow(instance).to receive(name) }
+        instance
+      end
+
+      def drain(queue)
+        Array.new(queue.size) { queue.pop }
+      end
+
+      def open_tab(name)
+        window.instance_variable_get(:@views)[name] = { snapshot: patient.snapshot, pressed: nil }
+        window.instance_variable_set(:@selected, name)
+      end
+
+      # #7660 review: Touch with no tab open shows a hint instead of the removed
+      # "who?" dialog.
+      it 'names both ways to add a patient on the status strip when no tab is open' do
+        allow(window).to receive(:show_activity)
+
+        window.on_touch
+
+        expect(window).to have_received(:show_activity).with('TOUCH <name> or ;touch <name> adds a tab', nil, :done)
+        expect(intents).to be_empty
+      end
+
+      it 'leaves the strip alone while a step is running' do
+        window.instance_variable_set(:@activity, { text: 'Self: Cast Heal', detail: 'cast Heal', state: :running })
+        allow(window).to receive(:show_activity)
+
+        window.on_touch
+
+        expect(window).not_to have_received(:show_activity)
+      end
+
+      it 'queues a left-click on a wound as an auto take, and on the bar as a condition take' do
+        open_tab('Navesi')
+
+        window.on_region('Navesi', 'w.fresh_external.head')
+        window.on_region('Navesi', 'b.vitality')
+
+        expect(drain(intents)).to eq([[:take_wound, 'Navesi', :fresh_external, :head, 'auto', defaults],
+                                      [:take_condition, 'Navesi', 'vitality', defaults]])
+      end
+
+      it 'takes the right-clicked wound with the amount picked from its menu' do
+        open_tab('Navesi')
+
+        window.on_surface('Navesi', { button: 'secondary', region: 'w.scar_internal.left_leg' })
+        window.on_wound_menu('half')
+
+        expect(drain(intents)).to eq([[:take_wound, 'Navesi', :scar_internal, :left_leg, 'half', defaults]])
+      end
+
+      it 'sends nothing from the wound menu when the right-click missed every wound' do
+        open_tab('Navesi')
+        allow(window).to receive(:show_activity)
+
+        window.on_surface('Navesi', { button: 'secondary', region: 'b.vitality' })
+        window.on_wound_menu('half')
+
+        expect(intents).to be_empty
+        expect(window).to have_received(:show_activity).with('Right-click a wound to take part of it', nil, :done)
+      end
+
+      it 'saves Take menu changes into the state written on exit' do
+        window.set_option(:quick, true)
+        window.set_click_amount('most')
+
+        expect(window.state['options']).to include('quick' => true, 'click_amount' => 'most')
+      end
+
+      it 'closes a tab, says so to the script and selects the next one' do
+        open_tab('Navesi')
+        open_tab('Pazzlen')
+        window.instance_variable_set(:@selected, 'Navesi')
+
+        window.on_tab_menu([:close_tab, 'Navesi'])
+
+        expect(drain(intents)).to eq([[:closed, 'Navesi']])
+        expect(window.selected_patient).to eq('Pazzlen')
+      end
+
+      it 'keeps the reported size and an on-screen position for the next start, and redraws on a resize' do
+        window.instance_variable_set(:@size, [420, 640])
+
+        window.on_configure({ width: 500, height: 700, position: [30, 40] })
+        window.on_configure({ width: 500, height: 700, position: [-32_000, -32_000] })
+
+        expect(window.state).to include('width' => 500, 'height' => 700, 'x' => 30, 'y' => 40)
+        expect(window).to have_received(:refresh).once
+      end
+
+      it 'right-click on Break cancels every link' do
+        window.on_break_press({ button: 3 })
+        window.on_break_press({ button: 1 })
+
+        expect(drain(intents)).to eq([[:break_all]])
+      end
     end
   end
 
