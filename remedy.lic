@@ -247,8 +247,12 @@ class Remedy
     # put your nemoih in your large mortar." (26:10749, the reply to
     # 26:10748 `put my nemoih in my large mortar`).
     #
-    # @note code-derived: the reply to the id form is taken to be the same
-    #   "You put your <herb> in your <vessel>."; no log sends the id form.
+    # @note The id form gets the same reply: `put #57039206 in my bowl` ->
+    #   "You put your junliar in your purpleheart bowl."
+    #   (deep-sea-draught-01-Mithandres, 2026-11-18 13:16:05;
+    #   2026-11-18_12-40-15.xml:34029 and :34070). Code-derived: the game
+    #   refusing a stale id in the put, which no log shows (a stale id in a
+    #   get is refused with "What were you referring to?", :35289-35290).
     #   The id form also listens for {NOT_FOUND}, and on it the put is sent
     #   again by name ({HerbGatherer#put_herb}); the name form listens for
     #   these replies alone, as it always has.
@@ -2534,10 +2538,13 @@ class Remedy
     # @return [String] the text bput returned for the last put sent
     # @note The id is GameObj's at the moment of the put. A hand tag the
     #   game has not yet sent for the last combine would leave a stale id;
-    #   no log carries hand tags (Genie client logs), so this is code-derived, as
-    #   is the refusal of a stale id: no log sends the id form.
-    #   "What were you referring to?" is the game's answer to a put of an
-    #   item it cannot find (26:39192 -> 26:39194).
+    #   no log carries hand tags (Genie client logs), so this is code-derived.
+    #   The id form itself is logged and answered as the name form is
+    #   ({Patterns::HERB_PUT_REPLIES}); a stale id refused in the put is
+    #   not, so that answer is code-derived too. "What were you referring
+    #   to?" is the game's answer to a put of an item it cannot find
+    #   (26:39192 -> 26:39194) and to a get of a stale id
+    #   (deep-sea-draught-01-Mithandres 13:17:36, {Inventory#forget_id}).
     #
     # After an id put the game answered "You put", the id is forgotten
     # ({Inventory#forget_id}, which keeps it while a hand still shows it),

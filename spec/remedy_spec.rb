@@ -3544,7 +3544,8 @@ RSpec.describe Remedy do
       # "What were you referring to?" (26:39194) is the game's answer to
       # `put my pewter ingot in my heavy cauldron` (26:39192) with no ingot
       # in hand. Here it stands for the game refusing an id it no longer
-      # knows, a stale id (code-derived: no log sends the id form).
+      # knows, a stale id (code-derived: the id form is logged, Mithandres
+      # 2026-11-18 13:16:05, but no log shows a stale id refused in a put).
       describe 'when the game refuses the id' do
         it 'puts the herb in by name once, the old command, and crafts to the end as the old put would' do
           script_short_unguent
@@ -7488,7 +7489,8 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
       end
 
       # 26:39194, "What were you referring to?", stands for the game
-      # refusing a stale id (code-derived: no log sends the id form).
+      # refusing a stale id (code-derived: the id form is logged, Mithandres
+      # 2026-11-18 13:16:05, but no log shows a stale id refused in a put).
       it 'puts the stack in by name once, the old command, when the game refuses the id (26:39194)' do
         script_stack
         game.script('put #41782305 in my large mortar', log('26:39194'))
