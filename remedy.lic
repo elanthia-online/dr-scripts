@@ -1217,6 +1217,41 @@ class Remedy
       (hand == :left ? GameObj.left_hand : GameObj.right_hand)&.id
     end
 
+    # Tells DRCC that an item remedy put into the vessel by its id is gone,
+    # so the next get of an item of that name does not ask for it by that
+    # id (DRCC::CRAFTING_ITEM_IDS.forget, lich-5 common-crafting.rb:165).
+    #
+    # DRCC remembers the id of the herb stack its get brought
+    # (remember_got_crafting_item, common-crafting.rb:798 and :1151-1155),
+    # and its next get of that herb asks for it by that id first
+    # (crafting_get_by_known_id, :1090-1100). remedy's put into the vessel
+    # is its own DRC.bput, so DRCC never learned the stack was gone, and
+    # every craft after the first sent a `get #<id>` that the game answered
+    # "What were you referring to?" before the get by name
+    # (deep-sea-draught-01-Mithandres: `put #57039206 in my bowl` at
+    # 13:16:05, `get #57039206` refused at 13:17:36; 67 of the 70 draught,
+    # glop and landsickness crafts of the 2026-11-18 Nezhiri sessions).
+    #
+    # Nothing is forgotten while a hand still shows the id (a put that took
+    # part of the stack, or a hand tag not yet updated: the get by id then
+    # finds it, or misses and goes by name as before), on a lich-5 without
+    # the memo, or while the Inventory feed answers but holds no snapshot:
+    # with no id remembered, DRCC's next get may send its own feed refresh
+    # and wait up to 2 s for it (crafting_feed_ids, :1039-1047), longer
+    # than the refused get it would save. A forgotten id is also counted
+    # dead, so an older feed snapshot cannot offer it again.
+    #
+    # @param id [String] the item's game id ({#held_id}), without "#"
+    # @return [Boolean] whether the id was forgotten
+    def forget_id(id)
+      return false if hand_ids.include?(id.to_s)
+      return false unless defined?(DRCC::CRAFTING_ITEM_IDS)
+      return false if feed_refresh_possible?
+
+      DRCC::CRAFTING_ITEM_IDS.forget(id.to_s)
+      true
+    end
+
     # What the hand holding an item shows, the hand found by the last word
     # of the item's name as {#stow_held} finds it (left hand first): the
     # full name, e.g. "nemoih unguent" for the noun "unguent".
@@ -1311,7 +1346,12 @@ class Remedy
 
     # Puts away the herb left in hand after the vessel put: in
     # herb_container, then, when the hand still holds it, in the crafting
-    # container.
+    # container. Nothing is sent when no hand holds the herb ({#held?},
+    # read once): the put took the whole stack, and the stow could only
+    # answer "What were you referring to?", as it did after all 95 vessel
+    # puts of the 2026-11-18 Nezhiri sessions
+    # (deep-sea-draught-02-Kythkani 13:45:44). A hand tag not yet updated
+    # still shows the herb, so the stow is then sent as before.
     #
     # The hand is read because lich-5 counts "That stack of herbs is too
     # large to add more to." (26:32077), the reply of a container whose
@@ -1324,6 +1364,8 @@ class Remedy
     # @param herb [String] herb1
     # @return [Boolean] whether the hands are free of the herb afterwards
     def stow_leftover(herb)
+      return true unless held?(herb)
+
       stow_herb(herb)
       return true if released?(herb, looks: STOP_LOOKS)
       return false unless @herb_container
@@ -1473,6 +1515,30 @@ class Remedy
     def in_both_hands?(name)
       noun = noun_of(name)
       DRCI.in_left_hand?(noun) && DRCI.in_right_hand?(noun)
+    end
+
+    # The game ids the hands show now ({#held_id}'s GameObj hands).
+    #
+    # @return [Array<String>] each hand's id, empty hands and hands with no
+    #   id left out
+    def hand_ids
+      [GameObj.left_hand, GameObj.right_hand].filter_map { |hand| hand&.id&.to_s }
+    end
+
+    # Whether DRCC's next get of an item it has no id for may send its own
+    # Inventory refresh ({#forget_id}): the feed has answered
+    # (Lich::Common::Inventory.feed_available?) but no snapshot is held
+    # (.current is nil), lich-5 common-crafting.rb:1046-1047. On a Lich
+    # whose Inventory has neither method there is no such refresh.
+    #
+    # @return [Boolean]
+    def feed_refresh_possible?
+      return false unless defined?(Lich::Common::Inventory)
+
+      feed = Lich::Common::Inventory
+      return false unless feed.respond_to?(:feed_available?) && feed.respond_to?(:current)
+
+      feed.feed_available? && feed.current.nil?
     end
 
     # @param hand [Symbol] :left or :right
@@ -1884,6 +1950,18 @@ class Remedy
   # has always sent, with or without herb_container (CURRENT H27): that
   # gathering works today, so A5 keeps its commands.
   #
+  # Three commands that could do nothing are not sent, each decided by the
+  # hands, which sends nothing:
+  # - the combine after the first get, when its count already reaches the
+  #   target and one hand holds the herb ({#first_stack_enough?});
+  # - the stow of the herb left after the put, when no hand holds it
+  #   ({Inventory#stow_leftover});
+  # - the next craft's get by the id of the stack the put took: the id is
+  #   forgotten in DRCC's memo once the put leaves no hand showing it
+  #   ({#put_herb}, {Inventory#forget_id}).
+  # A first stack short of the target, or beside a second stack, is still
+  # combined, and what the vessel did not take is still put away.
+  #
   # Short of a handful with no herb quantity, remedy says so and crafts with
   # what it holds, as it always has; the game decides ("requires more
   # pieces" stops remedy, {CraftLoop::MORE_PIECES}). Short of a herb
@@ -2024,6 +2102,8 @@ class Remedy
         return gather_outside_bags(herb, vessel, fetch + 1) unless routed
 
         count = count_held(herb)
+        return count if first_stack_enough?(herb, fetch, count)
+
         reply = combine(herb)
         return one_stack_count(count, counted) if fetch.positive? && reply == HOLDING_BOTH
         return held_after_unmerged(herb, reply) if unsettled?(reply, later: fetch.positive?)
@@ -2324,6 +2404,30 @@ class Remedy
       DRC.bput("combine my #{herb}", *Patterns::COMBINE_REPLIES)
     end
 
+    # Whether the first stack got from a bag ends the gathering before its
+    # combine: its count reached the target, and only one hand holds the
+    # herb, looked at once ({Inventory#got_second?} with no looks; it sends
+    # nothing).
+    #
+    # With one stack in hand the combine can only answer "You must be
+    # holding both substances to combine them." (25:18266), and after that
+    # reply on the first get the round ended on this same count, with or
+    # without a herb quantity ({#unsettled?} is false for it,
+    # {#add_from_bag} gives the sum, which is this count). So the combine
+    # did nothing: every one of the 95 crafts of the 2026-11-18 Nezhiri
+    # sessions sent it with a stack of 25 and got that reply
+    # (deep-sea-draught-02-Kythkani 13:45:43-44). With a stray stack of the
+    # herb in the other hand, or a count short of the target or holding no
+    # number, the combine is sent as before.
+    #
+    # @param herb [String] herb1
+    # @param fetch [Integer] the gets made before this one
+    # @param count [Integer, nil] this get's count
+    # @return [Boolean]
+    def first_stack_enough?(herb, fetch, count)
+      fetch.zero? && enough?(count) && !@inventory.got_second?(herb, looks: 0)
+    end
+
     # @param counted [Integer, nil] the pieces counted
     # @return [Boolean] whether they reach the target (the herb quantity,
     #   else {HANDFUL})
@@ -2433,10 +2537,16 @@ class Remedy
     #   is the refusal of a stale id: no log sends the id form.
     #   "What were you referring to?" is the game's answer to a put of an
     #   item it cannot find (26:39192 -> 26:39194).
+    #
+    # After an id put the game answered "You put", the id is forgotten
+    # ({Inventory#forget_id}, which keeps it while a hand still shows it),
+    # so the next craft's get of the herb does not ask for the stack now in
+    # the vessel by its id.
     def put_herb(herb, vessel, replies)
       id = @inventory.held_id(herb)
       if id
         reply = DRC.bput("put ##{id} in my #{vessel}", *replies, *Patterns::NOT_FOUND)
+        @inventory.forget_id(id) if reply == 'You put'
         return reply unless reply.start_with?(Patterns::NOT_FOUND_REPLY)
       end
       DRC.bput("put #{herb} in my #{vessel}", *replies)

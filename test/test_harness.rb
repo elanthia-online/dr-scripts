@@ -1561,6 +1561,19 @@ module Harness
     PRIVATE_FORGE_ENTRY_SUCCESS = ['You head through', 'You walk', 'You go', 'Obvious exits'].freeze
     PRIVATE_FORGE_ENTRY_BLOCKED = ["You don't have enough", 'The sentry blocks', 'cannot enter', 'You need to pay'].freeze
 
+    # Stand-in for lich-5's DRCC::ItemIdMemo (common-crafting.rb:106-210):
+    # the ids of crafting items DRCC moved, shared by every DRCC caller.
+    # Only the public calls scripts make are here, and they keep nothing; a
+    # spec spies on them (allow / have_received), or hides the constant
+    # (hide_const) for a lich-5 without the memo.
+    class ItemIdMemo
+      def forget(_id); end
+      def dead?(_id); false; end
+    end
+
+    # lich-5's one shared memo (common-crafting.rb:213).
+    CRAFTING_ITEM_IDS = ItemIdMemo.new
+
     class << self
       def check_for_existing_sigil?(*_args); true; end
       def get_adjust_tongs?(*_args); true; end
@@ -1779,10 +1792,13 @@ module Harness
 
     # lich-5's Lich::Common::Inventory read model (lib/common/inventory.rb).
     # refresh answers nil, as it does when the extended feed is absent; a
-    # spec that needs a snapshot stubs it.
+    # spec that needs a snapshot stubs it. feed_available? and current
+    # answer as with no feed seen (false, no snapshot).
     module Common
       module Inventory
         def self.refresh(*_args); end
+        def self.feed_available?; false; end
+        def self.current; end
       end
 
       # lich-5's user-regex timeout (lib/common/user_defs.rb), present from
