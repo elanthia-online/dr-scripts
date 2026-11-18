@@ -8250,10 +8250,12 @@ RSpec.describe TaskMaster do
         product: 'landsickness potion', order: 10, price: 537, pieces: 5 }
     end
 
-    # remedy_takes_stocked: true stands for the remedy.lic shipped with this
-    # taskmaster; the examples of remedy_takes_stocked? set it themselves.
-    def nezhiri_tm(**ivars)
-      build(npc: 'nezhiri', stockdata: stock, rooms: TaskMaster::ROOMS, remedy_takes_stocked: true, **ivars)
+    # remedy_takes_stocked? answers true, for the remedy.lic shipped with
+    # this taskmaster, unless real_remedy_check: true (its own examples).
+    def nezhiri_tm(real_remedy_check: false, **ivars)
+      tm = build(npc: 'nezhiri', stockdata: stock, rooms: TaskMaster::ROOMS, **ivars)
+      allow(tm).to receive(:remedy_takes_stocked?).and_return(true) unless real_remedy_check
+      tm
     end
 
     # A replay for the example: the game answers DRC.bput, fput and
@@ -8802,9 +8804,13 @@ RSpec.describe TaskMaster do
 
       before { $test_data.crafting = crafting }
 
-      def maker(settings: self.settings, **ivars)
-        build(settings: settings, npc: 'nezhiri', stockdata: crafting['stock'], rooms: TaskMaster::ROOMS, lootbag: 'velvet backpack',
-              keeplist_regex: /leather|stack/, remedy_takes_stocked: true, **ivars)
+      # remedy_takes_stocked? answers true (the shipped remedy.lic) unless
+      # real_remedy_check: true.
+      def maker(settings: self.settings, real_remedy_check: false, **ivars)
+        tm = build(settings: settings, npc: 'nezhiri', stockdata: crafting['stock'], rooms: TaskMaster::ROOMS, lootbag: 'velvet backpack',
+                   keeplist_regex: /leather|stack/, **ivars)
+        allow(tm).to receive(:remedy_takes_stocked?).and_return(true) unless real_remedy_check
+        tm
       end
 
       # The arguments read as remedy.lic reads them: Lich joins a caller's
@@ -8844,7 +8850,7 @@ RSpec.describe TaskMaster do
           # @param text [String, nil] the file's text; nil for no file found
           # @return [TaskMaster]
           def with_remedy_file(text)
-            tm = maker(remedy_takes_stocked: nil)
+            tm = maker(real_remedy_check: true)
             path = text && File.join(Dir.mktmpdir, 'remedy.lic')
             File.write(path, text) if path
             allow(tm).to receive(:remedy_script_file).and_return(path)
@@ -8867,10 +8873,40 @@ RSpec.describe TaskMaster do
 
           it 'leaves the word out when Lich finds no remedy.lic, or it cannot be read' do
             expect(with_remedy_file(nil).remedy_args(glop_recipe)).to eq(old_args)
-            unreadable = maker(remedy_takes_stocked: nil)
+            unreadable = maker(real_remedy_check: true)
             allow(unreadable).to receive(:remedy_script_file).and_return(File.join(Dir.mktmpdir, 'missing', 'remedy.lic'))
             expect(unreadable.remedy_args(glop_recipe)).to eq(old_args)
             expect(messages.size).to eq(2)
+          end
+
+          # With repeat one taskmaster launches remedy task after task, and
+          # the file Lich picks can change in between: a custom remedy taken
+          # out leaves an older one in the scripts folder.
+          it 'asks again at every launch, and goes by the file Lich now picks, read again only when it changes' do
+            dir = Dir.mktmpdir
+            custom = File.join(dir, 'custom-remedy.lic')
+            standard = File.join(dir, 'remedy.lic')
+            File.write(custom, File.read(File.expand_path('../remedy.lic', __dir__)))
+            File.write(standard, "class Remedy\n  ARG_DEFINITIONS = [].freeze\nend\n")
+            tm = maker(real_remedy_check: true)
+            picked = [custom, custom, standard, standard]
+            allow(tm).to receive(:remedy_script_file) { picked.shift }
+            allow(File).to receive(:binread).and_call_original
+
+            args = Array.new(4) { tm.remedy_args(glop_recipe).last }
+
+            expect(args).to eq(['stocked', 'stocked', '25', '25'])
+            expect(File).to have_received(:binread).twice
+            expect(messages.size).to eq(1)
+          end
+
+          it 're-reads the file when it changes in place' do
+            tm = with_remedy_file("class Remedy\nend\n")
+            path = tm.send(:remedy_script_file)
+            expect(tm.remedy_args(glop_recipe).last).to eq('25')
+
+            File.write(path, "class Remedy\n  STOCKED_ARG = {}.freeze\nend\n# now longer\n")
+            expect(tm.remedy_args(glop_recipe).last).to eq('stocked')
           end
 
           it "finds the file by Lich's own lookup, custom/ first, and gives nil when that lookup is not there" do
