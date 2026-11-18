@@ -6,7 +6,7 @@
   task_get_tools_on_completion: true/false # If you want taskmaster to pickup any remaining tools in the repair shop. Useful if you're using clerk-tools after each task
   task_use_boost: true/false # use boost to eliminate task cooldowns, useful if you have a few and you're doing a lot of tasks
   task_cooldown_poll: 15 # seconds between asks while the taskmaster makes you wait (minimum 3)
-  task_boosts: [task, haste] # boosts to use. task: BOOST TASK when a task is on cooldown (same as task_use_boost). haste: keep BOOST HASTE (1 hour, roundtimes -1 second) running between tasks. Once the game says you have no credits for one, it is not asked for again until your next login (boost credits are counted at login; to ask again sooner, ;e $taskmaster_boost_unavailable = nil)
+  task_boosts: [task, haste] # boosts to use. task: BOOST TASK when a task is on cooldown (same as task_use_boost). haste: keep BOOST HASTE (1 hour, roundtimes -1 second) running between tasks. Once the game says you have no credits for one, it is not asked for again until the game's daily rollover (midnight US Central, when login rewards can add boosts in the middle of a login) or your next login; to ask again sooner, ;e $taskmaster_boost_unavailable = nil
   task_keep_list: list of items to keep. See default in base.yaml
   task_junk_list: list of items to throw away; everything else is kept. String entries match whole words only ('steel' does not match silversteel); regexps match as written. When set (non-empty) it replaces task_keep_list, so a prize nobody has listed yet is kept rather than binned
   task_slack_keepers: true/false # send a Slack message (slack_username) for each keeper
@@ -37,7 +37,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.19.6'
+  VERSION = '2026.11.19.7'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -708,7 +708,7 @@ class TaskMaster
   # activated the Task Master boost for 2 hours!", 18:07:30; the two
   # no-credit lines, Holdigor 2026-11-18 15:26:44 and 15:26:47), so they are
   # anchored: someone in the room saying the same words ("Kvofe says, ...")
-  # cannot pass for the game's answer and stop the boost for the login. The
+  # cannot pass for the game's answer and stop the boost until the rollover. The
   # catch-alls (HASTE_OTHER, TASK_BOOST_OTHER) take a line naming the boost
   # only with no quote before the name: speech, whispers and thoughts quote
   # what is said, and none of the game's boost replies has a quote in it.
@@ -735,7 +735,8 @@ class TaskMaster
 
   # Reads task_boosts (and the older task_use_boost, which means the task
   # boost) into @boosts, and arms the one task boost per run in @boost,
-  # unless this login has already run out of task boosts (boost_spent?).
+  # unless the game has said there are no task boosts left since the last
+  # rollover (boost_spent?).
   #
   # @return [void]
   def configure_boosts
@@ -744,31 +745,62 @@ class TaskMaster
     @boost = @boosts.include?('task') && !boost_spent?('task')
   end
 
-  # Whether the game has said this login has no credits left for a boost
-  # (note_boost_spent). Boost credits are counted at login and only change
-  # at the next one, and each login starts a new Lich process, so the
-  # answer is kept in a process global, $taskmaster_boost_unavailable: it
-  # outlives the runs t2 starts for each task and ends with the login. To
-  # ask again without a relog: ;e $taskmaster_boost_unavailable = nil.
+  # Whether the game has said there are no credits left for a boost since
+  # the last daily rollover (note_boost_spent). Credits arrive at a login,
+  # and also in the middle of one: the daily login reward, at midnight US
+  # Central, can be boosts of either kind ("For logging in for 1
+  # consecutive days, you have earned 2 2-Hours of No TASK Cooldown
+  # boosts.", Gorkus 2026-11-18 19:00:43 NZDT, whose BOOST TASK got no
+  # credits at 18:56:48 and activated at 19:04:35; "1 1-Hour Minor Haste
+  # boost" is another reward). So the answer is kept, with when it was
+  # given, in a process global, $taskmaster_boost_unavailable: it outlives
+  # the runs t2 starts for each task, ends with the login, and lapses once a
+  # rollover hour (BOOST_ROLLOVER_HOURS) has passed since. To ask again
+  # sooner: ;e $taskmaster_boost_unavailable = nil.
   #
   # @param boost [String] 'task' or 'haste'
   # @return [Boolean]
   def boost_spent?(boost)
-    ($taskmaster_boost_unavailable || {})[boost] ? true : false
+    noted = ($taskmaster_boost_unavailable || {})[boost]
+    noted.is_a?(Integer) && !boost_rollover_since?(noted)
   end
 
-  # Notes that this login has no credits left for a boost, so it is not
-  # asked for again until the next login (boost_spent?).
+  # The UTC hours the game's day can turn over: midnight US Central, 05:00
+  # UTC in daylight time and 06:00 UTC in standard time. Login rewards were
+  # given at 05:xx or 06:xx UTC to characters already logged in (8,185 of
+  # them in the logs since 2025-10-25; the others came with a first login
+  # later in the day). Both hours are kept, so no time zone data is needed;
+  # the other one costs at most one more ask a day.
+  BOOST_ROLLOVER_HOURS = [5, 6].freeze
+
+  # Whether a rollover hour (BOOST_ROLLOVER_HOURS) has come since +noted+.
+  #
+  # @param noted [Integer] epoch seconds the no-credits reply was noted
+  # @return [Boolean]
+  def boost_rollover_since?(noted)
+    from = Time.at(noted).utc
+    now = Time.now.to_i
+    BOOST_ROLLOVER_HOURS.any? do |hour|
+      turn = Time.utc(from.year, from.month, from.day, hour)
+      turn += 86_400 if turn.to_i <= noted
+      turn.to_i <= now
+    end
+  end
+
+  # Notes, with the time, that the game said there are no credits left for
+  # a boost, so it is not asked for again until the next rollover hour or
+  # login (boost_spent?).
   #
   # @param boost [String] 'task' or 'haste'
   # @return [void]
   def note_boost_spent(boost)
     $taskmaster_boost_unavailable ||= {}
-    $taskmaster_boost_unavailable[boost] = true
+    $taskmaster_boost_unavailable[boost] = Time.now.to_i
   end
 
   # BOOST TASK, the one task boost of a run (@boost, which this disarms).
-  # No credits left notes it for the rest of the login (note_boost_spent).
+  # No credits left notes it until the next rollover hour or login
+  # (note_boost_spent).
   #
   # @return [Boolean] false when there were no credits, else true (an
   #   activation, or a reply it does not know, as BOOST TASK was always
@@ -783,8 +815,8 @@ class TaskMaster
 
   # Keeps BOOST HASTE running. Its expiry is kept in UserVars because t2 can
   # start this script once per task, so the hour outlives any single run.
-  # Out of credits, it is not asked for again until the next login
-  # (note_boost_spent), as only a login brings new credits.
+  # Out of credits, it is not asked for again until the next rollover hour
+  # or login (note_boost_spent), which can bring new credits.
   #
   # @note The expiry lives in UserVars.taskmaster_haste_expires, which
   #   persists across runs, since t2 relaunches this script for each task.
