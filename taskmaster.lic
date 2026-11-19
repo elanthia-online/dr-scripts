@@ -1302,7 +1302,7 @@ class TaskMaster
   # @param type [String] stock name, e.g. 'burlap'
   # @return [void]
   def zasele(item, count, volume_per_item, base, type)
-    toolset = base == 'yarn' ? ["knitting needles"] : @settings.outfitting_tools
+    toolset = base == 'yarn' ? [knitting_needles_name] : @settings.outfitting_tools
     stop_if_tools_at_repair(toolset)
     if base == 'yarn'
       buy_yarn(item, count, volume_per_item, base)
@@ -1314,6 +1314,15 @@ class TaskMaster
     # When bin_task_stock will bin the leftover stock after the hand-in,
     # there is no walk to the bin room now.
     trash(item, base, type) unless bins_task_stock?
+  end
+
+  # The knitting needles by the name outfitting_tools gives them (base.yaml
+  # says "knitting needle"), else "knitting needles", so a yarn task and a
+  # cloth task keep the same repair clock for them.
+  #
+  # @return [String]
+  def knitting_needles_name
+    Array(@settings.outfitting_tools).find { |tool| tool.to_s.match?(/\bknitting needles?\b/i) } || 'knitting needles'
   end
 
   # Dorhum's items, keyed by the task item's noun, as far as the Hollow Eve
@@ -5745,9 +5754,9 @@ class TaskMaster
   # repairer (repairer_for). Only the tools due a repair by
   # task_repair_every (repair_due?) go, after the hands are put away (a tool
   # not due can still be in hand from the craft); with none due, the hands
-  # are put away as with task_no_repair. Own repairs that stop (engaged in
-  # combat) note nothing repaired, so every tool due is tried again next
-  # time.
+  # are put away as with task_no_repair. With task_self_repair only the due
+  # tools a TAP finds are repaired and noted; own repairs that stop (engaged
+  # in combat) note nothing, so every tool due is tried again next time.
   #
   # @param tools [Array<String>] tool names (Bradyn's stone and bone tasks
   #   give the tool in hand, by the name DRC.right_hand shows, which is then
@@ -5760,8 +5769,13 @@ class TaskMaster
     return if due.empty? # skipping repair, tool(s) and stock put away, moving on
 
     if @self_repair
-      result = DRCC.repair_own_tools({ 'finisher-room' => 8776, 'finisher-number' => 6 }, due, @bag, @bag_items, belt) # runs self repair routine
-      due.each { |tool| note_repaired(tool) } unless result == :engaged
+      # Only tools carried are noted repaired: repair_own_tools skips one it
+      # cannot get without saying so, and that one stays due.
+      present = due.select { |tool| DRCI.exists?(tool) }
+      return if present.empty?
+
+      result = DRCC.repair_own_tools({ 'finisher-room' => 8776, 'finisher-number' => 6 }, present, @bag, @bag_items, belt) # runs self repair routine
+      present.each { |tool| note_repaired(tool) } unless result == :engaged
     else
       tool_drop(due, belt) # drops tools off at the repair guy to be picked up later
     end
@@ -5790,21 +5804,36 @@ class TaskMaster
     @repair_every_setting ||= begin
       setting = @settings.task_repair_every
       setting = setting.to_h if setting.is_a?(OpenStruct)
-      (setting.is_a?(Hash) ? setting : {}).each_with_object({}) do |(key, value), intervals|
+      unless setting.nil? || setting.is_a?(Hash)
+        DRC.message("task_repair_every should map taskmasters to seconds ({ default: 0, nezhiri: 10800 }), not '#{setting}'; ignoring it.")
+        setting = {}
+      end
+      (setting || {}).each_with_object({}) do |(key, value), intervals|
         next if value.nil? || value.to_s.strip.empty?
 
-        seconds = case value
-                  when Integer then value
-                  when Float then value.finite? ? value.to_i : nil
-                  else Integer(value.to_s.strip, exception: false)
-                  end
+        seconds = repair_seconds(value)
         if seconds.nil?
-          DRC.message("task_repair_every #{key}: '#{value}' is not a number of seconds; ignoring it.")
+          DRC.message("task_repair_every #{key}: '#{value}' is not a whole number of seconds (0 or more); ignoring it.")
           next
         end
         intervals[key.to_s.strip.downcase] = seconds
       end
     end
+  end
+
+  # A task_repair_every value as whole seconds, 0 or more: an Integer, a
+  # Float with no fraction, or the digits of one in base 10; nil for
+  # anything else ("3h", 10800.9, -5, "0x10").
+  #
+  # @param value [Object]
+  # @return [Integer, nil]
+  def repair_seconds(value)
+    seconds = case value
+              when Integer then value
+              when Float then value.finite? && value == value.floor ? value.to_i : nil
+              else value.to_s.strip.match?(/\A\d+\z/) ? Integer(value.to_s.strip, 10) : nil
+              end
+    seconds if seconds&.>=(0)
   end
 
   # Whether the tool is due a repair: its task_repair_every interval has run
@@ -5853,6 +5882,8 @@ class TaskMaster
     return if @no_repair
 
     intervals = repair_every_setting
+    unknown = intervals.keys - ['default'] - TASKMASTERS
+    DRC.message("task_repair_every names #{unknown.join(', ')}, which #{unknown.size == 1 ? 'is' : 'are'} not a taskmaster (#{TASKMASTERS.join(', ')}); a misspelling?") unless unknown.empty?
     npcs.compact.uniq.reject { |npc| intervals.key?(npc) }.each do |npc|
       DRC.message("task_repair_every has no entry for #{npc}; its tools go for repair #{interval_words(repair_interval(npc))}#{intervals.key?('default') ? ' (the default entry)' : ''}.")
     end

@@ -753,6 +753,13 @@ RSpec.describe TaskMaster do
         expect(start(npc: 'zasele', pickup: true, settings: { task_repair_every: nil })).to eq(%i[tool_pickup exit])
       end
 
+      it 'names Zasele in a cycle or marathon run that has no entry for it' do
+        cycle = start(cycle: true, samples: %w[zasele], wrap_up_after: 1, settings: { task_repair_every: { 'poltu' => 0, 'bradyn' => 0 } })
+        expect(cycle).to include([:message, 'task_repair_every has no entry for zasele; its tools go for repair after every task.'])
+        marathon = start(npc: 'nezhiri', marathon: true, wrap_up_after: 1, settings: { task_repair_every: { 'nezhiri' => 0 } })
+        expect(marathon).to include([:message, 'task_repair_every has no entry for zasele; its tools go for repair after every task.'])
+      end
+
       it "names cycle's task_fallback_npc too when it is not one of the three" do
         events = start(cycle: true, samples: %w[zasele], wrap_up_after: 1, settings: { task_repair_every: { 'poltu' => 0, 'bradyn' => 0, 'zasele' => 0 }, task_fallback_npc: 'dorhum' })
         expect(events).to include([:message, 'task_repair_every has no entry for dorhum; its tools go for repair after every task.'])
@@ -12988,17 +12995,28 @@ RSpec.describe TaskMaster do
         expect(every({ 'nezhiri' => '  ', 'default' => 600 }).repair_interval).to eq(600)
       end
 
+      it 'names and ignores values that are not whole seconds, 0 or more: fractions, negatives, hex; reads base-10 digits as given' do
+        tm = every({ 'nezhiri' => 10_800.9, 'zasele' => -5, 'poltu' => '0x10', 'bradyn' => '010', 'dorhum' => 7200.0 })
+        expect(tm.repair_every_setting).to eq('bradyn' => 10, 'dorhum' => 7200)
+        %w[nezhiri:\ '10800.9' zasele:\ '-5' poltu:\ '0x10'].each { |part| expect(DRC).to have_received(:message).with(/task_repair_every #{part}/) }
+      end
+
+      it 'names a setting that is not a mapping (a bare number) instead of dropping it silently' do
+        expect(every(10_800).repair_interval).to eq(0)
+        expect(DRC).to have_received(:message).with("task_repair_every should map taskmasters to seconds ({ default: 0, nezhiri: 10800 }), not '10800'; ignoring it.")
+      end
+
       it 'names and ignores an endless or not-a-number value (.inf, .nan in YAML) instead of crashing' do
         tm = every({ 'nezhiri' => Float::INFINITY, 'zasele' => Float::NAN, 'default' => 600 })
         expect(tm.repair_interval).to eq(600)
-        expect(DRC).to have_received(:message).with("task_repair_every nezhiri: 'Infinity' is not a number of seconds; ignoring it.")
-        expect(DRC).to have_received(:message).with("task_repair_every zasele: 'NaN' is not a number of seconds; ignoring it.")
+        expect(DRC).to have_received(:message).with("task_repair_every nezhiri: 'Infinity' is not a whole number of seconds (0 or more); ignoring it.")
+        expect(DRC).to have_received(:message).with("task_repair_every zasele: 'NaN' is not a whole number of seconds (0 or more); ignoring it.")
       end
 
       it 'says so, once, and ignores an entry that is not whole seconds' do
         tm = every({ 'nezhiri' => '3h', 'default' => 600 })
         2.times { expect(tm.repair_interval).to eq(600) }
-        expect(DRC).to have_received(:message).with("task_repair_every nezhiri: '3h' is not a number of seconds; ignoring it.").once
+        expect(DRC).to have_received(:message).with("task_repair_every nezhiri: '3h' is not a whole number of seconds (0 or more); ignoring it.").once
       end
     end
 
@@ -13035,6 +13053,12 @@ RSpec.describe TaskMaster do
         expect(UserVars.taskmaster_repaired_at).to eq('bowl' => now.to_i)
       end
 
+      it 'saves each stamp at once (a crash must not lose it)' do
+        stub_const('Vars', double('Vars', save: nil))
+        every({ 'nezhiri' => 10_800 }).note_repaired('bowl', now)
+        expect(Vars).to have_received(:save)
+      end
+
       it 'is always due at 0, as before the setting' do
         UserVars.taskmaster_repaired_at = { 'bowl' => now.to_i }
         expect(every({}).repair_due?('bowl', now)).to be(true)
@@ -13042,7 +13066,8 @@ RSpec.describe TaskMaster do
     end
 
     describe '#repair' do
-      def repair_with(due:, own_result: nil, **ivars)
+      def repair_with(due:, own_result: nil, carried: %w[mortar pestle sieve], **ivars)
+        allow(DRCI).to receive(:exists?) { |tool| carried.include?(tool) }
         tm = every({ 'nezhiri' => 10_800 }, **ivars)
         UserVars.taskmaster_repaired_at = (%w[mortar pestle sieve] - due).to_h { |tool| [tool, Time.now.to_i] }
         @steps = []
@@ -13074,6 +13099,12 @@ RSpec.describe TaskMaster do
         repair_with(due: %w[mortar], self_repair: true)
         expect(DRCC).to have_received(:repair_own_tools).with(anything, ['mortar'], 'duffel bag', [], 'alchemy belt')
         expect(UserVars.taskmaster_repaired_at['mortar']).to be_within(5).of(Time.now.to_i)
+      end
+
+      it 'with task_self_repair, repairs and notes only the due tools a TAP finds; a missing one stays due' do
+        repair_with(due: %w[mortar pestle], self_repair: true, carried: %w[pestle sieve])
+        expect(DRCC).to have_received(:repair_own_tools).with(anything, ['pestle'], 'duffel bag', [], 'alchemy belt')
+        expect(UserVars.taskmaster_repaired_at.keys).to contain_exactly('sieve', 'pestle')
       end
 
       it 'notes nothing repaired when own repairs stop (engaged), so every tool due is tried again' do
@@ -13150,6 +13181,11 @@ RSpec.describe TaskMaster do
         expect(DRC).not_to have_received(:message)
       end
 
+      it 'names a key that is neither default nor a taskmaster (a misspelling)' do
+        warned({ 'nezhri' => 10_800, 'nezhiri' => 10_800, 'zasele' => 43_200 })
+        expect(DRC).to have_received(:message).with('task_repair_every names nezhri, which is not a taskmaster (poltu, bradyn, zasele, dorhum, nezhiri); a misspelling?')
+      end
+
       it 'counts a blank entry as none' do
         warned({ 'nezhiri' => nil, 'zasele' => 43_200 })
         expect(DRC).to have_received(:message).with('task_repair_every has no entry for nezhiri; its tools go for repair after every task.')
@@ -13162,6 +13198,13 @@ RSpec.describe TaskMaster do
         expect(DRC).to have_received(:message).with(/no entry for bradyn/)
         expect(DRC).not_to have_received(:message).with(/no entry for zasele/)
       end
+    end
+  end
+
+  describe "the knitting needles' repair clock" do
+    it "keys a yarn task's needles by outfitting_tools' name for them, the one a cloth task uses" do
+      expect(build(settings: { outfitting_tools: ['knitting needle', 'scissors'] }).knitting_needles_name).to eq('knitting needle')
+      expect(build(settings: { outfitting_tools: ['scissors'] }).knitting_needles_name).to eq('knitting needles')
     end
   end
 end
