@@ -44,6 +44,24 @@
 # their last use and the game tossed them. No book is opened.
 #   ;remedy instructions marram "pewter ingot" mortar salve
 #
+# The instructions form takes one more optional argument, the word
+# stocked, before or after the herb quantity. It tells remedy the caller
+# has just checked the water, the alcohol and the coal nugget are on hand
+# (taskmaster.lic's Nezhiri crafts do, and none of her recipes uses water
+# or alcohol), so remedy skips its own check of loose water, alcohol and
+# coal at the start (a TAP each, see Buying supplies), and buys none of
+# them; a water_container or alcohol_container is still got and counted,
+# and when it holds none remedy tries to refill it (rubs it, then puts in
+# liquid from the crafting container), going on with the plain liquid if
+# that finds none, as on every run. Should the game then ask for a
+# catalyst that cannot be got, remedy stops with the vessel in hand, as it
+# always has, and prints the ;remedy continue line. taskmaster then checks
+# your hands for the remedy; finding none, it looks in the held vessel,
+# buys the nugget where it shops and carries an unfinished remedy on with
+# the continue form. Without stocked remedy checks and buys at the start,
+# as it always has.
+#   ;remedy instructions georin "coal nugget" mortar glop 25 stocked
+#
 # == Brewer's brine
 # Some instructions (Nezhiri's Hollow Eve 2026 recipes) list a splash of
 # brewer's brine, and the game asks for it while crafting ("You need another
@@ -62,11 +80,20 @@
 # workorders.lic:846/848, craft.lic:694 and create_remedies.lic:54 run the
 # book form with a base-recipes.yaml recipe; create_remedies runs the
 # instructions form instead for a recipe marked `instructions: true`
-# (CreateRemedies#remedy_args). Lich gives no exit status: the
-# finished remedy is left in hand, the tools and the vessel are put away,
-# the product is counted (`count my <noun>`, after the mark's roundtime) and
-# the script ends. The product in hand is the success signal; each caller
-# checks DRCI.in_hands?(noun) after remedy and stops when it is missing.
+# (CreateRemedies#remedy_args). taskmaster.lic runs the instructions form
+# for Nezhiri's remedies (Taskmaster#remedy_args), after it has bought what
+# the crafts need, with stocked when this remedy.lic takes the word, and
+# the continue form, without it, to carry an unfinished one on. Lich gives
+# no exit status: the finished remedy is left in hand, the tools and the
+# vessel are put away, the product is counted (`count my <noun>`, after
+# the mark's roundtime) and the script ends. The product in hand is the
+# success signal. workorders, craft and create_remedies check
+# DRCI.in_hands?(noun) after remedy and stop when it is missing
+# (workorders.lic:854, craft.lic:697, create_remedies.lic:57). taskmaster
+# checks the hands for the remedy (Taskmaster#held_remedy_ids); finding
+# none, it looks in a vessel left in hand and carries an unfinished remedy
+# on once with the continue form, or takes a finished one out
+# (Taskmaster#remedy_left_in_vessel), and stops only when that fails.
 # remedy prints a bold "Remedy:" line and exits with no product when the
 # game refuses the herb ("You need a more suitable type of herb", or more
 # pieces of it), when the studied instructions fade before crafting begins,
@@ -118,15 +145,22 @@
 # hometown; hometown's shop when base-crafting.yaml has none for the
 # crafting town), with coins from that town's bank, then walks to
 # alchemy_room, or back to the room it was started in when alchemy_room is
-# not set. remedy never buys brewer's brine.
+# not set. remedy never buys brewer's brine. It looks for loose water,
+# alcohol and coal at the start of every run, whether or not the recipe
+# uses them, unless the instructions form says stocked: then it looks for
+# none of them and buys nothing, and a catalyst that cannot be got stops
+# it with the vessel in hand. A water_container or alcohol_container is
+# got and counted at the start of every run, stocked or not; when it holds
+# none remedy tries to refill it, goes on with the plain liquid if that
+# finds none, and puts the vessel away.
 
 # Crafts one alchemy remedy from a recipe book or from crafting
 # instructions, or resumes one in progress.
 #
 # {Remedy.new} only takes the settings and the parsed arguments; {#run} does
 # the work: it registers the before_dying cleanup and the Flags, finds the
-# liquids, buys what is missing, then crafts until the game reports the
-# remedy done.
+# liquids, buys what is missing (unless the order is stocked), then crafts
+# until the game reports the remedy done.
 class Remedy
   # The game's own lines can start with XML tags or follow other text; other
   # players' speech, whispers and ESP always put a double quote before their
@@ -525,6 +559,21 @@ class Remedy
     description: 'Fewest pieces of herb1 to put in, 1 to 75; remedy stops before the put with fewer. Without it, 25, crafting with what is found.'
   }.freeze
 
+  # The instructions form's optional word stocked ({Order#stocked?}): the
+  # caller has just checked the water, the alcohol and the coal nugget are
+  # on hand, so remedy does not look for them at the start (see the file
+  # header). Like {HERB_QUANTITY_ARG} it is matched against the arguments
+  # left once the required ones are taken, so it may come before or after
+  # the herb quantity. The pattern is the whole word, anchored, so a herb
+  # quantity (digits only) never matches it nor it the herb quantity, and
+  # an argument list without it matches as before. The book and continue
+  # forms do not take it: their callers rely on remedy's own check, and
+  # taskmaster's continue run keeps it as the guard of its recovery.
+  STOCKED_ARG = {
+    name: 'stocked', regex: /\Astocked\z/i, optional: true,
+    description: 'The caller has checked water, alcohol and the coal nugget are on hand: skip the check of loose ones at the start and buy none of them (a water_container or alcohol_container is still got and counted, and remedy tries to refill it when empty). A catalyst that cannot be got stops remedy with the vessel in hand, for the caller to carry on (taskmaster checks your hands for the remedy, then looks in the held vessel and runs the continue form).'
+  }.freeze
+
   # The recipe names the book form accepts: letters, whitespace, hyphens and
   # the six characters ASCII sits between Z and a ([ \ ] ^ _ and the
   # backtick), as remedy always has (/^[A-z\s\-]+$/i, spelled out here).
@@ -563,7 +612,7 @@ class Remedy
   ].freeze
 
   # The instructions form: `;remedy instructions <herb1> <catalyst>
-  # <container> <noun> [herb quantity]`, for a remedy made from loose
+  # <container> <noun> [herb quantity] [stocked]`, for a remedy made from loose
   # crafting instructions, "<noun> instructions" ({Order#instructions_name}),
   # instead of a recipe book. It takes no herb2: every instructions remedy
   # of the logs uses one herb (clubmoss liniment 25:10795, marram salve
@@ -583,7 +632,8 @@ class Remedy
     CATALYST_ARG,
     CONTAINER_ARG,
     NOUN_ARG,
-    HERB_QUANTITY_ARG
+    HERB_QUANTITY_ARG,
+    STOCKED_ARG
   ].freeze
 
   # The forms parse_args matches the arguments against.
@@ -646,6 +696,9 @@ class Remedy
   #   @return [Integer, nil] the fewest pieces of herb1 to put in the vessel
   #     ({HERB_QUANTITY_ARG}), 1 to 75; nil when not given, and always in
   #     the continue form, which gathers no herb
+  # @!attribute [r] stocked
+  #   @return [Boolean] whether the caller said stocked ({STOCKED_ARG}):
+  #     true only in the instructions form, when given
   #
   # Defined as a constant and reopened below without a superclass: Lich
   # evals the whole script again on every run in the same session and keeps
@@ -654,7 +707,7 @@ class Remedy
   # for class Order" before sending anything.
   #
   # @api private
-  Order = Data.define(:mode, :book_type, :chapter, :recipe_name, :herb1, :herb2, :catalyst, :container_request, :noun, :herb_quantity)
+  Order = Data.define(:mode, :book_type, :chapter, :recipe_name, :herb1, :herb2, :catalyst, :container_request, :noun, :herb_quantity, :stocked)
 
   class Order
     # The herb2 values that say the recipe has no second herb, as parse_args
@@ -663,12 +716,14 @@ class Remedy
     # (the file header's example).
     NO_SECOND_HERB = ['na', 'none', 'not used'].freeze
 
-    # Builds an Order. herb_quantity may be left out, as in every request
-    # made before it existed: nil, gather the usual {HerbGatherer::HANDFUL}.
+    # Builds an Order. herb_quantity and stocked may be left out, as in
+    # every request made before they existed: nil, gather the usual
+    # {HerbGatherer::HANDFUL}; false, check the supplies at the start.
     #
     # @param herb_quantity [Integer, nil] see {#herb_quantity}
+    # @param stocked [Boolean] see {#stocked}
     # @param members [Hash{Symbol => Object}] every other attribute
-    def initialize(herb_quantity: nil, **members)
+    def initialize(herb_quantity: nil, stocked: false, **members)
       super
     end
 
@@ -681,8 +736,8 @@ class Remedy
 
     # Reads the request from parse_args' result, in any form of
     # {ARG_DEFINITIONS}. Only the continue form sets `continue`, only the
-    # instructions form `instructions`, and only the book and instructions
-    # forms a herb quantity. Stops before anything is sent when the
+    # instructions form `instructions` and `stocked`, and only the book and
+    # instructions forms a herb quantity. Stops before anything is sent when the
     # recipe name is no valid Regexp ({.recipe_name_error}) or the herb
     # quantity is one no stack can hold ({.herb_quantity_error}).
     #
@@ -705,7 +760,8 @@ class Remedy
           catalyst: args.catalyst,
           container_request: args.container,
           noun: args.noun,
-          herb_quantity: args.herb_quantity&.to_i)
+          herb_quantity: args.herb_quantity&.to_i,
+          stocked: !args.stocked.nil?)
     end
 
     # Which form of {ARG_DEFINITIONS} parse_args matched.
@@ -770,6 +826,15 @@ class Remedy
     # @return [Boolean]
     def instructions?
       mode == :instructions
+    end
+
+    # Whether the caller has checked the water, the alcohol and the coal
+    # nugget are on hand ({STOCKED_ARG}), so remedy does not look for them
+    # at the start, nor buy them ({Remedy#run}).
+    #
+    # @return [Boolean]
+    def stocked?
+      stocked
     end
 
     # The crafting instructions an instructions-form order studies, as
@@ -1807,6 +1872,9 @@ class Remedy
   # set, back to the room remedy was started in (before layer 13 it called
   # DRCT.walk_to(nil), which stays in the shop: H29).
   #
+  # A stocked order ({Order#stocked?}) skips the check at the start
+  # ({#buy_missing}) and buys nothing.
+  #
   # @api private
   class Supplies
     # The coins withdrawn before each purchase, as remedy always has.
@@ -1866,6 +1934,8 @@ class Remedy
     # @note Water and alcohol are bought whenever they are plain and missing,
     #   whether or not the recipe uses them, as before (H20, a
     #   follow-up): remedy is not told the recipe's liquid.
+    #   A stocked order ({Order#stocked?}) does not call it: its caller
+    #   has checked all three.
     def buy_missing(water:, alcohol:, catalyst:)
       buy('water') if water.plain? && !DRCI.exists?(water.source)
       buy('alcohol') if alcohol.plain? && !DRCI.exists?(alcohol.source)
@@ -2695,7 +2765,11 @@ class Remedy
     # ingot alongside the mortar ..." (25:11081).
     #
     # @return [void]
-    # @raise [SystemExit] when the catalyst cannot be got or put in
+    # @raise [SystemExit] when the catalyst cannot be got or put in. For a
+    #   stocked order too: remedy buys nothing mid-craft, where its shop
+    #   town (force_crafting_town or hometown) may be far from the room it
+    #   crafts in, and the caller carries the remedy on (taskmaster buys
+    #   the nugget in Crossing, then runs the continue form).
     def add_catalyst
       with_item(@order.catalyst, 'remedy-catalyst') { put_ingredient(@order.catalyst) }
     end
@@ -3969,7 +4043,8 @@ class Remedy
     @water = Liquid.find('water', @settings.water_container, @inventory)
     @alcohol = Liquid.find('alcohol', @settings.alcohol_container, @inventory)
     @brine = Liquid.plain('brine')
-    supplies.buy_missing(water: @water, alcohol: @alcohol, catalyst: @order.catalyst)
+    # A stocked order's caller has just checked all three (Order#stocked?).
+    supplies.buy_missing(water: @water, alcohol: @alcohol, catalyst: @order.catalyst) unless @order.stocked?
     DRC.wait_for_script_to_complete('buff', ['remedy']) if buff_set?
 
     if @order.continue?
