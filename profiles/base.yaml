@@ -3101,9 +3101,11 @@ task_cancel_foreign_tasks: false
 # task for when the one asked says you have done the most tasks it allows today ("You have reached the
 # maximum number of TASKs you may complete for <taskmaster> today."). Each run asks the first one
 # again, so its tasks resume once its limit resets; a task left open for the fallback is finished, not
-# cancelled. With task_repair_every entries for both, it is also worked, one task, each time the first
-# one's tools are left for repair (unless its own went for repair in the last 10 minutes), so the run
-# does not wait at the repairer; the run after asks the first one again. Unset: the run stops at the
+# cancelled. With task_repair_every entries for both (the first one's more than 0), it is also worked,
+# one task, right after the first one's tools are left for repair (unless its own went for repair in the
+# last 10 minutes, or it has given its limit since the daily rollover), so the run does not wait at the
+# repairer; the run after asks the first one again. With task_get_tools_on_completion each run collects
+# its tools at its end, so only repeat runs detour. Unset: the run stops at the
 # limit, and waits for tools at repair. Ignored by marathon, which works only Zasele's tasks.
 task_fallback_npc:
 # Setting for taskmaster - Where tools go for repair (unless task_no_repair or task_self_repair):

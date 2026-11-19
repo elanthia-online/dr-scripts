@@ -13183,7 +13183,7 @@ RSpec.describe TaskMaster do
 
       it 'says the fallback is not worked during repairs while either taskmaster lacks an entry' do
         warned({ 'nezhiri' => 10_800 })
-        expect(DRC).to have_received(:message).with("No Zasele task is worked while Nezhiri's tools are at repair until task_repair_every has entries for both.")
+        expect(DRC).to have_received(:message).with("No Zasele task is worked while Nezhiri's tools are at repair until task_repair_every has entries for both (and Nezhiri's is more than 0).")
         warned({ 'nezhiri' => 10_800 }, fallback: '')
         expect(DRC).to have_received(:message).with(/No Zasele task/).once
       end
@@ -13191,6 +13191,11 @@ RSpec.describe TaskMaster do
       it 'names a key that is neither default nor a taskmaster (a misspelling)' do
         warned({ 'nezhri' => 10_800, 'nezhiri' => 10_800, 'zasele' => 43_200 })
         expect(DRC).to have_received(:message).with('task_repair_every names nezhri, which is not a taskmaster (poltu, bradyn, zasele, dorhum, nezhiri); a misspelling?')
+      end
+
+      it 'says nothing about the fallback during repairs with task_self_repair, which never detours' do
+        warned({ 'nezhiri' => 10_800 }, self_repair: true)
+        expect(DRC).not_to have_received(:message).with(/No Zasele task/)
       end
 
       it 'counts a blank entry as none' do
@@ -13333,9 +13338,9 @@ RSpec.describe TaskMaster do
       expect(events.first).to eq([:ask, 'zasele'])
     end
 
-    it 'leaves a fallback set only for the daily limit alone: no detour without task_repair_every entries for both' do
+    it 'leaves a fallback set only for the daily limit alone: no detour without task_repair_every entries for both, or with 0 for the first one' do
       noted('nezhiri')
-      [{ 'default' => 10_800 }, { 'nezhiri' => 10_800 }, {}].each do |every|
+      [{ 'default' => 10_800 }, { 'nezhiri' => 10_800 }, {}, { 'nezhiri' => 0, 'zasele' => 0 }].each do |every|
         events, = detour_run(every: every, asks: { 'nezhiri' => [offer] })
         expect(events.first).to eq([:ask, 'nezhiri']), every.inspect
       end
@@ -13349,11 +13354,34 @@ RSpec.describe TaskMaster do
       expect(events).to eq([[:ask, 'zasele'], [:tool_pickup, 'zasele'], [:work, :zasele], [:complete, 'zasele']])
     end
 
-    it 'does not ask the fallback again in a run once it has given its daily limit' do
+    it 'does not ask the fallback again, in this run or the next, until the daily rollover after it gave its limit' do
       noted('nezhiri')
-      events, = detour_run(fallback_capped: true, asks: { 'nezhiri' => [offer] })
+      UserVars.taskmaster_capped = { 'zasele' => Time.now.to_i - 60 }
+      events, = detour_run(asks: { 'nezhiri' => [offer] })
 
       expect(events.first).to eq([:ask, 'nezhiri'])
+    end
+
+    it 'asks the fallback again once a daily rollover has passed since its limit' do
+      noted('nezhiri')
+      UserVars.taskmaster_capped = { 'zasele' => Time.now.to_i - (2 * 86_400) }
+      events, = detour_run(asks: { 'zasele' => [offer] })
+
+      expect(events.first).to eq([:ask, 'zasele'])
+    end
+
+    it 'notes the limit, with the time, when the fallback gives it during a detour' do
+      noted('nezhiri')
+      detour_run(asks: { 'zasele' => [daily_max], 'nezhiri' => [offer] })
+
+      expect(UserVars.taskmaster_capped['zasele']).to be_within(5).of(Time.now.to_i)
+    end
+
+    it 'does not detour for tools left long enough ago to be ready (overnight): it asks the first one and collects them' do
+      noted('nezhiri', ago: TaskMaster::REPAIR_READY_SECONDS)
+      events, = detour_run(asks: { 'nezhiri' => [offer] })
+
+      expect(events).to eq([[:ask, 'nezhiri'], [:tool_pickup, 'nezhiri'], [:work, :nezhiri], [:complete, 'nezhiri']])
     end
 
     it 'with repeat, does not walk to the fallback again in the run once it has given its daily limit' do
@@ -13388,6 +13416,33 @@ RSpec.describe TaskMaster do
       expect(asks).to eq(%w[zasele nezhiri nezhiri])
     end
 
+    it "does not detour Poltu's run to Bradyn for the forging tools Bradyn's task left, fresh or long ready (shared tools)" do
+      tm_settings = { task_repair_every: { 'poltu' => 10_800, 'bradyn' => 10_800 }, forging_tools: ['forging hammer', 'tongs'] }
+      hammer = { 'npc' => 'bradyn', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'forging hammer', 'item' => 'steel forging hammer', 'left_at' => Time.now.to_i - 60 }
+      UserVars.taskmaster_repairs = [hammer]
+      tm = build(npc: 'poltu', fallback_npc: 'bradyn', settings: tm_settings)
+
+      tm.detour_while_tools_repair
+
+      expect(tm.instance_variable_get(:@npc)).to eq('poltu')
+      hammer['left_at'] = Time.now.to_i - 3600
+      UserVars.taskmaster_repairs = [hammer]
+      tm = build(npc: 'poltu', fallback_npc: 'bradyn', settings: tm_settings)
+
+      tm.detour_while_tools_repair
+
+      expect(tm.instance_variable_get(:@npc)).to eq('poltu')
+    end
+
+    it 'clears the detour once the task is done (back_to_primary_npc)' do
+      tm = build(npc: 'zasele', primary_npc: 'nezhiri', repair_detour: true)
+
+      tm.back_to_primary_npc
+
+      expect(tm.instance_variable_get(:@npc)).to eq('nezhiri')
+      expect(tm.instance_variable_get(:@repair_detour)).to be(false)
+    end
+
     describe 'a task of the first one already open when the fallback is asked (#check_task_giver)' do
       it 'finishes that task, as the first taskmaster, instead of cancelling it' do
         tm = build(npc: 'zasele', primary_npc: 'nezhiri', repair_detour: true, fallback_npc: 'zasele', task_giver: 'nezhiri', cancel_foreign_tasks: true)
@@ -13399,6 +13454,12 @@ RSpec.describe TaskMaster do
         expect(tm.instance_variable_get(:@npc)).to eq('nezhiri')
         expect(tm.instance_variable_get(:@primary_npc)).to be_nil
         expect(DRC).to have_received(:message).with("You are on a task for Nezhiri; finishing it instead of working one of Zasele's.")
+      end
+
+      it "treats the first one's open task as another's when the run is not on a detour (fallback for the day)" do
+        tm = build(npc: 'zasele', primary_npc: 'nezhiri', repair_detour: false, fallback_npc: 'zasele', task_giver: 'nezhiri', cancel_foreign_tasks: false)
+
+        expect { tm.check_task_giver }.to raise_error(SystemExit)
       end
 
       it "still treats a third taskmaster's task as another's" do
