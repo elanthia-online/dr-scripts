@@ -1160,6 +1160,70 @@ RSpec.describe WorkOrders do
       workorders.instance_variable_set(:@settings, OpenStruct.new(workorders_repair_own_tools: false))
     end
 
+    # What DRC.bput hands back: the text the first given pattern (a String
+    # is /string/i) matches in the next line the game sends, '' if none.
+    def bput_lines(*lines)
+      allow(DRC).to receive(:bput) do |_command, *patterns|
+        line = lines.shift.to_s
+        hit = patterns.flatten.lazy.map { |pattern| line.match(pattern.is_a?(Regexp) ? pattern : /#{pattern}/i) }.find(&:itself)
+        hit ? hit[0] : ''
+      end
+    end
+
+    # Rangu's answers to a mortar (Hollow Eve 2026, log 6100:9659, 9661).
+    let(:quote) { "Rangu looks over the mortar and says, \"That will cost 240 Kronars to repair.  Just give it to me again if you want, and I'll have it ready in 1 roisaen.\"" }
+    let(:handed) { "You hand Rangu 240 Kronars and he gives you back a repair ticket.  Rangu says, \"I should be having that done for you in about 1 roisaen.\"" }
+
+    it 'answers each reply through the data patterns: a quote is confirmed (its cost read), no wear is put away' do
+      bput_lines(quote, handed, "Rangu shrugs and says, \"There isn't a scratch on that, and I'm not one to rob you.\"")
+      allow(DRCI).to receive(:get_item?).with('Rangu ticket').and_return(false)
+      allow(DRCI).to receive(:put_away_item?).and_return(true)
+      allow(workorders).to receive(:get_tool)
+      allow(workorders).to receive(:stow_tool)
+      allow(Lich::Messaging).to receive(:msg)
+      expect(workorders).to receive(:confirm_repair).with(info, 'hammer', 240).and_call_original
+
+      workorders.send(:repair_items, info, tools)
+
+      expect(workorders).to have_received(:stow_tool).with('tongs')
+      expect(DRCI).to have_received(:put_away_item?).with('ticket').once
+    end
+
+    it 'waits for a ticket until its look says it is ready, 30 s at a time' do
+      looks = ['Looking at the Rangu ticket you see it is for a steel hammer.',
+               'Looking at the Rangu ticket you see it is for a steel hammer.  You recall that your hammer should be ready by now.']
+      tickets = [true, false]
+      allow(DRCI).to receive(:get_item?).with('Rangu ticket') { tickets.shift }
+      allow(DRC).to receive(:bput) do |command, *patterns|
+        line = command == 'look at my ticket' ? (looks.shift || raise('looked at the ticket again after it was ready')) : 'You hand Rangu your ticket.'
+        hit = patterns.flatten.lazy.map { |pattern| line.match(pattern.is_a?(Regexp) ? pattern : /#{pattern}/i) }.find(&:itself)
+        hit ? hit[0] : ''
+      end
+      allow(workorders).to receive(:pause)
+      allow(workorders).to receive(:stow_tool)
+      allow(Lich::Messaging).to receive(:msg)
+
+      workorders.send(:repair_items, info, [])
+
+      expect(workorders).to have_received(:pause).with(30).once
+      expect(DRC).to have_received(:bput).with('look at my ticket', any_args).twice
+      # Both looks are answered by a pattern, so neither waits out bput's timeout.
+      expect(DRC).to have_received(:bput).with('look at my ticket', 'should be ready by now', 'Looking at the').twice
+    end
+
+    it 'says so once and leaves no tool for repair when base-crafting.yaml has no repair_replies (a stale data/custom copy)' do
+      allow(workorders).to receive(:get_data).with('crafting').and_return({ 'stock' => {} })
+      allow(DRCT).to receive(:walk_to)
+      allow(DRC).to receive(:bput)
+      allow(Lich::Messaging).to receive(:msg)
+
+      2.times { workorders.send(:repair_items, info, tools) }
+
+      expect(DRCT).not_to have_received(:walk_to)
+      expect(DRC).not_to have_received(:bput)
+      expect(Lich::Messaging).to have_received(:msg).with('bold', /base-crafting.yaml has no repair_replies quote, prompt, .*Update dr-scripts, or that copy/).once
+    end
+
     context 'when tool needs no repair' do
       it 'stows tool when repair not needed' do
         allow(DRC).to receive(:bput).and_return("There isn't a scratch on that")

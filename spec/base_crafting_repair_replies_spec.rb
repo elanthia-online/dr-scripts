@@ -31,9 +31,17 @@ RSpec.describe 'base-crafting.yaml repair_replies' do
     expect(rangu_quote[/#{replies['quote']}/i]).to start_with('cost 240 Kronars')
   end
 
-  it 'lists the quote among the answers to the first give, so a quote ends the wait' do
-    expect(replies['offered']).to include(replies['quote'])
-    expect(replies['offered'].any? { |pattern| bput_match?(pattern, rangu_quote) }).to be(true)
+  it 'lists the quote ahead of its bare prompt among the answers to the first give, so what bput hands back carries the cost' do
+    offered = replies['offered']
+    expect(offered).to include(replies['quote'], replies['prompt'])
+    expect(offered.index(replies['quote'])).to be < offered.index(replies['prompt'])
+    first = offered.find { |pattern| bput_match?(pattern, rangu_quote) }
+    expect(rangu_quote[/#{first}/i]).to match(/240 Kronars/)
+  end
+
+  it 'has the prompt in both repairers\' quotes, and not in a refusal' do
+    [rangu_quote, catrox_quote].each { |line| expect(bput_match?(replies['prompt'], line)).to be(true) }
+    expect(bput_match?(replies['prompt'], no_scratch)).to be(false)
   end
 
   it 'answers the first give for a tool with no wear, and declines it' do
@@ -56,7 +64,7 @@ RSpec.describe 'base-crafting.yaml repair_replies' do
   end
 
   it 'holds only strings, so every pattern loads without Ruby tags' do
-    patterns = [replies['quote'], replies['ticket'], replies['need_coin'], replies['ready'], replies['not_ready'], *replies['offered'], *replies['declined']]
+    patterns = [replies['quote'], replies['prompt'], replies['ticket'], replies['need_coin'], replies['ready'], replies['not_ready'], *replies['offered'], *replies['declined']]
     expect(patterns).to all(be_a(String))
     expect { patterns.each { |pattern| Regexp.new(pattern) } }.not_to raise_error
   end

@@ -12281,11 +12281,53 @@ RSpec.describe TaskMaster do
       expect(DRCC).to have_received(:stow_crafting_item).with('mortar', 'duffel bag', 'alchemy belt')
     end
 
+    it 'says so once and leaves nothing for repair, or collects nothing, when base-crafting.yaml has no repair_replies' do
+      tm = build(repair_replies: nil)
+      allow(tm).to receive(:get_data).with('crafting').and_return({ 'stock' => {} })
+      allow(DRCT).to receive(:walk_to)
+      allow(DRC).to receive(:bput)
+
+      tm.tool_drop(['mortar'], nil)
+      tm.tool_pickup
+
+      expect(DRCT).not_to have_received(:walk_to)
+      expect(DRC).not_to have_received(:bput)
+      expect(DRC).to have_received(:message).with(/base-crafting.yaml has no repair_replies quote, prompt, .*Update dr-scripts, or that copy/).once
+    end
+
     it 'puts the tool away when the first give gets no answer' do
       drop('')
 
       expect(sent).to eq(['give Rangu'])
       expect(DRCC).to have_received(:stow_crafting_item).with('mortar', 'duffel bag', 'alchemy belt')
+    end
+  end
+
+  describe 'collecting tools left with Rangu (#tool_pickup)' do
+    it 'waits until the ticket look says the tool is ready, 30 s at a time, then hands it in' do
+      # Every belt setting given: in Lich an unset one is nil, which its NilClass patch lets the search skip.
+      tm = build(settings: %i[forging_belt engineering_belt outfitting_belt alchemy_belt enchanting_belt].to_h { |belt| [belt, { 'items' => [] }] })
+      looks = ['Looking at the Rangu ticket you see it is for a polished belzune stone mortar.',
+               'Looking at the Rangu ticket you see it is for a polished belzune stone mortar.  You recall that your mortar should be ready by now.']
+      tickets = [true, false]
+      allow(DRCT).to receive(:walk_to)
+      allow(DRCI).to receive(:get_item?).with('rangu ticket') { tickets.shift }
+      allow(tm).to receive(:pause) { |seconds| $right_hand = 'stone mortar' if seconds < 1 }
+      allow(DRCC).to receive(:stow_crafting_item)
+      allow(DRC).to receive(:bput) do |command, *matchers|
+        if command == 'look at my ticket'
+          bput_match(looks.shift || raise('looked at the ticket again after it was ready'), matchers)
+        else
+          bput_match('You hand Rangu your ticket and are handed back a mortar.', matchers)
+        end
+      end
+
+      tm.tool_pickup
+
+      expect(tm).to have_received(:pause).with(30).once
+      expect(DRC).to have_received(:bput).with('look at my ticket', any_args).twice
+      # Both looks are answered by a pattern, so neither waits out bput's timeout.
+      expect(DRC).to have_received(:bput).with('look at my ticket', 'should be ready by now', 'Looking at the').twice
     end
   end
 end
