@@ -35,9 +35,11 @@ repair_replies:
   ticket: repair ticket
   # The answer to the second give when the coin carried is short.
   need_coin: more coin
-  # LOOK AT MY TICKET: "Looking at the Granzer ticket you see it is for a small
-  # demonscale shield ...  You recall that your shield should be ready by now."
-  # A ticket not ready yet starts the same way without that last sentence.
+  # LOOK AT MY TICKET, which reads a ticket stowed in a container too: "Looking
+  # at the Granzer ticket you see it is for a small demonscale shield ...  You
+  # recall that your shield should be ready by now." A ticket not ready yet
+  # starts the same way and ends "... should be ready any moment now."
+  # (Cithrin, Catrox, 2026-11-20 07:59:19).
   ready: should be ready by now
   not_ready: Looking at the
 stock:

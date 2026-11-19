@@ -58,9 +58,18 @@ RSpec.describe 'base-crafting.yaml repair_replies' do
     expect(bput_match?(replies['ticket'], rangu_quote)).to be(false)
   end
 
+  # LOOK AT a stowed Catrox ticket whose tool is not done yet (Cithrin,
+  # 2026-11-20 07:59:19).
+  let(:ticket_not_ready) { 'Looking at the Catrox ticket you see it is for a loimic slender awl.  You recall that your awl should be ready any moment now.' }
+
   it 'tells a ready ticket apart: the ready pattern matches it, and both match a ticket look' do
     expect(bput_match?(replies['ready'], ticket_ready)).to be(true)
     expect(bput_match?(replies['not_ready'], ticket_ready)).to be(true)
+  end
+
+  it 'reads a ticket not ready yet as a look that is not ready' do
+    expect(bput_match?(replies['not_ready'], ticket_not_ready)).to be(true)
+    expect(bput_match?(replies['ready'], ticket_not_ready)).to be(false)
   end
 
   it 'holds only strings, so every pattern loads without Ruby tags' do

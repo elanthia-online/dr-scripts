@@ -12454,12 +12454,11 @@ RSpec.describe TaskMaster do
   end
 
   describe 'tickets for the tools left for repair' do
-    # LOOK AT a ticket, in the form Mithandres's Granzer ticket showed
-    # (2026-01-03 00:55:40): ready, and the same look without its last
-    # sentence, not yet.
+    # LOOK AT a ticket, as the game words it for a stowed ticket: ready
+    # (Mithandres's Granzer ticket, 2026-01-03 00:55:40), and not yet
+    # (Cithrin's Catrox ticket, 2026-11-20 07:59:19).
     def ticket_look(name, item, ready: true)
-      line = "Looking at the #{name} ticket you see it is for a #{item}."
-      ready ? "#{line}  You recall that your #{item.split.last} should be ready by now." : line
+      "Looking at the #{name} ticket you see it is for a #{item}.  You recall that your #{item.split.last} should be ready #{ready ? 'by now' : 'any moment now'}."
     end
 
     let(:bowl) { { 'npc' => 'nezhiri', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'bowl', 'item' => 'large purpleheart bowl edged with ivory', 'left_at' => 1 } }
