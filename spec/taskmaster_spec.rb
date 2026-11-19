@@ -34,6 +34,12 @@ RSpec.describe TaskMaster do
     TaskMaster::TASKMASTERS.to_h { |npc| [npc, 0] }
   end
 
+  # What a pickup that brings everything back leaves noted: the notes of
+  # every other taskmaster's tools (all of them gone when npc is nil).
+  def collected(npc)
+    UserVars.taskmaster_repairs = Array(UserVars.taskmaster_repairs).reject { |record| npc.nil? || record['npc'] == npc }
+  end
+
   # The repair replies of data/base-crafting.yaml, read once: what a
   # repairer answers when handed a tool (shared with workorders).
   def real_repair_replies
@@ -555,7 +561,7 @@ RSpec.describe TaskMaster do
 
         rope_task
       end
-      allow(tm).to receive(:tool_pickup) { events << :tool_pickup }
+      allow(tm).to receive(:tool_pickup) { |npc: nil| events << :tool_pickup && collected(npc) }
       %i[poltu bradyn zasele].each do |npc|
         allow(tm).to receive(npc) do |*task|
           events << [:work, npc, *task]
@@ -676,7 +682,7 @@ RSpec.describe TaskMaster do
         else
           allow(tm).to receive(:get_task) { events << :get_task && tasks.shift }
         end
-        allow(tm).to receive(:tool_pickup) { |npc: nil| events << [:tool_pickup, npc] }
+        allow(tm).to receive(:tool_pickup) { |npc: nil| events << [:tool_pickup, npc] && collected(npc) }
         allow(tm).to receive(npc.to_sym) { events << :work }
         allow(tm).to receive(:complete_task) { events << :complete }
         tm.run_tasks(OpenStruct.new)
@@ -801,10 +807,10 @@ RSpec.describe TaskMaster do
         expect(events).to include(:restock, [:find_npc, 21, 'zasele'])
       end
 
-      it 'picks up repaired tools after each restock when a ticket is carried, and at the end only when asked' do
+      it 'picks up the tools left for repair after a restock, once they are back no more, and at the end only when asked' do
         events = start(npc: 'zasele', marathon: true, ticket: true, stock_ok: false, wrap_up_after: 1)
         expect(events.first(3)).to eq(%i[reconcile restock tool_pickup])
-        expect(events.each_cons(2).count { |pair| pair == %i[restock tool_pickup] }).to eq(2)
+        expect(events.each_cons(2).count { |pair| pair == %i[restock tool_pickup] }).to eq(1)
         expect(events.last(2)).to eq([[:complete, 'rope', 2], :exit])
         events = start(npc: 'zasele', marathon: true, settings: { task_self_repair: true, task_get_tools_on_completion: true }, ticket: true, wrap_up_after: 1)
         expect(events.last(3)).to eq([[:complete, 'rope', 2], :tool_pickup, :exit])
@@ -825,7 +831,8 @@ RSpec.describe TaskMaster do
 
         it "stops before sewing when a task's restock got none of a stock, after picking up repaired tools" do
           events = start(npc: 'zasele', marathon: true, ticket: true, stock_ok: false, restocks: [[], %w[cloth leather]], wrap_up_after: 1)
-          expect(events.last(6)).to eq([[:check_stock, 8, 'burlap', 'cloth'], [:repair, ['scissors'], outfitting_belt], :restock, :tool_pickup,
+          expect(events.first(3)).to eq(%i[reconcile restock tool_pickup])
+          expect(events.last(5)).to eq([[:check_stock, 8, 'burlap', 'cloth'], [:repair, ['scissors'], outfitting_belt], :restock,
                                         [:message, unreached], :exit])
         end
 
@@ -904,7 +911,7 @@ RSpec.describe TaskMaster do
         allow(tm).to receive(:run_before_scripts) { events << :before }
         allow(tm).to receive(:find_npc)
         allow(tm).to receive(:pause) { |seconds| events << [:pause, seconds] }
-        allow(tm).to receive(:tool_pickup) { events << :tool_pickup }
+        allow(tm).to receive(:tool_pickup) { |npc: nil| events << :tool_pickup && collected(npc) }
         allow(tm).to receive(:ensure_instructions) { |item, owed| events << [:ensure_instructions, item, owed] }
         if real_banked
           allow(tm).to receive(:give_item) do |item, owed|
@@ -1009,12 +1016,12 @@ RSpec.describe TaskMaster do
                               *before_task, [:ask, 'zasele'], [:pause, 15], [:ask, 'zasele'], *new_task])
       end
 
-      it 'with repeat and tools left for repair, picks up tools once on a resumed pass, inside the resume, and again only for the new task' do
+      it 'with repeat and tools left for repair, picks them up once, inside the resume of a resumed pass, and not again for the new task' do
         events = open_run(npc: 'zasele', repeat: true, wrap_up_after: 2, ticket: true, asks: [on_task, offer],
                           journals: [journal('a coil of reinforced cloth rope', 5, 3), journal('a coil of reinforced cloth rope', 3, 0)])
         resumed_with_pickup = resumed.dup.insert(4, :tool_pickup)
         expect(events).to eq([:reconcile, *before_task, [:ask, 'zasele'], *resumed_with_pickup,
-                              *before_task, [:ask, 'zasele'], :tool_pickup, *new_task])
+                              *before_task, [:ask, 'zasele'], *new_task])
         events = open_run(npc: 'zasele', repeat: true, wrap_up_after: 2, ticket: true, banked: [0], asks: [on_task, offer],
                           journals: [journal('a coil of reinforced cloth rope', 5, 3), journal('a coil of reinforced cloth rope', 3, 0)])
         expect(events).to eq([:reconcile, *before_task, [:ask, 'zasele'], [:banked, 'rope', 2, 0],
@@ -12348,6 +12355,20 @@ RSpec.describe TaskMaster do
       expect(DRCC).to have_received(:stow_crafting_item).with('mortar', 'duffel bag', 'alchemy belt')
     end
 
+    it 'says so once and leaves nothing for repair, or collects nothing, when base-crafting.yaml has no repair_replies' do
+      tm = build(repair_replies: nil)
+      allow(tm).to receive(:get_data).with('crafting').and_return({ 'stock' => {} })
+      allow(DRCT).to receive(:walk_to)
+      allow(DRC).to receive(:bput)
+
+      tm.tool_drop(['mortar'], nil)
+      tm.tool_pickup
+
+      expect(DRCT).not_to have_received(:walk_to)
+      expect(DRC).not_to have_received(:bput)
+      expect(DRC).to have_received(:message).with(/base-crafting.yaml has no repair_replies quote, prompt, .*Update dr-scripts, or that copy/).once
+    end
+
     it 'puts the tool away when the first give gets no answer, and says so' do
       drop('')
 
@@ -12674,27 +12695,52 @@ RSpec.describe TaskMaster do
     end
 
     describe 'the first run after upgrading (#pickup_old_tickets)' do
-      it "hands Rangu every ticket of his carried, once, and starts the notes once none is left" do
+      it 'hands Rangu every ticket of his that no note accounts for, once, and is done once a whole look finds none' do
         tm = pickup_world({ 'Rangu' => [['polished belzune stone mortar', true]] })
 
         tm.pickup_old_tickets
         tm.pickup_old_tickets
 
-        expect(sent).to eq([[:tap, 'Rangu ticket'], [:walk, 19_209], 'look at my first Rangu ticket', 'look at my second Rangu ticket',
-                            [:get, 'first Rangu ticket'], 'give Rangu', [:stow, 'mortar'], 'look at my first Rangu ticket', [:tap, 'Rangu ticket']])
-        expect(UserVars.taskmaster_repairs).to eq([])
+        expect(sent).to include([:walk, 19_209], [:get, 'first Rangu ticket'], 'give Rangu', [:stow, 'mortar'])
+        expect(sent.count { |step| step == [:tap, 'Rangu ticket'] }).to eq(1)
+        expect(UserVars.taskmaster_old_tickets_done).to be(true)
       end
 
-      it 'tries again next run while a Rangu ticket is still carried (not ready, refused, room not reached)' do
+      it 'stops before the task while an un-noted Rangu ticket is still carried (not ready, room not reached), and tries again next run' do
         tm = pickup_world({ 'Rangu' => [['polished belzune stone mortar', false]] }, ready_after: 999)
 
+        expect { tm.pickup_old_tickets }.to raise_error(SystemExit)
+        expect(UserVars.taskmaster_old_tickets_done).to be_nil
+        expect(DRC).to have_received(:message).with('Rangu tickets from an older taskmaster are still carried (polished belzune stone mortar); stopping before the task, which stays open. The next run tries again, or ;taskmaster pickup.')
+        tm = pickup_world({ 'Rangu' => [['polished belzune stone mortar', true]] }, unreached: [19_209])
+        expect { tm.pickup_old_tickets }.to raise_error(SystemExit)
+        expect(UserVars.taskmaster_old_tickets_done).to be_nil
+      end
+
+      it 'is not ended by a tool noted meanwhile: the old ticket is still collected on a later run' do
+        tm = pickup_world({ 'Rangu' => [['polished belzune stone mortar', false]] }, ready_after: 999)
+        expect { tm.pickup_old_tickets }.to raise_error(SystemExit)
+        tm.note_repair('npc' => 'zasele', 'repairer' => 'clerk', 'room' => 16_659, 'tool' => 'scissors', 'item' => 'jagged scissors', 'left_at' => 1)
+        sent.clear
+        tm = pickup_world({ 'Rangu' => [['polished belzune stone mortar', true]] })
+
         tm.pickup_old_tickets
 
-        expect(UserVars.taskmaster_repairs).to be_nil
-        expect(DRC).to have_received(:message).with('Some Rangu ticket from an older taskmaster is still carried; trying again next run (or ;taskmaster pickup).')
-        tm = pickup_world({ 'Rangu' => [['polished belzune stone mortar', true]] }, unreached: [19_209])
+        expect(sent).to include([:walk, 19_209], [:stow, 'mortar'])
+        expect(UserVars.taskmaster_old_tickets_done).to be(true)
+      end
+
+      it "leaves another taskmaster's noted Rangu tickets carried, and is done with only those left" do
+        noted = { 'npc' => 'zasele', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'scissors', 'item' => 'jagged steel scissors', 'left_at' => 1 }
+        UserVars.taskmaster_repairs = [noted]
+        tm = pickup_world({ 'Rangu' => [['jagged steel scissors', true], ['polished belzune stone mortar', true]] })
+
         tm.pickup_old_tickets
-        expect(UserVars.taskmaster_repairs).to be_nil
+
+        expect(sent).to include([:stow, 'mortar'])
+        expect(sent).not_to include([:get, 'first Rangu ticket'])
+        expect(UserVars.taskmaster_repairs).to eq([noted])
+        expect(UserVars.taskmaster_old_tickets_done).to be(true)
       end
 
       it 'only taps when no Rangu ticket is carried' do
@@ -12703,17 +12749,155 @@ RSpec.describe TaskMaster do
         tm.pickup_old_tickets
 
         expect(sent).to eq([[:tap, 'Rangu ticket']])
-        expect(UserVars.taskmaster_repairs).to eq([])
+        expect(UserVars.taskmaster_old_tickets_done).to be(true)
       end
 
-      it 'does nothing once notes have started, or with task_self_repair' do
-        UserVars.taskmaster_repairs = []
+      it 'does nothing once done, or with task_self_repair' do
+        UserVars.taskmaster_old_tickets_done = true
         pickup_world({ 'Rangu' => [['polished belzune stone mortar', true]] }).pickup_old_tickets
-        UserVars.taskmaster_repairs = nil
+        UserVars.taskmaster_old_tickets_done = nil
         pickup_world({ 'Rangu' => [['polished belzune stone mortar', true]] }, self_repair: true).pickup_old_tickets
 
         expect(sent).to be_empty
       end
+    end
+
+    describe 'stopping before work whose tools are still at repair (#collect_task_tools, #stop_if_tools_at_repair)' do
+      it 'remembers a noted tool that did not come back, and stops before work that uses it, task left open' do
+        UserVars.taskmaster_repairs = [bowl]
+        tm = pickup_world({ 'Rangu' => [['large purpleheart bowl edged with ivory', false]] }, ready_after: 999)
+
+        tm.collect_task_tools
+
+        expect { tm.stop_if_tools_at_repair(['bowl', 'mixing stick', 'sieve']) }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message).with("large purpleheart bowl edged with ivory still at repair (see above); stopping before Nezhiri's task is worked. It stays open, and the next run collects it first.")
+      end
+
+      it 'goes on with work that uses none of the tools left behind' do
+        UserVars.taskmaster_repairs = [bowl]
+        tm = pickup_world({ 'Rangu' => [['large purpleheart bowl edged with ivory', false]] }, ready_after: 999)
+
+        tm.collect_task_tools
+
+        expect { tm.stop_if_tools_at_repair(%w[mortar pestle sieve]) }.not_to raise_error
+      end
+
+      it 'goes on once every noted tool is back' do
+        UserVars.taskmaster_repairs = [bowl]
+        tm = pickup_world({ 'Rangu' => [['large purpleheart bowl edged with ivory', true]] })
+
+        tm.collect_task_tools
+
+        expect { tm.stop_if_tools_at_repair(['bowl']) }.not_to raise_error
+        expect(sent).to include([:stow, 'bowl'])
+      end
+
+      it 'does nothing when none of its tools is noted' do
+        UserVars.taskmaster_repairs = [needles]
+        tm = pickup_world({ 'clerk' => [['knitting needles', true]] })
+
+        tm.collect_task_tools
+
+        expect(sent).to be_empty
+      end
+
+      it 'names a tool by its setting name or the name in hand, singular or plural' do
+        tm = build
+        expect(tm.names_tool?('iron chisels', 'chisels')).to be(true)
+        expect(tm.names_tool?('knitting needle', 'knitting needles')).to be(true)
+        expect(tm.names_tool?('mortar', 'pestle')).to be(false)
+        expect(tm.names_tool?('', 'bowl')).to be(false)
+      end
+
+      it "stops a Zasele cloth task when the scissors are still at repair, but not a yarn task, which uses only the knitting needles" do
+        tm = build(settings: { outfitting_tools: %w[scissors yardstick] }, tools_left_at_repair: [{ 'tool' => 'scissors', 'item' => 'jagged scissors' }])
+        allow(tm).to receive(:buy_yarn)
+        allow(tm).to receive(:buy_stackables)
+        allow(tm).to receive(:tailor_item)
+        allow(tm).to receive(:repair)
+        allow(tm).to receive(:trash)
+        allow(tm).to receive(:bins_task_stock?).and_return(true)
+
+        expect { tm.zasele('rope', 2, 4, 'cloth', 'burlap') }.to raise_error(SystemExit)
+        expect(tm).not_to have_received(:buy_stackables)
+        expect { tm.zasele('hat', 2, 4, 'yarn', 'wool') }.not_to raise_error
+      end
+
+      it "stops a Bradyn stone task when the chisels (noted by the name in hand) are at repair, before buying rocks" do
+        tm = build(npc: 'bradyn', tools_left_at_repair: [{ 'tool' => 'iron chisels', 'item' => 'iron chisels' }])
+        allow(tm).to receive(:buy_rocks)
+
+        expect { tm.bradyn('idol', 2, 'boulder', 'stone', 'alabaster') }.to raise_error(SystemExit)
+        expect(tm).not_to have_received(:buy_rocks)
+      end
+    end
+
+    it "keeps a note when the tool handed back is not the noted one (another of the same noun), and collects the noted one next" do
+      mortar = { 'npc' => 'nezhiri', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'mortar', 'item' => 'polished belzune stone mortar', 'left_at' => 1 }
+      UserVars.taskmaster_repairs = [mortar]
+      # The ticket reads differently from the name in hand, so no ticket has the
+      # full name and the word match takes the first mortar ticket.
+      tm = pickup_world({ 'Rangu' => [['heavy iron mortar', true], ['belzune stone mortar', true]] })
+      allow(DRC).to receive(:message)
+
+      tm.tool_pickup(npc: 'nezhiri')
+
+      expect(DRC).to have_received(:message).with('Rangu handed back heavy iron mortar, not the noted polished belzune stone mortar; keeping its note.')
+    end
+
+    it 'says so when a ticket cannot be got (hands full) and leaves it' do
+      UserVars.taskmaster_repairs = [bowl]
+      tm = pickup_world({ 'Rangu' => [['large purpleheart bowl edged with ivory', true]] })
+      allow(DRCI).to receive(:get_item?).and_return(false)
+
+      tm.tool_pickup(npc: 'nezhiri')
+
+      expect(DRC).to have_received(:message).with('Could not get the first Rangu ticket (hands full?); leaving it for a later pickup.')
+      expect(UserVars.taskmaster_repairs).to eq([bowl])
+    end
+
+    it 'says so when a noted ticket is past the last ordinal it looks at' do
+      UserVars.taskmaster_repairs = [bowl]
+      others = (1..TaskMaster::TICKET_ORDINALS.size).map { |i| ["steel hammer #{i}", false] }
+      tm = pickup_world({ 'Rangu' => others + [['large purpleheart bowl edged with ivory', true]] })
+
+      tm.tool_pickup(npc: 'nezhiri')
+
+      expect(DRC).to have_received(:message).with('Could not look at every Rangu ticket carried (more than 10, or a look went unanswered); large purpleheart bowl edged with ivory left for a later pickup.')
+      expect(UserVars.taskmaster_repairs).to eq([bowl])
+    end
+
+    it 'in pickup mode, also hands in the un-noted tickets of a named repairer (Catrox), but not of a clerk' do
+      catrox = { 'npc' => 'zasele', 'repairer' => 'Catrox', 'room' => 19_093, 'tool' => 'scissors', 'item' => 'jagged scissors', 'left_at' => 1 }
+      UserVars.taskmaster_repairs = [catrox, needles]
+      tm = pickup_world({ 'Catrox' => [['jagged scissors', true], ['steel tongs', true]], 'clerk' => [['knitting needles', true], ['bronze hammer', true]] })
+
+      tm.tool_pickup
+
+      expect(sent).to include([:stow, 'scissors'], [:stow, 'tongs'], [:stow, 'knitting needles'])
+      expect(sent).not_to include([:stow, 'hammer'])
+    end
+
+    it "takes a noted tool's ticket by full name before another of the same noun (an un-noted iron mortar ahead of it)" do
+      mortar = { 'npc' => 'nezhiri', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'mortar', 'item' => 'polished belzune stone mortar', 'left_at' => 1 }
+      UserVars.taskmaster_repairs = [mortar]
+      tm = pickup_world({ 'Rangu' => [['heavy iron mortar', true], ['polished belzune stone mortar', true]] })
+
+      tm.tool_pickup(npc: 'nezhiri')
+
+      expect(sent).to include([:get, 'second Rangu ticket'])
+      expect(sent).not_to include([:get, 'first Rangu ticket'])
+      expect(UserVars.taskmaster_repairs).to eq([])
+    end
+
+    it 'still takes a ticket by the setting words when none has the full name' do
+      mortar = { 'npc' => 'nezhiri', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'mortar', 'item' => 'stone mortar', 'left_at' => 1 }
+      UserVars.taskmaster_repairs = [mortar]
+      tm = pickup_world({ 'Rangu' => [['polished belzune stone mortar', true]] })
+
+      tm.tool_pickup(npc: 'nezhiri')
+
+      expect(UserVars.taskmaster_repairs).to eq([])
     end
   end
 
@@ -12749,6 +12933,21 @@ RSpec.describe TaskMaster do
       expect(DRC).to have_received(:bput).with('give Catrox', any_args).exactly(3).times
       expect(UserVars.taskmaster_repairs).to match([a_hash_including('npc' => 'zasele', 'repairer' => 'Catrox', 'room' => 19_093, 'tool' => 'knitting needles',
                                                                      'item' => 'slender bone knitting needles', 'left_at' => be_within(5).of(Time.now.to_i))])
+    end
+
+    it 'notes the tool before it stows the ticket, so a run stopped in between leaves a note, not an un-noted ticket' do
+      order = []
+      allow(UserVars).to(receive(:taskmaster_repairs=).and_wrap_original { |original, value| order << :note && original.call(value) })
+      tm = build(npc: 'zasele', settings: { task_repair_by: 'hometown' })
+      allow(tm).to receive(:get_data).and_return('Crossing' => { 'metal_repair' => { 'id' => 19_093, 'name' => 'Catrox' } })
+      allow(DRCT).to receive(:walk_to).and_return(true)
+      allow(DRCC).to receive(:get_crafting_item) { $right_hand = 'slender knitting needles' }
+      replies = [quote, ticket]
+      allow(DRC).to receive(:bput) { |command, *matchers| command == 'stow ticket' ? (order << :stow && 'You put') : bput_match(replies.shift, matchers) }
+
+      tm.tool_drop(['knitting needles'], nil)
+
+      expect(order).to eq(%i[note stow])
     end
 
     it 'notes nothing when no ticket is kept' do

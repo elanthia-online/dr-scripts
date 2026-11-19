@@ -3106,7 +3106,8 @@ task_fallback_npc:
 # Setting for taskmaster - Where tools go for repair (unless task_no_repair or task_self_repair):
 # rangu (Rangu, Crossing Engineering Society), hometown (your town's repairer in base-town.yaml) or
 # task_type (the repairer of the task's crafting discipline in base-crafting.yaml). The town is
-# task_hometown, else Crossing, where tasks are worked.
+# task_hometown, else Crossing, where tasks are worked; always Crossing for Nezhiri. With no such
+# repairer in the data it says so and uses Rangu.
 task_repair_by: rangu
 # Setting for taskmaster - Seconds between repairs of each tool, by taskmaster: e.g.
 # { nezhiri: 10800, zasele: 43200 } sends Nezhiri's tools at most every 3 hours and Zasele's every 12.

@@ -5,7 +5,7 @@
   task_self_repair: true/false # use own brush and oil for repairs
   task_get_tools_on_completion: true/false # If you want taskmaster to pickup any remaining tools in the repair shop. Useful if you're using clerk-tools after each task
   task_repair_every: { default: 0 } # seconds between repairs of each tool, by taskmaster ({ nezhiri: 10800, zasele: 43200 }); a taskmaster with no entry uses default, and with no default 0, which repairs after every task (as before). Each tool's last repair is kept per character (UserVars.taskmaster_repaired_at; ;e UserVars.taskmaster_repaired_at = nil forgets them all). Applies to task_self_repair too. A run that repairs says which taskmaster it may work has no entry
-  task_repair_by: rangu # where tools go for repair: rangu (the default: Rangu, Crossing Engineering Society), hometown (the town's repairer in base-town.yaml) or task_type (the repairer of the task's crafting discipline in base-crafting.yaml: tailoring for Zasele, remedies for Nezhiri, blacksmithing for Poltu, shaping for Bradyn, artificing for Dorhum). The town is task_hometown, else Crossing, where tasks are worked; with no such repairer in the data it says so and uses Rangu. Each tool left is noted (UserVars.taskmaster_repairs) and picked up by its ticket after the next task accepted that uses it (Poltu's and Bradyn's metal tasks share the forging tools). The first run after upgrading hands Rangu any of his tickets carried from before
+  task_repair_by: rangu # where tools go for repair: rangu (the default: Rangu, Crossing Engineering Society), hometown (the town's repairer in base-town.yaml) or task_type (the repairer of the task's crafting discipline in base-crafting.yaml: tailoring for Zasele, remedies for Nezhiri, blacksmithing for Poltu, shaping for Bradyn, artificing for Dorhum). The town is task_hometown, else Crossing, where tasks are worked; with no such repairer in the data it says so and uses Rangu. Each tool left is noted (UserVars.taskmaster_repairs) and picked up by its ticket after the next task accepted that uses it (Poltu's and Bradyn's metal tasks share the forging tools); a task stops before its work while a tool it uses is still at repair, and stays open for the next run. After upgrading, runs first hand Rangu any of his tickets that no note accounts for (UserVars.taskmaster_old_tickets_done once none is left)
   task_use_boost: true/false # use boost to eliminate task cooldowns, useful if you have a few and you're doing a lot of tasks
   task_cooldown_poll: 15 # seconds between asks while the taskmaster makes you wait (minimum 3)
   task_boosts: [task, haste] # boosts to use. task: BOOST TASK when a task is on cooldown (same as task_use_boost). haste: keep BOOST HASTE (1 hour, roundtimes -1 second) running between tasks. Once the game says you have no credits for one, it is not asked for again until the game's daily rollover (midnight US Central, when login rewards can add boosts in the middle of a login) or your next login; to ask again sooner, ;e $taskmaster_boost_unavailable = nil
@@ -39,7 +39,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.19.15'
+  VERSION = '2026.11.20.3'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -290,7 +290,7 @@ class TaskMaster
         item, count, volume_per_item, base, type = task
         # The tools this taskmaster left for repair (noted, so no command
         # asks), picked up once the task is accepted.
-        tool_pickup(npc: @npc) if tools_at_repair?
+        collect_task_tools
         send(@npc.to_sym, item, count, volume_per_item, base, type)
         complete_task(item, count)
       end
@@ -334,7 +334,7 @@ class TaskMaster
     @npc = 'zasele'
     reconcile_hands
     unbought = restock
-    tool_pickup(npc: @npc) if tools_at_repair?
+    collect_task_tools
     stop_restock(unbought) unless unbought.empty?
     loop do
       prepare_for_task
@@ -379,7 +379,7 @@ class TaskMaster
     unless check_stock(needed, type, base)
       repair(@settings.outfitting_tools, @settings.outfitting_belt) unless @no_repair
       unbought = restock
-      tool_pickup(npc: @npc) if tools_at_repair?
+      collect_task_tools
       stop_restock(unbought) unless unbought.empty?
       if still_short?(needed, type, base)
         DRC.message("Restocking left too little #{type} #{base} for #{count} #{item}s (#{needed} yards). Stopping before any is made; the task stays open for the next run.")
@@ -1189,6 +1189,7 @@ class TaskMaster
   # @param type [String] stock name, e.g. 'alabaster', 'deer', 'balsa' or 'bronze'
   # @return [void]
   def bradyn(item, count, volume_per_item, base, type)
+    stop_if_tools_at_repair(bradyn_tools(base))
     if base == 'stone'
       buy_rocks(count)
       carve_stone(item, count)
@@ -1213,6 +1214,20 @@ class TaskMaster
     forge_metal_task(item, count, volume_per_item, base, type)
   end
 
+  # The tools a Bradyn task of this base uses: chisels for stone, the bone
+  # saw for bone, the shaping tools for lumber, the forging tools for metal.
+  #
+  # @param base [String]
+  # @return [Array<String>]
+  def bradyn_tools(base)
+    case base
+    when 'stone' then ['chisels']
+    when 'stack' then ['bone saw']
+    when 'lumber' then Array(@settings.shaping_tools || @settings.engineering_tools)
+    else Array(@settings.forging_tools)
+    end
+  end
+
   # A Poltu or Bradyn metal task: buy the metal, forge the items, send the
   # forging tools for repair and throw away any metal left over. When forging
   # stops short, the metal is thrown away even on a task of whole ingots (one
@@ -1231,6 +1246,7 @@ class TaskMaster
   # @param type [String] the task's metal, e.g. 'bronze'
   # @return [void]
   def forge_metal_task(item, count, volume_per_item, base, type)
+    stop_if_tools_at_repair(@settings.forging_tools)
     bin_stray_ingots
     @ingots_before = carried_ingots
     type = buy_metal(count, volume_per_item, type)
@@ -1286,12 +1302,12 @@ class TaskMaster
   # @param type [String] stock name, e.g. 'burlap'
   # @return [void]
   def zasele(item, count, volume_per_item, base, type)
+    toolset = base == 'yarn' ? ["knitting needles"] : @settings.outfitting_tools
+    stop_if_tools_at_repair(toolset)
     if base == 'yarn'
       buy_yarn(item, count, volume_per_item, base)
-      toolset = ["knitting needles"]
     else
       buy_stackables(item, count, volume_per_item, base)
-      toolset = @settings.outfitting_tools
     end
     tailor_item(item, count, base, type)
     repair(toolset, @settings.outfitting_belt)
@@ -1367,6 +1383,7 @@ class TaskMaster
     check_loot_bag
     recipe = dorhum_recipe(item)
     check_loot_bag_clear(recipe[:noun]) unless @loot_bag_checked
+    stop_if_tools_at_repair(dorhum_tools)
     ensure_tools(dorhum_tools, 'enchanting')
     buy_sigils(sigils, count)
     # Next door to the sigil-scrolls, before the walk to the base items.
@@ -1730,7 +1747,9 @@ class TaskMaster
   # missing are asked of the society clerk (;clerk-tools <discipline> get),
   # and any still missing stop the run with their names, rather than buying
   # supplies and spending an instructions use on an item that cannot be made.
-  # Tools this taskmaster left for repair were collected after the accept.
+  # Tools this taskmaster left for repair were collected after the accept,
+  # and the task stopped before its work if one it uses is still there
+  # (stop_if_tools_at_repair).
   # A tool the crafting bag's INVENTORY lists (listed) needs no TAP; after
   # the clerk, every tool still missing is looked for afresh.
   #
@@ -2676,6 +2695,7 @@ class TaskMaster
     # The tools the wait before the task found missing (survey_remedy_supplies);
     # with none of this task's among them, nothing is tapped again.
     missing = surveyed(:missing_tools) { nil }
+    stop_if_tools_at_repair(tools)
     ensure_tools(tools, 'alchemy', listed: @bag_listing) unless missing && (missing & tools).empty?
     added = brew_remedy_round(recipe, doses, crafts)
     top_up_remedies(item, doses, recipe, added)
@@ -3958,7 +3978,7 @@ class TaskMaster
     item, count, volume_per_item, base, type = read_instructions(item, owed)
     refresh_haste
     top_up_copper
-    tool_pickup(npc: @npc) if tools_at_repair?
+    collect_task_tools
     if @marathon
       marathon_tailor(item, count, volume_per_item, base, type)
     else
@@ -6028,27 +6048,82 @@ class TaskMaster
     Vars.save if defined?(Vars) && Vars.respond_to?(:save)
   end
 
-  # Until tools are noted on a character (UserVars.taskmaster_repairs never
-  # set), each run hands Rangu any ticket of his carried from an older
-  # taskmaster, which no note would ever collect. The notes are marked
-  # started only once no Rangu ticket is left, so a ticket not ready, a
-  # refusal or an unreachable room is tried again next run. Nothing with
-  # task_self_repair.
+  # Until it is done on a character (UserVars.taskmaster_old_tickets_done),
+  # each run first hands Rangu every ticket of his carried that no note
+  # accounts for: ones left by an older taskmaster, which no note would ever
+  # collect. Noted ones (another taskmaster's tools at Rangu) stay carried
+  # for their own taskmaster's task. It is done once a whole look at the
+  # Rangu tickets finds none without a note. While one is left (not ready,
+  # refused, room not reached, tickets not readable) the run stops before
+  # the task, as the older taskmaster waited for its tools, and the next run
+  # tries again. Nothing with task_self_repair.
   #
   # @return [void]
+  # @raise [SystemExit] while an un-noted Rangu ticket is still carried
   def pickup_old_tickets
-    return if @self_repair || !UserVars.taskmaster_repairs.nil?
+    return if @self_repair || UserVars.taskmaster_old_tickets_done
 
-    ticket = "#{RANGU['name']} ticket"
-    if DRCI.exists?(ticket)
-      collect_tools(RANGU['id'], RANGU['name'], [], any: true)
-      if DRCI.exists?(ticket)
-        DRC.message("Some #{ticket} from an older taskmaster is still carried; trying again next run (or ;taskmaster pickup).")
-        return
+    name = RANGU['name']
+    if DRCI.exists?("#{name} ticket")
+      noted = repairs_out.select { |record| record['repairer'] == name }
+      collect_tools(RANGU['id'], name, [], any: true, keep: noted)
+      tickets, whole = carried_tickets(name)
+      left = tickets - noted.filter_map { |record| ticket_for(record, tickets, noted) }
+      unless whole && left.empty?
+        DRC.message("#{left.empty? ? 'Some Rangu tickets could not all be looked at' : "#{name} tickets from an older taskmaster are still carried (#{left.map { |ticket| ticket[:item] }.join(', ')})"}; stopping before the task, which stays open. The next run tries again, or ;taskmaster pickup.")
+        exit
       end
     end
-    UserVars.taskmaster_repairs = []
+    UserVars.taskmaster_old_tickets_done = true
     save_user_vars
+  end
+
+  # Picks up the tools this taskmaster's tasks use that are at repair, after
+  # the accept, and remembers any still there (not ready in time, not taken
+  # back, room not reached, the tickets could not be looked at) in
+  # @tools_left_at_repair. The task's work then stops before it starts if it
+  # uses one of them (stop_if_tools_at_repair), with the task left open for
+  # the next run; a task that uses none of them goes on.
+  #
+  # @return [void]
+  def collect_task_tools
+    @tools_left_at_repair = []
+    return unless tools_at_repair?
+
+    tool_pickup(npc: @npc)
+    @tools_left_at_repair = repairs_out(@npc)
+  end
+
+  # Stops the run before a task's work when one of the tools it is about to
+  # use is still at repair (collect_task_tools could not get it back). The
+  # task stays open, and the next run collects the tool first.
+  #
+  # @param tools [Array<String>] the tools the work uses, by setting name
+  # @return [void]
+  # @raise [SystemExit] when one of them is still at repair
+  def stop_if_tools_at_repair(tools)
+    left = Array(@tools_left_at_repair).select { |record| Array(tools).any? { |tool| names_tool?(record['tool'], tool) } }
+    return if left.empty?
+
+    DRC.message("#{left.map { |record| record['item'] || record['tool'] }.join(', ')} still at repair (see above); stopping before #{@npc.capitalize}'s task is worked. It stays open, and the next run collects #{left.size == 1 ? 'it' : 'them'} first.")
+    exit
+  end
+
+  # Whether a noted tool's name and a tool the work uses name the same
+  # tool: equal, or every word of the shorter one starting a word of the
+  # other ("iron chisels" and "chisels", "knitting needle" and "knitting
+  # needles").
+  #
+  # @param noted [String]
+  # @param tool [String]
+  # @return [Boolean]
+  def names_tool?(noted, tool)
+    a = noted.to_s.downcase
+    b = tool.to_s.downcase
+    return false if a.empty? || b.empty?
+
+    short, long = [a, b].sort_by(&:length)
+    short.split.all? { |word| long.match?(/\b#{Regexp.escape(word)}/) }
   end
 
   # The first object in a hand (held_objects), right first, with its full
@@ -6074,7 +6149,7 @@ class TaskMaster
   # @param belt [Hash, nil] toolbelt settings the tools live on
   # @return [void]
   def tool_drop(toolslist, belt = nil) # accepts array of tools for repair
-    return if @self_repair
+    return if @self_repair || !repair_replies_known?
 
     repairer = repairer_for
     name = repairer['name']
@@ -6090,9 +6165,11 @@ class TaskMaster
       if repair_offered?(reply)
         confirmed = DRC.bput("give #{name}", repair_replies['ticket'], repair_replies['need_coin'])
         if confirmed.match?(/#{repair_replies['ticket']}/i)
-          DRC.bput('stow ticket', 'You put')
+          # Noted before the ticket is stowed: a run stopped in between leaves a
+          # note whose ticket is in hand, which the next look still finds.
           note_repair('npc' => @npc, 'repairer' => name, 'room' => repairer['id'], 'tool' => tool_name, 'item' => item, 'left_at' => Time.now.to_i)
           note_repaired(tool_name)
+          DRC.bput('stow ticket', 'You put')
           next
         end
         DRC.message("No repair ticket for the #{tool_name} (#{confirmed.empty? ? 'no answer' : confirmed}); putting it away.")
@@ -6113,7 +6190,7 @@ class TaskMaster
   # @param reply [String] the answer to the first give
   # @return [Boolean]
   def repair_offered?(reply)
-    reply.match?(/give it to me again/i) && !repair_declined?(reply)
+    reply.match?(/#{repair_replies['prompt']}/i) && !repair_declined?(reply)
   end
 
   # Whether a repairer's answer says the tool needs no repair or can't have
@@ -6126,12 +6203,33 @@ class TaskMaster
   end
 
   # What repairers answer when handed a tool (data/base-crafting.yaml
-  # repair_replies, shared with workorders): offered, declined, quote,
-  # ticket, need_coin, ready and not_ready.
+  # repair_replies, shared with workorders): quote, prompt, offered,
+  # declined, ticket, need_coin, ready and not_ready.
   #
-  # @return [Hash{String => Object}]
+  # @return [Hash{String => Object}, nil] nil when the data has none
   def repair_replies
     @repair_replies ||= get_data('crafting')['repair_replies']
+  end
+
+  # The repair_replies keys repair uses.
+  REPAIR_REPLY_KEYS = %w[quote prompt offered declined ticket need_coin ready not_ready].freeze
+
+  # Whether base-crafting.yaml has every repair reply. A copy in data/custom
+  # from before they were added replaces the shipped file whole and has none:
+  # then it says so (once) and no tool is left or collected, rather than
+  # giving with no reply to wait for and waiting on a ticket forever.
+  #
+  # @return [Boolean]
+  def repair_replies_known?
+    replies = repair_replies
+    missing = replies.is_a?(Hash) ? REPAIR_REPLY_KEYS.reject { |key| replies.key?(key) } : REPAIR_REPLY_KEYS
+    return true if missing.empty?
+
+    unless @repair_replies_warned
+      DRC.message("base-crafting.yaml has no repair_replies #{missing.join(', ')} (a copy in data/custom from before they were added?); tools are not left for repair or collected. Update dr-scripts, or that copy.")
+      @repair_replies_warned = true
+    end
+    false
   end
 
   # Collects the tools left for repair (repairs_out), from each repairer
@@ -6139,16 +6237,19 @@ class TaskMaster
   # toolbelt that lists it. With an npc, only the tools that taskmaster's
   # tasks want (task_wants?): the tickets for others' stay carried. Without
   # one (the pickup mode, and task_get_tools_on_completion), every noted
-  # tool, plus any Rangu ticket carried, noted or not (Rangu is the only
-  # repairer by that name; society clerks all go by "clerk", so another
-  # clerk's ticket, or another script's, is left alone).
+  # tool, plus every other ticket of each named repairer with a note and of
+  # Rangu (a ticket left by an older taskmaster, or one whose note was lost).
+  # Society clerks all go by "clerk", so a ticket of theirs that is not
+  # noted (another clerk's, or another script's) is left alone.
   #
   # @param npc [String, nil]
   # @return [void]
   def tool_pickup(npc: nil) # picks up all your tools from repair shop
+    return unless repair_replies_known?
+
     groups = repairs_out(npc).group_by { |record| [record['room'], record['repairer']] }
     groups[[RANGU['id'], RANGU['name']]] ||= [] if npc.nil? && DRCI.exists?("#{RANGU['name']} ticket")
-    groups.each { |(room, name), records| collect_tools(room, name, records, any: npc.nil? && name == RANGU['name']) }
+    groups.each { |(room, name), records| collect_tools(room, name, records, any: npc.nil? && !name.casecmp?('clerk')) }
   end
 
   # Whether the taskmaster's tasks have tools left for repair (no game
@@ -6175,8 +6276,12 @@ class TaskMaster
   # @param name [String] the repairer
   # @param records [Array<Hash{String => Object}>] the tools noted there
   # @param any [Boolean] hand in every ticket of this repairer, noted or not
+  # @param keep [Array<Hash{String => Object}>] noted tools whose tickets
+  #   are left carried even with any (another taskmaster's)
   # @return [void]
-  def collect_tools(room, name, records, any: false)
+  def collect_tools(room, name, records, any: false, keep: [])
+    return unless repair_replies_known?
+
     unless DRCT.walk_to(room)
       DRC.message("Could not reach #{name} (room #{room}) to collect the tools left there; the tickets stay for a later pickup.")
       return
@@ -6191,17 +6296,22 @@ class TaskMaster
         break
       end
       if whole
-        lost = pending.reject { |record| tickets.any? { |ticket| same_tool?(record, ticket[:item]) } }
+        lost = pending.reject { |record| ticket_for(record, tickets, pending) }
         unless lost.empty?
           DRC.message("No #{name} ticket carried for: #{lost.map { |record| record['item'] || record['tool'] }.join(', ')}; forgetting #{lost.size == 1 ? 'it' : 'them'} (collected by hand or by another script?).")
           lost.each { |record| forget_repair(record) }
           pending -= lost
         end
       end
-      noted = tickets.select { |ticket| pending.any? { |record| same_tool?(record, ticket[:item]) } }
-      others = any ? tickets - noted : []
+      noted = pending.filter_map { |record| ticket_for(record, tickets, pending) }.uniq
+      kept = keep.filter_map { |record| ticket_for(record, tickets, keep) }
+      others = any ? tickets - noted - kept : []
       others = others.reject { |ticket| skipped.include?(ticket[:item]) }
-      break if noted.empty? && others.empty?
+      if noted.empty? && others.empty?
+        unseen = whole ? [] : pending.reject { |record| ticket_for(record, tickets, pending) }
+        DRC.message("Could not look at every #{name} ticket carried (more than #{TICKET_ORDINALS.size}, or a look went unanswered); #{unseen.map { |record| record['item'] || record['tool'] }.join(', ')} left for a later pickup.") unless unseen.empty?
+        break
+      end
 
       ready = noted.find { |ticket| ticket[:ready] } || others.find { |ticket| ticket[:ready] }
       unless ready
@@ -6218,18 +6328,25 @@ class TaskMaster
         next
       end
 
-      record = pending.find { |entry| same_tool?(entry, ready[:item]) }
-      unless redeem_ticket(name, ready[:ordinal], record && record['tool'])
+      record = pending.find { |entry| ticket_for(entry, tickets, pending) == ready }
+      back = redeem_ticket(name, ready[:ordinal], record && record['tool'])
+      unless back
         break if record
 
         skipped << ready[:item]
         next
       end
+      next unless record
 
-      if record
-        forget_repair(record)
-        pending.delete(record)
+      if back.respond_to?(:name) && !returned_tool?(record, back.name)
+        # Another tool of the same noun came back: the noted one's ticket is
+        # still carried, so its note stays for the next look.
+        DRC.message("#{name} handed back #{back.name}, not the noted #{record['item'] || record['tool']}; keeping its note.")
+        next
       end
+
+      forget_repair(record)
+      pending.delete(record)
     end
   end
 
@@ -6252,6 +6369,40 @@ class TaskMaster
       tickets << { ordinal: ordinal, item: look[TICKET_ITEM, :item].to_s, ready: look.match?(/#{repair_replies['ready']}/i) }
     end
     [tickets, false]
+  end
+
+  # The ticket for a noted tool: one for its full name; failing that, one
+  # whose item has every word of the tool's setting name, as long as no
+  # noted tool has that ticket by full name. So an un-noted "iron mortar"
+  # ticket is never taken for the noted "polished belzune stone mortar"
+  # when that one's ticket is carried too.
+  #
+  # @param record [Hash{String => Object}]
+  # @param tickets [Array<Hash{Symbol => Object}>]
+  # @param pending [Array<Hash{String => Object}>] every noted tool there
+  # @return [Hash{Symbol => Object}, nil]
+  def ticket_for(record, tickets, pending)
+    tickets.find { |ticket| exact_tool?(record, ticket[:item]) } ||
+      tickets.find { |ticket| same_tool?(record, ticket[:item]) && pending.none? { |other| exact_tool?(other, ticket[:item]) } }
+  end
+
+  # Whether the tool handed back is the noted one: its full name, or, with
+  # no full name noted, every word of its setting name.
+  #
+  # @param record [Hash{String => Object}]
+  # @param name [String] the full name of the tool now in hand
+  # @return [Boolean]
+  def returned_tool?(record, name)
+    record['item'].to_s.empty? ? same_tool?(record, name) : exact_tool?(record, name)
+  end
+
+  # Whether a ticket's item is the noted tool's full name.
+  #
+  # @param record [Hash{String => Object}]
+  # @param item [String]
+  # @return [Boolean]
+  def exact_tool?(record, item)
+    !item.to_s.empty? && !record['item'].to_s.empty? && item.casecmp?(record['item'].to_s.sub(/\A(?:an?|some|the)\s+/i, ''))
   end
 
   # Whether a ticket's item is the noted tool: its full name, else every
@@ -6286,9 +6437,14 @@ class TaskMaster
   # @param name [String] the repairer
   # @param ordinal [String] which of that repairer's tickets
   # @param tool_name [String, nil] the noted tool's setting name
-  # @return [Boolean] false when the ticket could not be got or was not taken
+  # @return [Object, Boolean] the tool now in hand (GameObj), true when the
+  #   ticket was taken but nothing new showed in a hand, false when the
+  #   ticket could not be got or was not taken
   def redeem_ticket(name, ordinal, tool_name = nil)
-    return false unless DRCI.get_item?("#{ordinal} #{name} ticket")
+    unless DRCI.get_item?("#{ordinal} #{name} ticket")
+      DRC.message("Could not get the #{ordinal} #{name} ticket (hands full?); leaving it for a later pickup.")
+      return false
+    end
 
     before = held_objects.map { |obj| [obj.id, obj.name] }
     reply = DRC.bput("give #{name}", *TICKET_HANDED, *TICKET_NOT_TAKEN)
@@ -6308,7 +6464,7 @@ class TaskMaster
     belts = [@settings.forging_belt, @settings.engineering_belt, @settings.outfitting_belt, @settings.alchemy_belt, @settings.enchanting_belt]
     toolbelt = belts.find { |belt| belt_lists_tool?(belt, tool.name) } # the first toolbelt listing the tool
     DRCC.stow_crafting_item(tool_name || tool.noun, @bag, toolbelt)
-    true
+    tool
   end
 
   # Replies to GET COIN FROM MY SACK (Hollow Eve 2026 logs): each get picks up

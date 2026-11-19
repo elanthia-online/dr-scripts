@@ -366,6 +366,8 @@ class WorkOrders
       return
     end
 
+    return unless repair_replies_known?
+
     DRCT.walk_to info['repair-room']
 
     tools.each do |tool_name|
@@ -381,7 +383,7 @@ class WorkOrders
     end
 
     while DRCI.get_item?("#{info['repair-npc']} ticket")
-      pause 30 until DRC.bput('look at my ticket', repair_replies['ready'], repair_replies['not_ready']) == repair_replies['ready']
+      pause 30 until DRC.bput('look at my ticket', repair_replies['ready'], repair_replies['not_ready']).match?(/#{repair_replies['ready']}/i)
       DRC.bput("give #{info['repair-npc']}", 'You hand')
       pause 1
       stow_tool(DRC.right_hand) if DRC.right_hand
@@ -391,12 +393,33 @@ class WorkOrders
   end
 
   # What repairers answer when handed a tool (data/base-crafting.yaml
-  # repair_replies, shared with taskmaster): offered, declined, quote, ticket,
-  # need_coin, ready and not_ready.
+  # repair_replies, shared with taskmaster): quote, prompt, offered,
+  # declined, ticket, need_coin, ready and not_ready.
   #
-  # @return [Hash{String => Object}]
+  # @return [Hash{String => Object}, nil] nil when the data has none
   def repair_replies
     @repair_replies ||= get_data('crafting')['repair_replies']
+  end
+
+  # The repair_replies keys repair uses.
+  REPAIR_REPLY_KEYS = %w[quote prompt offered declined ticket need_coin ready not_ready].freeze
+
+  # Whether base-crafting.yaml has every repair reply. A copy in data/custom
+  # from before they were added replaces the shipped file whole and has none:
+  # then it says so (once) and repair is skipped, rather than giving with no
+  # reply to wait for and waiting on a ticket forever.
+  #
+  # @return [Boolean]
+  def repair_replies_known?
+    replies = repair_replies
+    missing = replies.is_a?(Hash) ? REPAIR_REPLY_KEYS.reject { |key| replies.key?(key) } : REPAIR_REPLY_KEYS
+    return true if missing.empty?
+
+    unless @repair_replies_warned
+      Lich::Messaging.msg('bold', "WorkOrders: base-crafting.yaml has no repair_replies #{missing.join(', ')} (a copy in data/custom from before they were added?); tools are not left for repair. Update dr-scripts, or that copy.")
+      @repair_replies_warned = true
+    end
+    false
   end
 
   # Parse the copper cost out of the clerk's repair quote. Repair prices are
@@ -416,11 +439,11 @@ class WorkOrders
   def confirm_repair(info, tool_name, cost)
     attempts = 0
     loop do
-      result = DRC.bput("give #{info['repair-npc']}", repair_replies['ticket'], repair_replies['need_coin'], repair_replies['quote'], 'Just give it to me again')
+      result = DRC.bput("give #{info['repair-npc']}", repair_replies['ticket'], repair_replies['need_coin'], repair_replies['quote'], repair_replies['prompt'])
       case result
       when /#{repair_replies['ticket']}/i
         break
-      when /#{repair_replies['quote']}/i, /Just give it to me again/i
+      when /#{repair_replies['quote']}/i, /#{repair_replies['prompt']}/i
         new_cost = repair_cost_copper(result)
         cost = new_cost if new_cost
       when /#{repair_replies['need_coin']}/i
