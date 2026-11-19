@@ -1,11 +1,13 @@
 # frozen_string_literal: true
 
 require 'ostruct'
+require 'tmpdir'
 require 'yaml'
 
 require_relative 'spec_helper'
 
 load_lic_class('taskmaster.lic', 'TaskMaster')
+load_lic_class('remedy.lic', 'Remedy')
 
 RSpec.describe TaskMaster do
   # The script's own stack map, so no example runs against a copy that has
@@ -8338,8 +8340,12 @@ RSpec.describe TaskMaster do
         product: 'landsickness potion', order: 10, price: 537, pieces: 5 }
     end
 
-    def nezhiri_tm(**ivars)
-      build(npc: 'nezhiri', stockdata: stock, rooms: TaskMaster::ROOMS, **ivars)
+    # remedy_takes_stocked? answers true, for the remedy.lic shipped with
+    # this taskmaster, unless real_remedy_check: true (its own examples).
+    def nezhiri_tm(real_remedy_check: false, **ivars)
+      tm = build(npc: 'nezhiri', stockdata: stock, rooms: TaskMaster::ROOMS, **ivars)
+      allow(tm).to receive(:remedy_takes_stocked?).and_return(true) unless real_remedy_check
+      tm
     end
 
     # A replay for the example: the game answers DRC.bput, fput and
@@ -8888,9 +8894,122 @@ RSpec.describe TaskMaster do
 
       before { $test_data.crafting = crafting }
 
-      def maker(settings: self.settings, **ivars)
-        build(settings: settings, npc: 'nezhiri', stockdata: crafting['stock'], rooms: TaskMaster::ROOMS, lootbag: 'velvet backpack',
-              keeplist_regex: /leather|stack/, **ivars)
+      # remedy_takes_stocked? answers true (the shipped remedy.lic) unless
+      # real_remedy_check: true.
+      def maker(settings: self.settings, real_remedy_check: false, **ivars)
+        tm = build(settings: settings, npc: 'nezhiri', stockdata: crafting['stock'], rooms: TaskMaster::ROOMS, lootbag: 'velvet backpack',
+                   keeplist_regex: /leather|stack/, **ivars)
+        allow(tm).to receive(:remedy_takes_stocked?).and_return(true) unless real_remedy_check
+        tm
+      end
+
+      # The arguments read as remedy.lic reads them: Lich joins a caller's
+      # list (ArgParserModel.caller_vars), remedy's forms match it and
+      # Remedy::Order.from_args builds the order. Layer 06 of the Nezhiri
+      # stack: every craft says stocked (buy_remedy_supplies checked the
+      # water, the alcohol and the coal for it), so remedy taps none of them
+      # again; the carry-on does not, so remedy checks them itself there.
+      describe "the arguments remedy is run with, read by remedy.lic's forms" do
+        # @param args [Array<String>]
+        # @return [Remedy::Order]
+        def remedy_order(args)
+          Remedy::Order.from_args(ArgParserModel.parse(Remedy::ARG_DEFINITIONS, ArgParserModel.caller_vars(args).drop(1)))
+        end
+
+        %i[moisturizer_recipe draught_recipe glop_recipe potion_recipe].each do |name|
+          it "crafts the #{name.to_s.delete_suffix('_recipe')} stocked in the instructions form, and carries one on unstocked in the continue form" do
+            recipe = send(name)
+            craft = remedy_order(maker.remedy_args(recipe))
+            carry = remedy_order(maker.remedy_continue_args(recipe))
+            expect([craft.mode, craft.stocked?, craft.herb1, craft.catalyst, craft.container_request, craft.noun, craft.herb_quantity])
+              .to eq([:instructions, true, recipe[:herb], 'coal nugget', recipe[:vessel], recipe[:noun], 25])
+            expect([carry.mode, carry.stocked?, carry.catalyst, carry.container_request, carry.noun]).to eq([:continue, false, 'coal nugget', recipe[:vessel], recipe[:noun]])
+          end
+        end
+
+        # taskmaster can be updated without remedy.lic. An older remedy
+        # prints its help on the word and crafts nothing, after the task was
+        # taken and its supplies bought; without the word it is run with the
+        # arguments taskmaster gave it before (main's remedy_args).
+        describe 'with the remedy.lic Lich would run' do
+          let(:messages) { [] }
+          let(:old_args) { ['instructions', 'georin', 'coal nugget', 'mortar', 'glop', '25'] }
+
+          before { allow(DRC).to receive(:message) { |text| messages << text } }
+
+          # @param text [String, nil] the file's text; nil for no file found
+          # @return [TaskMaster]
+          def with_remedy_file(text)
+            tm = maker(real_remedy_check: true)
+            path = text && File.join(Dir.mktmpdir, 'remedy.lic')
+            File.write(path, text) if path
+            allow(tm).to receive(:remedy_script_file).and_return(path)
+            tm
+          end
+
+          it 'says stocked when it is the remedy.lic shipped with this taskmaster' do
+            tm = with_remedy_file(File.read(File.expand_path('../remedy.lic', __dir__)))
+            expect(tm.remedy_args(glop_recipe)).to eq(old_args + ['stocked'])
+            expect(messages).to be_empty
+          end
+
+          it 'leaves the word out, saying so once a run, when it has no stocked word' do
+            tm = with_remedy_file("class Remedy\n  ARG_DEFINITIONS = [].freeze\nend\n")
+            2.times { expect(tm.remedy_args(glop_recipe)).to eq(old_args) }
+            expect(messages).to eq(['Your remedy.lic does not take the stocked word (it is older than this taskmaster, or could not be read), so remedy checks the water, alcohol and coal on every craft. ' \
+                                    'Update remedy.lic to skip those checks.'])
+            expect(remedy_order(old_args).stocked?).to be(false)
+          end
+
+          it 'leaves the word out when Lich finds no remedy.lic, or it cannot be read' do
+            expect(with_remedy_file(nil).remedy_args(glop_recipe)).to eq(old_args)
+            unreadable = maker(real_remedy_check: true)
+            allow(unreadable).to receive(:remedy_script_file).and_return(File.join(Dir.mktmpdir, 'missing', 'remedy.lic'))
+            expect(unreadable.remedy_args(glop_recipe)).to eq(old_args)
+            expect(messages.size).to eq(2)
+          end
+
+          # With repeat one taskmaster launches remedy task after task, and
+          # the file Lich picks can change in between: a custom remedy taken
+          # out leaves an older one in the scripts folder.
+          it 'asks again at every launch, and goes by the file Lich now picks, read again only when it changes' do
+            dir = Dir.mktmpdir
+            custom = File.join(dir, 'custom-remedy.lic')
+            standard = File.join(dir, 'remedy.lic')
+            File.write(custom, File.read(File.expand_path('../remedy.lic', __dir__)))
+            File.write(standard, "class Remedy\n  ARG_DEFINITIONS = [].freeze\nend\n")
+            tm = maker(real_remedy_check: true)
+            picked = [custom, custom, standard, standard]
+            allow(tm).to receive(:remedy_script_file) { picked.shift }
+            allow(File).to receive(:binread).and_call_original
+
+            args = Array.new(4) { tm.remedy_args(glop_recipe).last }
+
+            expect(args).to eq(['stocked', 'stocked', '25', '25'])
+            expect(File).to have_received(:binread).twice
+            expect(messages.size).to eq(1)
+          end
+
+          it 're-reads the file when it changes in place' do
+            tm = with_remedy_file("class Remedy\nend\n")
+            path = tm.send(:remedy_script_file)
+            expect(tm.remedy_args(glop_recipe).last).to eq('25')
+
+            File.write(path, "class Remedy\n  STOCKED_ARG = {}.freeze\nend\n# now longer\n")
+            expect(tm.remedy_args(glop_recipe).last).to eq('stocked')
+          end
+
+          it "finds the file by Lich's own lookup, custom/ first, and gives nil when that lookup is not there" do
+            tm = maker
+            stub_const('SCRIPT_DIR', '/lich/scripts')
+            allow(Script).to receive(:send).and_call_original
+            allow(Script).to receive(:send).with(:__find_script_file, 'remedy').and_return('/custom/remedy.lic')
+            expect(tm.send(:remedy_script_file)).to eq('/lich/scripts/custom/remedy.lic')
+
+            allow(Script).to receive(:send).with(:__find_script_file, 'remedy').and_raise(NoMethodError)
+            expect(tm.send(:remedy_script_file)).to be_nil
+          end
+        end
       end
 
       # The game, the commons model with shops answered through the game,
@@ -9001,7 +9120,7 @@ RSpec.describe TaskMaster do
              '>> swap', '>> give my glop to nezhiri',
              '>> get coin from #7900', '>> get coin from #7900', '>> get coin from #7900', '>> get coin from #7900', '>> look in #7900', '>> dump junk']
           )
-          expect(runs.select { |name, _| name == 'remedy' }).to eq([['remedy', ['instructions', 'georin', 'coal nugget', 'mortar', 'glop', '25']]] * 3)
+          expect(runs.select { |name, _| name == 'remedy' }).to eq([['remedy', ['instructions', 'georin', 'coal nugget', 'mortar', 'glop', '25', 'stocked']]] * 3)
           calls = commons.calls.map(&:first)
           expect(commons.calls).to include(['DRCM.ensure_copper_on_hand', (1 * 50) + (3 * 437) + 7500, 'Crossing'], ['DRCT.buy_item', 51_102, 'brine'],
                                            ['DRCT.walk_to', 7896], ['DRCT.walk_to', 19_209])
@@ -9072,7 +9191,7 @@ RSpec.describe TaskMaster do
              '>> give my draught to nezhiri',
              '>> get coin from #7900', '>> get coin from #7900', '>> get coin from #7900', '>> get coin from #7900', '>> look in #7900', '>> dump junk']
           )
-          expect(runs.select { |name, _| name == 'remedy' }).to eq([['remedy', ['instructions', 'junliar', 'coal nugget', 'bowl', 'draught', '25']]] * 2)
+          expect(runs.select { |name, _| name == 'remedy' }).to eq([['remedy', ['instructions', 'junliar', 'coal nugget', 'bowl', 'draught', '25', 'stocked']]] * 2)
           expect(commons.calls.map(&:first)).not_to include('DRCT.buy_item')
           expect(commons.calls).to include(['DRCM.ensure_copper_on_hand', (2 * 531) + 212 + 7500, 'Crossing'])
           expect(commons.calls.select { |name, *| name == 'DRCT.order_item' }).to eq([['DRCT.order_item', 8775, 2]] + ([['DRCT.order_item', 8862, 9]] * 2))
@@ -9624,8 +9743,9 @@ RSpec.describe TaskMaster do
 
         # None of her four remedies uses water or alcohol: every logged READ
         # lists a herb, a splash of brewer's brine and a catalyst (the reads
-        # let). remedy buys a missing one all the same, mid-task, at the
-        # crafting town's shop (remedy.lic Supplies#buy_missing), so with no
+        # let). Her crafts run stocked, but the carry-on run does not, and
+        # remedy then buys a missing one, mid-task, at the crafting town's
+        # shop (remedy.lic Supplies#buy_missing), so with no
         # answer from the wait (no wait, a finish, a survey made with a
         # water_container set) they are looked for and bought on the way.
         it 'looks for water and alcohol when the wait gave no answer for them, and buys those not found, though her remedies use neither' do
@@ -9659,7 +9779,7 @@ RSpec.describe TaskMaster do
 
         # A coal nugget shrinks a size a rub and a tiny one is used up
         # (6100:3370-3372, then 6100:3501): one too small for the crafts runs
-        # out part way, and remedy then buys one at the hometown's shop.
+        # out part way, and remedy then stops with the vessel in hand.
         it 'buys a coal nugget when the one carried is tiny and two crafts need two rubs, and none for one craft (6100:10599)' do
           tm = maker(settings: settings.merge(water_container: 'jug', alcohol_container: 'flask'))
           game, = shop_world([])
@@ -11935,8 +12055,8 @@ RSpec.describe TaskMaster do
                'look in my mortar', *supply_checks, 'count #7001', 'combine #7001 with #7002', 'count #7003',
                'inventory duffel bag', 'count #7003', 'give my moisturizer to nezhiri', 'dump junk']
             )
-            expect(runs).to eq([['instructions', 'red flower', 'coal nugget', 'mortar', 'moisturizer', '25'], continued,
-                                ['instructions', 'red flower', 'coal nugget', 'mortar', 'moisturizer', '25']])
+            expect(runs).to eq([['instructions', 'red flower', 'coal nugget', 'mortar', 'moisturizer', '25', 'stocked'], continued,
+                                ['instructions', 'red flower', 'coal nugget', 'mortar', 'moisturizer', '25', 'stocked']])
             expect(DRC).to have_received(:message).with(carrying_on)
             expect(DRC).to have_received(:message).with('12 doses of scale moisturizer made and combined into one.')
             expect(tm).to have_received(:task_handed_in).with('moisturizer')
@@ -11992,7 +12112,7 @@ RSpec.describe TaskMaster do
 
             expect { tm.nezhiri('moisturizer', 12, moisturizer) }.to raise_error(SystemExit)
 
-            expect(runs).to eq([['instructions', 'red flower', 'coal nugget', 'mortar', 'moisturizer', '25'], continued])
+            expect(runs).to eq([['instructions', 'red flower', 'coal nugget', 'mortar', 'moisturizer', '25', 'stocked'], continued])
             expect(game.sent.count('look in my mortar')).to eq(1)
             expect(commons.location_of('#6001')).to eq('right')
             expect(DRC).to have_received(:message).with(/\Aremedy's continue run left no scale moisturizer in your hands either/)
