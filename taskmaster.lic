@@ -4,6 +4,7 @@
   task_no_repair: true/false # skip repairing tools entirely
   task_self_repair: true/false # use own brush and oil for repairs
   task_get_tools_on_completion: true/false # If you want taskmaster to pickup any remaining tools in the repair shop. Useful if you're using clerk-tools after each task
+  task_repair_every: { default: 0 } # seconds between repairs of each tool, by taskmaster ({ nezhiri: 10800, zasele: 43200 }); a taskmaster with no entry uses default, and with no default 0, which repairs after every task (as before). Each tool's last repair is kept per character (UserVars.taskmaster_repaired_at; ;e UserVars.taskmaster_repaired_at = nil forgets them all). Applies to task_self_repair too. A run that repairs says which taskmaster it may work has no entry
   task_repair_by: rangu # where tools go for repair: rangu (the default: Rangu, Crossing Engineering Society), hometown (the town's repairer in base-town.yaml) or task_type (the repairer of the task's crafting discipline in base-crafting.yaml: tailoring for Zasele, remedies for Nezhiri, blacksmithing for Poltu, shaping for Bradyn, artificing for Dorhum). The town is task_hometown, else Crossing, where tasks are worked; with no such repairer in the data it says so and uses Rangu. Each tool left is noted (UserVars.taskmaster_repairs) and picked up by its ticket after the next task accepted that uses it (Poltu's and Bradyn's metal tasks share the forging tools). The first run after upgrading hands Rangu any of his tickets carried from before
   task_use_boost: true/false # use boost to eliminate task cooldowns, useful if you have a few and you're doing a lot of tasks
   task_cooldown_poll: 15 # seconds between asks while the taskmaster makes you wait (minimum 3)
@@ -24,7 +25,7 @@
   task_cancel_foreign_tasks: true/false # a run never works another taskmaster's task; with this it cancels one it finds open, waits out the 10-minute cooldown a cancel brings, then goes back to its own taskmaster. Off: it stops, saying whose task it is and how to finish or cancel it
   task_fallback_npc: zasele # when the taskmaster asked says you have done the most tasks it allows today, work this taskmaster's task instead; the next run asks the first one again. Unset: the run stops there. Ignored by marathon (Zasele only)
   task_cancel_when_instructions_short: true/false # default true. When the task's one replacement set is spent and the instructions carried still have too few uses, cancel the task (losing the items made for it), wait out the 10-minute cooldown and take a new one. False: stop on every run with "Already asked ..." for a person to look at
-  alchemy_tools: [bowl, mixing stick, mortar, pestle, sieve] # Nezhiri's tasks use the mortar and pestle or the bowl and mixing stick (whichever her remedy needs) and the sieve; the two used go to the repairer (task_repair_by) after each task (task_no_repair / task_self_repair as usual)
+  alchemy_tools: [bowl, mixing stick, mortar, pestle, sieve] # Nezhiri's tasks use the mortar and pestle or the bowl and mixing stick (whichever her remedy needs) and the sieve; the two used and the sieve go for repair (task_repair_by, task_repair_every) after each task (task_no_repair / task_self_repair as usual)
   alchemy_belt: # the toolbelt the alchemy tools are tied to, if any
   alchemy_room: <room number> # Nezhiri's remedies are crafted here; unset, in the Crossing alchemy supplies (8862), where the herbs are bought
   ## Nezhiri's tasks: taskmaster buys brewer's brine on Andreshlew (room 51102), then in Crossing the herbs (one 25-piece stack per craft), a coal nugget when the ones carried have too few rubs left for the crafts (TAP shows the size: tiny lasts one craft, small two, and so on; should one run out all the same, remedy stops with the vessel in hand and the carry-on below buys another here), and water and alcohol when none is on hand (none of her remedies uses them, and her crafts tell remedy the supplies are stocked, so it does not look for loose ones; a water_container or alcohol_container is still got and counted, and remedy tries to refill it when empty (going on with the plain liquid if the refill finds none) (a remedy.lic older than this taskmaster does not take that word: taskmaster says so and crafts without it, and remedy then checks them on every craft); but the carry-on of an unfinished remedy, below, runs without that word, and remedy then buys any that is missing, at your crafting town's shop, in the middle of the task; the wait before the task looks for them, and with no wait the crafting bag's INVENTORY or a TAP does). It looks over the brine, coal, herbs, alchemy tools and copper during that wait, so the task starts sooner after her accept. task_hometown is not needed for her. crafting_container holds the brine, the herbs and her remedies: doses left from earlier tasks count toward the next, every stack is combined into one, and the hand-in cuts it to the doses she asked for, putting the rest back. It plans one craft per 6 doses still owed, but a craft can make fewer, and how many has differed between characters (the cause is unknown): so it remembers, for each remedy, the fewest doses one craft made the last time you crafted it (UserVars.taskmaster_remedy_yields, kept per character across runs; each run whose crafts add doses replaces it, and a finish counts as such a run), and plans the next task's crafts at that many doses each, never more than 6. Crafting stops once the doses owed are made, so crafts planned for a yield since outgrown are not made: the herbs, brine and coal bought for them stay in crafting_container and the next task's purchases count them. Extra doses made are not lost either: they stay in crafting_container and count toward the next task. When the crafts planned fall short it makes enough more crafts for the doses still owed, counting each at the fewest doses one craft made this run (never more than 6), buying their supplies first, up to 2 such rounds. To forget the remembered yields, ;e UserVars.taskmaster_remedy_yields = nil. It stops when a round adds no doses, or when the instruction sets carried (all of them, read again) have too few uses left for the extra crafts (ask Nezhiri for another copy, then ;taskmaster nezhiri finish); still short after that, it stops and ;taskmaster nezhiri finish makes the rest. Another item with the remedy's noun in crafting_container (another potion, say) is named once and left there: taskmaster gets its own stacks out by id, or by the remedy's whole name ("get my deep-sea draught from my duffel bag"); the game matches the start of each word, so anything else that brings (a "scaled ... moisturizer" for "scale moisturizer") is put back and the second, third and so on is asked for, up to the twentieth (lich-5's ordinals); it stops when a get brings nothing, or after the twentieth, so a stack behind twenty such items stays in the bag and the run stops, saying what the gets brought. After each remedy run taskmaster checks your hands for the remedy (its held-product check). A run that ends without it, stopping part way (a stocked craft that can't get its catalyst, say) or crashing, leaves the mortar or bowl in hand: a run or a finish looks in it, and carries an unfinished remedy on once with remedy's continue form (buying brine or a coal nugget first when none is left, then crafting where it crafts), takes a finished one out as a made stack, puts a herb back in crafting_container, and puts an empty vessel away; anything else, or a continue run that again ends without the remedy, stops with the vessel in hand. A vessel left on the ground is not looked for. remedy.lic must handle the brine prompt (with a remedy that does not, each craft stops part way, the continue run stops at the same prompt, and the task stops) ##
@@ -38,7 +39,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.19.14'
+  VERSION = '2026.11.19.15'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -187,7 +188,10 @@ class TaskMaster
     shift_to_task_hometown
     @npc = args.npc
     @marathon = args.marathon
-    pickup_old_tickets unless args.find || args.tools || args.reset_output || args.loot_history || args.pickup
+    unless args.find || args.tools || args.reset_output || args.loot_history || args.pickup
+      pickup_old_tickets
+      warn_repair_intervals((args.cycle ? %w[poltu bradyn zasele] : [@marathon ? 'zasele' : @npc]) + [usable_fallback_npc])
+    end
     if args.find
       find_npc(@rooms, @npc)
       exit
@@ -2675,7 +2679,7 @@ class TaskMaster
     ensure_tools(tools, 'alchemy', listed: @bag_listing) unless missing && (missing & tools).empty?
     added = brew_remedy_round(recipe, doses, crafts)
     top_up_remedies(item, doses, recipe, added)
-    repair(tools.grep(REMEDY_VESSEL_TOOLS[recipe[:vessel]]), @settings.alchemy_belt)
+    repair(tools, @settings.alchemy_belt)
   end
 
   # One round of crafts: buys what they need (buy_remedy_supplies, which
@@ -5718,20 +5722,130 @@ class TaskMaster
 
   # Deals with worn tools after a task: stows them with task_no_repair,
   # repairs them with task_self_repair, or leaves them with the task's
-  # repairer (repairer_for).
+  # repairer (repairer_for). Only the tools due a repair by
+  # task_repair_every (repair_due?) go, after the hands are put away (a tool
+  # not due can still be in hand from the craft); with none due, the hands
+  # are put away as with task_no_repair. Own repairs that stop (engaged in
+  # combat) note nothing repaired, so every tool due is tried again next
+  # time.
   #
-  # @param tools [Array<String>] tool names
+  # @param tools [Array<String>] tool names (Bradyn's stone and bone tasks
+  #   give the tool in hand, by the name DRC.right_hand shows, which is then
+  #   the key its clock is kept under)
   # @param belt [Hash, nil] toolbelt settings the tools live on
   # @return [void]
   def repair(tools, belt)
-    if @no_repair # skipping repair, putting tool(s) and stock away, moving on
-      put_hands_away(belt)
-      return
-    elsif @self_repair
-      DRCC.repair_own_tools({ 'finisher-room' => 8776, 'finisher-number' => 6 }, tools, @bag, @bag_items, belt) # runs self repair routine
+    due = @no_repair ? [] : Array(tools).compact.select { |tool| repair_due?(tool) }
+    put_hands_away(belt)
+    return if due.empty? # skipping repair, tool(s) and stock put away, moving on
+
+    if @self_repair
+      result = DRCC.repair_own_tools({ 'finisher-room' => 8776, 'finisher-number' => 6 }, due, @bag, @bag_items, belt) # runs self repair routine
+      due.each { |tool| note_repaired(tool) } unless result == :engaged
     else
-      tool_drop(tools, belt) # drops tools off at the repair guy to be picked up later
+      tool_drop(due, belt) # drops tools off at the repair guy to be picked up later
     end
+  end
+
+  # Seconds between repairs of one tool, for the taskmaster's tasks, from
+  # task_repair_every: that taskmaster's entry, else its default entry, else 0
+  # (after every task, as before the setting). An entry left blank, or one
+  # that is not a whole number of seconds, counts as no entry
+  # (repair_every_setting).
+  #
+  # @param npc [String]
+  # @return [Integer]
+  def repair_interval(npc = @npc)
+    intervals = repair_every_setting
+    intervals.fetch(npc) { intervals.fetch('default', 0) }
+  end
+
+  # task_repair_every as a Hash of String keys ('default' and taskmaster
+  # names) to whole seconds; empty when unset or not a mapping. Entries left
+  # blank are dropped, and so are values that are not whole seconds (said
+  # once, by name: "3h" is not 3 hours).
+  #
+  # @return [Hash{String => Integer}]
+  def repair_every_setting
+    @repair_every_setting ||= begin
+      setting = @settings.task_repair_every
+      setting = setting.to_h if setting.is_a?(OpenStruct)
+      (setting.is_a?(Hash) ? setting : {}).each_with_object({}) do |(key, value), intervals|
+        next if value.nil? || value.to_s.strip.empty?
+
+        seconds = case value
+                  when Integer then value
+                  when Float then value.finite? ? value.to_i : nil
+                  else Integer(value.to_s.strip, exception: false)
+                  end
+        if seconds.nil?
+          DRC.message("task_repair_every #{key}: '#{value}' is not a number of seconds; ignoring it.")
+          next
+        end
+        intervals[key.to_s.strip.downcase] = seconds
+      end
+    end
+  end
+
+  # Whether the tool is due a repair: its task_repair_every interval has run
+  # out since it was last repaired (or a repairer last found nothing to
+  # repair on it), by UserVars.taskmaster_repaired_at, kept per character
+  # across runs and keyed by the tool's name as repair is given it. A tool
+  # never noted is due, and so is one noted later than now (the clock was
+  # set back).
+  #
+  # @param tool [String] the tool's name
+  # @param now [Time]
+  # @return [Boolean]
+  def repair_due?(tool, now = Time.now)
+    last = repaired_at[tool]
+    last.nil? || last.to_i > now.to_i || now.to_i - last.to_i >= repair_interval
+  end
+
+  # UserVars.taskmaster_repaired_at, or an empty Hash when it holds anything
+  # else.
+  #
+  # @return [Hash{String => Integer}]
+  def repaired_at
+    stamps = UserVars.taskmaster_repaired_at
+    stamps.is_a?(Hash) ? stamps : {}
+  end
+
+  # Notes the tool as just repaired (or found needing none).
+  #
+  # @param tool [String] the tool's name
+  # @param now [Time]
+  # @return [void]
+  def note_repaired(tool, now = Time.now)
+    UserVars.taskmaster_repaired_at = repaired_at.merge(tool => now.to_i)
+    save_user_vars
+  end
+
+  # Says, at the start of a run that repairs tools (not task_no_repair), for
+  # each taskmaster the run may work (the one named and task_fallback_npc;
+  # in cycle, the three it picks from and task_fallback_npc) that task_repair_every has no entry
+  # for, how often its tools go for repair instead (the default entry, else
+  # after every task).
+  #
+  # @param npcs [Array<String>]
+  # @return [void]
+  def warn_repair_intervals(npcs = [@npc, usable_fallback_npc])
+    return if @no_repair
+
+    intervals = repair_every_setting
+    npcs.compact.uniq.reject { |npc| intervals.key?(npc) }.each do |npc|
+      DRC.message("task_repair_every has no entry for #{npc}; its tools go for repair #{interval_words(repair_interval(npc))}#{intervals.key?('default') ? ' (the default entry)' : ''}.")
+    end
+  end
+
+  # @param seconds [Integer]
+  # @return [String] e.g. "after every task", "every 3 hours"
+  def interval_words(seconds)
+    return 'after every task' unless seconds.positive?
+    return "every #{seconds / 3600} hour#{seconds == 3600 ? '' : 's'}" if (seconds % 3600).zero?
+    return "every #{seconds / 60} minute#{seconds == 60 ? '' : 's'}" if (seconds % 60).zero?
+
+    "every #{seconds} seconds"
   end
 
   # Rangu, in the Crossing Engineering Society: where tools went for repair
@@ -5978,10 +6092,15 @@ class TaskMaster
         if confirmed.match?(/#{repair_replies['ticket']}/i)
           DRC.bput('stow ticket', 'You put')
           note_repair('npc' => @npc, 'repairer' => name, 'room' => repairer['id'], 'tool' => tool_name, 'item' => item, 'left_at' => Time.now.to_i)
+          note_repaired(tool_name)
           next
         end
         DRC.message("No repair ticket for the #{tool_name} (#{confirmed.empty? ? 'no answer' : confirmed}); putting it away.")
-      elsif !repair_declined?(reply)
+      elsif repair_declined?(reply)
+        # Looked over: no wear, or past repair. Either way not due again
+        # until its interval runs out.
+        note_repaired(tool_name)
+      else
         DRC.message("#{name} did not take the #{tool_name} (#{reply.empty? ? 'no answer' : reply}); putting it away.")
       end
       DRCC.stow_crafting_item(tool_name, @bag, belt)

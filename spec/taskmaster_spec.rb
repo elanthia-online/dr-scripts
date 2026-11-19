@@ -28,6 +28,12 @@ RSpec.describe TaskMaster do
     $taskmaster_boost_unavailable = nil
   end
 
+  # A task_repair_every with an entry for every taskmaster, so a run that
+  # repairs says nothing about it.
+  def every_taskmaster_listed
+    TaskMaster::TASKMASTERS.to_h { |npc| [npc, 0] }
+  end
+
   # The repair replies of data/base-crafting.yaml, read once: what a
   # repairer answers when handed a tool (shared with workorders).
   def real_repair_replies
@@ -528,7 +534,7 @@ RSpec.describe TaskMaster do
       tm = described_class.allocate
       events = []
       completed = 0
-      allow(tm).to receive(:get_settings).and_return(OpenStruct.new({ outfitting_tools: ['scissors'], outfitting_belt: outfitting_belt }.merge(settings)))
+      allow(tm).to receive(:get_settings).and_return(OpenStruct.new({ outfitting_tools: ['scissors'], outfitting_belt: outfitting_belt, task_repair_every: every_taskmaster_listed }.merge(settings)))
       allow(tm).to receive(:get_data).and_return({ 'stock' => {} })
       allow(tm).to receive(:parse_args) do |definitions|
         events << [:parse_args, definitions.map { |group| group.map { |arg| arg[:name] } }]
@@ -726,6 +732,24 @@ RSpec.describe TaskMaster do
         expect(events.last(2)).to eq([[:complete, 'rope', 2], :tool_pickup])
         expect(start(npc: 'zasele', settings: { task_get_tools_on_completion: true }).last(2)).to eq([[:complete, 'rope', 2], :tool_pickup])
         expect(start(npc: 'zasele', ticket: true).last).to eq([:complete, 'rope', 2])
+      end
+
+      it 'says, before anything else, which taskmaster task_repair_every has no entry for' do
+        events = start(npc: 'zasele', settings: { task_repair_every: nil })
+        expect(events.first).to eq([:message, 'task_repair_every has no entry for zasele; its tools go for repair after every task.'])
+        expect(start(npc: 'zasele', settings: { task_repair_every: nil, task_no_repair: true })).not_to include(a_collection_including(:message))
+      end
+
+      it 'names the three taskmasters cycle picks from, and says nothing in pickup mode' do
+        events = start(cycle: true, samples: %w[zasele], wrap_up_after: 1, settings: { task_repair_every: { 'zasele' => 0 } })
+        expect(events.select { |event| Array(event).first == :message }.map(&:last)).to eq(['task_repair_every has no entry for poltu; its tools go for repair after every task.',
+                                                                                            'task_repair_every has no entry for bradyn; its tools go for repair after every task.'])
+        expect(start(npc: 'zasele', pickup: true, settings: { task_repair_every: nil })).to eq(%i[tool_pickup exit])
+      end
+
+      it "names cycle's task_fallback_npc too when it is not one of the three" do
+        events = start(cycle: true, samples: %w[zasele], wrap_up_after: 1, settings: { task_repair_every: { 'poltu' => 0, 'bradyn' => 0, 'zasele' => 0 }, task_fallback_npc: 'dorhum' })
+        expect(events).to include([:message, 'task_repair_every has no entry for dorhum; its tools go for repair after every task.'])
       end
 
       it 'stops after one task without repeat, wrap-up or not' do
@@ -9098,13 +9122,18 @@ RSpec.describe TaskMaster do
       end
 
       describe 'a whole logged task' do
+        # The logged runs sent the vessel's two tools only; the sieve goes too
+        # now, unless repaired within task_repair_every, as it is here, so the
+        # log's commands still hold.
+        before { UserVars.taskmaster_repaired_at = { 'sieve' => Time.now.to_i } }
+
         # 6100:8619-10292: 13 doses of gill glop, nothing on hand. One part of
         # brine is carried (6100:8665), so a brine is bought (6100:8718);
         # three crafts make 6, 12 and 18 doses (6100:9223, 9371, 9539); the
         # mortar and pestle go to Rangu (6100:9659-9671); the 18 are cut to 13
         # (6100:9688-9692) and handed in for a woven sack (6100:10258-10261).
         it 'asks, accepts, buys brine and herbs, crafts three times, combines, cuts to 13 and hands in (6100:8619-10292)' do
-          tm = maker
+          tm = maker(settings: settings.merge(task_repair_every: { 'nezhiri' => 10_800 }))
           game, commons = shop_world(kit)
           allow(tm).to receive(:prepare_for_task)
           runs = remedy_makes(commons, 'gill glop', %w[7001 7002 7004])
@@ -9175,7 +9204,7 @@ RSpec.describe TaskMaster do
         # craft happened to add no catalyst; under remedy every craft asked
         # for one (6102:313, 690, 1024).
         it 'counts the 4 doses left from an earlier task, buys no brine with 26 parts carried, crafts twice and hands in 13 of 16 (6100:10293-11330)' do
-          tm = maker(boost: true, cooldown_poll: 15)
+          tm = maker(settings: settings.merge(task_repair_every: { 'nezhiri' => 10_800 }), boost: true, cooldown_poll: 15)
           game, commons = shop_world(kit + [['deep-sea draught', 'duffel bag', '7101']])
           allow(tm).to receive(:prepare_for_task)
           runs = remedy_makes(commons, 'deep-sea draught', %w[7102 7104])
@@ -9722,6 +9751,24 @@ RSpec.describe TaskMaster do
           expect(commons.calls.select { |name, *| name == 'DRCT.order_item' }).to eq([['DRCT.order_item', 8862, 7]] * 2)
           expect(commons.calls).to include(['DRCM.ensure_copper_on_hand', (2 * 437) + 7500, 'Crossing'])
           expect(commons.calls.map(&:first)).not_to include('DRCT.buy_item')
+        end
+
+        it "sends the remedy's vessel and its tool for repair with the sieve, and none of the other vessel's" do
+          tm = maker(task_product: 'gill glop')
+          game, = shop_world(kit + [['dried georin', 'duffel bag']], shop: :model)
+          game.script('inventory duffel bag', *bag_listed)
+          game.script('count my first brine', ReplayGame.log('6100:8800'))
+          game.script('count my second brine', ReplayGame.log('6100:8793'))
+          game.script('tap my first coal nugget', ReplayGame.log('6100:8910'))
+          game.script('count my first georin', ReplayGame.log('6100:4595'))
+          game.script('count my second georin', ReplayGame.log('6100:8793'))
+          allow(tm).to receive(:brew_remedies)
+          allow(tm).to receive(:top_up_remedies)
+          allow(tm).to receive(:repair)
+
+          tm.nezhiri('glop', 13, glop)
+
+          expect(tm).to have_received(:repair).with(%w[mortar pestle sieve], belt)
         end
 
         it 'buys the coal nugget at the forging supplies, then water and alcohol at the alchemy supplies, only when the wait before the task found none' do
@@ -12708,6 +12755,214 @@ RSpec.describe TaskMaster do
       drop([no_scratch], ['scissors'], ['jagged scissors'])
 
       expect(UserVars.taskmaster_repairs).to be_nil
+    end
+  end
+
+  describe 'how often tools go for repair (task_repair_every)' do
+    let(:now) { Time.at(1_800_000_000) }
+
+    def every(setting, npc: 'nezhiri', **ivars)
+      build(settings: { task_repair_every: setting }, npc: npc, **ivars)
+    end
+
+    describe '#repair_interval' do
+      it "takes the taskmaster's entry, else default, else 0" do
+        expect(every({ 'nezhiri' => 10_800, 'default' => 600 }).repair_interval).to eq(10_800)
+        expect(every({ 'zasele' => 43_200, 'default' => 600 }).repair_interval).to eq(600)
+        expect(every({ 'zasele' => 43_200 }).repair_interval).to eq(0)
+        expect(every(nil).repair_interval).to eq(0)
+      end
+
+      it 'reads symbol and mixed-case keys as YAML or a hand-made setting may give them' do
+        expect(every({ Nezhiri: 10_800 }).repair_interval).to eq(10_800)
+        expect(every({ default: 7200 }).repair_interval).to eq(7200)
+      end
+
+      it 'treats a setting that is not a mapping as unset (repair after every task)' do
+        expect(every('10800').repair_interval).to eq(0)
+        expect(every([10_800]).repair_interval).to eq(0)
+      end
+
+      it 'reads whole seconds given as text, and treats a blank entry as none' do
+        expect(every({ 'nezhiri' => '10800' }).repair_interval).to eq(10_800)
+        expect(every({ 'nezhiri' => nil, 'default' => 600 }).repair_interval).to eq(600)
+        expect(every({ 'nezhiri' => '  ', 'default' => 600 }).repair_interval).to eq(600)
+      end
+
+      it 'names and ignores an endless or not-a-number value (.inf, .nan in YAML) instead of crashing' do
+        tm = every({ 'nezhiri' => Float::INFINITY, 'zasele' => Float::NAN, 'default' => 600 })
+        expect(tm.repair_interval).to eq(600)
+        expect(DRC).to have_received(:message).with("task_repair_every nezhiri: 'Infinity' is not a number of seconds; ignoring it.")
+        expect(DRC).to have_received(:message).with("task_repair_every zasele: 'NaN' is not a number of seconds; ignoring it.")
+      end
+
+      it 'says so, once, and ignores an entry that is not whole seconds' do
+        tm = every({ 'nezhiri' => '3h', 'default' => 600 })
+        2.times { expect(tm.repair_interval).to eq(600) }
+        expect(DRC).to have_received(:message).with("task_repair_every nezhiri: '3h' is not a number of seconds; ignoring it.").once
+      end
+    end
+
+    describe '#repair_due?' do
+      it 'is due when never repaired' do
+        expect(every({ 'nezhiri' => 10_800 }).repair_due?('bowl', now)).to be(true)
+      end
+
+      it 'is due once the interval has run out since the last repair, not a second before' do
+        tm = every({ 'nezhiri' => 10_800 })
+        UserVars.taskmaster_repaired_at = { 'bowl' => now.to_i - 10_799 }
+        expect(tm.repair_due?('bowl', now)).to be(false)
+        UserVars.taskmaster_repaired_at = { 'bowl' => now.to_i - 10_800 }
+        expect(tm.repair_due?('bowl', now)).to be(true)
+      end
+
+      it 'keeps each tool on its own clock' do
+        tm = every({ 'nezhiri' => 10_800 })
+        UserVars.taskmaster_repaired_at = { 'bowl' => now.to_i, 'mortar' => now.to_i - 20_000 }
+        expect(tm.repair_due?('bowl', now)).to be(false)
+        expect(tm.repair_due?('mortar', now)).to be(true)
+      end
+
+      it 'is due when the last repair is noted later than now (the clock was set back)' do
+        UserVars.taskmaster_repaired_at = { 'bowl' => now.to_i + 3600 }
+        expect(every({ 'nezhiri' => 10_800 }).repair_due?('bowl', now)).to be(true)
+      end
+
+      it 'reads a repaired_at that is not a mapping as nothing noted' do
+        UserVars.taskmaster_repaired_at = 'oops'
+        tm = every({ 'nezhiri' => 10_800 })
+        expect(tm.repair_due?('bowl', now)).to be(true)
+        tm.note_repaired('bowl', now)
+        expect(UserVars.taskmaster_repaired_at).to eq('bowl' => now.to_i)
+      end
+
+      it 'is always due at 0, as before the setting' do
+        UserVars.taskmaster_repaired_at = { 'bowl' => now.to_i }
+        expect(every({}).repair_due?('bowl', now)).to be(true)
+      end
+    end
+
+    describe '#repair' do
+      def repair_with(due:, own_result: nil, **ivars)
+        tm = every({ 'nezhiri' => 10_800 }, **ivars)
+        UserVars.taskmaster_repaired_at = (%w[mortar pestle sieve] - due).to_h { |tool| [tool, Time.now.to_i] }
+        @steps = []
+        allow(tm).to receive(:tool_drop) { |tools, _belt| @steps << [:tool_drop, tools] }
+        allow(tm).to receive(:put_hands_away) { @steps << :put_hands_away }
+        allow(DRCC).to receive(:repair_own_tools).and_return(own_result)
+        tm.repair(%w[mortar pestle sieve], 'alchemy belt')
+        tm
+      end
+
+      it 'leaves only the tools due with the repairer, after putting the hands away (a tool not due may be in hand)' do
+        expect(repair_with(due: %w[sieve])).to have_received(:tool_drop).with(['sieve'], 'alchemy belt')
+        expect(@steps).to eq([:put_hands_away, [:tool_drop, ['sieve']]])
+      end
+
+      it 'puts the hands away and goes nowhere when none is due' do
+        tm = repair_with(due: [])
+        expect(tm).not_to have_received(:tool_drop)
+        expect(tm).to have_received(:put_hands_away).with('alchemy belt')
+      end
+
+      it 'sends nothing with task_no_repair, due or not' do
+        tm = repair_with(due: %w[mortar pestle sieve], no_repair: true)
+        expect(tm).not_to have_received(:tool_drop)
+        expect(tm).to have_received(:put_hands_away).with('alchemy belt')
+      end
+
+      it 'repairs only the tools due with task_self_repair, and notes them repaired' do
+        repair_with(due: %w[mortar], self_repair: true)
+        expect(DRCC).to have_received(:repair_own_tools).with(anything, ['mortar'], 'duffel bag', [], 'alchemy belt')
+        expect(UserVars.taskmaster_repaired_at['mortar']).to be_within(5).of(Time.now.to_i)
+      end
+
+      it 'notes nothing repaired when own repairs stop (engaged), so every tool due is tried again' do
+        repair_with(due: %w[mortar pestle], self_repair: true, own_result: :engaged)
+        expect(UserVars.taskmaster_repaired_at.keys).to eq(['sieve'])
+      end
+    end
+
+    describe 'noting a tool repaired when it is left (#tool_drop)' do
+      let(:quote) { "Rangu looks over the mortar and says, \"That will cost 240 Kronars to repair.  Just give it to me again if you want, and I'll have it ready in 1 roisaen.\"" }
+      let(:ticket) { "You hand Rangu 240 Kronars and he gives you back a repair ticket.  Rangu says, \"I should be having that done for you in about 1 roisaen.  Don't lose this ticket!  You must have it to reclaim your mortar.\"" }
+
+      def drop(*replies)
+        tm = every({ 'nezhiri' => 10_800 })
+        queue = replies.dup
+        allow(DRCT).to receive(:walk_to).and_return(true)
+        allow(DRCC).to receive(:get_crafting_item) { $right_hand = 'polished belzune stone mortar' }
+        allow(DRCC).to receive(:stow_crafting_item)
+        allow(DRC).to receive(:bput) { |command, *matchers| command == 'stow ticket' ? 'You put' : bput_match(queue.shift, matchers) }
+        tm.tool_drop(['mortar'], nil)
+        Hash(UserVars.taskmaster_repaired_at)['mortar']
+      end
+
+      it 'when the ticket is kept' do
+        expect(drop(quote, ticket)).to be_within(5).of(Time.now.to_i)
+      end
+
+      it 'when the repairer finds no wear on it, or will not repair it' do
+        expect(drop("Rangu shrugs and says, \"There isn't a scratch on that, and I'm not one to rob you.\"")).to be_within(5).of(Time.now.to_i)
+        UserVars.taskmaster_repaired_at = nil
+        expect(drop("I can't fix those.  They only have so many uses and then you must buy another.")).to be_within(5).of(Time.now.to_i)
+      end
+
+      it 'not when nobody looked at it (no repairer there, no answer) or no ticket came (short of coin)' do
+        expect(drop(missed_give)).to be_nil
+        expect(drop('')).to be_nil
+        expect(drop(quote, 'Rangu says, "You will need more coin if I am to be repairing that!"')).to be_nil
+      end
+    end
+
+    describe 'the warning at the start of a run that repairs (#warn_repair_intervals)' do
+      def warned(setting, npc: 'nezhiri', fallback: 'zasele', **ivars)
+        tm = build(settings: { task_repair_every: setting }, npc: npc, fallback_npc: fallback, **ivars)
+        tm.warn_repair_intervals
+        tm
+      end
+
+      it 'names the taskmaster asked and the fallback when neither has an entry, with the interval used instead' do
+        warned({ 'default' => 0 })
+        expect(DRC).to have_received(:message).with('task_repair_every has no entry for nezhiri; its tools go for repair after every task (the default entry).')
+        expect(DRC).to have_received(:message).with('task_repair_every has no entry for zasele; its tools go for repair after every task (the default entry).')
+      end
+
+      it 'warns when the setting is not there at all' do
+        warned(nil, fallback: '')
+        expect(DRC).to have_received(:message).with('task_repair_every has no entry for nezhiri; its tools go for repair after every task.').once
+      end
+
+      it 'gives a non-zero default in hours or minutes' do
+        warned({ 'default' => 10_800, 'nezhiri' => 10_800 })
+        expect(DRC).to have_received(:message).with('task_repair_every has no entry for zasele; its tools go for repair every 3 hours (the default entry).')
+        warned({ 'default' => 5400, 'nezhiri' => 10_800 })
+        expect(DRC).to have_received(:message).with('task_repair_every has no entry for zasele; its tools go for repair every 90 minutes (the default entry).')
+      end
+
+      it 'says nothing when both have an entry, or with task_no_repair' do
+        warned({ 'nezhiri' => 10_800, 'zasele' => 43_200 })
+        warned({}, no_repair: true)
+        expect(DRC).not_to have_received(:message)
+      end
+
+      it 'leaves out the fallback in marathon, which never falls back' do
+        warned({ 'zasele' => 43_200 }, npc: 'zasele', fallback: 'nezhiri', marathon: true)
+        expect(DRC).not_to have_received(:message)
+      end
+
+      it 'counts a blank entry as none' do
+        warned({ 'nezhiri' => nil, 'zasele' => 43_200 })
+        expect(DRC).to have_received(:message).with('task_repair_every has no entry for nezhiri; its tools go for repair after every task.')
+      end
+
+      it 'names the three taskmasters cycle picks from' do
+        tm = build(settings: { task_repair_every: { 'zasele' => 0 } }, npc: nil)
+        tm.warn_repair_intervals(%w[poltu bradyn zasele])
+        expect(DRC).to have_received(:message).with(/no entry for poltu/)
+        expect(DRC).to have_received(:message).with(/no entry for bradyn/)
+        expect(DRC).not_to have_received(:message).with(/no entry for zasele/)
+      end
     end
   end
 end

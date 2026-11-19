@@ -3108,6 +3108,12 @@ task_fallback_npc:
 # task_type (the repairer of the task's crafting discipline in base-crafting.yaml). The town is
 # task_hometown, else Crossing, where tasks are worked.
 task_repair_by: rangu
+# Setting for taskmaster - Seconds between repairs of each tool, by taskmaster: e.g.
+# { nezhiri: 10800, zasele: 43200 } sends Nezhiri's tools at most every 3 hours and Zasele's every 12.
+# A taskmaster with no entry uses default; 0 repairs after every task. A run that repairs tools says
+# when a taskmaster it may work (the one named, task_fallback_npc) has no entry of its own.
+task_repair_every:
+  default: 0
 
 # Setting for taskmaster - Scripts to run to completion before asking for each task, with any
 # arguments separated by spaces (e.g. 'buff crafting'). Empty runs nothing.
