@@ -23,7 +23,7 @@
   task_rock_room: 793 # room where Dorhum's spongestone and splashstone tasks forage rocks (none can be had on Andreshlew)
   task_shell_room: 793 # room where Dorhum's glow shell tasks forage shells
   task_cancel_foreign_tasks: true/false # a run never works another taskmaster's task; with this it cancels one it finds open, waits out the 10-minute cooldown a cancel brings, then goes back to its own taskmaster. Off: it stops, saying whose task it is and how to finish or cancel it
-  task_fallback_npc: zasele # when the taskmaster asked says you have done the most tasks it allows today, work this taskmaster's task instead; the next run asks the first one again. Unset: the run stops there. Ignored by marathon (Zasele only)
+  task_fallback_npc: zasele # when the taskmaster asked says you have done the most tasks it allows today, work this taskmaster's task instead; the next run asks the first one again. With task_repair_every entries for both, it is also worked, one task, each time the first one's tools are left for repair (unless its own went for repair in the last 10 minutes), so the run does not wait at the repairer; the run after asks the first one again. Unset: the run stops at the limit, and waits for tools at repair. Ignored by marathon (Zasele only)
   task_cancel_when_instructions_short: true/false # default true. When the task's one replacement set is spent and the instructions carried still have too few uses, cancel the task (losing the items made for it), wait out the 10-minute cooldown and take a new one. False: stop on every run with "Already asked ..." for a person to look at
   alchemy_tools: [bowl, mixing stick, mortar, pestle, sieve] # Nezhiri's tasks use the mortar and pestle or the bowl and mixing stick (whichever her remedy needs) and the sieve; the two used and the sieve go for repair (task_repair_by, task_repair_every) after each task (task_no_repair / task_self_repair as usual)
   alchemy_belt: # the toolbelt the alchemy tools are tied to, if any
@@ -39,7 +39,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.19.15'
+  VERSION = '2026.11.19.16'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -284,6 +284,7 @@ class TaskMaster
     loop do
       @dispose, @remainder = [false, false]
       prepare_for_task
+      detour_while_tools_repair
       # nil: a task already open was finished and handed in by get_task.
       task = get_task(exit_after_resume: !looping)
       if task
@@ -312,10 +313,58 @@ class TaskMaster
   #
   # @return [void]
   def back_to_primary_npc
+    @repair_detour = false
     return unless @primary_npc
 
     @npc = @primary_npc
     @primary_npc = nil
+  end
+
+  # Seconds after which a tool left for repair is surely ready to collect
+  # (repairs have taken 1 to 3 roisaen).
+  REPAIR_READY_SECONDS = 600
+
+  # Each time the tools of the taskmaster asked are left for repair, the next
+  # run works one of task_fallback_npc's tasks instead of waiting at the
+  # repairer; the run after that asks the first taskmaster again and
+  # collects its tools then, ready by now. Once per leaving: the notes it
+  # detoured for are marked ('detoured'), so it never works the fallback
+  # twice for the same tools. Only when task_repair_every has an entry for
+  # both taskmasters (so a fallback set only for the daily limit is left
+  # alone), and not while any of the fallback's own tools went for repair
+  # less than REPAIR_READY_SECONDS ago (older ones are ready, and its task
+  # collects them). Not after the fallback has given its daily limit this
+  # run, and not in a run already switched (the fallback for the day). With
+  # no detour the run asks as usual, and the pickup after the accept waits
+  # for the tools.
+  #
+  # @return [void]
+  def detour_while_tools_repair
+    return if @primary_npc || @fallback_capped || @self_repair
+
+    other = usable_fallback_npc
+    return unless other && repair_every_setting.key?(@npc) && repair_every_setting.key?(other)
+
+    fresh = repairs_out(@npc).reject { |record| record['detoured'] }
+    return if fresh.empty?
+    return if repairs_out(other).any? { |record| (Time.now.to_i - record['left_at'].to_i).between?(0, REPAIR_READY_SECONDS - 1) }
+
+    mark_detoured(fresh)
+    DRC.message("#{@npc.capitalize}'s tools are at repair; working one of #{other.capitalize}'s tasks meanwhile (the next run asks #{@npc.capitalize} again).")
+    @primary_npc = @npc
+    @npc = other
+    @repair_detour = true
+    # What Nezhiri's wait found is not for another taskmaster's task.
+    @stock_survey = nil
+  end
+
+  # Marks the noted tools as detoured for (detour_while_tools_repair).
+  #
+  # @param records [Array<Hash{String => Object}>]
+  # @return [void]
+  def mark_detoured(records)
+    UserVars.taskmaster_repairs = repairs_out.map { |record| records.include?(record) ? record.merge('detoured' => true) : record }
+    save_user_vars
   end
 
   # Zasele tasks until the wrap-up call, restocking (and repairing) only when
@@ -3986,6 +4035,16 @@ class TaskMaster
     giver = @task_giver
     return if giver.nil? || giver == @npc
 
+    if @repair_detour && giver == @primary_npc
+      # Asked the fallback while the first one's tools were at repair, and
+      # a task of the first one's is open: finish that one instead.
+      DRC.message("You are on a task for #{giver.capitalize}; finishing it instead of working one of #{@npc.capitalize}'s.")
+      @npc = giver
+      @primary_npc = nil
+      @repair_detour = false
+      return
+    end
+
     if giver == usable_fallback_npc
       # A task for task_fallback_npc left open (a run that fell back and
       # stopped part way): it is ours to finish, not to cancel.
@@ -4410,7 +4469,20 @@ class TaskMaster
   # @return [void]
   # @raise [SystemExit] when there is no taskmaster left to ask today
   def fall_back_for_the_day
-    fallback = usable_fallback_npc
+    if @repair_detour
+      # Worked only while the first one's tools were at repair: go back to
+      # it, and its pickup waits for them.
+      DRC.message("#{@npc.capitalize} has given you all the tasks allowed today; asking #{@primary_npc.capitalize} again, whose tools are at repair.")
+      @fallback_capped = true
+      @npc = @primary_npc
+      @primary_npc = nil
+      @repair_detour = false
+      @stock_survey = nil
+      return
+    end
+
+    # One that has given its limit this run is not asked again.
+    fallback = @fallback_capped ? nil : usable_fallback_npc
     unless fallback
       DRC.message("#{@npc.capitalize} has given you all the tasks allowed today. #{@fallback_npc.empty? ? 'Set task_fallback_npc to work another taskmaster\'s tasks meanwhile.' : 'No other taskmaster to ask.'} Stopping.")
       exit
@@ -5833,9 +5905,14 @@ class TaskMaster
     return if @no_repair
 
     intervals = repair_every_setting
-    npcs.compact.uniq.reject { |npc| intervals.key?(npc) }.each do |npc|
+    missing = npcs.compact.uniq.reject { |npc| intervals.key?(npc) }
+    missing.each do |npc|
       DRC.message("task_repair_every has no entry for #{npc}; its tools go for repair #{interval_words(repair_interval(npc))}#{intervals.key?('default') ? ' (the default entry)' : ''}.")
     end
+    fallback = usable_fallback_npc
+    return unless fallback && @npc && !missing.empty? && (missing & [@npc, fallback]).any?
+
+    DRC.message("No #{fallback.capitalize} task is worked while #{@npc.capitalize}'s tools are at repair until task_repair_every has entries for both.")
   end
 
   # @param seconds [Integer]
