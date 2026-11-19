@@ -12776,6 +12776,15 @@ RSpec.describe TaskMaster do
         expect { tm.zasele('hat', 2, 4, 'yarn', 'wool') }.not_to raise_error
       end
 
+      it 'stops a marathon tailoring task before sewing when one of its tools is still at repair' do
+        tm = build(settings: { outfitting_tools: %w[scissors] }, tools_left_at_repair: [{ 'tool' => 'scissors', 'item' => 'jagged scissors' }])
+        allow(tm).to receive(:check_stock).and_return(true)
+        allow(tm).to receive(:tailor_item)
+
+        expect { tm.marathon_tailor('rope', 2, 4, 'cloth', 'burlap') }.to raise_error(SystemExit)
+        expect(tm).not_to have_received(:tailor_item)
+      end
+
       it "stops a Bradyn stone task when the chisels (noted by the name in hand) are at repair, before buying rocks" do
         tm = build(npc: 'bradyn', tools_left_at_repair: [{ 'tool' => 'iron chisels', 'item' => 'iron chisels' }])
         allow(tm).to receive(:buy_rocks)
