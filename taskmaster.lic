@@ -6041,7 +6041,10 @@ class TaskMaster
   # The item a LOOK AT <ticket> names: "Looking at the Granzer ticket you see
   # it is for a small demonscale shield pyrographed with a map of the Blasted
   # Plains.  You recall that your shield should be ready by now." (Mithandres,
-  # 2026-01-03 00:55:40).
+  # 2026-01-03 00:55:40). LOOK reads a ticket stowed in a container too: "l
+  # my cat ticket" gave "Looking at the Catrox ticket you see it is for a
+  # loimic slender awl.  You recall that your awl should be ready any moment
+  # now." with the tickets in the pack (Cithrin, 2026-11-20 07:59:19).
   TICKET_ITEM = /it is for (?:an? |some |the )?(?<item>.+?)\.(?:\s\s|\s*\z)/
 
   # The replies to LOOK AT <ordinal> <name> ticket when there is no such
