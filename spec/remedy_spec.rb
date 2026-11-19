@@ -1087,7 +1087,7 @@ RSpec.describe Remedy do
       end
     end
 
-    describe 'buying a missing liquid or catalyst in the hometown (Crossing, base-crafting.yaml:1388-1416)' do
+    describe 'buying a missing liquid or catalyst in the hometown (Crossing, base-crafting.yaml:1429-1457)' do
       let(:settings) { logged_settings.merge(mark_crafted_goods: false, alchemy_room: 8859) }
 
       # @return [Array<Array>] the bank and travel calls, in order
@@ -2035,7 +2035,7 @@ RSpec.describe Remedy do
       let(:orders) { { 1 => 'water' } }
 
       # layer 13 (restock in the crafting town)
-      it 'H09: buys in force_crafting_town (Crossing stock-room 8862, base-crafting.yaml:1401), not in the Shard hometown' do
+      it 'H09: buys in force_crafting_town (Crossing stock-room 8862, base-crafting.yaml:1442), not in the Shard hometown' do
         settings.merge!(hometown: 'Shard', force_crafting_town: 'Crossing')
         script_short_unguent
         expect(run_remedy(short_unguent)).to eq(:exited)
@@ -3174,7 +3174,7 @@ RSpec.describe Remedy do
       let(:settings) { logged_settings.merge(mark_crafted_goods: false, alchemy_room: nil) }
 
       it 'walks back to the room remedy was started in, read before the walk to the shop' do
-        # Room ids from base-crafting.yaml:1392-1397 (Crossing npc-rooms): the
+        # Room ids from base-crafting.yaml:1433-1438 (Crossing npc-rooms): the
         # character starts in 8863; Room.current would answer the shop room
         # 8862 if it were read again after the order.
         allow(Room).to receive(:current).and_return(instance_double(Map, id: 8863), instance_double(Map, id: 8862))
@@ -9025,7 +9025,7 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
         expect(calls).to be_empty
       end
 
-      it 'buys the coal nugget for the catalyst "nugget" too, at the Riverhaven catalyst-room (8785, base-crafting.yaml:1450)' do
+      it 'buys the coal nugget for the catalyst "nugget" too, at the Riverhaven catalyst-room (8785, base-crafting.yaml:1487)' do
         allow(DRCI).to receive(:exists?) { |item, *| item != 'nugget' }
         supplies.buy_missing(water: plain_water, alcohol: plain_alcohol, catalyst: 'nugget')
         expect(calls).to eq([[:bank, '5 silver', 'Riverhaven'], [:order, 8785, 2], [:stow, 'coal nugget', toolbag, toolstrap], [:walk, 4321]])
