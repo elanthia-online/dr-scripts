@@ -12893,6 +12893,17 @@ RSpec.describe TaskMaster do
       expect(sent).not_to include([:stow, 'hammer'])
     end
 
+    it "reads the tool off a stowed Rangu ticket, article and all, and matches it to the tool's name in hand" do
+      # Kythkani, 2026-11-20 08:08:39: the ticket put in the pack, then looked at.
+      look = 'Looking at the Rangu ticket you see it is for some slender agonite sewing needles capped with tiny tidal bloodstones.  You recall that your needles should be ready any moment now.'
+      item = look[TaskMaster::TICKET_ITEM, :item]
+      needles = { 'tool' => 'sewing needles', 'item' => 'slender agonite sewing needles capped with tiny tidal bloodstones' }
+
+      expect(item).to eq('slender agonite sewing needles capped with tiny tidal bloodstones')
+      expect(build.exact_tool?(needles, item)).to be(true)
+      expect(look).not_to match(/#{real_repair_replies['ready']}/i)
+    end
+
     it "takes a noted tool's ticket by full name before another of the same noun (an un-noted iron mortar ahead of it)" do
       mortar = { 'npc' => 'nezhiri', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'mortar', 'item' => 'polished belzune stone mortar', 'left_at' => 1 }
       UserVars.taskmaster_repairs = [mortar]
