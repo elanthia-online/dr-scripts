@@ -26,35 +26,12 @@ class WorkOrders
 
   NPC_NOT_FOUND_PATTERN = "^What is it you're trying to give".freeze
 
-  # The clerk's repair quote, e.g. "That will cost 4,447 Kronars to repair.
-  # Just give it to me again..." -- captured (cost included) so we can read the
-  # price and top up from the bank if we are short before confirming. This only
-  # matches when the cost and prompt share one game line (the observed format);
-  # the bare 'Just give it to me again' below is kept as a fallback so a split
-  # line still matches the prompt (repair proceeds, just without auto-funding).
-  REPAIR_QUOTE_PATTERN = /cost [\d,]+ \w+ to repair.*give it to me again/i
-
-  # Clerk's response when we lack the coin to pay for a repair.
-  REPAIR_NEED_COIN_PATTERN = 'more coin'
-
   # Extra forge attempts beyond asked quantity to cover quality rejects / failed crafts
   FORGE_ATTEMPT_BUFFER = 5
 
   # Stock ingots this size and larger are sold at the town's bulk materials
   # shop (bingots-room), not its stock shop. smith.lic has the same constant.
   BULK_INGOT_VOLUME = 50
-
-  REPAIR_GIVE_PATTERNS = [
-    "I don't repair those here",
-    'What is it',
-    "There isn't a scratch on that",
-    REPAIR_QUOTE_PATTERN,
-    'Just give it to me again',
-    'I will not',
-    "I can't fix those.  They only have so many uses and then you must buy another."
-  ].freeze
-
-  REPAIR_NO_NEED_PATTERNS = [/scratch/, /I will not/, /They only have so many uses/].freeze
 
   BUNDLE_SUCCESS_PATTERNS = [
     '^You notate the',
@@ -393,8 +370,8 @@ class WorkOrders
 
     tools.each do |tool_name|
       get_tool(tool_name)
-      result = DRC.bput("give #{info['repair-npc']}", *REPAIR_GIVE_PATTERNS)
-      if REPAIR_NO_NEED_PATTERNS.any? { |pat| pat.match?(result) }
+      result = DRC.bput("give #{info['repair-npc']}", *repair_replies['offered'])
+      if repair_replies['declined'].any? { |declined| result.match?(/#{declined}/i) }
         stow_tool(tool_name)
       elsif result.include?('give')
         confirm_repair(info, tool_name, repair_cost_copper(result))
@@ -404,13 +381,22 @@ class WorkOrders
     end
 
     while DRCI.get_item?("#{info['repair-npc']} ticket")
-      pause 30 until DRC.bput('look at my ticket', 'should be ready by now', 'Looking at the') == 'should be ready by now'
+      pause 30 until DRC.bput('look at my ticket', repair_replies['ready'], repair_replies['not_ready']) == repair_replies['ready']
       DRC.bput("give #{info['repair-npc']}", 'You hand')
       pause 1
       stow_tool(DRC.right_hand) if DRC.right_hand
       stow_tool(DRC.left_hand) if DRC.left_hand
     end
     Lich::Messaging.msg('plain', 'WorkOrders: Tool repair at NPC completed')
+  end
+
+  # What repairers answer when handed a tool (data/base-crafting.yaml
+  # repair_replies, shared with taskmaster): offered, declined, quote, ticket,
+  # need_coin, ready and not_ready.
+  #
+  # @return [Hash{String => Object}]
+  def repair_replies
+    @repair_replies ||= get_data('crafting')['repair_replies']
   end
 
   # Parse the copper cost out of the clerk's repair quote. Repair prices are
@@ -430,14 +416,14 @@ class WorkOrders
   def confirm_repair(info, tool_name, cost)
     attempts = 0
     loop do
-      result = DRC.bput("give #{info['repair-npc']}", 'repair ticket', REPAIR_NEED_COIN_PATTERN, REPAIR_QUOTE_PATTERN, 'Just give it to me again')
+      result = DRC.bput("give #{info['repair-npc']}", repair_replies['ticket'], repair_replies['need_coin'], repair_replies['quote'], 'Just give it to me again')
       case result
-      when /repair ticket/
+      when /#{repair_replies['ticket']}/i
         break
-      when REPAIR_QUOTE_PATTERN, /Just give it to me again/
+      when /#{repair_replies['quote']}/i, /Just give it to me again/i
         new_cost = repair_cost_copper(result)
         cost = new_cost if new_cost
-      when /#{REPAIR_NEED_COIN_PATTERN}/
+      when /#{repair_replies['need_coin']}/i
         attempts += 1
         if cost.nil? || attempts > 3
           Lich::Messaging.msg('bold', "WorkOrders: Unable to fund repair of #{tool_name}; skipping.")

@@ -28,6 +28,12 @@ RSpec.describe TaskMaster do
     $taskmaster_boost_unavailable = nil
   end
 
+  # The repair replies of data/base-crafting.yaml, read once: what a
+  # repairer answers when handed a tool (shared with workorders).
+  def real_repair_replies
+    @real_repair_replies ||= YAML.load_file(File.expand_path('../data/base-crafting.yaml', __dir__), aliases: true)['repair_replies']
+  end
+
   # A bare instance: initialize runs the whole script, so each example builds
   # one with allocate and injects only the state the method under test reads.
   # settings: becomes @settings; every other keyword sets the ivar of that
@@ -35,10 +41,26 @@ RSpec.describe TaskMaster do
   # would read a braceless settings hash as ivar keywords.
   def build(settings: {}, **ivars)
     tm = described_class.allocate
-    { settings: OpenStruct.new(settings), bag: 'duffel bag', bag_items: [], npc: 'zasele', rooms: [16_145], stackmap: stackmap }
+    { settings: OpenStruct.new(settings), bag: 'duffel bag', bag_items: [], npc: 'zasele', rooms: [16_145], stackmap: stackmap,
+      repair_replies: real_repair_replies }
       .merge(ivars)
       .each { |name, value| tm.instance_variable_set(:"@#{name}", value) }
     tm
+  end
+
+  # What DRC.bput hands back for a game line: the text of the first matcher
+  # (a String is matched as /string/i) that matches it, in the order given,
+  # or '' when none does (lich-5 common.rb, bput).
+  #
+  # @param line [String]
+  # @param matchers [Array<String, Regexp>]
+  # @return [String]
+  def bput_match(line, matchers)
+    matchers.flatten.each do |matcher|
+      found = line.to_s.match(matcher.is_a?(Regexp) ? matcher : /#{matcher}/i)
+      return found[0] if found
+    end
+    ''
   end
 
   # Game replies keyed by the start of the command that produces them. A reply
@@ -12190,6 +12212,80 @@ RSpec.describe TaskMaster do
           expect(ReplayGame.log('6100:10261').text).to match(/hands you a/)
         end
       end
+    end
+  end
+
+  describe 'leaving tools for repair (#tool_drop)' do
+    # Rangu's answers to the mortar (Hollow Eve 2026, log 6100:9659 and 9661).
+    let(:rangu_quote) { "Rangu looks over the mortar and says, \"That will cost 240 Kronars to repair.  Just give it to me again if you want, and I'll have it ready in 1 roisaen.\"" }
+    let(:rangu_ticket) { "You hand Rangu 240 Kronars and he gives you back a repair ticket.  Rangu says, \"I should be having that done for you in about 1 roisaen.  Don't lose this ticket!  You must have it to reclaim your mortar.\"" }
+    # Catrox's answer to a tool with no wear (Byd, 2026-11-18 23:03:03).
+    let(:no_scratch) { "Catrox shrugs and says, \"There isn't a scratch on that, and I'm not one to rob you.\"" }
+    let(:sent) { [] }
+
+    def drop(*replies, tools: ['mortar'])
+      tm = build
+      queue = replies.dup
+      allow(DRCT).to receive(:walk_to)
+      allow(DRCC).to receive(:get_crafting_item)
+      allow(DRCC).to receive(:stow_crafting_item)
+      allow(DRC).to receive(:bput) do |command, *matchers|
+        sent << command
+        command == 'stow ticket' ? 'You put' : bput_match(queue.shift, matchers)
+      end
+      tm.tool_drop(tools, 'alchemy belt')
+      tm
+    end
+
+    it 'confirms a quote with a second give and keeps the ticket' do
+      drop(rangu_quote, rangu_ticket)
+
+      expect(sent).to eq(['give Rangu', 'give Rangu', 'stow ticket'])
+      expect(DRCC).not_to have_received(:stow_crafting_item)
+    end
+
+    it 'gives each tool its own quote and ticket' do
+      drop(rangu_quote, rangu_ticket, rangu_quote, rangu_ticket, tools: %w[mortar pestle])
+
+      expect(sent).to eq(['give Rangu', 'give Rangu', 'stow ticket', 'give Rangu', 'give Rangu', 'stow ticket'])
+    end
+
+    it 'puts a tool with no wear away without a second give' do
+      drop(no_scratch)
+
+      expect(sent).to eq(['give Rangu'])
+      expect(DRCC).to have_received(:stow_crafting_item).with('mortar', 'duffel bag', 'alchemy belt')
+    end
+
+    it 'puts the tool away, with no second give, when Rangu is not there to take it' do
+      drop(missed_give)
+
+      expect(sent).to eq(['give Rangu'])
+      expect(DRCC).to have_received(:stow_crafting_item).with('mortar', 'duffel bag', 'alchemy belt')
+    end
+
+    ["I can't fix those.  They only have so many uses and then you must buy another.", 'I will not repair that.', "I don't repair those here."].each do |reply|
+      it "puts the tool away on \"#{reply[0, 30]}...\"" do
+        drop(reply)
+
+        expect(sent).to eq(['give Rangu'])
+        expect(DRCC).to have_received(:stow_crafting_item).with('mortar', 'duffel bag', 'alchemy belt')
+      end
+    end
+
+    it 'says so and puts the tool away when the second give brings no ticket (short of coin)' do
+      drop(rangu_quote, 'Rangu says, "You will need more coin if I am to be repairing that!"')
+
+      expect(sent).to eq(['give Rangu', 'give Rangu'])
+      expect(DRC).to have_received(:message).with('No repair ticket for the mortar (more coin); putting it away.')
+      expect(DRCC).to have_received(:stow_crafting_item).with('mortar', 'duffel bag', 'alchemy belt')
+    end
+
+    it 'puts the tool away when the first give gets no answer' do
+      drop('')
+
+      expect(sent).to eq(['give Rangu'])
+      expect(DRCC).to have_received(:stow_crafting_item).with('mortar', 'duffel bag', 'alchemy belt')
     end
   end
 end

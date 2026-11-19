@@ -1,4 +1,38 @@
 ---
+# What a repairer (Rangu, a society clerk, Catrox and the like) answers when
+# handed a tool with GIVE <name>, read by the scripts that leave tools for
+# repair (workorders, taskmaster) so each keeps no copy of its own. Each entry
+# is a pattern as DRC.bput takes one: a regular expression, matched without
+# regard to case.
+repair_replies:
+  # The quote, cost included: "That will cost 4,447 Kronars to repair.  Just
+  # give it to me again if you want, and I'll have it ready in 2 roisaen."
+  # Matched only when the cost and the prompt share one line (as seen so far).
+  quote: &repair_quote 'cost [\d,]+ \w+ to repair.*give it to me again'
+  # Every answer to the first give: the quote (or its bare prompt, should the
+  # line split), or why the tool is not taken.
+  offered:
+    - "I don't repair those here"
+    - What is it
+    - "There isn't a scratch on that"
+    - *repair_quote
+    - Just give it to me again
+    - I will not
+    - "I can't fix those.  They only have so many uses and then you must buy another."
+  # Answers that mean the tool needs no repair or can't have one: it is put away.
+  declined:
+    - scratch
+    - I will not
+    - They only have so many uses
+  # The second give, which takes the coin and hands over a repair ticket.
+  ticket: repair ticket
+  # The answer to the second give when the coin carried is short.
+  need_coin: more coin
+  # LOOK AT MY TICKET: "Looking at the Granzer ticket you see it is for a small
+  # demonscale shield ...  You recall that your shield should be ready by now."
+  # A ticket not ready yet starts the same way without that last sentence.
+  ready: should be ready by now
+  not_ready: Looking at the
 stock:
   bronze:
     stock-volume: 5

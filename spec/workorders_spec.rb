@@ -21,8 +21,12 @@ load_lic_class('workorders.lic', 'WorkOrders')
 RSpec.describe WorkOrders do
   # Allocate a bare instance without calling initialize
   let(:workorders) { described_class.allocate }
+  # The real repair replies (data/base-crafting.yaml), shared with taskmaster.
+  let(:repair_replies) { YAML.unsafe_load_file(File.expand_path('../data/base-crafting.yaml', __dir__))['repair_replies'] }
 
   before(:each) do
+    allow(workorders).to receive(:get_data).and_call_original
+    allow(workorders).to receive(:get_data).with('crafting').and_return({ 'repair_replies' => repair_replies })
     # World state this spec assumes (reset_data runs first, via spec_helper).
     $right_hand = nil
     $left_hand = nil
@@ -70,19 +74,6 @@ RSpec.describe WorkOrders do
     it 'defines NPC_NOT_FOUND_PATTERN as frozen string' do
       expect(described_class::NPC_NOT_FOUND_PATTERN).to be_frozen
       expect(described_class::NPC_NOT_FOUND_PATTERN).to eq("^What is it you're trying to give")
-    end
-
-    it 'defines REPAIR_GIVE_PATTERNS as frozen array' do
-      expect(described_class::REPAIR_GIVE_PATTERNS).to be_frozen
-      expect(described_class::REPAIR_GIVE_PATTERNS.length).to eq(7)
-      # Cost-capturing quote plus a bare-prompt fallback for split lines.
-      expect(described_class::REPAIR_GIVE_PATTERNS).to include(described_class::REPAIR_QUOTE_PATTERN)
-      expect(described_class::REPAIR_GIVE_PATTERNS).to include('Just give it to me again')
-    end
-
-    it 'defines REPAIR_NO_NEED_PATTERNS as frozen array' do
-      expect(described_class::REPAIR_NO_NEED_PATTERNS).to be_frozen
-      expect(described_class::REPAIR_NO_NEED_PATTERNS.length).to eq(3)
     end
 
     it 'defines BUNDLE_SUCCESS_PATTERNS as frozen array' do
@@ -1552,23 +1543,6 @@ RSpec.describe WorkOrders do
         expect(described_class::BUNDLE_FAILURE_PATTERN).not_to match('You notate the')
       end
     end
-
-    describe 'REPAIR_NO_NEED_PATTERNS' do
-      it 'matches no scratch response' do
-        result = "There isn't a scratch on that tool"
-        expect(described_class::REPAIR_NO_NEED_PATTERNS.any? { |p| p.match?(result) }).to be true
-      end
-
-      it 'matches will not repair' do
-        result = 'I will not repair that'
-        expect(described_class::REPAIR_NO_NEED_PATTERNS.any? { |p| p.match?(result) }).to be true
-      end
-
-      it 'matches limited use item' do
-        result = 'They only have so many uses'
-        expect(described_class::REPAIR_NO_NEED_PATTERNS.any? { |p| p.match?(result) }).to be true
-      end
-    end
   end
 
   # ===========================================================================
@@ -1601,7 +1575,7 @@ RSpec.describe WorkOrders do
       it 'uses DRCI.put_away_item? for ticket in repair_items' do
         workorders.instance_variable_set(:@settings, OpenStruct.new(workorders_repair_own_tools: false))
         # First give per tool returns the clerk's cost quote (matches
-        # REPAIR_QUOTE_PATTERN and contains a price so repair_cost_copper works);
+        # the repair_replies quote and contains a price so repair_cost_copper works);
         # confirm_repair's give -- the only one passing 'repair ticket' as a
         # pattern -- returns 'repair ticket' so the repair finalizes and the
         # ticket is stowed.
@@ -1619,16 +1593,6 @@ RSpec.describe WorkOrders do
     end
 
     describe 'repair insufficient-funds recovery' do
-      it 'REPAIR_QUOTE_PATTERN matches a clerk cost quote' do
-        expect(described_class::REPAIR_QUOTE_PATTERN).to be_a(Regexp)
-        expect('That will cost 4,447 Kronars to repair.  Just give it to me again if you want')
-          .to match(described_class::REPAIR_QUOTE_PATTERN)
-      end
-
-      it 'REPAIR_NEED_COIN_PATTERN is the short-on-coin phrase' do
-        expect(described_class::REPAIR_NEED_COIN_PATTERN).to eq('more coin')
-      end
-
       describe '#repair_cost_copper' do
         it 'parses the copper amount out of a repair quote' do
           expect(workorders.send(:repair_cost_copper, 'cost 4,447 Kronars to repair')).to eq(4447)

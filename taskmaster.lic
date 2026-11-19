@@ -37,7 +37,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.19.12'
+  VERSION = '2026.11.19.13'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -5734,7 +5734,11 @@ class TaskMaster
   end
 
   # Leaves each tool with Rangu for repair and keeps the tickets; a tool he
-  # won't take goes back where it came from.
+  # won't take, or that needs no repair, goes back where it came from. The
+  # replies are the repair_replies of data/base-crafting.yaml, which
+  # workorders reads too: a quote (or its bare prompt) is confirmed with a
+  # second give, which takes the coin and hands over the ticket; any other
+  # answer to that give (short of coin, say) puts the tool away.
   #
   # @param toolslist [Array<String>] tool names
   # @param belt [Hash, nil] toolbelt settings the tools live on
@@ -5746,14 +5750,35 @@ class TaskMaster
     @belt = belt
     toolslist.each do |tool_name|
       DRCC.get_crafting_item(tool_name, @bag, @bag_items, belt, true)
-      case DRC.bput("give Rangu", "I don't repair those here", 'What is it', "There isn't a scratch on that", 'Just give it to me again', 'I will not', "I can't fix those.  They only have so many uses and then you must buy another.")
-      when /give/
-        DRC.bput("give Rangu", 'repair ticket')
-        DRC.bput('stow ticket', 'You put')
-      else
-        DRCC.stow_crafting_item(tool_name, @bag, belt)
+      reply = DRC.bput("give Rangu", *repair_replies['offered'])
+      if repair_offered?(reply)
+        confirmed = DRC.bput("give Rangu", repair_replies['ticket'], repair_replies['need_coin'])
+        if confirmed.match?(/#{repair_replies['ticket']}/i)
+          DRC.bput('stow ticket', 'You put')
+          next
+        end
+        DRC.message("No repair ticket for the #{tool_name} (#{confirmed.empty? ? 'no answer' : confirmed}); putting it away.")
       end
+      DRCC.stow_crafting_item(tool_name, @bag, belt)
     end
+  end
+
+  # Whether a repairer's answer to the first give asks for a second one (a
+  # quote, or its bare prompt) rather than turning the tool away.
+  #
+  # @param reply [String] the answer to the first give
+  # @return [Boolean]
+  def repair_offered?(reply)
+    reply.match?(/give it to me again/i) && repair_replies['declined'].none? { |declined| reply.match?(/#{declined}/i) }
+  end
+
+  # What repairers answer when handed a tool (data/base-crafting.yaml
+  # repair_replies, shared with workorders): offered, declined, quote,
+  # ticket, need_coin, ready and not_ready.
+  #
+  # @return [Hash{String => Object}]
+  def repair_replies
+    @repair_replies ||= get_data('crafting')['repair_replies']
   end
 
   # Collects every tool Rangu holds a ticket for, waiting until each is
@@ -5765,7 +5790,7 @@ class TaskMaster
   def tool_pickup # picks up all your tools from repair shop
     DRCT.walk_to(19209)
     while DRCI.get_item?("rangu ticket")
-      pause 30 until DRC.bput('look at my ticket', 'should be ready by now', 'Looking at the') == 'should be ready by now'
+      pause 30 until DRC.bput('look at my ticket', repair_replies['ready'], repair_replies['not_ready']) == repair_replies['ready']
       DRC.bput("give Rangu", 'You hand')
       pause 0.01 until (tool = [DRC.right_hand, DRC.left_hand].compact.first) # waits for tool to hit your hand
       belts = [@settings.forging_belt, @settings.engineering_belt, @settings.outfitting_belt, @settings.alchemy_belt, @settings.enchanting_belt]
