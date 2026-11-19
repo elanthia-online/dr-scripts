@@ -8731,9 +8731,10 @@ RSpec.describe TaskMaster do
           expect(commons.inventory.map(&:to_a)).to include(['massive coal nugget', 'duffel bag', nil])
           expect(commons.calls.select { |name, *| name == 'DRCC.get_crafting_item' }.map { |call| call[1] }).to eq(['bowl', 'mixing stick'])
           # The leftover stack's id is not known at the start, so it is got
-          # by the noun, as the logs got remedies ("get my glop from my
-          # leather satchel", 6100:9365); no log gets one by its whole name.
-          expect(commons.calls.select { |name, *| name == 'DRCI.get_item?' }.map { |call| call[1] }.grep_v(/\A#|instructions/)).to eq(['draught'])
+          # by the remedy's whole name, which the game takes for that item
+          # only; the logs got remedies by the noun ("get my glop from my
+          # leather satchel", 6100:9365), which another draught answers too.
+          expect(commons.calls.select { |name, *| name == 'DRCI.get_item?' }.map { |call| call[1] }.grep_v(/\A#|instructions/)).to eq(['deep-sea draught'])
           expect(commons.inventory.select { |item| item.name == 'deep-sea draught' }.map(&:to_a)).to eq([['deep-sea draught', 'duffel bag', '7105']])
           expect(UserVars.taskmaster_sacks['nezhiri']).to eq(['horse-bone stack'])
           # The boost's 2 s pause; no reply was waited out.
@@ -8817,18 +8818,224 @@ RSpec.describe TaskMaster do
           expect([game.clock, game.diagnostics]).to eq([0.0, []])
         end
 
-        it "stops before buying anything when the bag holds another item of the remedy's noun" do
+        # The healing potion is in the bag before the landsickness potion, so
+        # a get by the noun alone ("get my potion") would bring it; the get
+        # by the whole name brings the landsickness potion only. It used to
+        # stop the run here, before buying anything.
+        it "names another item of the remedy's noun, leaves it in the bag and goes on, getting the remedy by its whole name" do
           tm = maker(task_product: 'landsickness potion')
-          game, commons = shop_world(kit + [['healing potion', 'duffel bag']])
-          game.script('inventory duffel bag', *bag_listed('some landsickness potion instructions', 'a healing potion'))
+          game, commons = shop_world(kit + [['healing potion', 'duffel bag'], ['landsickness potion', 'duffel bag', '7301']])
+          game.script('inventory duffel bag', *bag_listed('some landsickness potion instructions', 'a healing potion', 'some landsickness potion'))
+          game.script('count #7301', ReplayGame.log('6100:6040')) # 15 doses
 
-          expect { tm.nezhiri('potion', 15, potion_recipe.merge(uses: 16)) }.to raise_error(SystemExit)
+          tm.nezhiri('potion', 15, potion_recipe.merge(uses: 16))
+
+          expect(game.sent).to eq(['inventory duffel bag', 'count #7301'])
+          expect(commons.calls.select { |name, *| name == 'DRCI.get_item?' }.map { |call| call.drop(1) }).to eq([['landsickness potion', 'duffel bag']])
+          expect([commons.location_of('healing potion'), commons.location_of('#7301')]).to eq(['duffel bag', 'duffel bag'])
+          expect(DRC).to have_received(:message)
+            .with('Your duffel bag also holds 1 potion that is not landsickness potion ("a healing potion"). taskmaster gets the landsickness potion by its id or its whole name, and leaves it there.')
+          expect(DRC).to have_received(:message).with('15 doses of landsickness potion owed, 15 on hand: 0 crafts to make.')
+        end
+
+        # Defileous, 2026-11-18 12:56:21: "an ojhenik draught" in the duffel
+        # bag on a deep-sea draught task stopped every relaunch for about 26
+        # minutes. Both draught stacks are got by the whole name and
+        # combined; the ojhenik draught, first in the bag, is never got.
+        it 'gathers only the deep-sea draught stacks when the bag also holds an ojhenik draught, and does not stop' do
+          tm = maker(task_product: 'deep-sea draught')
+          game, commons = shop_world(kit + [['ojhenik draught', 'duffel bag', '7200'], ['deep-sea draught', 'duffel bag', '7101'], ['deep-sea draught', 'duffel bag', '7102']])
+          game.script('inventory duffel bag', *bag_listed('an ojhenik draught', 'some deep-sea draught', 'some deep-sea draught'))
+          game.script('combine #7101 with #7102', ReplayGame.log('6100:10912'), after: merges(commons, 'deep-sea draught', '7101', '7102', into: '7103'))
+          game.script('count #7103', ReplayGame.log('6100:10914'))
+
+          expect(tm.remedy_doses_on_hand(draught_recipe)).to eq(10)
+
+          expect(game.sent).to eq(['inventory duffel bag', 'combine #7101 with #7102', 'count #7103'])
+          expect(commons.calls.select { |name, *| name == 'DRCI.get_item?' }.map { |call| call[1] }).to eq(['deep-sea draught'] * 2)
+          expect([commons.location_of('#7200'), commons.location_of('#7103')]).to eq(['duffel bag', 'duffel bag'])
+          expect(commons.moves.grep(/ojhenik/)).to be_empty
+          expect(DRC).to have_received(:message)
+            .with('Your duffel bag also holds 1 draught that is not deep-sea draught ("an ojhenik draught"). taskmaster gets the deep-sea draught by its id or its whole name, and leaves it there.')
+          expect(DRC).not_to have_received(:message).with(/Stopping/)
+        end
+
+        it 'gets nothing when the only item of the noun in the bag is another remedy' do
+          tm = maker(task_product: 'deep-sea draught')
+          game, commons = shop_world(kit + [['ojhenik draught', 'duffel bag', '7200']])
+          game.script('inventory duffel bag', *bag_listed('some deep-sea draught instructions', 'an ojhenik draught'))
+
+          expect(tm.remedy_doses_on_hand(draught_recipe)).to eq(0)
 
           expect(game.sent).to eq(['inventory duffel bag'])
-          expect(commons.calls.map(&:first)).not_to include('DRCI.count_item_parts', 'DRCM.ensure_copper_on_hand', 'DRC.wait_for_script_to_complete')
+          expect(commons.calls.map(&:first)).not_to include('DRCI.get_item?')
+          expect(commons.location_of('#7200')).to eq('duffel bag')
+        end
+
+        # The planning count and the hand-in each read the bag; the same
+        # other items are named once a run, and other ones again.
+        it 'names the other items of the noun once a run, not again at the hand-in' do
+          tm = maker(task_product: 'deep-sea draught')
+          game, = shop_world(kit)
+          2.times { game.script('inventory duffel bag', *bag_listed('an ojhenik draught', 'some deep-sea draught')) }
+          game.script('inventory duffel bag', *bag_listed('an ojhenik draught', 'a murky draught', 'some deep-sea draught'))
+
+          3.times { expect(tm.send(:remedy_stacks_in_bag, draught_recipe)).to eq(1) }
+
+          expect(DRC).to have_received(:message).with(/also holds 1 draught that is not deep-sea draught \("an ojhenik draught"\)/).once
           expect(DRC).to have_received(:message)
-            .with('Your duffel bag holds 1 potion that is not landsickness potion. remedy and the hand-in find the landsickness potion by its noun, so they could take it instead. ' \
-                  'Move it out of your duffel bag, then start again. Stopping before buying anything.')
+            .with('Your duffel bag also holds 2 draughts that are not deep-sea draught ("an ojhenik draught", "a murky draught"). taskmaster gets the deep-sea draught by its id or its whole name, and leaves them there.').once
+        end
+
+        # With repeat one taskmaster works task after task: a deep-sea draught
+        # task, a landsickness potion one, then a deep-sea draught one again,
+        # the bag unchanged. Each remedy's other items are named once.
+        it 'names each remedy\'s other items once when tasks for different remedies alternate' do
+          tm = maker(task_product: 'deep-sea draught')
+          game, = shop_world(kit)
+          listed = bag_listed('an ojhenik draught', 'some deep-sea draught', 'a healing potion', 'some landsickness potion')
+          3.times { game.script('inventory duffel bag', *listed) }
+
+          [draught_recipe, potion_recipe, draught_recipe].each { |recipe| expect(tm.send(:remedy_stacks_in_bag, recipe)).to eq(1) }
+
+          expect(DRC).to have_received(:message).with(/also holds 1 draught that is not deep-sea draught \("an ojhenik draught"\)/).once
+          expect(DRC).to have_received(:message).with(/also holds 1 potion that is not landsickness potion \("a healing potion"\)/).once
+        end
+
+        # Two other items the whole name finds come back in front, turned
+        # around (get_remedy_stack); the hand-in's INVENTORY lists them so.
+        it 'names the same other items once when the bag lists them in another order' do
+          tm = maker(task_product: 'scale moisturizer')
+          game, = shop_world(kit)
+          game.script('inventory duffel bag', *bag_listed('some scaled moisturizer', 'a scalemail moisturizer', 'some scale moisturizer'))
+          game.script('inventory duffel bag', *bag_listed('a scalemail moisturizer', 'some scaled moisturizer', 'some scale moisturizer'))
+
+          2.times { tm.send(:remedy_stacks_in_bag, moisturizer_recipe) }
+
+          expect(DRC).to have_received(:message).with(/\AYour duffel bag also holds 2 moisturizers that are not scale moisturizer/).once
+        end
+
+        # The crafting bag in order, front first, as the game keeps it: each
+        # word of a name finds the start of a word ("scale" finds "scaled",
+        # seen in game 2026-11-19), an ordinal picks among the items found,
+        # and an item put back goes in front (read_carried_instructions).
+        # Gets by id, and puts into anything else, go to the ReplayCommons
+        # model.
+        def ordered_bag(commons, items)
+          bag = items.map(&:dup)
+          finds = lambda do |name, requested|
+            words = name.downcase.split
+            asked = requested.downcase.split
+            asked.all? { |word| words.any? { |own| own.start_with?(word) } } && words.last.start_with?(asked.last)
+          end
+          allow(DRCI).to receive(:get_item?) do |item, container|
+            next commons.get_item?(item, container) if item.start_with?('#')
+
+            commons.calls << ['DRCI.get_item?', item, container]
+            ordinal, rest = item.split(' ', 2)
+            place = $ORDINALS.index(ordinal)
+            found = bag.select { |name, _| finds.call(name, place ? rest : item) }[place || 0]
+            next false unless found
+
+            bag.delete(found)
+            commons.inventory.reject! { |entry| entry.id == found[1] }
+            commons.hold(found[0], id: found[1])
+            true
+          end
+          allow(DRCI).to receive(:put_away_item?) do |item, container|
+            held = [GameObj.right_hand, GameObj.left_hand].find { |obj| obj&.id && "##{obj.id}" == item }
+            bag.unshift([held.name, held.id]) if held && container == 'duffel bag'
+            commons.put_away_item?(item, container)
+          end
+          bag
+        end
+
+        # @return [Array<String>] the items DRCI.get_item? was asked for by name
+        def gets_by_name(commons)
+          commons.calls.select { |name, item, *| name == 'DRCI.get_item?' && !item.start_with?('#') }.map { |call| call[1] }
+        end
+
+        it 'puts back a "scaled" moisturizer the whole name brings and gets the stack as the second' do
+          tm = maker(task_product: 'scale moisturizer')
+          _, commons = shop_world(kit + [['scaled moisturizer', 'duffel bag', '7200'], ['scale moisturizer', 'duffel bag', '7101']])
+          bag = ordered_bag(commons, [['scaled moisturizer', '7200'], ['scale moisturizer', '7101']])
+
+          expect(tm.send(:get_remedy_stack, moisturizer_recipe, nil)).to eq('7101')
+
+          expect(gets_by_name(commons)).to eq(['scale moisturizer', 'second scale moisturizer'])
+          expect(commons.calls).to include(['DRCI.put_away_item?', '#7200', 'duffel bag'])
+          expect(bag).to eq([['scaled moisturizer', '7200']])
+          expect(DRC).not_to have_received(:message).with(/Stopping/)
+        end
+
+        it 'goes on to the third when two other items the whole name finds are ahead, each put back in front' do
+          tm = maker(task_product: 'scale moisturizer')
+          _, commons = shop_world(kit + [['scaled moisturizer', 'duffel bag', '7200'], ['scaled moisturizer', 'duffel bag', '7201'], ['scale moisturizer', 'duffel bag', '7101']])
+          bag = ordered_bag(commons, [['scaled moisturizer', '7200'], ['scaled moisturizer', '7201'], ['scale moisturizer', '7101']])
+
+          expect(tm.send(:get_remedy_stack, moisturizer_recipe, nil)).to eq('7101')
+
+          expect(gets_by_name(commons)).to eq(['scale moisturizer', 'second scale moisturizer', 'third scale moisturizer'])
+          expect(bag).to eq([['scaled moisturizer', '7201'], ['scaled moisturizer', '7200']])
+        end
+
+        it 'stops, with what came put back, once a get brings nothing and none was the remedy' do
+          tm = maker(task_product: 'scale moisturizer')
+          _, commons = shop_world(kit + [['scaled moisturizer', 'duffel bag', '7200']])
+          bag = ordered_bag(commons, [['scaled moisturizer', '7200']])
+
+          expect { tm.send(:get_remedy_stack, moisturizer_recipe, nil) }.to raise_error(SystemExit)
+
+          expect(gets_by_name(commons)).to eq(['scale moisturizer', 'second scale moisturizer'])
+          expect(bag).to eq([['scaled moisturizer', '7200']])
+          expect(DRC).to have_received(:message)
+            .with('Could not get the scale moisturizer out of your duffel bag: the gets brought only scaled moisturizer (#7200), put back there. Stopping.')
+        end
+
+        # A get by the whole name that brings another item of the noun puts
+        # it back by id and asks for the second; here (an ordinal the model
+        # does not place) that brings nothing, and the run stops before
+        # anything is combined with the stack already held.
+        it 'stops, putting it back by id and combining nothing, when the get by the whole name brings another item of the noun' do
+          tm = maker(task_product: 'deep-sea draught')
+          game, commons = shop_world(kit + [['ojhenik draught', 'duffel bag', '7200'], ['deep-sea draught', 'duffel bag', '7101']])
+          commons.hold('deep-sea draught', id: '7102')
+          game.script('inventory duffel bag', *bag_listed('an ojhenik draught', 'some deep-sea draught'))
+          # Every other get goes to the ReplayCommons model shop_world
+          # installed (and_wrap_original would wrap the harness stub instead).
+          allow(DRCI).to receive(:get_item?) do |item, container|
+            next commons.get_item?(item, container) unless item == 'deep-sea draught'
+
+            commons.calls << ['DRCI.get_item?', item, container]
+            commons.inventory.reject! { |entry| entry.id == '7200' }
+            commons.hold('ojhenik draught', id: '7200')
+            true
+          end
+
+          expect { tm.remedy_doses_on_hand(draught_recipe) }.to raise_error(SystemExit)
+
+          expect(game.sent).to eq(['inventory duffel bag'])
+          expect(commons.calls).to include(['DRCI.put_away_item?', '#7200', 'duffel bag'])
+          expect([commons.location_of('#7200'), commons.location_of('#7101'), commons.location_of('#7102')]).to eq(['duffel bag', 'duffel bag', 'duffel bag'])
+          expect(DRC).to have_received(:message)
+            .with('Could not get the deep-sea draught out of your duffel bag: the gets brought only ojhenik draught (#7200), put back there. Stopping.')
+        end
+
+        # Each of Nezhiri's remedies, from a bag whose name has an
+        # apostrophe (Nelis's trapper's duffel), with another item of its
+        # noun ahead of it there. The other names are made up.
+        it "gets each remedy's stack by its whole name, never by its noun, from any crafting bag" do
+          TaskMaster::NEZHIRI_ITEMS.each do |product, info|
+            tm = maker(task_product: product)
+            tm.instance_variable_set(:@bag, "trapper's duffel")
+            _, commons = shop_world([["ojhenik #{info[:noun]}", "trapper's duffel", '7400'], [product, "trapper's duffel", '7401']])
+
+            expect(tm.send(:get_remedy_stack, { product: product, noun: info[:noun] }, nil)).to eq('7401')
+
+            expect(commons.calls.select { |name, *| name == 'DRCI.get_item?' }.map { |call| call.drop(1) }).to eq([[product, "trapper's duffel"]])
+            expect(commons.location_of('#7400')).to eq("trapper's duffel")
+            commons.release('#7401') # the hands are not reset between worlds
+          end
         end
 
         it 'stops rather than take an INVENTORY unanswered twice for an empty bag' do
@@ -8865,17 +9072,78 @@ RSpec.describe TaskMaster do
         end
 
         # No item logged in November 2026 that holds a remedy's noun reads as
-        # no noun, so get_noun is made to read none off this real one.
-        it 'stops, naming it, for an item that holds the noun but has no noun read off it' do
+        # no noun, so get_noun is made to read none off this real one. It is
+        # named and left in the bag; it used to stop the run.
+        it 'names, and does not count or stop for, an item that holds the noun but has no noun read off it' do
           tm = maker(task_product: 'deep-sea draught')
           game, = shop_world(kit)
           holster = 'a cracked black leather draught holster set with a vivid fire whirl ruby'
           game.script('inventory duffel bag', *bag_listed(holster, 'some deep-sea draught'))
           allow(DRC).to(receive(:get_noun).and_wrap_original { |real, name| name == holster ? nil : real.call(name) })
 
-          expect { tm.send(:remedy_stacks_in_bag, draught_recipe) }.to raise_error(SystemExit)
+          expect(tm.send(:remedy_stacks_in_bag, draught_recipe)).to eq(1)
 
-          expect(DRC).to have_received(:message).with(a_string_ending_with("Stopping before buying anything. Counted as draughts, since taskmaster can't tell that it is not: \"#{holster}\"."))
+          expect(DRC).to have_received(:message)
+            .with("Your duffel bag also holds 1 item with no noun taskmaster can read (\"#{holster}\"). taskmaster gets the deep-sea draught by its id or its whole name, and leaves it there.")
+        end
+
+        # An unread line holding every word of the remedy's name may be the
+        # remedy itself (no November 2026 line was: get_noun is made to read
+        # none off it). It is not counted, and the note says so rather than
+        # that the remedy is left behind; only the counted stack is got (one
+        # get by the whole name), counted and put back, and nothing combined.
+        it 'gets only the counted stack, and names as uncounted an item named as the remedy with no noun read off it' do
+          tm = maker(task_product: 'deep-sea draught')
+          game, commons = shop_world(kit + [['deep-sea draught', 'duffel bag', '7101'], ['fresh deep-sea draught', 'duffel bag', '7103']])
+          2.times { game.script('inventory duffel bag', *bag_listed('some deep-sea draught', 'some fresh deep-sea draught')) }
+          game.script('count #7101', ReplayGame.log('6100:10519')) # 4 doses
+          allow(DRC).to(receive(:get_noun).and_wrap_original { |real, name| name == 'some fresh deep-sea draught' ? nil : real.call(name) })
+
+          expect(tm.send(:remedy_stacks_in_bag, draught_recipe)).to eq(1)
+          expect(tm.remedy_doses_on_hand(draught_recipe)).to eq(4)
+
+          expect(game.sent).to eq(['inventory duffel bag'] * 2 + ['count #7101'])
+          expect(commons.calls.select { |name, *| name == 'DRCI.get_item?' }.map { |call| call.drop(1) }).to eq([['deep-sea draught', 'duffel bag']])
+          expect(commons.calls.map(&:first).grep(/combine/i)).to eq([])
+          expect([commons.location_of('#7101'), commons.location_of('#7103')]).to eq(['duffel bag', 'duffel bag'])
+          expect(DRC).to have_received(:message)
+            .with('Your duffel bag also holds 1 item named deep-sea draught with no noun taskmaster can read ("some fresh deep-sea draught"). ' \
+                  'taskmaster does not count it as deep-sea draught, so it may craft more than is owed.').once
+          expect(DRC).not_to have_received(:message).with(/leaves it there/)
+        end
+
+        # Its only stack unread: none is counted, so nothing is got, combined
+        # or counted, and the run crafts all the doses owed.
+        it 'counts no doses and gets nothing when the only stack of the remedy has no noun read off it' do
+          tm = maker(task_product: 'deep-sea draught')
+          game, commons = shop_world(kit + [['deep-sea draught', 'duffel bag', '7101']])
+          game.script('inventory duffel bag', *bag_listed('some deep-sea draught'))
+          allow(DRC).to(receive(:get_noun).and_wrap_original { |real, name| name == 'some deep-sea draught' ? nil : real.call(name) })
+
+          expect(tm.remedy_doses_on_hand(draught_recipe)).to eq(0)
+
+          expect(game.sent).to eq(['inventory duffel bag'])
+          expect(commons.calls.map(&:first)).not_to include('DRCI.get_item?')
+          expect(commons.location_of('#7101')).to eq('duffel bag')
+          expect(tm.instance_variable_get(:@remedy_stack)).to be_nil
+          expect(DRC).to have_received(:message)
+            .with('Your duffel bag also holds 1 item named deep-sea draught with no noun taskmaster can read ("some deep-sea draught"). ' \
+                  'taskmaster does not count it as deep-sea draught, so it may craft more than is owed.')
+        end
+
+        it 'names the uncounted items after the others, in one message, plural when more than one' do
+          tm = maker(task_product: 'deep-sea draught')
+          game, = shop_world(kit)
+          unread = ['some deep-sea draught', 'a vial of deep-sea draught']
+          game.script('inventory duffel bag', *bag_listed('an ojhenik draught', *unread))
+          allow(DRC).to(receive(:get_noun).and_wrap_original { |real, name| unread.include?(name) ? nil : real.call(name) })
+
+          expect(tm.send(:remedy_stacks_in_bag, draught_recipe)).to eq(0)
+
+          expect(DRC).to have_received(:message)
+            .with('Your duffel bag also holds 1 draught that is not deep-sea draught ("an ojhenik draught"). taskmaster gets the deep-sea draught by its id or its whole name, ' \
+                  'and leaves it there. It holds 2 items named deep-sea draught with no noun taskmaster can read ("some deep-sea draught", "a vial of deep-sea draught"). ' \
+                  'taskmaster does not count them as deep-sea draught, so it may craft more than is owed.').once
         end
 
         it 'stops before buying anything when the instructions have fewer uses than crafts' do
@@ -10233,6 +10501,11 @@ RSpec.describe TaskMaster do
 
           expect(tm.remedy_doses_on_hand(draught_recipe)).to eq(4)
           expect(game.sent.last(2)).to eq(['inventory duffel bag', 'count #7101'])
+          # The glop got by its id goes back; the draught is then got by its
+          # whole name, counted and put back.
+          expect(commons.calls.select { |name, *| %w[DRCI.get_item? DRCI.put_away_item?].include?(name) }.last(4))
+            .to eq([['DRCI.get_item?', '#7006', 'duffel bag'], ['DRCI.put_away_item?', '#7006', 'duffel bag'], ['DRCI.get_item?', 'deep-sea draught', 'duffel bag'],
+                    ['DRCI.put_away_item?', '#7101', 'duffel bag']])
           expect([commons.location_of('#7006'), commons.location_of('#7101'), tm.instance_variable_get(:@remedy_stack)]).to eq(['duffel bag', 'duffel bag', '7101'])
         end
 
@@ -10272,18 +10545,44 @@ RSpec.describe TaskMaster do
         end
 
         # The healing potion that, with a give by noun, went to her five times
-        # (6100:3908 journal): the hand-in looks in the bag first and stops.
-        it 'gives Nezhiri nothing on finish when the bag holds another item of the noun (6100:3908)' do
+        # (6100:3908 journal). The hand-in looks in the bag first; it used to
+        # stop there. Now the healing potion is named and left in the bag,
+        # and with no landsickness potion on hand nothing is given.
+        it 'gives Nezhiri nothing on finish, and leaves the healing potion in the bag, with no doses on hand (6100:3908)' do
           tm = maker
           game, commons = shop_world(kit + [['small healing potion', 'duffel bag']])
           game.script('task', ReplayGame.log('6100:3908'))
           game.script('inventory duffel bag', *bag_listed('some landsickness potion instructions', 'a small healing potion'))
+          expect(tm).to receive(:ensure_instructions).with('potion', 15)
+          expect(tm).to receive(:read_instructions).with('potion', 15).and_return(['potion', 15, potion_recipe])
+          %i[refresh_haste top_up_copper nezhiri complete_task].each { |step| allow(tm).to receive(step) }
           allow(tm).to receive(:find_npc)
 
           expect { tm.resume_task }.to raise_error(SystemExit)
 
           expect(game.sent).to eq(['task', 'inventory duffel bag'])
           expect(commons.location_of('small healing potion')).to eq('duffel bag')
+          expect(commons.calls.map(&:first)).not_to include('DRCI.get_item?')
+          expect(tm).not_to have_received(:find_npc)
+          expect(DRC).to have_received(:message).with(a_string_starting_with('Your duffel bag also holds 1 potion that is not landsickness potion ("a small healing potion").'))
+          expect(DRC).to have_received(:message).with('0 of the 15 doses of landsickness potion owed are on hand: not enough to hand in yet.')
+        end
+
+        # The same bag with 15 doses of landsickness potion behind the
+        # healing potion: the hand-in readies the landsickness potion, got by
+        # its whole name, and the healing potion stays in the bag.
+        it 'readies the landsickness potion for the hand-in, not the healing potion ahead of it in the bag (6100:3908)' do
+          tm = maker(task_product: 'landsickness potion')
+          game, commons = shop_world(kit + [['small healing potion', 'duffel bag'], ['landsickness potion', 'duffel bag', '7301']])
+          game.script('inventory duffel bag', *bag_listed('some landsickness potion instructions', 'a small healing potion', 'some landsickness potion'))
+          game.script('count #7301', ReplayGame.log('6100:6040')) # 15 doses
+
+          expect(tm.remedy_hand_in?('potion', 15)).to be(true)
+
+          expect(game.sent).to eq(['inventory duffel bag', 'count #7301'])
+          expect(tm.instance_variable_get(:@remedy_hand_in)).to eq('7301')
+          expect([commons.location_of('#7301'), commons.location_of('small healing potion')]).to eq(['right', 'duffel bag'])
+          expect(commons.calls.select { |name, *| name == 'DRCI.get_item?' }.map { |call| call[1] }).to eq(['landsickness potion'])
         end
 
         it 'puts a stack left in hand together with the ones in the bag before counting' do
@@ -10710,17 +11009,20 @@ RSpec.describe TaskMaster do
             expect(DRC).to have_received(:message).with(/can't carry on what is in it \(the game said "In the stone mortar you see some unfinished scale moisturizer\."\)/)
           end
 
-          it 'leaves the mortar in hand when a foreign item of the noun stops the run before the look' do
+          # A foreign item of the noun used to stop the run before the look,
+          # the bowl left in hand. It is named and left in the bag, and the
+          # bowl is looked in and dealt with as without it.
+          it 'looks in the bowl and puts it away, empty, when the bag also holds a foreign item of the noun (6101:5693)' do
             tm = maker(task_product: 'landsickness potion')
             game, commons = holding(bowl, '6002', others: [['healing potion', 'duffel bag']])
             game.script('inventory duffel bag', *bag_listed('a healing potion'))
-            allow(DRCI).to receive(:stow_hands)
+            game.script('look in my bowl', ReplayGame.log('6101:5693'))
 
-            expect { tm.remedy_doses_on_hand(potion_recipe) }.to raise_error(SystemExit)
+            expect(tm.remedy_doses_on_hand(potion_recipe)).to eq(0)
 
-            expect(game.sent).to eq(['inventory duffel bag'])
-            expect(commons.location_of('#6002')).to eq('right')
-            expect(DRCI).not_to have_received(:stow_hands)
+            expect(game.sent).to eq(['inventory duffel bag', 'look in my bowl'])
+            expect([commons.location_of('#6002'), commons.location_of('healing potion')]).to eq(['duffel bag', 'duffel bag'])
+            expect(DRC).to have_received(:message).with(a_string_starting_with('Your duffel bag also holds 1 potion that is not landsickness potion ("a healing potion").'))
           end
         end
 

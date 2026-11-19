@@ -26,7 +26,7 @@
   alchemy_tools: [bowl, mixing stick, mortar, pestle, sieve] # Nezhiri's tasks use the mortar and pestle or the bowl and mixing stick (whichever her remedy needs) and the sieve; the two used go to Rangu after each task (task_no_repair / task_self_repair as usual)
   alchemy_belt: # the toolbelt the alchemy tools are tied to, if any
   alchemy_room: <room number> # Nezhiri's remedies are crafted here; unset, in the Crossing alchemy supplies (8862), where the herbs are bought
-  ## Nezhiri's tasks: taskmaster buys brewer's brine on Andreshlew (room 51102), then in Crossing the herbs (one 25-piece stack per craft), a coal nugget when the ones carried have too few rubs left for the crafts (TAP shows the size: tiny lasts one craft, small two, and so on), and water and alcohol when none is on hand, so remedy never shops elsewhere. task_hometown is not needed for her. crafting_container holds the brine, the herbs and her remedies: doses left from earlier tasks count toward the next, every stack is combined into one, and the hand-in cuts it to the doses she asked for, putting the rest back. It plans one craft per 6 doses still owed, but a craft can make fewer, and how many has differed between characters (the cause is unknown): so it remembers, for each remedy, the fewest doses one craft made the last time you crafted it (UserVars.taskmaster_remedy_yields, kept per character across runs; each run whose crafts add doses replaces it, and a finish counts as such a run), and plans the next task's crafts at that many doses each, never more than 6. Crafting stops once the doses owed are made, so crafts planned for a yield since outgrown are not made: the herbs, brine and coal bought for them stay in crafting_container and the next task's purchases count them. Extra doses made are not lost either: they stay in crafting_container and count toward the next task. When the crafts planned fall short it makes enough more crafts for the doses still owed, counting each at the fewest doses one craft made this run (never more than 6), buying their supplies first, up to 2 such rounds. To forget the remembered yields, ;e UserVars.taskmaster_remedy_yields = nil. It stops when a round adds no doses, or when the instruction sets carried (all of them, read again) have too few uses left for the extra crafts (ask Nezhiri for another copy, then ;taskmaster nezhiri finish); still short after that, it stops and ;taskmaster nezhiri finish makes the rest. Keep no other item with the remedy's noun (another potion, say) in crafting_container: a task stops before buying anything if it finds one. A remedy run that stops part way (or a crash) leaves the mortar or bowl in hand: a run or a finish looks in it, and carries an unfinished remedy on once with remedy's continue form (buying brine or a coal nugget first when none is left, then crafting where it crafts), takes a finished one out as a made stack, puts a herb back in crafting_container, and puts an empty vessel away; anything else, or a continue run that again ends without the remedy, stops with the vessel in hand. A vessel left on the ground is not looked for. remedy.lic must handle the brine prompt (with a remedy that does not, each craft stops part way, the continue run stops at the same prompt, and the task stops) ##
+  ## Nezhiri's tasks: taskmaster buys brewer's brine on Andreshlew (room 51102), then in Crossing the herbs (one 25-piece stack per craft), a coal nugget when the ones carried have too few rubs left for the crafts (TAP shows the size: tiny lasts one craft, small two, and so on), and water and alcohol when none is on hand, so remedy never shops elsewhere. task_hometown is not needed for her. crafting_container holds the brine, the herbs and her remedies: doses left from earlier tasks count toward the next, every stack is combined into one, and the hand-in cuts it to the doses she asked for, putting the rest back. It plans one craft per 6 doses still owed, but a craft can make fewer, and how many has differed between characters (the cause is unknown): so it remembers, for each remedy, the fewest doses one craft made the last time you crafted it (UserVars.taskmaster_remedy_yields, kept per character across runs; each run whose crafts add doses replaces it, and a finish counts as such a run), and plans the next task's crafts at that many doses each, never more than 6. Crafting stops once the doses owed are made, so crafts planned for a yield since outgrown are not made: the herbs, brine and coal bought for them stay in crafting_container and the next task's purchases count them. Extra doses made are not lost either: they stay in crafting_container and count toward the next task. When the crafts planned fall short it makes enough more crafts for the doses still owed, counting each at the fewest doses one craft made this run (never more than 6), buying their supplies first, up to 2 such rounds. To forget the remembered yields, ;e UserVars.taskmaster_remedy_yields = nil. It stops when a round adds no doses, or when the instruction sets carried (all of them, read again) have too few uses left for the extra crafts (ask Nezhiri for another copy, then ;taskmaster nezhiri finish); still short after that, it stops and ;taskmaster nezhiri finish makes the rest. Another item with the remedy's noun in crafting_container (another potion, say) is named once and left there: taskmaster gets its own stacks out by id, or by the remedy's whole name ("get my deep-sea draught from my duffel bag"); the game matches the start of each word, so anything else that brings (a "scaled ... moisturizer" for "scale moisturizer") is put back and the second, third and so on is asked for, up to the twentieth (lich-5's ordinals); it stops when a get brings nothing, or after the twentieth, so a stack behind twenty such items stays in the bag and the run stops, saying what the gets brought. A remedy run that stops part way (or a crash) leaves the mortar or bowl in hand: a run or a finish looks in it, and carries an unfinished remedy on once with remedy's continue form (buying brine or a coal nugget first when none is left, then crafting where it crafts), takes a finished one out as a made stack, puts a herb back in crafting_container, and puts an empty vessel away; anything else, or a continue run that again ends without the remedy, stops with the vessel in hand. A vessel left on the ground is not looked for. remedy.lic must handle the brine prompt (with a remedy that does not, each craft stops part way, the continue run stops at the same prompt, and the task stops) ##
   enchanting_room: <room number> # Dorhum's tasks enchant in task_crafting_room, else here; with neither, where they stand if you carry a brazier, else at a Crossing brazier room. Outside tasks, enchanting uses enchanting_room as before
   ## Dorhum's tasks need task_loot_bag set to a container other than crafting_container: his finished items keep the base item's noun (a spongestone is still a rock) and wait there apart from the unworked ones. A task stops before buying anything if task_loot_bag already holds that noun, since the hand-in would give those first ##
   ## For Dorhum's tasks make task_crafting_room a room of your own (a private forge): each finished item is picked up off the floor by its noun, so another rock or shell lying there could be taken instead. A rented room's notice is read before enchanting and the rental renewed when under ten minutes are left ##
@@ -37,7 +37,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.18.5'
+  VERSION = '2026.11.19.3'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -2500,12 +2500,13 @@ class TaskMaster
   # @param doses [Integer] doses owed
   # @param recipe [Hash] what read_remedy_instructions returns
   # @return [void]
-  # @raise [SystemExit] when the bag holds another item of the same noun,
-  #   the instructions have too few uses (for the crafts planned or the
-  #   extra ones), a tool is missing, money or a purchase runs short, the
-  #   held vessel holds something it does not carry on, a craft (or its one
-  #   continue run) does not end with the remedy in hand, or the crafts and
-  #   extra crafts make fewer doses than owed
+  # @raise [SystemExit] when a stack in the bag can't be got (a get by the
+  #   remedy's whole name brought another item), the instructions have too
+  #   few uses (for the crafts planned or the extra ones), a tool is
+  #   missing, money or a purchase runs short, the held vessel holds
+  #   something it does not carry on, a craft (or its one continue run) does
+  #   not end with the remedy in hand, or the crafts and extra crafts make
+  #   fewer doses than owed
   def nezhiri(item, doses, recipe, _base = nil, _type = nil)
     @remedy_studies = 0
     @remedy_yield = nil
@@ -2762,9 +2763,10 @@ class TaskMaster
   #
   # @param recipe [Hash] the task's recipe
   # @return [String, nil] the id of the stack, held; nil when there is none
-  # @raise [SystemExit] when the bag holds another item of the remedy's
-  #   noun (remedy_stacks_in_bag), the held vessel can't be cleared
-  #   (clear_held_vessel), or a stack can't be got or combined
+  # @raise [SystemExit] when INVENTORY goes unanswered twice
+  #   (remedy_stacks_in_bag), the held vessel can't be cleared
+  #   (clear_held_vessel), or a stack can't be got (get_remedy_stack) or
+  #   combined
   def gather_remedy(recipe)
     product = recipe[:product]
     bagged = remedy_stacks_in_bag(recipe)
@@ -2974,41 +2976,91 @@ class TaskMaster
   end
 
   # How many stacks of the task's remedy the crafting bag holds, from one
-  # INVENTORY of it (container_listing), by their noun (sort_listed).
-  # Another item there with the same noun but another name (a healing
-  # potion when the remedy is landsickness potion) stops the run: remedy
-  # and the hand-in work the remedy by its noun, so it could be crafted
-  # into, combined or handed in. So does an item whose name holds the noun
-  # but with no noun read off it at all (unread in sort_listed), as it may
-  # be one of the noun; it is named. One whose noun reads as another is not
-  # one they would take, and does not count: the task's own instructions
-  # ("some gill glop instructions", noun "instructions"), or "a cracked
-  # black leather draught holster set with a vivid fire whirl ruby". get_noun
-  # read the noun of every glop, moisturizer, potion and draught logged in
-  # November 2026 right. An INVENTORY with no answer is asked once more;
-  # unanswered twice it stops the run, since taking it for an empty bag
-  # would craft doses already made, or leave them out of the hand-in. On
-  # the stop the hands are emptied, but for the remedy's vessel, which may
-  # hold an unfinished remedy the next run carries on (clear_held_vessel).
+  # INVENTORY of it (container_listing), by the remedy's whole name
+  # (count_listed): a line holding every word of "deep-sea draught" whose
+  # noun reads as "draught". Another item there with the same noun but
+  # another name (a healing potion when the remedy is landsickness potion,
+  # "an ojhenik draught" on a deep-sea draught task) is not counted, and
+  # is named once a run (one message, not repeated at the hand-in for the
+  # same items) and left there; so is an item whose name holds the noun but
+  # with no noun read off it at all (unread in sort_listed). One of those
+  # that holds every word of the remedy's name is named as uncounted: the
+  # run may craft more than is owed (note_other_remedies). It used to stop
+  # the run, which left Defileous relaunching into the stop for about 26
+  # minutes and Kvofe binning the item by hand (2026-11-18). taskmaster gets
+  # its own stacks out by id, or by the whole name (get_remedy_stack),
+  # putting back anything else that brings and asking for the second, the
+  # third and so on. remedy's noun commands act on the
+  # hand and the held vessel, not the bag: with a 6-dose deep-sea draught
+  # just put in the bag, "push my draught with my sieve" filtered the
+  # unfinished draught in the held bowl (Mithandres 13:17:29, 13:18:09), and
+  # with a 12-dose scale moisturizer there "crush my moisturizer" worked the
+  # mortar (Mailicyian 13:41:59, 13:42:17). One whose noun reads as another
+  # is not named either: the task's own instructions ("some gill glop
+  # instructions", noun "instructions"), or "a cracked black leather draught
+  # holster set with a vivid fire whirl ruby". get_noun read the noun of
+  # every glop, moisturizer, potion and draught logged in November 2026
+  # right. An INVENTORY with no answer is asked once more; unanswered twice
+  # it stops the run, since taking it for an empty bag would craft doses
+  # already made, or leave them out of the hand-in.
   #
   # @param recipe [Hash] the task's recipe
   # @return [Integer] stacks of the remedy in the bag
-  # @raise [SystemExit] when another item may have the remedy's noun, or
-  #   INVENTORY went unanswered twice
+  # @raise [SystemExit] when INVENTORY went unanswered twice
   def remedy_stacks_in_bag(recipe)
     noun = recipe[:noun]
+    product = recipe[:product]
     lines = container_listing(@bag)
     lines = container_listing(@bag) if lines.nil?
-    stop_stock("Could not look for #{recipe[:product]} in your #{@bag}: INVENTORY went unanswered twice.") if lines.nil?
-    ours = count_listed(lines, recipe[:product])
+    stop_stock("Could not look for #{product} in your #{@bag}: INVENTORY went unanswered twice.") if lines.nil?
+    ours = sort_listed(lines, product)
     sorted = sort_listed(lines, noun)
-    unread = sorted[:unread]
-    others = sorted[:of_kind].size - ours + unread.size
-    return ours if others.zero?
+    note_other_remedies(recipe, sorted[:of_kind] - ours[:of_kind], sorted[:unread] - ours[:unread], ours[:unread])
+    ours[:of_kind].size
+  end
 
-    put_hands_away unless held_vessel(recipe)
-    DRC.message("Your #{@bag} holds #{others} #{noun}#{others == 1 ? '' : 's'} that #{others == 1 ? 'is' : 'are'} not #{recipe[:product]}. remedy and the hand-in find the #{recipe[:product]} by its noun, so they could take #{others == 1 ? 'it' : 'them'} instead. Move #{others == 1 ? 'it' : 'them'} out of your #{@bag}, then start again. Stopping before buying anything.#{unread_note(noun, unread)}")
-    exit
+  # Names, once a run, the items in the crafting bag that hold the remedy's
+  # noun but are not counted as the remedy (remedy_stacks_in_bag): those of
+  # the noun, and those with no noun read off them. An unread one that
+  # holds every word of the remedy's name may be the remedy itself, so it is
+  # named apart: not counted, so the run may craft more than is owed, and
+  # nothing is got or combined for it. The same items for the same
+  # remedy are not named again (the hand-in reads the bag a second time),
+  # each remedy kept apart: with repeat, a deep-sea draught task after a
+  # landsickness potion one does not name the draught's items again. The
+  # items are compared in any order: get_remedy_stack puts items back in
+  # front of the others, which turns two of them around in the bag.
+  #
+  # @param recipe [Hash] the task's recipe; reads :noun and :product
+  # @param others [Array<String>] INVENTORY lines of the noun, not the remedy
+  # @param unread [Array<String>] INVENTORY lines with no noun read off
+  #   them, without every word of the remedy's name
+  # @param uncounted [Array<String>] INVENTORY lines with no noun read off
+  #   them that hold every word of the remedy's name
+  # @return [void]
+  def note_other_remedies(recipe, others, unread, uncounted)
+    return if others.empty? && unread.empty? && uncounted.empty?
+
+    product = recipe[:product]
+    noted = [others.sort, unread.sort, uncounted.sort]
+    @remedy_others_noted ||= {}
+    return if @remedy_others_noted[product] == noted
+
+    @remedy_others_noted[product] = noted
+    noun = recipe[:noun]
+    quoted = ->(lines) { lines.map { |line| "\"#{line}\"" }.join(', ') }
+    text = []
+    text << "#{others.size} #{noun}#{others.size == 1 ? '' : 's'} that #{others.size == 1 ? 'is' : 'are'} not #{product} (#{quoted.call(others)})" unless others.empty?
+    text << "#{unread.size} item#{unread.size == 1 ? '' : 's'} with no noun taskmaster can read (#{quoted.call(unread)})" unless unread.empty?
+    many = others.size + unread.size > 1
+    said = []
+    said << "Your #{@bag} also holds #{text.join(' and ')}. taskmaster gets the #{product} by its id or its whole name, and leaves #{many ? 'them' : 'it'} there." unless text.empty?
+    unless uncounted.empty?
+      one = uncounted.size == 1
+      said << "#{said.empty? ? "Your #{@bag} also holds" : 'It holds'} #{uncounted.size} item#{one ? '' : 's'} named #{product} with no noun taskmaster can read " \
+              "(#{quoted.call(uncounted)}). taskmaster does not count #{one ? 'it' : 'them'} as #{product}, so it may craft more than is owed."
+    end
+    DRC.message(said.join(' '))
   end
 
   # The ids of the stacks of a remedy in hand: the hand's GameObj noun is
@@ -3040,24 +3092,36 @@ class TaskMaster
   end
 
   # Gets one stack of the remedy out of the crafting bag: by id when one is
-  # known and not already held, else by the remedy's noun, the way the logs
-  # got it ("get my glop from my leather satchel" took a second stack with
-  # one already held, 6100:9365-9366). No log gets a remedy by its whole
-  # name ("get my deep-sea draught"), and the noun is safe: the run has
-  # already stopped if the bag holds any other item of that noun
-  # (remedy_stacks_in_bag), and the instructions' noun is "instructions".
-  # The new id in
-  # hand is the stack; the get's answer is not read, since with a stack
-  # already held it is true either way. What the known id brought is kept
-  # only when it is this remedy: the id may be the piece cut off another
-  # remedy for an earlier task (a gill glop left over, on a deep-sea
-  # draught task), which goes back in the bag.
+  # known and not already held, else by the remedy's whole name ("get my
+  # deep-sea draught from my duffel bag"), so a healing potion or "an
+  # ojhenik draught" in the bag is not got (remedy_stacks_in_bag leaves
+  # them there). The logs got a second stack by the noun ("get my glop from
+  # my leather satchel" with one already held, 6100:9365-9366); no log yet
+  # gets one by its whole name. The new id in hand is the stack; the get's
+  # answer is not read, since with a stack already held it is true either
+  # way. What a get brought is kept only when it is this remedy
+  # (held_remedy_ids): the known id may be the piece cut off another remedy
+  # for an earlier task (a gill glop left over, on a deep-sea draught task),
+  # which goes back in the bag.
   #
-  # @param recipe [Hash] the task's recipe; reads :product and :noun
+  # The game matches each word of a name as the start of a word, so with
+  # "a reddish fish" ahead of "a red fish" in a bag, "get my red fish" may
+  # bring either, while "get my reddish fish" brings only the one (seen in
+  # game, 2026-11-19). A "scaled ... moisturizer" ahead of the stack would
+  # come for "get my scale moisturizer" every time. So anything else the
+  # whole name brings goes back in the bag by id, and the next get asks for
+  # the second, then the third, by name: an item put back goes in front of
+  # the others (read_carried_instructions), so each one put back stays
+  # ahead, and the next place holds one not yet tried. This ends with the
+  # stack, with a get that brings nothing, or after every ordinal there is
+  # ($ORDINALS).
+  #
+  # @param recipe [Hash] the task's recipe; reads :product
   # @param known [String, nil] the id of a stack known to be in the bag
   # @return [String] the id of the stack got
-  # @raise [SystemExit] when no new stack came into a hand, or another
-  #   remedy got by the known id would not go back in the bag
+  # @raise [SystemExit] when no get brought the stack (whatever else the
+  #   gets brought is back in the bag), or another remedy got by the known
+  #   id, or another item got by name, would not go back in the bag
   def get_remedy_stack(recipe, known)
     product = recipe[:product]
     before = hand_ids
@@ -3069,11 +3133,17 @@ class TaskMaster
       put_away_remedy(piece, product) if piece
     end
 
-    DRCI.get_item?(recipe[:noun], @bag)
-    piece = (hand_ids - before).first
-    return piece if piece
+    others = []
+    while others.size < $ORDINALS.size
+      DRCI.get_item?(others.empty? ? product : "#{$ORDINALS[others.size]} #{product}", @bag)
+      piece = (hand_ids - before).first
+      return piece if piece && held_remedy_ids(product).include?(piece)
+      break unless piece
 
-    stop_stock("Could not get the #{product} out of your #{@bag}.")
+      others << "#{[GameObj.right_hand, GameObj.left_hand].find { |obj| obj&.id == piece }&.name} (##{piece})"
+      put_away_remedy(piece, product)
+    end
+    stop_stock("Could not get the #{product} out of your #{@bag}#{": the gets brought only #{others.join(', ')}, put back there" unless others.empty?}.")
   end
 
   # Doses in a remedy stack, counted by its id. A COUNT with no answer is
