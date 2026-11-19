@@ -387,7 +387,7 @@ class TaskMaster
       end
       find_npc(@rooms, @npc)
     end
-    stop_if_tools_at_repair(base == 'yarn' ? ['knitting needles'] : @settings.outfitting_tools)
+    stop_if_tools_at_repair(base == 'yarn' ? [knitting_needles_name] : @settings.outfitting_tools)
     made = tailor_item(item, count, base, type)
     return made if made.positive?
 
