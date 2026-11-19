@@ -1884,7 +1884,7 @@ class Remedy
     COAL = ['coal nugget', 'nugget'].freeze
 
     # What each supply is ordered as: the base-crafting.yaml remedies keys
-    # (base-crafting.yaml:1388-1416, Crossing) of the room it is ordered in
+    # (base-crafting.yaml:1429-1457, Crossing) of the room it is ordered in
     # and of its menu number, and the name it is stowed and looked for by.
     ORDERS = {
       'water'   => { room: 'stock-room', number: 'stock-number', item: 'water' }.freeze,

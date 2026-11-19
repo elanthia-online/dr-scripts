@@ -12301,6 +12301,20 @@ RSpec.describe TaskMaster do
       expect(DRCC).to have_received(:stow_crafting_item).with('mortar', 'duffel bag', 'alchemy belt')
     end
 
+    it 'says so once and leaves nothing for repair, or collects nothing, when base-crafting.yaml has no repair_replies' do
+      tm = build(repair_replies: nil)
+      allow(tm).to receive(:get_data).with('crafting').and_return({ 'stock' => {} })
+      allow(DRCT).to receive(:walk_to)
+      allow(DRC).to receive(:bput)
+
+      tm.tool_drop(['mortar'], nil)
+      tm.tool_pickup
+
+      expect(DRCT).not_to have_received(:walk_to)
+      expect(DRC).not_to have_received(:bput)
+      expect(DRC).to have_received(:message).with(/base-crafting.yaml has no repair_replies quote, prompt, .*Update dr-scripts, or that copy/).once
+    end
+
     it 'puts the tool away when the first give gets no answer, and says so' do
       drop('')
 
