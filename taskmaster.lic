@@ -23,7 +23,7 @@
   task_rock_room: 793 # room where Dorhum's spongestone and splashstone tasks forage rocks (none can be had on Andreshlew)
   task_shell_room: 793 # room where Dorhum's glow shell tasks forage shells
   task_cancel_foreign_tasks: true/false # a run never works another taskmaster's task; with this it cancels one it finds open, waits out the 10-minute cooldown a cancel brings, then goes back to its own taskmaster. Off: it stops, saying whose task it is and how to finish or cancel it
-  task_fallback_npc: zasele # when the taskmaster asked says you have done the most tasks it allows today, work this taskmaster's task instead; the next run asks the first one again. With task_repair_every entries for both (the first one's more than 0), it is also worked, one task, right after the first one's tools are left for repair (unless its own went for repair in the last 10 minutes, or it has given its limit since the daily rollover), so the run does not wait at the repairer; the run after asks the first one again (with task_get_tools_on_completion each run collects its tools at its end, so only repeat runs detour). Unset: the run stops at the limit, and waits for tools at repair. Ignored by marathon (Zasele only)
+  task_fallback_npc: zasele # when the taskmaster asked says you have done the most tasks it allows today, work this taskmaster's task instead; the next run asks the first one again. With task_repair_every entries for both (the first one's more than 0), it is also worked, one task, right after the first one's tools are left for repair (unless its own went for repair in the last 10 minutes, or it has given its limit since the daily rollover), so the run does not wait at the repairer; the run after asks the first one again (with task_get_tools_on_completion each run collects its tools at its end, so only repeat and cycle runs detour). A fallback that has given its limit since the rollover is not asked again until the next one: neither for a detour nor when the first one gives its limit (the run then stops). Unset: the run stops at the limit, and waits for tools at repair. Ignored by marathon (Zasele only)
   task_cancel_when_instructions_short: true/false # default true. When the task's one replacement set is spent and the instructions carried still have too few uses, cancel the task (losing the items made for it), wait out the 10-minute cooldown and take a new one. False: stop on every run with "Already asked ..." for a person to look at
   alchemy_tools: [bowl, mixing stick, mortar, pestle, sieve] # Nezhiri's tasks use the mortar and pestle or the bowl and mixing stick (whichever her remedy needs) and the sieve; the two used and the sieve go for repair (task_repair_by, task_repair_every) after each task (task_no_repair / task_self_repair as usual)
   alchemy_belt: # the toolbelt the alchemy tools are tied to, if any
@@ -39,7 +39,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.20.9'
+  VERSION = '2026.11.20.10'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -377,14 +377,16 @@ class TaskMaster
   # UserVars.taskmaster_capped, so single-task runs (t2) do not walk to it
   # again each time. The task limit resets at that rollover: Nezhiri's
   # last limit lines came at 18:58-19:00 NZDT and her next tasks were
-  # handed in from 19:05 (2026-11-18 and 11-19, 06:00 UTC).
+  # handed in from 19:05 (2026-11-18 and 11-19, 06:00 UTC). A note later
+  # than now (written while the clock was fast) counts as none, as in
+  # just_left?.
   #
   # @param npc [String]
   # @return [Boolean]
   def fallback_capped?(npc)
     capped = UserVars.taskmaster_capped
     noted = capped.is_a?(Hash) ? capped[npc] : nil
-    noted.is_a?(Integer) && !boost_rollover_since?(noted)
+    noted.is_a?(Integer) && noted <= Time.now.to_i && !boost_rollover_since?(noted)
   end
 
   # Notes, with the time, that the taskmaster has given its daily limit.

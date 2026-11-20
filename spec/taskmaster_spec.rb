@@ -13475,6 +13475,24 @@ RSpec.describe TaskMaster do
       expect(events.first).to eq([:ask, 'nezhiri'])
     end
 
+    it 'asks the fallback when its limit note is later than now (written while the clock was fast)' do
+      noted('nezhiri')
+      UserVars.taskmaster_capped = { 'zasele' => Time.now.to_i + 86_400 }
+      events, = detour_run(asks: { 'zasele' => [offer] })
+
+      expect(events.first).to eq([:ask, 'zasele'])
+    end
+
+    it 'notes the limit of a fallback worked for the day, so the next run stops at the first one without walking to it' do
+      nezhiri_max = daily_max.sub('Zasele', 'Nezhiri')
+      expect { detour_run(asks: { 'nezhiri' => [nezhiri_max], 'zasele' => [daily_max] }) }.to raise_error(SystemExit)
+      expect(UserVars.taskmaster_capped['zasele']).to be_within(5).of(Time.now.to_i)
+
+      # 'zasele' => []: asking Zasele again would raise "asked zasele again".
+      expect { detour_run(asks: { 'nezhiri' => [nezhiri_max], 'zasele' => [] }) }.to raise_error(SystemExit)
+      expect(DRC).to have_received(:message).with('Nezhiri has given you all the tasks allowed today. No other taskmaster to ask. Stopping.')
+    end
+
     it 'asks the fallback again once a daily rollover has passed since its limit' do
       noted('nezhiri')
       UserVars.taskmaster_capped = { 'zasele' => Time.now.to_i - (2 * 86_400) }
