@@ -375,7 +375,7 @@ class WorkOrders
       result = DRC.bput("give #{info['repair-npc']}", *repair_replies['offered'])
       if repair_replies['declined'].any? { |declined| result.match?(/#{declined}/i) }
         stow_tool(tool_name)
-      elsif result.match?(/#{repair_replies['prompt']}/i)
+      elsif repair_offered?(result)
         confirm_repair(info, tool_name, repair_cost_copper(result))
       else
         stow_tool(tool_name)
@@ -390,6 +390,16 @@ class WorkOrders
       stow_tool(DRC.left_hand) if DRC.left_hand
     end
     Lich::Messaging.msg('plain', 'WorkOrders: Tool repair at NPC completed')
+  end
+
+  # Whether the answer to the first give asks for a second one: the quote or
+  # its bare prompt (a quote pattern changed in data/custom may match the
+  # cost alone). A refusal is checked before this.
+  #
+  # @param reply [String] what DRC.bput handed back
+  # @return [Boolean]
+  def repair_offered?(reply)
+    [repair_replies['quote'], repair_replies['prompt']].any? { |pattern| reply.match?(/#{pattern}/i) }
   end
 
   # What repairers answer when handed a tool (data/base-crafting.yaml

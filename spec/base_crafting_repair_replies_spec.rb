@@ -39,8 +39,9 @@ RSpec.describe 'base-crafting.yaml repair_replies' do
     expect(rangu_quote[/#{first}/i]).to match(/240 Kronars/)
   end
 
-  it 'has the prompt in both repairers\' quotes, and not in a refusal' do
-    [rangu_quote, catrox_quote].each { |line| expect(bput_match?(replies['prompt'], line)).to be(true) }
+  it 'has the prompt in both repairers\' quotes and in Fang Cove\'s wording, and not in a refusal' do
+    # Fang Cove's wording, as crossing-repair and mining-buddy match it.
+    [rangu_quote, catrox_quote, 'If you agree, give it to me again'].each { |line| expect(bput_match?(replies['prompt'], line)).to be(true) }
     expect(bput_match?(replies['prompt'], no_scratch)).to be(false)
   end
 
