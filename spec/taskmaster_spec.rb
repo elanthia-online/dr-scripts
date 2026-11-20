@@ -12398,12 +12398,46 @@ RSpec.describe TaskMaster do
       expect(UserVars.taskmaster_repairs.map { |record| record['tool'] }).to eq(['mortar'])
     end
 
-    it 'forgets the note again when the confirming give says no (short of coin), but keeps it when the give goes unanswered' do
+    it 'keeps the note on any answer to the confirming give but the ticket (short of coin, or none), for the next whole look to forget' do
       drop(rangu_quote, 'Rangu says, "You will need more coin if I am to be repairing that!"')
-      expect(UserVars.taskmaster_repairs).to eq([])
+      expect(UserVars.taskmaster_repairs.map { |record| record['tool'] }).to eq(['mortar'])
 
+      UserVars.taskmaster_repairs = []
       drop(rangu_quote, '')
       expect(UserVars.taskmaster_repairs.map { |record| record['tool'] }).to eq(['mortar'])
+    end
+
+    # lich-5's DRC.bput returns on the first line any pattern matches, so a
+    # line from another player in the room can come back as the answer.
+    def drop_with_chatter(confirming_lines)
+      tm = build
+      replies = [[rangu_quote], confirming_lines]
+      allow(DRCT).to receive(:walk_to).and_return(true)
+      allow(DRCC).to receive(:get_crafting_item)
+      allow(DRCC).to receive(:stow_crafting_item)
+      allow(DRC).to receive(:bput) do |command, *matchers|
+        sent << command
+        next 'You put' if command == 'stow ticket'
+
+        found = replies.shift.map { |line| bput_match(line, matchers) }.reject(&:empty?)
+        found.first || ''
+      end
+      tm.tool_drop(['mortar'], 'alchemy belt')
+      tm
+    end
+
+    it "keeps the note when another player's \"more coin\" comes ahead of the ticket, so the ticket handed over stays tracked" do
+      drop_with_chatter(['Kalak says, "Bah, I need more coin for that."', rangu_ticket])
+
+      expect(UserVars.taskmaster_repairs.map { |record| record['tool'] }).to eq(['mortar'])
+    end
+
+    it "takes only the game's own \"You hand\" line for the ticket, not another player's words naming one, and puts the tool away" do
+      drop_with_chatter(['Kalak asks, "Did you get a repair ticket?"', 'Rangu says, "You will need more coin if I am to be repairing that!"'])
+
+      expect(sent).to eq(['give Rangu', 'give Rangu'])
+      expect(DRC).to have_received(:message).with('No repair ticket for the mortar (more coin); putting it away.')
+      expect(DRCC).to have_received(:stow_crafting_item).with('mortar', 'duffel bag', 'alchemy belt')
     end
 
     it 'puts away, by its id, a ticket that shows in hand after the confirming give went unanswered, keeping the note' do

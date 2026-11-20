@@ -5935,9 +5935,9 @@ class TaskMaster
   # 'repairer' (name), 'room', 'tool' (the setting's name), 'item' (the
   # tool's name on its hand tag, which leaves out any words after the noun)
   # and 'left_at' (epoch seconds). Kept across runs in
-  # UserVars.taskmaster_repairs. tool_drop forgets a note at once when the
-  # confirming give says no (short of coin, say), and keeps it when that
-  # give goes unanswered; collect_tools forgets one when its tool comes
+  # UserVars.taskmaster_repairs. tool_drop keeps a note whatever the
+  # confirming give's answer (another player's "more coin" can come ahead
+  # of the game's line); collect_tools forgets one when its tool comes
   # back, or when a whole look through the repairer's tickets finds none
   # for it.
   #
@@ -6170,8 +6170,10 @@ class TaskMaster
   # that needs no repair, goes back where it came from. The replies are the
   # repair_replies of data/base-crafting.yaml, which workorders reads too: a
   # quote (or its bare prompt) is confirmed with a second give, which takes
-  # the coin and hands over the ticket; any other answer to that give (short
-  # of coin, say) puts the tool away. A refusal that is not one of the
+  # the coin and hands over the ticket (ticket_handed_over); any other
+  # answer to that give (short of coin, say, or none) puts the tool away
+  # and keeps its note, which the next whole look through the repairer's
+  # tickets forgets should no ticket be found. A refusal that is not one of the
   # declined answers (no repairer there, "I don't repair those here", no
   # answer) is named. When the repairer's room can't be reached nothing is
   # given.
@@ -6205,18 +6207,19 @@ class TaskMaster
         # whole look finds no ticket for it and forgets it.
         record = { 'npc' => @npc, 'repairer' => name, 'room' => repairer['id'], 'tool' => tool_name, 'item' => item, 'left_at' => Time.now.to_i }
         note_repair(record)
-        confirmed = DRC.bput("give #{name}", repair_replies['ticket'], repair_replies['need_coin'])
-        if confirmed.match?(/#{repair_replies['ticket']}/i)
+        confirmed = DRC.bput("give #{name}", ticket_handed_over, repair_replies['need_coin'])
+        if confirmed.match?(ticket_handed_over)
           DRC.bput('stow ticket', 'You put')
           next
         end
-        # A reply that says no (short of coin) drops the note. With no answer
-        # the give may still have gone through: the note stays, and the next
-        # whole look forgets it should no ticket turn up. A ticket that comes
-        # late is put away before the next tool, or after the last, so the
-        # next give and the next pickup's LOOK and GET ordinals count it
-        # among the stowed ones.
-        forget_repair(record) unless confirmed.empty?
+        # Any other answer keeps the note: DRC.bput returns on the first line
+        # any pattern matches, so "more coin" may be another player's line
+        # ahead of the game's, and with no answer the give may still have
+        # gone through. Should no ticket turn up, the next whole look through
+        # the repairer's tickets forgets the note. A ticket that comes late
+        # is put away before the next tool, or after the last, so the next
+        # give and the next pickup's LOOK and GET ordinals count it among
+        # the stowed ones.
         DRC.message("No repair ticket for the #{tool_name} (#{confirmed.empty? ? 'no answer' : confirmed}); putting it away.")
       elsif !repair_declined?(reply)
         DRC.message("#{name} did not take the #{tool_name} (#{reply.empty? ? 'no answer' : reply}); putting it away.")
@@ -6224,6 +6227,17 @@ class TaskMaster
       DRCC.stow_crafting_item(tool_name, @bag, belt)
     end
     put_away_tickets(name)
+  end
+
+  # The game's own line for a confirming give that went through ("You hand
+  # Rangu 240 Kronars and he gives you back a repair ticket.", lich-5's
+  # common-items.rb has the same shape): the repair_replies ticket on a line
+  # starting "You hand", so another player's words naming a repair ticket
+  # are not taken for it.
+  #
+  # @return [Regexp]
+  def ticket_handed_over
+    /^You hand .*(?:#{repair_replies['ticket']})/i
   end
 
   # Whether a repairer's answer to the first give asks for a second one (a
