@@ -3121,9 +3121,13 @@ task_fallback_npc:
 # the ask finds a Rangu ticket, every Rangu ticket no note accounts for (an older taskmaster's, or one
 # whose note was lost) is handed in too, waited for the same way. A task stops before its work while a
 # tool it uses is still at repair (a noted one, or an un-noted Rangu ticket still carried whose item
-# names it), and stays open for the next run; any other tool still out waits for a later task or
-# ;taskmaster pickup. When tickets for two different items fit one note, none is handed in and it
-# says so. With task_type, Zasele's, Nezhiri's and Poltu's tools go to society clerks, who are all
+# names it, or one the repairer would not take), and stays open for the next run; with
+# mark_crafted_goods that includes the stamp for Poltu's, Bradyn's lumber and metal, and Dorhum's
+# tasks, whose crafting scripts stop without it. Any other tool still out waits for a later task or
+# ;taskmaster pickup, and is not sent for repair again meanwhile. Another taskmaster's note counts
+# for a task by its setting name, or by a name of two words or more: a one-word name such as "rod" is
+# not taken for another toolset's "stirring rod" or "imbuement rod". When tickets for two different
+# items fit one note, none is handed in and it says so. With task_type, Zasele's, Nezhiri's and Poltu's tools go to society clerks, who are all
 # called clerk: their tickets stay carried until a task, ;taskmaster pickup or
 # task_get_tools_on_completion collects them, and ;workorders in another discipline picks such a
 # ticket up with its own and stops collecting at one its clerk does not take.

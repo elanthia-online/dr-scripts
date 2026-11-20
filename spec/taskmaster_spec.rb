@@ -12673,6 +12673,47 @@ RSpec.describe TaskMaster do
       expect(DRC).to have_received(:message).with('Rangu did not take the mortar (no answer); putting it away.')
       expect(DRCC).to have_received(:stow_crafting_item).with('mortar', 'duffel bag', 'alchemy belt')
     end
+
+    # The pickup after the accept waits only for the tools the work uses, so
+    # a worker that repairs more (Zasele's cloth tasks all of
+    # outfitting_tools, Dorhum's the brazier) may find one still out.
+    describe 'a tool still noted at a repairer (#repair)' do
+      def repair_run(npc:, tools:, notes:, settings: {})
+        UserVars.taskmaster_repairs = notes
+        tm = build(npc: npc, settings: settings)
+        allow(tm).to receive(:get_data).and_return('Crossing' => { 'metal_repair' => { 'id' => 19_093, 'name' => 'Catrox' } })
+        allow(DRCT).to receive(:walk_to) { |room| sent << [:walk, room] }
+        allow(DRCC).to receive(:get_crafting_item) { |tool, *| sent << [:get, tool] }
+        allow(DRCC).to receive(:stow_crafting_item)
+        replies = Array.new(tools.size) { no_scratch }
+        allow(DRC).to receive(:bput) do |command, *matchers|
+          sent << command
+          bput_match(replies.shift, matchers)
+        end
+        tm.repair(tools, nil)
+        tm
+      end
+
+      it "sends a Zasele cloth task's tools but the knitting needles still at Rangu, and says so" do
+        needles_out = { 'npc' => 'zasele', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'knitting needle', 'item' => 'slender knitting needles', 'left_at' => 1 }
+        repair_run(npc: 'zasele', tools: ['scissors', 'knitting needle'], notes: [needles_out])
+
+        expect(sent).to eq([[:walk, 19_209], [:get, 'scissors'], 'give Rangu'])
+        expect(DRC).to have_received(:message).with('knitting needle still at repair (left earlier); not sent again. A later task or ;taskmaster pickup collects it.')
+        expect(UserVars.taskmaster_repairs).to eq([needles_out])
+      end
+
+      it "sends none of a Dorhum task's tools still at Catrox (the brazier, which a public brazier room's task never uses), and goes nowhere when none is left to send" do
+        brazier = { 'npc' => 'dorhum', 'repairer' => 'Catrox', 'room' => 19_093, 'tool' => 'brazier', 'item' => 'iron brazier', 'left_at' => 1 }
+        repair_run(npc: 'dorhum', tools: ['augment loop', 'brazier', 'burin'], notes: [brazier], settings: { task_repair_by: 'hometown' })
+
+        expect(sent).to eq([[:walk, 19_093], [:get, 'augment loop'], 'give Catrox', [:get, 'burin'], 'give Catrox'])
+
+        sent.clear
+        repair_run(npc: 'dorhum', tools: ['brazier'], notes: [brazier], settings: { task_repair_by: 'hometown' })
+        expect(sent).to be_empty
+      end
+    end
   end
 
   describe 'where tools go for repair (task_repair_by)' do
@@ -14142,6 +14183,107 @@ RSpec.describe TaskMaster do
 
         expect { tm.bradyn('idol', 2, 'boulder', 'stone', 'alabaster') }.to raise_error(SystemExit)
         expect(tm).not_to have_received(:buy_rocks)
+      end
+
+      # shape, forge and enchant get "stamp" with no skip when
+      # mark_crafted_goods is set, so a stamp at repair would stop them part
+      # way, a finished item unmarked in hand.
+      describe 'the stamp a crafting script marks the items with (mark_crafted_goods)' do
+        let(:stamp_out) { { 'npc' => 'zasele', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'stamp', 'item' => 'iron stamp', 'left_at' => 1 } }
+        let(:marking) { { mark_crafted_goods: true, outfitting_tools: ['stamp', 'knitting needle'], shaping_tools: ['carving knife', 'rasp'] } }
+
+        it 'waits for, and stops a Bradyn lumber task before buying lumber on, a stamp another taskmaster\'s task left' do
+          UserVars.taskmaster_repairs = [stamp_out]
+          tm = pickup_world({ 'Rangu' => [['iron stamp', false]] }, ready_after: 999, npc: 'bradyn', rangu_ticket: false, settings: marking)
+          allow(tm).to receive(:buy_stackables)
+          allow(tm).to receive(:shape_item)
+
+          tm.collect_task_tools(tm.task_tools('bradyn', ['bowl', 2, 10, 'lumber', 'balsa']))
+
+          expect(tm).to have_received(:pause).with(30).exactly(TaskMaster::TICKET_WAIT_POLLS).times
+          expect { tm.bradyn('bowl', 2, 10, 'lumber', 'balsa') }.to raise_error(SystemExit)
+          expect(tm).not_to have_received(:buy_stackables)
+          expect(DRC).to have_received(:message).with("iron stamp still at repair (see above); stopping before Bradyn's task is worked. It stays open, and the next run collects it first.")
+        end
+
+        it 'collects the stamp for a lumber task when it is ready, and waits for none without mark_crafted_goods' do
+          UserVars.taskmaster_repairs = [stamp_out]
+          tm = pickup_world({ 'Rangu' => [['iron stamp', false]] }, ready_after: 1, npc: 'bradyn', rangu_ticket: false, settings: marking)
+          tm.collect_task_tools(tm.task_tools('bradyn', ['bowl', 2, 10, 'lumber', 'balsa']))
+          expect(sent).to include([:stow, 'stamp'])
+          expect(UserVars.taskmaster_repairs).to eq([])
+
+          sent.clear
+          UserVars.taskmaster_repairs = [stamp_out]
+          tm = pickup_world({ 'Rangu' => [['iron stamp', false]] }, ready_after: 999, npc: 'bradyn', rangu_ticket: false, settings: marking.merge(mark_crafted_goods: false))
+          allow(tm).to receive(:buy_stackables)
+          allow(tm).to receive(:shape_item)
+          allow(tm).to receive(:repair)
+          allow(tm).to receive(:trash)
+          tm.collect_task_tools(tm.task_tools('bradyn', ['bowl', 2, 10, 'lumber', 'balsa']))
+          expect(sent).to be_empty
+          expect { tm.bradyn('bowl', 2, 10, 'lumber', 'balsa') }.not_to raise_error
+        end
+
+        it 'stops Poltu\'s and Dorhum\'s work on a stamp still at repair, by any name a tool setting gives it, but not Zasele\'s, Nezhiri\'s or Bradyn\'s stone and bone' do
+          left = [stamp_out.merge('tool' => 'iron stamp')]
+          settings = marking.merge(outfitting_tools: ['iron stamp'], forging_tools: %w[hammer tongs], alchemy_tools: %w[bowl])
+          tm = build(npc: 'poltu', settings: settings, tools_left_at_repair: left)
+          allow(tm).to receive(:bin_stray_ingots)
+          expect { tm.poltu('sword', 2, 5, 'ingot', 'bronze') }.to raise_error(SystemExit)
+          expect(tm).not_to have_received(:bin_stray_ingots)
+
+          tm = build(npc: 'dorhum', loot_bag_checked: true, settings: settings, tools_left_at_repair: left)
+          allow(tm).to receive(:check_loot_bag)
+          allow(tm).to receive(:dorhum_recipe).and_return({ noun: 'rock' })
+          allow(tm).to receive(:dorhum_tools).and_return(%w[burin rod])
+          allow(tm).to receive(:ensure_tools)
+          expect { tm.dorhum('spongestone', 6, %w[congruence decay]) }.to raise_error(SystemExit)
+          expect(tm).not_to have_received(:ensure_tools)
+
+          tm = build(npc: 'bradyn', settings: settings)
+          expect(tm.task_tools('bradyn', ['sword', 2, 5, 'ingot', 'bronze'])).to eq(%w[hammer tongs stamp] + ['iron stamp'])
+          %w[stone stack].each { |base| expect(tm.task_tools('bradyn', ['idol', 2, 5, base, 'alabaster'])).not_to include('stamp') }
+          expect(tm.task_tools('zasele', ['rope', 2, 4, 'cloth', 'burlap'])).to eq(['iron stamp'])
+          expect(tm.task_tools('nezhiri', ['draught', 13, { vessel: 'bowl' }])).not_to include('stamp')
+        end
+      end
+
+      describe "another taskmaster's tool of the same noun" do
+        let(:imbuement_rod) { { 'npc' => 'dorhum', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'imbuement rod', 'item' => 'cambrinth imbuement rod', 'left_at' => 1 } }
+        let(:stirring_rod) { { 'npc' => 'poltu', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'stirring rod', 'item' => 'iron stirring rod', 'left_at' => 1 } }
+
+        it 'neither waits for nor stops a Poltu task on the imbuement rod a Dorhum task left, when forging_tools names the stirring rod "rod"' do
+          UserVars.taskmaster_repairs = [imbuement_rod]
+          tm = pickup_world({ 'Rangu' => [['cambrinth imbuement rod', false]] }, ready_after: 999, npc: 'poltu', rangu_ticket: false, settings: { forging_tools: %w[hammer tongs rod] })
+
+          tm.collect_task_tools(tm.task_tools('poltu', ['sword', 2, 5, 'ingot', 'bronze']))
+
+          expect(sent).to be_empty
+          expect { tm.stop_if_tools_at_repair(%w[hammer tongs rod]) }.not_to raise_error
+        end
+
+        it "neither waits for nor stops a Dorhum task (its fallback rod) on the stirring rod a Poltu task left, yet stops it on its own imbuement rod" do
+          UserVars.taskmaster_repairs = [stirring_rod]
+          tm = pickup_world({ 'Rangu' => [['iron stirring rod', false]] }, ready_after: 999, npc: 'dorhum', rangu_ticket: false, settings: { enchanting_tools: ['augment loop', 'brazier', 'burin'] })
+          allow(tm).to receive(:needs_own_brazier?).and_return(false)
+
+          expect(tm.task_tools('dorhum', ['spongestone', 6, %w[congruence]])).to eq(['augment loop', 'burin', 'rod'])
+          tm.collect_task_tools(tm.task_tools('dorhum', ['spongestone', 6, %w[congruence]]))
+
+          expect(sent).to be_empty
+          expect { tm.stop_if_tools_at_repair(['augment loop', 'burin', 'rod']) }.not_to raise_error
+          tm.instance_variable_set(:@tools_left_at_repair, [imbuement_rod])
+          expect { tm.stop_if_tools_at_repair(['augment loop', 'burin', 'rod']) }.to raise_error(SystemExit)
+        end
+
+        it "still names another taskmaster's tool by its very setting name, or by names of two words or more" do
+          tm = build(npc: 'bradyn')
+          expect(tm.tools_left_for(['stamp'], [{ 'npc' => 'zasele', 'tool' => 'stamp', 'item' => 'iron stamp' }])).not_to be_empty
+          expect(tm.tools_left_for(['knitting needles'], [{ 'npc' => 'zasele', 'tool' => 'knitting needle', 'item' => 'knitting needles' }])).not_to be_empty
+          expect(tm.tools_left_for(['rod'], [{ 'npc' => 'dorhum', 'tool' => 'imbuement rod', 'item' => 'imbuement rod' }])).to be_empty
+          expect(tm.tools_left_for(['rod'], [{ 'tool' => 'imbuement rod', 'item' => 'imbuement rod' }])).not_to be_empty
+        end
       end
     end
   end
