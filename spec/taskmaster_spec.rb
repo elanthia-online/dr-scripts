@@ -15334,6 +15334,48 @@ RSpec.describe TaskMaster do
       end
     end
 
+    # The fallback's tools at repair are matched as its own pickup matches
+    # them (tools_left_for with the fallback as the worker): a one-word
+    # forging_tools "rod" is the stirring rod, so the imbuement rod a Dorhum
+    # task left is not one a Poltu task waits for or stops on, and the
+    # stirring rod Poltu left is not Dorhum's imbuement rod.
+    it "matches the fallback's tools as the fallback's pickup does: a one-word \"rod\" is not another toolset's imbuement or stirring rod" do
+      settings = { task_repair_every: { 'dorhum' => 10_800, 'poltu' => 10_800 }, forging_tools: %w[hammer tongs rod], enchanting_tools: ['augment loop', 'brazier', 'burin', 'imbuement rod'] }
+      UserVars.taskmaster_repairs = [{ 'npc' => 'dorhum', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'imbuement rod', 'item' => 'cambrinth imbuement rod', 'left_at' => Time.now.to_i - 60 }]
+      tm = build(npc: 'dorhum', fallback_npc: 'poltu', settings: settings)
+
+      tm.detour_while_tools_repair
+
+      expect(tm.instance_variable_get(:@npc)).to eq('poltu')
+      UserVars.taskmaster_repairs = [{ 'npc' => 'poltu', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'rod', 'item' => 'iron stirring rod', 'left_at' => Time.now.to_i - 60 }]
+      tm = build(npc: 'poltu', fallback_npc: 'dorhum', settings: settings)
+
+      tm.detour_while_tools_repair
+
+      expect(tm.instance_variable_get(:@npc)).to eq('dorhum')
+    end
+
+    # With mark_crafted_goods a Poltu task waits for, and stops on, a stamp
+    # still at repair by any name a tool setting gives it (marking_tools),
+    # here one Bradyn's shaping_tools sent long ago: a detour to Poltu would
+    # open a task that stops before its work on it.
+    it 'is held back by a stamp at repair that the fallback\'s task marks with (mark_crafted_goods), whatever toolset sent it' do
+      settings = { task_repair_every: { 'zasele' => 43_200, 'poltu' => 10_800 }, mark_crafted_goods: true, forging_tools: %w[hammer tongs], shaping_tools: ['drawknife', 'iron stamp'] }
+      UserVars.taskmaster_repairs = [{ 'npc' => 'zasele', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'scissors', 'item' => 'steel scissors', 'left_at' => Time.now.to_i - 60 },
+                                     { 'npc' => 'bradyn', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'iron stamp', 'item' => 'iron stamp', 'left_at' => Time.now.to_i - 7200 }]
+      tm = build(npc: 'zasele', fallback_npc: 'poltu', settings: settings)
+
+      tm.detour_while_tools_repair
+
+      expect(tm.instance_variable_get(:@npc)).to eq('zasele')
+      expect(UserVars.taskmaster_repairs.first).not_to have_key('detoured')
+      tm = build(npc: 'zasele', fallback_npc: 'poltu', settings: settings.merge(mark_crafted_goods: false))
+
+      tm.detour_while_tools_repair
+
+      expect(tm.instance_variable_get(:@npc)).to eq('poltu')
+    end
+
     it "marks only the notes the detour was for: another taskmaster's fresh note for tools of its own is left as it was" do
       noted('nezhiri', 'poltu')
       detour_run(asks: { 'zasele' => [offer] })

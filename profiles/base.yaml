@@ -3114,7 +3114,8 @@ task_cancel_foreign_tasks: false
 # limit resets; a task left open for the fallback is finished, not cancelled. With task_repair_every
 # entries for both (the first one's more than 0; the default entry does not count, and a run says so at
 # its start), it is also worked, one task, right after the first one's tools are left for repair (unless
-# any of its own is still at repair, however long ago it was left, since its task could wait for it, or
+# any of its own is still at repair, matched as its own pickup matches them and with mark_crafted_goods
+# the stamp its task marks with included, however long ago it was left, since its task could wait for it, or
 # stop with the task open on one a pickup could not get back, and the task is not known before the ask;
 # a ready one is collected by the next task whose pickup goes to its repairer, task_get_tools_on_completion
 # or ;taskmaster pickup; or unless it has given its limit since the daily rollover), so the run does
