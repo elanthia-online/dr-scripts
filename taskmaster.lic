@@ -4,7 +4,7 @@
   task_no_repair: true/false # skip repairing tools entirely
   task_self_repair: true/false # use own brush and oil for repairs
   task_get_tools_on_completion: true/false # If you want taskmaster to pickup any remaining tools in the repair shop. Useful if you're using clerk-tools after each task
-  task_repair_every: { default: 0 } # seconds between repairs of each tool, by taskmaster ({ nezhiri: 10800, zasele: 43200 }), written as plain digits with no leading 0 (YAML reads an unquoted 0600 as octal, 384, 0x10 as hex, 16, and 3:00:00 as base 60, 10800, before taskmaster sees them, as it reads any other plain YAML number; a value that is not a plain YAML number, quoted or not, is read as base-10 digits (an unquoted 0800, not valid octal, is 800); one that is not whole seconds, 0 or more, such as 3h, 10800.9 or -5, is named and ignored); a taskmaster with no entry uses default, and with no default 0, which repairs after every task (as before). Each tool's last repair is kept per character (UserVars.taskmaster_repaired_at; ;e UserVars.taskmaster_repaired_at = nil forgets them all). A kept ticket, or a repairer's no-wear or past-repair answer, starts the tool's clock; a refusal or no answer does not, so the tool goes again after the next task. Applies to task_self_repair too: with an interval above 0 only the due tools carried (the inventory feed or hands, else a TAP) are repaired and noted, except one on Lich's immune list (repaired with Proper Forging Tool Care in the last two hours or so), which is skipped and stays due; at 0 every tool goes to your own repair with no TAP and none is noted, as before the setting. A run that repairs says which taskmaster it may work (the one named and task_fallback_npc; in cycle, the three it picks from and task_fallback_npc) has no entry, and names a key that is not a taskmaster (a misspelling)
+  task_repair_every: { default: 0 } # seconds between repairs of each tool, by taskmaster ({ nezhiri: 10800, zasele: 43200 }), written as plain digits with no leading 0 (YAML reads an unquoted 0600 as octal, 384, 0x10 as hex, 16, and 3:00:00 as base 60, 10800, before taskmaster sees them, as it reads any other plain YAML number; a value that is not a plain YAML number, quoted or not, is read as base-10 digits (an unquoted 0800, not valid octal, is 800); one that is not whole seconds, 0 or more, such as 3h, 10800.9 or -5, is named and ignored); a taskmaster with no entry uses default, and with no default 0, which repairs after every task (as before). Each tool's last repair is kept per character (UserVars.taskmaster_repaired_at; ;e UserVars.taskmaster_repaired_at = nil forgets them all). A kept ticket, or the repairer's own no-wear or past-repair answer (its line, by its name: the same words in someone else's speech heard first are named and do not count), starts the tool's clock; a refusal or no answer does not, so the tool goes again after the next task. Applies to task_self_repair too: with an interval above 0 only the due tools carried (the inventory feed or hands, else a TAP) are repaired and noted, except one on Lich's immune list (repaired with Proper Forging Tool Care in the last two hours or so), which is skipped and stays due; at 0 every tool goes to your own repair with no TAP and none is noted, as before the setting. A run that repairs says which taskmaster it may work (the one named and task_fallback_npc; in cycle, the three it picks from and task_fallback_npc) has no entry, and names a key that is not a taskmaster (a misspelling)
   task_repair_by: rangu # where tools go for repair: rangu (the default: Rangu, Crossing Engineering Society), hometown (Crossing's town repairer in base-town.yaml, Catrox) or task_type (Crossing's repairer, in base-crafting.yaml, of the discipline taskmaster gives each taskmaster: tailoring for Zasele, remedies for Nezhiri, blacksmithing for Poltu, shaping for Bradyn (his metal tasks too), artificing for Dorhum). Always Crossing's, where every task is bought and crafted, whatever task_hometown says; with no such repairer in the data it says so and uses Rangu. Each tool left is noted (UserVars.taskmaster_repairs, with its name in hand). Once a task is accepted, the noted tools its work uses are picked up by their tickets, waiting up to 10 minutes at each repairer for them to be ready (Poltu's and Bradyn's metal tasks share the forging tools); another noted tool at a repairer it goes to is picked up if it is ready then, or by the end of a wait there for the work's own tools; and when a TAP before the ask finds a Rangu ticket, every Rangu ticket no note accounts for (an older taskmaster's, or one whose note was lost) is handed in too, waited for the same way. A task stops before its work while a tool it uses is still at repair (a noted one, or an un-noted Rangu ticket still carried whose item names it, or one the repairer would not take), and stays open for the next run; with mark_crafted_goods that includes the stamp for Zasele's (yarn, cloth and leather), Poltu's, Bradyn's lumber and metal, and Dorhum's tasks, whose crafting scripts stop without it. Any other tool still out waits for a later task or ;taskmaster pickup, and is not sent for repair again meanwhile (a tool still noted is taken to be at repair). A tool collected by hand keeps its note, so it is not sent for repair until ;taskmaster pickup (or a task's pickup at that repairer) forgets the note: run ;taskmaster pickup after handing tickets in yourself. Another taskmaster's note counts for a task by its setting name, or by a name of two words or more: a one-word name such as "rod" is not taken for another toolset's "stirring rod" or "imbuement rod", and Dorhum's rod with none in enchanting_tools (enchant's fallback "rod") is matched as "imbuement rod". Two settings that give different tools the very same name ("rod" in both forging_tools and enchanting_tools) are still taken for each other. A ticket is matched to a note by the tool's name in hand, which a ticket may follow with more words ("large purpleheart bowl edged with ivory"); when tickets for two different items fit one note, none is handed in and it says so. With task_type, Zasele's, Nezhiri's and Poltu's tools go to society clerks, who are all called clerk: their tickets stay carried until a task, ;taskmaster pickup or task_get_tools_on_completion collects them, and ;workorders in another discipline picks such a ticket up with its own and stops collecting at one its clerk does not take
   task_use_boost: true/false # use boost to eliminate task cooldowns, useful if you have a few and you're doing a lot of tasks
   task_cooldown_poll: 15 # seconds between asks while the taskmaster makes you wait (minimum 3)
@@ -6004,8 +6004,8 @@ class TaskMaster
   end
 
   # Notes the tool as just repaired, or as found needing none or past repair
-  # (a declined answer). A refusal of the tool itself ("I don't repair those
-  # here") is not noted.
+  # (the repairer's own declined answer). A refusal of the tool itself ("I
+  # don't repair those here") is not noted.
   #
   # @param tool [String] the tool's name
   # @param now [Time]
@@ -6391,10 +6391,13 @@ class TaskMaster
   # the coin and hands over the ticket; any other answer to that give (short
   # of coin, say) puts the tool away. A refusal that is not one of the
   # declined answers (no repairer there, "I don't repair those here", no
-  # answer) is named. A tool whose ticket is kept, or that a declined answer
-  # turns away (no wear, or past repair), is noted repaired (note_repaired,
+  # answer) is named. A tool whose ticket is kept, or that the repairer's
+  # own declined answer turns away (no wear, or past repair:
+  # repairer_declined_pattern), is noted repaired (note_repaired,
   # task_repair_every); one turned away any other way is not, and stays due
-  # for the next task. When the repairer's room can't be reached nothing is
+  # for the next task. That includes a declined word heard in another line
+  # first (room speech, which bput can answer with ahead of the
+  # repairer's quote), which is named and the tool put away, as main did. When the repairer's room can't be reached nothing is
   # given.
   #
   # @param toolslist [Array<String>] tool names
@@ -6417,7 +6420,13 @@ class TaskMaster
       put_away_tickets(name)
       DRCC.get_crafting_item(tool_name, @bag, @bag_items, belt, true)
       item = held_object&.name
-      reply = DRC.bput("give #{name}", *repair_replies['offered'])
+      # The repairer's own declined answer is tried first on each line, so
+      # it comes back with the speaker's name ahead of the quote (bput
+      # hands back only the text matched): a room line that says a
+      # declined word ("Kalak says, \"I will not ...\"") matches only the
+      # bare pattern, and starts no clock.
+      own_declined = repairer_declined_pattern(name)
+      reply = DRC.bput("give #{name}", own_declined, *repair_replies['offered'])
       if repair_offered?(reply)
         # Noted before the confirming give: a run stopped once that give has
         # gone through (a disconnect before bput returns, or before the
@@ -6440,10 +6449,14 @@ class TaskMaster
         # among the stowed ones.
         forget_repair(record) unless confirmed.empty?
         DRC.message("No repair ticket for the #{tool_name} (#{confirmed.empty? ? 'no answer' : confirmed}); putting it away.")
-      elsif repair_declined?(reply)
-        # Looked over: no wear, or past repair. Either way not due again
-        # until its interval runs out.
+      elsif repair_declined?(reply) && reply.match?(own_declined)
+        # Looked over by the repairer: no wear, or past repair. Either way
+        # not due again until its interval runs out.
         note_repaired(tool_name)
+      elsif repair_declined?(reply)
+        # Someone else's words, or a line with no speaker: put away, as
+        # main did, and due again after the next task.
+        DRC.message("Heard \"#{reply}\", not as #{name}'s answer; putting the #{tool_name} away, not noted as looked over.")
       else
         DRC.message("#{name} did not take the #{tool_name} (#{reply.empty? ? 'no answer' : reply}); putting it away.")
       end
@@ -6460,6 +6473,21 @@ class TaskMaster
   # @return [Boolean]
   def repair_offered?(reply)
     [repair_replies['quote'], repair_replies['prompt']].any? { |pattern| reply.match?(/#{pattern}/i) } && !repair_declined?(reply)
+  end
+
+  # A declined answer (repair_replies declined) as the repairer's own
+  # speech: a line starting with its name (after "A", "An" or "The" and at
+  # most one more word: "A clerk shakes his head and says, ...") with the
+  # answer inside the quote that follows ("Catrox shrugs and says,
+  # \"There isn't a scratch on that ...\""). Another speaker's line, one
+  # that names the repairer later ("Kalak says to Rangu, ..."), or one with
+  # no quote does not match.
+  #
+  # @param name [String] the repairer
+  # @return [Regexp]
+  def repairer_declined_pattern(name)
+    declined = repair_replies['declined'].map { |pattern| "(?:#{pattern})" }.join('|')
+    /\A(?:(?:an?|the)\s+(?:[\w'-]+\s+)?)?#{Regexp.escape(name)}(?![\w'])[^"]*"[^"]*?(?:#{declined})/i
   end
 
   # Whether a repairer's answer says the tool needs no repair or can't have

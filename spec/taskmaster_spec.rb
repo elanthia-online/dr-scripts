@@ -12450,8 +12450,10 @@ RSpec.describe TaskMaster do
       expect(DRCC).to have_received(:stow_crafting_item).with('mortar', 'duffel bag', 'alchemy belt')
     end
 
-    ["I can't fix those.  They only have so many uses and then you must buy another.", 'I will not repair that.'].each do |reply|
-      it "puts the tool away, saying nothing, on \"#{reply[0, 30]}...\"" do
+    # Stand-ins for the repairer's past-repair and no-wear lines (only the
+    # quoted words are known: crossing-repair.lic:218), spoken as NPCs speak.
+    ['Rangu says, "I can\'t fix those.  They only have so many uses and then you must buy another."', 'Rangu says, "I will not repair something that isn\'t broken."'].each do |reply|
+      it "puts the tool away, saying nothing, on #{reply[0, 42]}...\"" do
         drop(reply)
 
         expect(sent).to eq(['give Rangu'])
@@ -12807,7 +12809,8 @@ RSpec.describe TaskMaster do
         replies = Array.new(tools.size) { no_scratch }
         allow(DRC).to receive(:bput) do |command, *matchers|
           sent << command
-          bput_match(replies.shift, matchers)
+          # Catrox's line, said by whoever was given the tool.
+          bput_match(replies.shift&.sub('Catrox', command.delete_prefix('give ')), matchers)
         end
         tm.repair(tools, nil)
         tm
@@ -14859,13 +14862,24 @@ RSpec.describe TaskMaster do
       let(:quote) { "Rangu looks over the mortar and says, \"That will cost 240 Kronars to repair.  Just give it to me again if you want, and I'll have it ready in 1 roisaen.\"" }
       let(:ticket) { "You hand Rangu 240 Kronars and he gives you back a repair ticket.  Rangu says, \"I should be having that done for you in about 1 roisaen.  Don't lose this ticket!  You must have it to reclaim your mortar.\"" }
 
-      def drop(*replies)
+      let(:sent) { [] }
+
+      # Each reply is one line, or an Array of the lines that come in
+      # before bput's answer: bput tries every pattern on a line before the
+      # next line, and hands back the first match (lich-5 common.rb).
+      def drop(*replies, repairer: 'Rangu')
         tm = every({ 'nezhiri' => 10_800 })
+        allow(tm).to receive(:repairer_for).and_return({ 'id' => 19_209, 'name' => repairer })
         queue = replies.dup
         allow(DRCT).to receive(:walk_to).and_return(true)
         allow(DRCC).to receive(:get_crafting_item) { $right_hand = 'polished belzune stone mortar' }
         allow(DRCC).to receive(:stow_crafting_item)
-        allow(DRC).to receive(:bput) { |command, *matchers| command == 'stow ticket' ? 'You put' : bput_match(queue.shift, matchers) }
+        allow(DRC).to receive(:bput) do |command, *matchers|
+          sent << command
+          next 'You put' if command == 'stow ticket'
+
+          Array(queue.shift).lazy.map { |line| bput_match(line, matchers) }.find { |match| !match.empty? }.to_s
+        end
         tm.tool_drop(['mortar'], nil)
         Hash(UserVars.taskmaster_repaired_at)['mortar']
       end
@@ -14877,7 +14891,27 @@ RSpec.describe TaskMaster do
       it 'when the repairer finds no wear on it, or says it is past repair (the declined answers)' do
         expect(drop("Rangu shrugs and says, \"There isn't a scratch on that, and I'm not one to rob you.\"")).to be_within(5).of(Time.now.to_i)
         UserVars.taskmaster_repaired_at = nil
-        expect(drop("I can't fix those.  They only have so many uses and then you must buy another.")).to be_within(5).of(Time.now.to_i)
+        expect(drop('Rangu says, "I can\'t fix those.  They only have so many uses and then you must buy another."')).to be_within(5).of(Time.now.to_i)
+        UserVars.taskmaster_repaired_at = nil
+        expect(drop('A clerk shrugs and says, "There isn\'t a scratch on that, and I\'m not one to rob you."', repairer: 'clerk')).to be_within(5).of(Time.now.to_i)
+      end
+
+      # bput hands back the first line any pattern matches, so room speech
+      # ahead of the repairer's quote decides the answer; only the
+      # repairer's own declined line starts the clock (main's tool_drop put
+      # the tool away on any of these, with no clock).
+      it 'not on a declined word in room speech ahead of the quote, or a line naming the repairer after the speaker, or one with no speaker' do
+        ['Kalak says, "I will not lend you my mortar again."', 'Kalak says to Rangu, "There isn\'t a scratch on that, friend."',
+         "Rangu's apprentice says, \"There isn't a scratch on that.\"", "I can't fix those.  They only have so many uses and then you must buy another."].each do |line|
+          UserVars.taskmaster_repaired_at = nil
+          expect(drop([line, quote])).to be_nil
+          expect(sent).to eq(['give Rangu'])
+          sent.clear
+        end
+        expect(DRCC).to have_received(:stow_crafting_item).with('mortar', 'duffel bag', nil).exactly(4).times
+        expect(DRC).to have_received(:message).with('Heard "I will not", not as Rangu\'s answer; putting the mortar away, not noted as looked over.')
+        expect(DRC).to have_received(:message).with(/\AHeard "There isn't a scratch on that", not as Rangu's answer/).twice
+        expect(DRC).to have_received(:message).with(/\AHeard "I can't fix those\.  They only have so many uses/)
       end
 
       it 'not when the repairer refuses the tool itself, so it goes again after the next task' do
