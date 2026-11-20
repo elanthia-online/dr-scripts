@@ -3140,12 +3140,16 @@ task_repair_by: rangu
 # { nezhiri: 10800, zasele: 43200 } sends Nezhiri's tools at most every 3 hours and Zasele's every 12.
 # A taskmaster with no entry uses default; 0 repairs after every task. Write plain digits with no
 # leading 0: YAML reads an unquoted 0600 as octal (384), 0x10 as hex (16) and 3:00:00 as base 60
-# (10800) before taskmaster sees them. With task_self_repair and an interval above 0, only the due
-# tools carried (the inventory feed or hands, else a TAP) are repaired and noted, except one on Lich's
-# immune list (repaired with Proper Forging Tool Care in the last two hours), which is skipped and
-# stays due; at 0 every tool goes to your own repair unchecked and none is noted, as before the setting.
-# A run that repairs tools says when a taskmaster it may work (the one named, task_fallback_npc) has
-# no entry of its own.
+# (10800) before taskmaster sees them. A value that is not whole seconds, 0 or more (3h, 10800.9, -5),
+# is named and ignored. Each tool's last repair is kept per character: a kept ticket, or a
+# repairer's no-wear or past-repair answer, starts the tool's clock; a refusal or no answer does not,
+# so the tool goes again after the next task. With task_self_repair and an interval above 0, only the
+# due tools carried (the inventory feed or hands, else a TAP) are repaired and noted, except one on
+# Lich's immune list (repaired with Proper Forging Tool Care in the last two hours or so), which is
+# skipped and stays due; at 0 every tool goes to your own repair unchecked and none is noted, as
+# before the setting. A run that repairs tools says when a taskmaster it may work (the one named and
+# task_fallback_npc; in cycle, the three it picks from and task_fallback_npc) has no entry of its
+# own, and names a key that is not a taskmaster (a misspelling).
 task_repair_every:
   default: 0
 

@@ -4,7 +4,7 @@
   task_no_repair: true/false # skip repairing tools entirely
   task_self_repair: true/false # use own brush and oil for repairs
   task_get_tools_on_completion: true/false # If you want taskmaster to pickup any remaining tools in the repair shop. Useful if you're using clerk-tools after each task
-  task_repair_every: { default: 0 } # seconds between repairs of each tool, by taskmaster ({ nezhiri: 10800, zasele: 43200 }), written as plain digits with no leading 0 (YAML reads an unquoted 0600 as octal, 384, 0x10 as hex, 16, and 3:00:00 as base 60, 10800, before taskmaster sees them; any other value, quoted or not, is read as base-10 digits (an unquoted 0800, not octal, is 800), and one that is not digits, such as 3h, is named and ignored); a taskmaster with no entry uses default, and with no default 0, which repairs after every task (as before). Each tool's last repair is kept per character (UserVars.taskmaster_repaired_at; ;e UserVars.taskmaster_repaired_at = nil forgets them all). Applies to task_self_repair too: with an interval above 0 only the due tools carried (the inventory feed or hands, else a TAP) are repaired and noted, except one on Lich's immune list (repaired with Proper Forging Tool Care in the last two hours), which is skipped and stays due; at 0 every tool goes to your own repair with no TAP and none is noted, as before the setting. A run that repairs says which taskmaster it may work has no entry
+  task_repair_every: { default: 0 } # seconds between repairs of each tool, by taskmaster ({ nezhiri: 10800, zasele: 43200 }), written as plain digits with no leading 0 (YAML reads an unquoted 0600 as octal, 384, 0x10 as hex, 16, and 3:00:00 as base 60, 10800, before taskmaster sees them, as it reads any other plain YAML number; a value that is not a plain YAML number, quoted or not, is read as base-10 digits (an unquoted 0800, not valid octal, is 800); one that is not whole seconds, 0 or more, such as 3h, 10800.9 or -5, is named and ignored); a taskmaster with no entry uses default, and with no default 0, which repairs after every task (as before). Each tool's last repair is kept per character (UserVars.taskmaster_repaired_at; ;e UserVars.taskmaster_repaired_at = nil forgets them all). A kept ticket, or a repairer's no-wear or past-repair answer, starts the tool's clock; a refusal or no answer does not, so the tool goes again after the next task. Applies to task_self_repair too: with an interval above 0 only the due tools carried (the inventory feed or hands, else a TAP) are repaired and noted, except one on Lich's immune list (repaired with Proper Forging Tool Care in the last two hours or so), which is skipped and stays due; at 0 every tool goes to your own repair with no TAP and none is noted, as before the setting. A run that repairs says which taskmaster it may work (the one named and task_fallback_npc; in cycle, the three it picks from and task_fallback_npc) has no entry, and names a key that is not a taskmaster (a misspelling)
   task_repair_by: rangu # where tools go for repair: rangu (the default: Rangu, Crossing Engineering Society), hometown (Crossing's town repairer in base-town.yaml, Catrox) or task_type (Crossing's repairer, in base-crafting.yaml, of the discipline taskmaster gives each taskmaster: tailoring for Zasele, remedies for Nezhiri, blacksmithing for Poltu, shaping for Bradyn (his metal tasks too), artificing for Dorhum). Always Crossing's, where every task is bought and crafted, whatever task_hometown says; with no such repairer in the data it says so and uses Rangu. Each tool left is noted (UserVars.taskmaster_repairs, with its name in hand). Once a task is accepted, the noted tools its work uses are picked up by their tickets, waiting up to 10 minutes at each repairer for them to be ready (Poltu's and Bradyn's metal tasks share the forging tools); another noted tool at a repairer it goes to is picked up only if ready then; and when a TAP before the ask finds a Rangu ticket, every Rangu ticket no note accounts for (an older taskmaster's, or one whose note was lost) is handed in too, waited for the same way. A task stops before its work while a tool it uses is still at repair (a noted one, or an un-noted Rangu ticket still carried whose item names it, or one the repairer would not take), and stays open for the next run; with mark_crafted_goods that includes the stamp for Poltu's, Bradyn's lumber and metal, and Dorhum's tasks, whose crafting scripts stop without it. Any other tool still out waits for a later task or ;taskmaster pickup, and is not sent for repair again meanwhile. Another taskmaster's note counts for a task by its setting name, or by a name of two words or more: a one-word name such as "rod" is not taken for another toolset's "stirring rod" or "imbuement rod". A ticket is matched to a note by the tool's name in hand, which a ticket may follow with more words ("large purpleheart bowl edged with ivory"); when tickets for two different items fit one note, none is handed in and it says so. With task_type, Zasele's, Nezhiri's and Poltu's tools go to society clerks, who are all called clerk: their tickets stay carried until a task, ;taskmaster pickup or task_get_tools_on_completion collects them, and ;workorders in another discipline picks such a ticket up with its own and stops collecting at one its clerk does not take
   task_use_boost: true/false # use boost to eliminate task cooldowns, useful if you have a few and you're doing a lot of tasks
   task_cooldown_poll: 15 # seconds between asks while the taskmaster makes you wait (minimum 3)
@@ -189,6 +189,9 @@ class TaskMaster
     @npc = args.npc
     @marathon = args.marathon
     unless args.find || args.tools || args.reset_output || args.loot_history || args.pickup
+      # A cycle run has no npc argument (lich-5's parse_args takes cycle only
+      # without one), so usable_fallback_npc there is task_fallback_npc
+      # whenever it names a taskmaster.
       warn_repair_intervals((args.cycle ? %w[poltu bradyn zasele] : [@marathon ? 'zasele' : @npc]) + [usable_fallback_npc])
     end
     if args.find
@@ -5820,11 +5823,14 @@ class TaskMaster
   # given, in place, so they stay due and are tried again after the next
   # task.
   #
-  # A due tool still noted at a repairer (tools_left_for) is not sent
-  # again: it is not carried (a worker repairs more tools than its work
-  # uses, and the pickup after the accept waits only for those), so it is
-  # named as still out, for a later pickup, and its clock is left as it
-  # is.
+  # When leaving tools with a repairer (not task_self_repair), a due tool
+  # still noted at a repairer (tools_left_for) is not sent again: it is not
+  # carried (a worker repairs more tools than its work uses, and the pickup
+  # after the accept waits only for those), so it is named as still out,
+  # for a later pickup, and its clock is left as it is. A tool not due is
+  # not looked at for this. With task_self_repair such a tool is not named:
+  # above 0 it is not carried (DRCI.exists?), so it is skipped and stays
+  # due; at 0 repair_own_tools' get skips it.
   #
   # @param tools [Array<String>] tool names (Bradyn's stone and bone tasks
   #   give the tool in hand, by the name DRC.right_hand shows, which is then
@@ -5899,8 +5905,9 @@ class TaskMaster
   # @return [Hash{String => Integer}]
   def repair_every_setting
     @repair_every_setting ||= begin
+      # get_settings wraps only the top level in an OpenStruct, so a mapping
+      # arrives as a Hash.
       setting = @settings.task_repair_every
-      setting = setting.to_h if setting.is_a?(OpenStruct)
       unless setting.nil? || setting.is_a?(Hash)
         DRC.message("task_repair_every should map taskmasters to seconds ({ default: 0, nezhiri: 10800 }), not '#{setting}'; ignoring it.")
         setting = {}
@@ -5977,9 +5984,10 @@ class TaskMaster
 
   # Says, at the start of a run that repairs tools (not task_no_repair), for
   # each taskmaster the run may work (the one named and task_fallback_npc;
-  # in cycle, the three it picks from and task_fallback_npc) that task_repair_every has no entry
-  # for, how often its tools go for repair instead (the default entry, else
-  # after every task).
+  # in cycle, the three it picks from and task_fallback_npc), once each,
+  # that task_repair_every has no entry for, how often its tools go for
+  # repair instead (the default entry, else after every task). It also
+  # names a key that is neither default nor a taskmaster (a misspelling?).
   #
   # @param npcs [Array<String>]
   # @return [void]

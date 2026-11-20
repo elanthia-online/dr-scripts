@@ -801,6 +801,12 @@ RSpec.describe TaskMaster do
         expect(events).to include([:message, 'task_repair_every has no entry for dorhum; its tools go for repair after every task.'])
       end
 
+      it "names cycle's task_fallback_npc once when it is one of the three" do
+        events = start(cycle: true, samples: %w[zasele], wrap_up_after: 1, settings: { task_repair_every: { 'default' => 0 }, task_fallback_npc: 'zasele' })
+        expect(events.count([:message, 'task_repair_every has no entry for zasele; its tools go for repair after every task (the default entry).'])).to eq(1)
+        expect(events.count { |event| Array(event).first == :message && event.last.include?('no entry for') }).to eq(3)
+      end
+
       it 'stops after one task without repeat, wrap-up or not' do
         expect(start(npc: 'zasele').count(:get_task)).to eq(1)
       end
@@ -12804,6 +12810,29 @@ RSpec.describe TaskMaster do
         sent.clear
         repair_run(npc: 'dorhum', tools: ['brazier'], notes: [brazier], settings: { task_repair_by: 'hometown' })
         expect(sent).to be_empty
+      end
+
+      # Only the due tools (task_repair_every) are looked at for this.
+      it 'neither sends nor names a tool still at Rangu that is not due' do
+        needles_out = { 'npc' => 'zasele', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'knitting needle', 'item' => 'slender knitting needles', 'left_at' => 1 }
+        UserVars.taskmaster_repaired_at = { 'knitting needle' => Time.now.to_i - 60 }
+        repair_run(npc: 'zasele', tools: ['scissors', 'knitting needle'], notes: [needles_out], settings: { task_repair_every: { 'zasele' => 3600 } })
+
+        expect(sent).to eq([[:walk, 19_209], [:get, 'scissors'], 'give Rangu'])
+        expect(DRC).not_to have_received(:message).with(/still at repair/)
+      end
+
+      it "names a due tool still at Rangu and leaves its clock as it is (tool_drop never sees it)" do
+        needles_out = { 'npc' => 'zasele', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'knitting needle', 'item' => 'slender knitting needles', 'left_at' => 1 }
+        stamped = Time.now.to_i - 7200
+        UserVars.taskmaster_repaired_at = { 'knitting needle' => stamped }
+        repair_run(npc: 'zasele', tools: ['scissors', 'knitting needle'], notes: [needles_out], settings: { task_repair_every: { 'zasele' => 3600 } })
+
+        expect(sent).to eq([[:walk, 19_209], [:get, 'scissors'], 'give Rangu'])
+        expect(DRC).to have_received(:message).with('knitting needle still at repair (left earlier); not sent again. A later task or ;taskmaster pickup collects it.')
+        expect(UserVars.taskmaster_repaired_at['knitting needle']).to eq(stamped)
+        # The scissors, sent and found unworn, are stamped: the clock works here.
+        expect(UserVars.taskmaster_repaired_at['scissors']).to be_within(5).of(Time.now.to_i)
       end
     end
   end
