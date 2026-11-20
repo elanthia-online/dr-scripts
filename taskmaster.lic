@@ -4,7 +4,7 @@
   task_no_repair: true/false # skip repairing tools entirely
   task_self_repair: true/false # use own brush and oil for repairs
   task_get_tools_on_completion: true/false # If you want taskmaster to pickup any remaining tools in the repair shop. Useful if you're using clerk-tools after each task
-  task_repair_by: rangu # where tools go for repair: rangu (the default: Rangu, Crossing Engineering Society), hometown (Crossing's town repairer in base-town.yaml, Catrox) or task_type (Crossing's repairer, in base-crafting.yaml, of the discipline taskmaster gives each taskmaster: tailoring for Zasele, remedies for Nezhiri, blacksmithing for Poltu, shaping for Bradyn (his metal tasks too), artificing for Dorhum). Always Crossing's, where every task is bought and crafted, whatever task_hometown says; with no such repairer in the data it says so and uses Rangu. Each tool left is noted (UserVars.taskmaster_repairs, with its name in hand). Once a task is accepted, the noted tools its work uses are picked up by their tickets, waiting up to 10 minutes at each repairer for them to be ready (Poltu's and Bradyn's metal tasks share the forging tools); another noted tool at a repairer it goes to is picked up only if ready then; and when a TAP before the ask finds a Rangu ticket, every Rangu ticket no note accounts for (an older taskmaster's, or one whose note was lost) is handed in too, waited for the same way. A task stops before its work while a tool it uses is still at repair, and stays open for the next run; any other tool still out waits for a later task or ;taskmaster pickup. A ticket is matched to a note by the tool's name in hand, which a ticket may follow with more words ("large purpleheart bowl edged with ivory"); when tickets for two different items fit one note, none is handed in and it says so. With task_type, Zasele's, Nezhiri's and Poltu's tools go to society clerks, who are all called clerk: their tickets stay carried until a task collects them, and ;workorders in another discipline picks such a ticket up with its own and stops collecting at one its clerk does not take
+  task_repair_by: rangu # where tools go for repair: rangu (the default: Rangu, Crossing Engineering Society), hometown (Crossing's town repairer in base-town.yaml, Catrox) or task_type (Crossing's repairer, in base-crafting.yaml, of the discipline taskmaster gives each taskmaster: tailoring for Zasele, remedies for Nezhiri, blacksmithing for Poltu, shaping for Bradyn (his metal tasks too), artificing for Dorhum). Always Crossing's, where every task is bought and crafted, whatever task_hometown says; with no such repairer in the data it says so and uses Rangu. Each tool left is noted (UserVars.taskmaster_repairs, with its name in hand). Once a task is accepted, the noted tools its work uses are picked up by their tickets, waiting up to 10 minutes at each repairer for them to be ready (Poltu's and Bradyn's metal tasks share the forging tools); another noted tool at a repairer it goes to is picked up only if ready then; and when a TAP before the ask finds a Rangu ticket, every Rangu ticket no note accounts for (an older taskmaster's, or one whose note was lost) is handed in too, waited for the same way. A task stops before its work while a tool it uses is still at repair (a noted one, or an un-noted Rangu ticket still carried whose item names it), and stays open for the next run; any other tool still out waits for a later task or ;taskmaster pickup. A ticket is matched to a note by the tool's name in hand, which a ticket may follow with more words ("large purpleheart bowl edged with ivory"); when tickets for two different items fit one note, none is handed in and it says so. With task_type, Zasele's, Nezhiri's and Poltu's tools go to society clerks, who are all called clerk: their tickets stay carried until a task, ;taskmaster pickup or task_get_tools_on_completion collects them, and ;workorders in another discipline picks such a ticket up with its own and stops collecting at one its clerk does not take
   task_use_boost: true/false # use boost to eliminate task cooldowns, useful if you have a few and you're doing a lot of tasks
   task_cooldown_poll: 15 # seconds between asks while the taskmaster makes you wait (minimum 3)
   task_boosts: [task, haste] # boosts to use. task: BOOST TASK when a task is on cooldown (same as task_use_boost). haste: keep BOOST HASTE (1 hour, roundtimes -1 second) running between tasks. Once the game says you have no credits for one, it is not asked for again until the game's daily rollover (midnight US Central, when login rewards can add boosts in the middle of a login) or your next login; to ask again sooner, ;e $taskmaster_boost_unavailable = nil
@@ -73,7 +73,7 @@ class TaskMaster
     ],
     [
       { name: 'reset_output', regex: /^reset_output/i, optional: true, description: 'Clears prize window' },
-      { name: 'pickup', regex: /^pickup/i, optional: true, description: 'Picks up every tool left for repair (task_repair_by), and any Rangu ticket carried' },
+      { name: 'pickup', regex: /^pickup/i, optional: true, description: 'Picks up every tool left for repair, at every repairer holding one, and any Rangu ticket carried' },
       { name: 'cycle', regex: /^cycle/i, optional: true, description: 'Cycles through each taskmaster randomly and completes their task' },
       { name: 'marathon', regex: /^marathon/i, optional: true, description: 'stocks up and runs zasele tasks, repairs during restock' },
       { name: 'loot_history', regex: /^loot_history/i, optional: true, description: 'Prints out saved sack contents history, potentially scrollish' },
@@ -5951,8 +5951,10 @@ class TaskMaster
   # taskmaster left (it kept no notes), one left from another Lich install,
   # or one whose note was lost (named when still not ready). Only a tool the
   # work uses can stop the task (stop_if_tools_at_repair, from
-  # @tools_left_at_repair, the notes still out afterwards); any other still
-  # out waits for a later task or ;taskmaster pickup.
+  # @tools_left_at_repair: the notes still out afterwards, and each Rangu
+  # ticket no note accounts for still carried, by the item it is for, so a
+  # tool of the work's that one is for stops it too); any other still out
+  # waits for a later task or ;taskmaster pickup.
   #
   # @param tools [Array<String>] the tools the task's work uses, by setting
   #   name (task_tools)
@@ -5971,11 +5973,13 @@ class TaskMaster
     wanted = tools_left_for(tools, notes)
     visits = wanted.map { |record| [record['room'], record['repairer']] }
     visits << rangu if stray
+    unnoted_left = []
     visits.uniq.each do |room, name|
       here = notes.select { |record| [record['room'], record['repairer']] == [room, name] }
-      collect_tools(room, name, here & wanted, ready_only: here - wanted, unnoted: stray && [room, name] == rangu)
+      left = collect_tools(room, name, here & wanted, ready_only: here - wanted, unnoted: stray && [room, name] == rangu)
+      unnoted_left.concat(left.map { |ticket| { 'repairer' => name, 'room' => room, 'item' => ticket[:item] } })
     end
-    @tools_left_at_repair = repairs_out
+    @tools_left_at_repair = repairs_out + unnoted_left
   end
 
   # The tools a task's work uses, by setting name: the list its worker
@@ -5998,8 +6002,9 @@ class TaskMaster
   end
 
   # Stops the run before a task's work when one of the tools it is about to
-  # use is still at repair (collect_task_tools could not get it back). The
-  # task stays open, and the next run collects the tool first.
+  # use is still at repair (collect_task_tools could not get it back): a
+  # note of it, or a Rangu ticket no note accounts for whose item names it.
+  # The task stays open, and the next run collects the tool first.
   #
   # @param tools [Array<String>] the tools the work uses, by setting name
   # @return [void]
@@ -6254,19 +6259,22 @@ class TaskMaster
   # wait for one. They are read once and kept up to date as each is handed
   # in (the ones after it move up one ordinal); each wait looks again at
   # just the tickets waited for, and everything is read again after a
-  # ticket not handed in, a tool not the noted one, or a look that does not
-  # read the same ticket back.
+  # ticket not handed in, a tool not the noted one (the ticket handed in may
+  # not be the one its ordinal was read for), or a look that does not read
+  # the same ticket back (one ahead handed in meanwhile).
   #
   # A noted tool is forgotten, and named, only when a whole look through the
-  # tickets (one ending on "no such ticket") finds none for it (ticket_for);
-  # a look that goes unanswered keeps every note, and so does a look that
-  # finds none while a TAP still finds such a ticket. A note more than one
-  # ticket could be for is named and kept, and no ticket is handed in for
-  # it. A noted ticket the repairer does not take, or one still not ready
-  # after the polls, is left with its note for a later pickup; so is
-  # everything when the room can't be reached, or once a ticket can't be got
-  # (hands full). An un-noted ticket the repairer does not take is passed
-  # over.
+  # tickets (one ending on "no such ticket") finds none for it (ticket_for),
+  # a tool not the noted one handed back included; a look that goes
+  # unanswered keeps every note, and so does a look that finds none while a
+  # TAP still finds such a ticket. A note more than one ticket could be for
+  # is named once and kept, and no ticket is handed in for it. Each ticket
+  # the repairer does not take is tried once (refused, kept at its place
+  # among the tickets read: a note's next ticket that fits is tried in
+  # turn), and a note is kept when every ticket for it was refused; so is a
+  # noted ticket still not ready after the polls, everything when the room
+  # can't be reached, and everything once a ticket can't be got (hands
+  # full).
   #
   # @param room [Integer] the repairer's room
   # @param name [String] the repairer
@@ -6275,9 +6283,11 @@ class TaskMaster
   #   there, handed in only when ready now
   # @param unnoted [Boolean] also hand in, and wait for, the repairer's
   #   tickets no note accounts for (Rangu's only)
-  # @return [void]
+  # @return [Array<Hash{Symbol => Object}>] with +unnoted+, the repairer's
+  #   tickets no note accounts for still carried afterwards, as last read
+  #   (not ready, refused, or never reached); else none
   def collect_tools(room, name, records, ready_only: [], unnoted: false)
-    return unless repair_replies_known?
+    return [] unless repair_replies_known?
 
     put_away_tickets(name)
     waited = records.dup
@@ -6286,12 +6296,11 @@ class TaskMaster
     # go by "clerk", so a clerk ticket may be another clerk's.
     rivals = repairs_out.select { |record| record['repairer'].to_s.casecmp?(name) }
     elsewhere = rivals.reject { |record| record['room'] == room }
+    unaccounted = ->(ticket) { rivals.none? { |record| fits_note?(record, ticket[:item]) } }
     tickets, whole = carried_tickets(name)
     fresh = true
     walked = false
     polls = 0
-    passed = []
-    kept = []
     told = []
     loop do
       notes = waited + extra
@@ -6315,9 +6324,9 @@ class TaskMaster
         DRC.message("More than one #{name} ticket carried could be for #{note_names(unclear)}; handing in none for #{unclear.size == 1 ? 'it' : 'them'}, and keeping the note#{unclear.size == 1 ? '' : 's'}. Hand the right one in yourself.")
         told.concat(unclear)
       end
-      live = claims.select { |record, ticket| ticket.is_a?(Hash) && !kept.include?(record) }
+      live = claims.select { |_, ticket| ticket.is_a?(Hash) }
       own = live.select { |record, _| waited.include?(record) }.map(&:last)
-      loose = unnoted ? tickets.reject { |ticket| passed.include?(ticket[:item]) || rivals.any? { |record| fits_note?(record, ticket[:item]) } } : []
+      loose = unnoted ? tickets.reject { |ticket| ticket[:refused] || !unaccounted.call(ticket) } : []
       ready = own.find { |ticket| ticket[:ready] } || live.map(&:last).find { |ticket| ticket[:ready] } || loose.find { |ticket| ticket[:ready] }
       unless ready
         waiting = (own + loose).uniq
@@ -6325,7 +6334,7 @@ class TaskMaster
           # The tickets were kept up to date by hand: a look that stopped
           # short (more than TICKET_ORDINALS) may now reach further.
           unless whole || fresh
-            tickets, whole = carried_tickets(name)
+            tickets, whole = reread_tickets(name, tickets)
             fresh = true
             next
           end
@@ -6338,17 +6347,17 @@ class TaskMaster
           DRC.message(not_finished(name, waiting, loose))
           break
         end
-        return unless (walked ||= reach_repairer(room, name))
+        break unless (walked ||= reach_repairer(room, name))
 
         pause 30
         next if poll_tickets(name, waiting)
 
-        tickets, whole = carried_tickets(name)
+        tickets, whole = reread_tickets(name, tickets)
         fresh = true
         next
       end
 
-      return unless (walked ||= reach_repairer(room, name))
+      break unless (walked ||= reach_repairer(room, name))
 
       record = live.find { |_, ticket| ticket.equal?(ready) }&.first
       back = redeem_ticket(name, ready[:ordinal], record)
@@ -6357,8 +6366,8 @@ class TaskMaster
       break if %i[unseen not_got].include?(back)
 
       unless back
-        record ? kept << record : passed << ready[:item]
-        tickets, whole = carried_tickets(name)
+        ready[:refused] = true
+        tickets, whole = reread_tickets(name, tickets)
         fresh = true
         next
       end
@@ -6367,18 +6376,32 @@ class TaskMaster
       next unless record
 
       unless returned_tool?(record, back.name)
-        tickets, whole = carried_tickets(name)
+        # The ticket handed in may not be the one its ordinal was read for:
+        # read them again, and the note is kept or forgotten as at any look.
+        DRC.message("#{name} handed back #{back.name}, not the noted #{note_names([record])}; looking at the #{name} tickets again, and keeping its note only while one is for it.")
+        tickets, whole = reread_tickets(name, tickets)
         fresh = true
-        unless whole && ticket_for(record, tickets, rivals, elsewhere).nil?
-          DRC.message("#{name} handed back #{back.name}, not the noted #{note_names([record])}; a ticket carried may still be for it, so its note stays.")
-          next
-        end
-        DRC.message("#{name} handed back #{back.name}, not the noted #{note_names([record])}, and no ticket carried is for it now; forgetting its note. Look for the #{note_names([record])} yourself.")
+        next
       end
       forget_repair(record)
       waited.delete(record)
       extra.delete(record)
     end
+    unnoted ? tickets.select(&unaccounted) : []
+  end
+
+  # Reads the repairer's tickets again (carried_tickets), keeping each
+  # refusal on the ticket read at the same ordinal for the same item.
+  #
+  # @param name [String] the repairer
+  # @param old [Array<Hash{Symbol => Object}>] the tickets read before
+  # @return [Array(Array<Hash{Symbol => Object}>, Boolean)] tickets and whole
+  def reread_tickets(name, old)
+    tickets, whole = carried_tickets(name)
+    tickets.each do |ticket|
+      ticket[:refused] = true if old.any? { |was| was[:refused] && was[:ordinal] == ticket[:ordinal] && was[:item].casecmp?(ticket[:item]) }
+    end
+    [tickets, whole]
   end
 
   # @param records [Array<Hash{String => Object}>] notes
@@ -6515,7 +6538,10 @@ class TaskMaster
   # stone mortar". When tickets for more than one item fit a named note, or
   # the ticket that fits could be a note's of a repairer of the same name
   # in another room (another society clerk's), which is its own can't be
-  # told: :unclear, and none is handed in for it.
+  # told: :unclear, and none is handed in for it. Of the tickets that fit,
+  # the first the repairer has not refused this pickup (:refused, marked by
+  # collect_tools) is the one; when it refused them all: :refused, and the
+  # note is kept.
   #
   # @param record [Hash{String => Object}] the note
   # @param tickets [Array<Hash{Symbol => Object}>] the repairer's tickets read
@@ -6523,8 +6549,8 @@ class TaskMaster
   #   of this name, the note among them
   # @param elsewhere [Array<Hash{String => Object}>] those of them in
   #   another room
-  # @return [Hash{Symbol => Object}, Symbol, nil] the ticket; :unclear; nil
-  #   when no ticket is for it
+  # @return [Hash{Symbol => Object}, Symbol, nil] the ticket; :unclear;
+  #   :refused; nil when no ticket is for it
   def ticket_for(record, tickets, rivals = [record], elsewhere = [])
     fits = tickets.select { |ticket| exact_tool?(record, ticket[:item]) }
     if fits.empty?
@@ -6540,7 +6566,7 @@ class TaskMaster
     return :unclear if fits.map { |ticket| ticket[:item].downcase }.uniq.size > 1
     return :unclear if elsewhere.any? { |other| fits_note?(other, fits.first[:item]) }
 
-    fits.first
+    fits.find { |ticket| !ticket[:refused] } || :refused
   end
 
   # Whether a ticket's item could be a note's tool, as ticket_for matches
@@ -6634,21 +6660,25 @@ class TaskMaster
   # @param record [Hash{String => Object}, nil] the note it is for
   # @return [Object, Symbol, false] the tool now in hand (GameObj); :unseen
   #   when the ticket was taken but nothing new showed in a hand; :not_got
-  #   when the ticket could not be got (no hand free); false when it could
+  #   when no ticket came into a hand (no hand free); false when it could
   #   not be moved to the right hand, or was not taken
   def redeem_ticket(name, ordinal, record = nil)
     held = held_objects.map(&:id)
-    unless DRCI.get_item?("#{ordinal} #{name} ticket")
+    # lich-5's get_item? looks only for the noun (ticket) in a hand after the
+    # GET, so another ticket held makes it true whatever the GET did: the
+    # ticket got is the object new in a hand.
+    got = DRCI.get_item?("#{ordinal} #{name} ticket")
+    ticket = got && held_objects.find { |obj| !held.include?(obj.id) }
+    unless ticket
       DRC.message("Could not get the #{ordinal} #{name} ticket (hands full?); leaving it for a later pickup.")
       return :not_got
     end
     # A bare GIVE hands over the right hand: the ticket goes there first, by
     # its id, should it have landed in the left (the right hand busy, as in
     # pickup mode, which runs before the hands are put away).
-    ticket = held_objects.find { |obj| !held.include?(obj.id) }
-    unless ticket && move_to_right_hand(ticket.id)
+    unless move_to_right_hand(ticket.id)
       DRC.message("Could not get the #{ordinal} #{name} ticket into your right hand; leaving it for a later pickup.")
-      DRC.bput('stow ticket', 'You put') if ticket
+      DRC.bput('stow ticket', 'You put')
       return false
     end
 
