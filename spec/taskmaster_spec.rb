@@ -12234,8 +12234,8 @@ RSpec.describe TaskMaster do
     let(:no_scratch) { "Catrox shrugs and says, \"There isn't a scratch on that, and I'm not one to rob you.\"" }
     let(:sent) { [] }
 
-    def drop(*replies, tools: ['mortar'], reached: true)
-      tm = build
+    def drop(*replies, tools: ['mortar'], reached: true, data: real_repair_replies)
+      tm = build(repair_replies: data)
       queue = replies.dup
       allow(DRCT).to receive(:walk_to).and_return(reached)
       allow(DRCC).to receive(:get_crafting_item)
@@ -12253,6 +12253,20 @@ RSpec.describe TaskMaster do
 
       expect(sent).to eq(['give Rangu', 'give Rangu', 'stow ticket'])
       expect(DRCC).not_to have_received(:stow_crafting_item)
+    end
+
+    it "confirms Fang Cove's wording of the prompt (\"If you agree, give it to me again\")" do
+      drop('Osmandikar says, "If you agree, give it to me again."', rangu_ticket)
+
+      expect(sent).to eq(['give Rangu', 'give Rangu', 'stow ticket'])
+    end
+
+    it 'confirms a quote pattern from data/custom that matches the cost alone, and still puts a refused tool away' do
+      cost_only = real_repair_replies.merge('quote' => 'cost [\d,]+ \w+ to repair', 'offered' => ['cost [\d,]+ \w+ to repair', "There isn't a scratch on that", 'give it to me again'])
+      drop('Rangu says, "That will cost 240 Kronars to repair."', rangu_ticket, "Rangu says, \"There isn't a scratch on that, and I'm not one to rob you.\"", tools: %w[mortar pestle], data: cost_only)
+
+      expect(sent).to eq(['give Rangu', 'give Rangu', 'stow ticket', 'give Rangu'])
+      expect(DRCC).to have_received(:stow_crafting_item).with('pestle', 'duffel bag', 'alchemy belt').once
     end
 
     it 'gives each tool its own quote and ticket' do
