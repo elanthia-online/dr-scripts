@@ -15124,7 +15124,17 @@ RSpec.describe TaskMaster do
       expect(DRC).to have_received(:message).with('Zasele has given you all the tasks allowed today; asking Nezhiri again, whose tools are at repair.')
     end
 
+    # A running clock at midday UTC, away from the game day's turn and its
+    # reset grace (RESET_GRACE_SECONDS), for examples that note a limit at
+    # Time.now and expect it to hold: run within minutes after 05:00 or
+    # 06:00 UTC, such a note lapses at once by design.
+    def midday_clock
+      start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      allow(Time).to receive(:now) { Time.utc(2026, 11, 20, 12) + (Process.clock_gettime(Process::CLOCK_MONOTONIC) - start) }
+    end
+
     it 'stops when both have given all their tasks today, without asking the fallback again' do
+      midday_clock
       noted('nezhiri')
       expect do
         detour_run(asks: { 'zasele' => [daily_max], 'nezhiri' => [daily_max.sub('Zasele', 'Nezhiri')] })
@@ -15223,6 +15233,7 @@ RSpec.describe TaskMaster do
     end
 
     it 'notes the limit of a fallback worked for the day, so the next run stops at the first one without walking to it' do
+      midday_clock
       nezhiri_max = daily_max.sub('Zasele', 'Nezhiri')
       expect { detour_run(asks: { 'nezhiri' => [nezhiri_max], 'zasele' => [daily_max] }) }.to raise_error(SystemExit)
       expect(UserVars.taskmaster_capped['zasele']).to be_within(5).of(Time.now.to_i)
@@ -15365,6 +15376,7 @@ RSpec.describe TaskMaster do
     end
 
     it 'with repeat, does not walk to the fallback again in the run once it has given its daily limit' do
+      midday_clock
       noted('nezhiri')
       tm = build(npc: 'nezhiri', fallback_npc: 'zasele', cooldown_poll: 3, settings: { task_repair_every: { 'nezhiri' => 10_800, 'zasele' => 43_200 } })
       asks = []
