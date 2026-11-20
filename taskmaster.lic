@@ -6449,7 +6449,11 @@ class TaskMaster
   # a tool not the noted one handed back included; a look that goes
   # unanswered keeps every note, and so does a look that finds none while a
   # TAP still finds such a ticket. A note more than one ticket could be for
-  # is named once and kept, and no ticket is handed in for it. A ticket the
+  # is named once and kept, and no ticket is handed in for it; so is one
+  # whose one ticket could as well be a note's at a repairer of the same
+  # name in another room (another clerk's), named as such. Those notes, and
+  # any whose every ticket was refused, are added to @tools_held_back for
+  # stop_if_tools_at_repair: only the player's hand frees them. A ticket the
   # repairer does not take is not tried again: it is marked refused at the
   # ordinal it was read at, and every ticket for its item is once the
   # repairer has refused as many of them as there are (a ticket stowed back
