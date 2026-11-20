@@ -15589,6 +15589,28 @@ RSpec.describe TaskMaster do
       expect(tm.instance_variable_get(:@npc)).to eq('bradyn')
     end
 
+    # Zasele's tasks mark with the stamp as well: sew stops the run when it
+    # is not in hand (marking_tools). Here a stamp Poltu's forging_tools sent
+    # long ago, which outfitting_tools does not name, holds back a detour to
+    # her; without mark_crafted_goods it does not.
+    it 'is held back by a stamp at repair when the fallback is Zasele, whose sew stops without it (mark_crafted_goods)' do
+      settings = { task_repair_every: { 'nezhiri' => 10_800, 'zasele' => 43_200 }, mark_crafted_goods: true, alchemy_tools: %w[bowl mortar], outfitting_tools: ['scissors', 'sewing needles', 'knitting needles'], forging_tools: ['hammer', 'tongs', 'iron stamp'] }
+      UserVars.taskmaster_repairs = [{ 'npc' => 'nezhiri', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'bowl', 'item' => 'stone bowl', 'left_at' => Time.now.to_i - 60 },
+                                     { 'npc' => 'poltu', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'iron stamp', 'item' => 'iron stamp', 'left_at' => Time.now.to_i - 7200 }]
+      tm = build(npc: 'nezhiri', fallback_npc: 'zasele', settings: settings)
+
+      tm.detour_while_tools_repair
+
+      expect(tm.instance_variable_get(:@npc)).to eq('nezhiri')
+      expect(UserVars.taskmaster_repairs.first).not_to have_key('detoured')
+      tm = build(npc: 'nezhiri', fallback_npc: 'zasele', settings: settings.merge(mark_crafted_goods: false))
+
+      tm.detour_while_tools_repair
+
+      expect(tm.instance_variable_get(:@npc)).to eq('zasele')
+      expect(UserVars.taskmaster_repairs.first).to include('detoured' => true)
+    end
+
     it "marks only the notes the detour was for: another taskmaster's fresh note for tools of its own is left as it was" do
       noted('nezhiri', 'poltu')
       detour_run(asks: { 'zasele' => [offer] })

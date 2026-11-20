@@ -3124,10 +3124,10 @@ task_cancel_foreign_tasks: false
 # not wait at the repairer; the run after asks the first one again (in a cycle run the next pick is
 # random as usual, and the next task that uses the first one's tools collects them). Poltu and
 # Bradyn share the forging tools, so a Poltu run never detours to Bradyn, and a Bradyn run detours to
-# Poltu only after a task that left no forging tool (and, with mark_crafted_goods, no stamp: Poltu's,
-# Bradyn's and Dorhum's tasks all mark with it, so a stamp at repair, whichever toolset sent it, holds
-# back a detour to any of them). With task_get_tools_on_completion each run collects
-# its tools at its end, so only repeat and cycle runs detour, and a run right after one that only finished
+# Poltu only after a task that left no forging tool (and, with mark_crafted_goods, no stamp:
+# Zasele's, Poltu's, Bradyn's and Dorhum's tasks all mark with it, so a stamp at repair, whichever
+# toolset sent it, holds back a detour to any of them). With task_get_tools_on_completion each run
+# collects its tools at its end, so only repeat and cycle runs detour, and a run right after one that only finished
 # a task already open (that run ends before the pickup). A fallback that has given its limit since
 # the daily rollover is not asked again until the next one: neither for a detour nor when the first one
 # gives its limit (the run then stops). The game resets the limit some seconds after the rollover, so a

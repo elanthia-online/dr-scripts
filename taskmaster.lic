@@ -23,7 +23,7 @@
   task_rock_room: 793 # room where Dorhum's spongestone and splashstone tasks forage rocks (none can be had on Andreshlew)
   task_shell_room: 793 # room where Dorhum's glow shell tasks forage shells
   task_cancel_foreign_tasks: true/false # a run never works another taskmaster's task; with this it cancels one it finds open, waits out the 10-minute cooldown a cancel brings, then goes back to its own taskmaster. Off: it stops, saying whose task it is and how to finish or cancel it. A cycle run finishes an open task of Poltu, Bradyn or Zasele (the taskmasters it picks from) as its own, whichever it picked
-  task_fallback_npc: zasele # when the taskmaster asked says you have done the most tasks it allows today (the game's line naming it; a player saying those words, or a line naming another taskmaster, does not count), work this taskmaster's task instead; the next run asks the first one again (in a cycle run the next taskmaster is picked at random as usual). With task_repair_every entries for both (the first one's more than 0; the default entry does not count, and a run says so at its start), it is also worked, one task, right after the first one's tools are left for repair (unless any of its own is still at repair (matched as its own pickup matches them, the stamp its task marks with under mark_crafted_goods included), however long ago it was left, since its task could wait for it, or stop with the task open on one a pickup could not get back, and the task is not known before the ask; a ready one is collected by the next task whose pickup goes to its repairer, task_get_tools_on_completion or ;taskmaster pickup; or it has given its limit since the daily rollover; Poltu and Bradyn share the forging tools, so a Poltu run never detours to Bradyn, and a Bradyn run detours to Poltu only after a task that left no forging tool (and, with mark_crafted_goods, no stamp: Poltu's, Bradyn's and Dorhum's tasks all mark with it, so a stamp at repair, whichever toolset sent it, holds back a detour to any of them)), so the run does not wait at the repairer; the run after asks the first one again (in a cycle run the next pick is random as usual, and the next task that uses the first one's tools collects them; with task_get_tools_on_completion each run collects its tools at its end, so only repeat and cycle runs detour, and a run right after one that only finished a task already open, which ends before that pickup). A fallback that has given its limit since the rollover is not asked again until the next one: neither for a detour nor when the first one gives its limit (the run then stops). The game resets the limit some seconds after the rollover, so a limit given in the first 5 minutes after it counts as the old day's and does not hold for the new day. Unset: the run stops at the limit, and waits for tools at repair. Ignored by marathon (Zasele only)
+  task_fallback_npc: zasele # when the taskmaster asked says you have done the most tasks it allows today (the game's line naming it; a player saying those words, or a line naming another taskmaster, does not count), work this taskmaster's task instead; the next run asks the first one again (in a cycle run the next taskmaster is picked at random as usual). With task_repair_every entries for both (the first one's more than 0; the default entry does not count, and a run says so at its start), it is also worked, one task, right after the first one's tools are left for repair (unless any of its own is still at repair (matched as its own pickup matches them, the stamp its task marks with under mark_crafted_goods included), however long ago it was left, since its task could wait for it, or stop with the task open on one a pickup could not get back, and the task is not known before the ask; a ready one is collected by the next task whose pickup goes to its repairer, task_get_tools_on_completion or ;taskmaster pickup; or it has given its limit since the daily rollover; Poltu and Bradyn share the forging tools, so a Poltu run never detours to Bradyn, and a Bradyn run detours to Poltu only after a task that left no forging tool (and, with mark_crafted_goods, no stamp: Zasele's, Poltu's, Bradyn's and Dorhum's tasks all mark with it, so a stamp at repair, whichever toolset sent it, holds back a detour to any of them)), so the run does not wait at the repairer; the run after asks the first one again (in a cycle run the next pick is random as usual, and the next task that uses the first one's tools collects them; with task_get_tools_on_completion each run collects its tools at its end, so only repeat and cycle runs detour, and a run right after one that only finished a task already open, which ends before that pickup). A fallback that has given its limit since the rollover is not asked again until the next one: neither for a detour nor when the first one gives its limit (the run then stops). The game resets the limit some seconds after the rollover, so a limit given in the first 5 minutes after it counts as the old day's and does not hold for the new day. Unset: the run stops at the limit, and waits for tools at repair. Ignored by marathon (Zasele only)
   task_cancel_when_instructions_short: true/false # default true. When the task's one replacement set is spent and the instructions carried still have too few uses, cancel the task (losing the items made for it), wait out the 10-minute cooldown and take a new one. False: stop on every run with "Already asked ..." for a person to look at
   alchemy_tools: [bowl, mixing stick, mortar, pestle, sieve] # Nezhiri's tasks use the mortar and pestle or the bowl and mixing stick (whichever her remedy needs) and the sieve; the two used and the sieve go for repair (task_repair_by, task_repair_every) after each task (task_no_repair / task_self_repair as usual)
   alchemy_belt: # the toolbelt the alchemy tools are tied to, if any
@@ -361,15 +361,15 @@ class TaskMaster
   # by ;taskmaster pickup; until then the run asks the first one, as with
   # no detour (with task_type the fallback's repairer is usually not the
   # first one's, so this can last until the fallback is next worked, at
-  # the first one's daily limit). Poltu and Bradyn share the
-  # forging tools, so a forging tool either left holds back a detour to the
-  # other (the fallback's task would wait for it, or stop with the task
-  # open): a Poltu run never detours to Bradyn, and a Bradyn run detours to
-  # Poltu only after a task that left no forging tool (and, with
-  # mark_crafted_goods, no stamp: Poltu's, Bradyn's and Dorhum's tasks all
-  # mark with it, so a stamp at repair, whichever toolset sent it, holds
-  # back a detour to any of them). The notes marked are
-  # those the detour was for, a shared tool another taskmaster left
+  # the first one's daily limit). Poltu and Bradyn share the forging
+  # tools, so a forging tool either left holds back a detour to the other
+  # (the fallback's task would wait for it, or stop with the task open): a
+  # Poltu run never detours to Bradyn, and a Bradyn run detours to Poltu
+  # only after a task that left no forging tool (and, with
+  # mark_crafted_goods, no stamp: Zasele's, Poltu's, Bradyn's and Dorhum's
+  # tasks all mark with it, so a stamp at repair, whichever toolset sent
+  # it, holds back a detour to any of them). The notes marked are those
+  # the detour was for, a shared tool another taskmaster left
   # included, so the next run does not detour again for it. Not while the
   # fallback's daily limit holds (fallback_capped?), and not in a run
   # already switched (the fallback for the day, or the detour itself): the
@@ -419,9 +419,9 @@ class TaskMaster
 
   # Every tool name a taskmaster's tasks send for repair, from the settings
   # (whatever the task: task_tools gives one task's), and the stamp its
-  # tasks mark with (marking_tools, with mark_crafted_goods: Poltu's,
-  # Bradyn's and Dorhum's, by every name a tool setting gives it), which
-  # their pickup waits for and stops on whatever toolset sent it.
+  # tasks mark with (marking_tools, with mark_crafted_goods: Zasele's,
+  # Poltu's, Bradyn's and Dorhum's, by every name a tool setting gives it),
+  # which their pickup waits for and stops on whatever toolset sent it.
   #
   # @param npc [String]
   # @return [Array<String>]
