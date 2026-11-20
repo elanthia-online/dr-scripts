@@ -12769,7 +12769,7 @@ RSpec.describe TaskMaster do
       replies = { 'mortar' => [rangu_quote, :late], 'pestle' => [rangu_quote, :late] }
       given = []
       late = false
-      allow(DRCT).to receive(:walk_to)
+      allow(DRCT).to receive(:walk_to).and_return(true)
       allow(DRCC).to receive(:get_crafting_item) do |name, *|
         sent << "get #{name}"
         hold.call($right_hand ? :left : :right, name) unless $right_hand && $left_hand
