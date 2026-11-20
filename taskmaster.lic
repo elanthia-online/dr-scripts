@@ -4,7 +4,7 @@
   task_no_repair: true/false # skip repairing tools entirely
   task_self_repair: true/false # use own brush and oil for repairs
   task_get_tools_on_completion: true/false # If you want taskmaster to pickup any remaining tools in the repair shop. Useful if you're using clerk-tools after each task
-  task_repair_by: rangu # where tools go for repair: rangu (the default: Rangu, Crossing Engineering Society), hometown (Crossing's town repairer in base-town.yaml, Catrox) or task_type (Crossing's repairer, in base-crafting.yaml, of the discipline taskmaster gives each taskmaster: tailoring for Zasele, remedies for Nezhiri, blacksmithing for Poltu, shaping for Bradyn (his metal tasks too), artificing for Dorhum). Always Crossing's, where every task is bought and crafted, whatever task_hometown says; with no such repairer in the data it says so and uses Rangu. Each tool left is noted (UserVars.taskmaster_repairs, with its name in hand). Once a task is accepted, the noted tools its work uses are picked up by their tickets, waiting up to 10 minutes for each to be ready (Poltu's and Bradyn's metal tasks share the forging tools); another noted tool at a repairer it goes to is picked up only if ready then; and when a TAP before the ask finds a Rangu ticket, every Rangu ticket no note accounts for (an older taskmaster's, or one whose note was lost) is handed in too, waited for the same way. A task stops before its work while a tool it uses is still at repair, and stays open for the next run; any other tool still out waits for a later task or ;taskmaster pickup. A ticket is matched to a note by the tool's name in hand, which a ticket may follow with more words ("large purpleheart bowl edged with ivory"); when tickets for two different items fit one note, none is handed in and it says so. With task_type, Zasele's, Nezhiri's and Poltu's tools go to society clerks, who are all called clerk: their tickets stay carried until a task collects them, and ;workorders in another discipline picks such a ticket up with its own and stops collecting at one its clerk does not take
+  task_repair_by: rangu # where tools go for repair: rangu (the default: Rangu, Crossing Engineering Society), hometown (Crossing's town repairer in base-town.yaml, Catrox) or task_type (Crossing's repairer, in base-crafting.yaml, of the discipline taskmaster gives each taskmaster: tailoring for Zasele, remedies for Nezhiri, blacksmithing for Poltu, shaping for Bradyn (his metal tasks too), artificing for Dorhum). Always Crossing's, where every task is bought and crafted, whatever task_hometown says; with no such repairer in the data it says so and uses Rangu. Each tool left is noted (UserVars.taskmaster_repairs, with its name in hand). Once a task is accepted, the noted tools its work uses are picked up by their tickets, waiting up to 10 minutes at each repairer for them to be ready (Poltu's and Bradyn's metal tasks share the forging tools); another noted tool at a repairer it goes to is picked up only if ready then; and when a TAP before the ask finds a Rangu ticket, every Rangu ticket no note accounts for (an older taskmaster's, or one whose note was lost) is handed in too, waited for the same way. A task stops before its work while a tool it uses is still at repair, and stays open for the next run; any other tool still out waits for a later task or ;taskmaster pickup. A ticket is matched to a note by the tool's name in hand, which a ticket may follow with more words ("large purpleheart bowl edged with ivory"); when tickets for two different items fit one note, none is handed in and it says so. With task_type, Zasele's, Nezhiri's and Poltu's tools go to society clerks, who are all called clerk: their tickets stay carried until a task collects them, and ;workorders in another discipline picks such a ticket up with its own and stops collecting at one its clerk does not take
   task_use_boost: true/false # use boost to eliminate task cooldowns, useful if you have a few and you're doing a lot of tasks
   task_cooldown_poll: 15 # seconds between asks while the taskmaster makes you wait (minimum 3)
   task_boosts: [task, haste] # boosts to use. task: BOOST TASK when a task is on cooldown (same as task_use_boost). haste: keep BOOST HASTE (1 hour, roundtimes -1 second) running between tasks. Once the game says you have no credits for one, it is not asked for again until the game's daily rollover (midnight US Central, when login rewards can add boosts in the middle of a login) or your next login; to ask again sooner, ;e $taskmaster_boost_unavailable = nil
@@ -5942,16 +5942,17 @@ class TaskMaster
   end
 
   # Picks up, once a task is accepted, the tools left for repair: each noted
-  # tool the task's work uses (task_tools), waiting for it to be ready (up
-  # to TICKET_WAIT_POLLS polls 30 s apart); at each repairer it goes to for
-  # those, any other noted tool there that is ready now (not waited for);
-  # and when a Rangu ticket is carried (look_for_rangu_ticket before the
-  # ask, else a TAP now), every Rangu ticket no note accounts for, waited
-  # for the same way: one an older taskmaster left (it kept no notes), one
-  # left from another Lich install, or one whose note was lost. Only a tool
-  # the work uses can stop the task (stop_if_tools_at_repair, from
+  # tool the task's work uses (task_tools), waiting for them to be ready (up
+  # to TICKET_WAIT_POLLS polls 30 s apart at each repairer); at each
+  # repairer it goes to for those, any other noted tool there that is ready
+  # now (not waited for); and when a Rangu ticket is carried
+  # (look_for_rangu_ticket before the ask, else a TAP now), every Rangu
+  # ticket no note accounts for, waited for the same way: one an older
+  # taskmaster left (it kept no notes), one left from another Lich install,
+  # or one whose note was lost (named when still not ready). Only a tool the
+  # work uses can stop the task (stop_if_tools_at_repair, from
   # @tools_left_at_repair, the notes still out afterwards); any other still
-  # out is named and waits for a later task or ;taskmaster pickup.
+  # out waits for a later task or ;taskmaster pickup.
   #
   # @param tools [Array<String>] the tools the task's work uses, by setting
   #   name (task_tools)
