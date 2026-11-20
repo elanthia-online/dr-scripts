@@ -436,9 +436,9 @@ class WorkOrders
   # with no GET: while it is held, the GET answers "You are already
   # holding that." and brings no other. Otherwise the GET needs a free hand,
   # so with both full the right hand is put away first, and the ticket got
-  # is the object new in a hand (see ticket_got). Either way the ticket goes
-  # to the right hand by its id (see ticket_to_right_hand) before it is
-  # looked at and handed in. After each hand-in both hands are put away
+  # is the <npc> ticket new in a hand (see ticket_got). Either way the
+  # ticket goes to the right hand by its id (see ticket_to_right_hand)
+  # before it is looked at and handed in. After each hand-in both hands are put away
   # (stow_tool), the tool handed back and anything that was held with it.
   #
   # @param npc [String] the repairer (repair-npc)
@@ -486,21 +486,32 @@ class WorkOrders
     [GameObj.right_hand, GameObj.left_hand].compact.reject { |obj| obj.name.to_s == 'Empty' }
   end
 
-  # A <npc> ticket in a hand, the right one first: an object whose noun is
-  # ticket and whose name has the repairer's name as a word, as GET MY
-  # <NPC> TICKET takes one (taskmaster's repairer_ticket? matches the same).
+  # A <npc> ticket in a hand, the right one first (see npc_ticket?).
   #
   # @param npc [String] the repairer (repair-npc)
   # @return [Object, nil] its GameObj
   def held_ticket(npc)
-    held_objects.find { |obj| obj.id && obj.noun.to_s == 'ticket' && obj.name.to_s.match?(/\b#{Regexp.escape(npc)}\b/i) }
+    held_objects.find { |obj| npc_ticket?(obj, npc) }
   end
 
-  # GETs a <npc> ticket and gives the object new in a hand (by id), looked
-  # for TICKET_IN_HAND_POLLS times 0.1 s apart. lich-5's get_item? looks only
-  # for the noun, so a ticket of another name held makes it true whatever
-  # the GET did, and at once: with none new in a hand, the GET brought
-  # nothing (no <npc> ticket left), as when get_item? is false.
+  # Whether a hand's object is a <npc> ticket: it has an id, its noun is
+  # ticket and its name has the repairer's name as a word, as GET MY <NPC>
+  # TICKET takes one (taskmaster's repairer_ticket? matches the same).
+  #
+  # @param obj [Object] a hand's GameObj
+  # @param npc [String] the repairer (repair-npc)
+  # @return [Boolean]
+  def npc_ticket?(obj, npc)
+    !obj.id.nil? && obj.noun.to_s == 'ticket' && obj.name.to_s.match?(/\b#{Regexp.escape(npc)}\b/i)
+  end
+
+  # GETs a <npc> ticket and gives the <npc> ticket new in a hand (by id;
+  # see npc_ticket?), looked for TICKET_IN_HAND_POLLS times 0.1 s apart.
+  # lich-5's get_item? looks only for the noun, so a ticket of another name
+  # held makes it true whatever the GET did, and at once: with no new <npc>
+  # ticket in a hand, the GET brought nothing (no <npc> ticket left), as
+  # when get_item? is false. Anything else new in a hand (the tool of the
+  # last hand-in, shown late) is not taken for the ticket.
   #
   # @param npc [String] the repairer (repair-npc)
   # @return [Object, nil] the ticket's GameObj; nil when none was got
@@ -509,7 +520,7 @@ class WorkOrders
     return unless DRCI.get_item?("#{npc} ticket")
 
     TICKET_IN_HAND_POLLS.times do
-      found = held_objects.find { |obj| obj.id && !held.include?(obj.id) }
+      found = held_objects.find { |obj| !held.include?(obj.id) && npc_ticket?(obj, npc) }
       return found if found
 
       pause 0.1

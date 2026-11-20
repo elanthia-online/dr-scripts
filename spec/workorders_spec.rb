@@ -1679,6 +1679,57 @@ RSpec.describe WorkOrders do
         expect(Lich::Messaging).not_to have_received(:msg).with('bold', anything)
       end
 
+      # Not the order a real stream gives (the hand tag comes ahead of the
+      # reply text), but ticket_got must not take a tool for the ticket: the
+      # hammer of the first hand-in shows in the right hand only after the
+      # next GET has put the second ticket in the left.
+      it 'takes only a clerk ticket new in a hand for the ticket, not the tool of the last hand-in shown late' do
+        @world = repair_world(npc: 'clerk', room: 8776, tickets: 0, look: ready_look)
+        carried = 2
+        late = nil
+        given = []
+        ids = 0
+        hold = lambda do |hand, name|
+          hand == :right ? ($right_hand = name) : ($left_hand = name)
+          $hand_ids[name] = "9#{ids += 1}" if name
+        end
+        allow(DRCI).to receive(:get_item?).with('clerk ticket') do
+          raise 'still collecting after 4 gets' if (@world[:gets] += 1) > 4
+          next false unless carried.positive?
+
+          carried -= 1
+          hold.call($right_hand || late ? :left : :right, 'clerk ticket')
+          if late
+            hold.call(:right, late)
+            late = nil
+          end
+          true
+        end
+        allow(DRC).to receive(:bput).with('give clerk', any_args) do |_command, *patterns|
+          given << $right_hand
+          line = ''
+          if $right_hand == 'clerk ticket'
+            line = 'You hand the clerk your ticket and are handed back a diagonal-peen hammer.'
+            if given.size == 1
+              hold.call(:right, nil)
+              late = 'diagonal-peen hammer'
+            else
+              hold.call(:right, 'diagonal-peen hammer')
+            end
+          end
+          hit = patterns.flatten.lazy.map { |pattern| line.match(/#{pattern}/i) }.find(&:itself)
+          hit ? hit[0] : ''
+        end
+
+        workorders.send(:repair_items, info, [])
+
+        expect(given).to eq(['clerk ticket', 'clerk ticket'])
+        # The second ticket, in the left hand, is moved to the right by SWAP.
+        expect(@world[:log].map { |_room, command, _line| command }).to eq(['look at my ticket', 'swap', 'look at my ticket'])
+        expect(Lich::Messaging).not_to have_received(:msg).with('bold', anything)
+        expect([$right_hand, $left_hand, carried]).to eq([nil, nil, 0])
+      end
+
       it 'puts the right hand away first when both hands are full, so the GET finds a free hand' do
         clerk(look: ready_look, give: 'You hand the clerk your ticket and are handed back a diagonal-peen hammer.', turns: 2)
         @world[:tickets] = 1
