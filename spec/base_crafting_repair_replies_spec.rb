@@ -1,7 +1,11 @@
 # frozen_string_literal: true
 
+require 'ostruct'
 require 'yaml'
 require_relative 'spec_helper'
+
+load_lic_class('workorders.lic', 'WorkOrders')
+load_lic_class('taskmaster.lic', 'TaskMaster')
 
 # data/base-crafting.yaml repair_replies: what a repairer answers when handed a
 # tool, read by workorders and taskmaster. Each entry is a pattern as DRC.bput
@@ -74,8 +78,55 @@ RSpec.describe 'base-crafting.yaml repair_replies' do
   end
 
   it 'holds only strings, so every pattern loads without Ruby tags' do
-    patterns = [replies['quote'], replies['prompt'], replies['ticket'], replies['need_coin'], replies['ready'], replies['not_ready'], *replies['offered'], *replies['declined']]
+    patterns = replies.values.flatten
     expect(patterns).to all(be_a(String))
     expect { patterns.each { |pattern| Regexp.new(pattern) } }.not_to raise_error
+  end
+
+  # A town repairer's answers to a tool, as crossing-repair.lic:218 matches
+  # them (Fang Cove's Osmandikar among them, base-town.yaml metal_repair).
+  let(:not_damaged) { "Osmandikar says, \"Lucky for you!  That isn't damaged!\"" }
+  let(:wrong_material) { 'Osmandikar says, "I don\'t work on those here."' }
+
+  it "answers the first give for Fang Cove's tool with no wear, and declines it" do
+    expect(replies['offered'].any? { |pattern| bput_match?(pattern, not_damaged) }).to be(true)
+    expect(replies['declined'].any? { |pattern| bput_match?(pattern, not_damaged) }).to be(true)
+  end
+
+  it 'answers the first give for a tool of the wrong material, and does not decline it (a refusal, not no wear)' do
+    expect(replies['offered'].any? { |pattern| bput_match?(pattern, wrong_material) }).to be(true)
+    expect(replies['declined'].none? { |pattern| bput_match?(pattern, wrong_material) }).to be(true)
+  end
+
+  # A ticket handed in: taken (Kurtus, 2026-11-18 23:15:27; crossing-repair
+  # also takes "takes your ticket"), or not (crossing-repair.lic:277).
+  it 'tells a ticket taken from one not taken' do
+    taken = ['You hand Catrox your ticket and are handed back a large purpleheart bowl edged with ivory.', 'The clerk takes your ticket and hands you a hammer.']
+    not_taken = ['The clerk says, "That one is almost done."', 'Rangu says, "Well that isn\'t gonna be done for a while yet."', "That's not ready yet.", "What is it you're trying to give?"]
+    taken.each do |line|
+      expect(replies['ticket_handed'].any? { |pattern| bput_match?(pattern, line) }).to be(true)
+      expect(replies['ticket_not_taken'].none? { |pattern| bput_match?(pattern, line) }).to be(true)
+    end
+    not_taken.each do |line|
+      expect(replies['ticket_not_taken'].any? { |pattern| bput_match?(pattern, line) }).to be(true)
+      expect(replies['ticket_handed'].none? { |pattern| bput_match?(pattern, line) }).to be(true)
+    end
+  end
+
+  it 'has exactly the keys both scripts read, lists where they read lists' do
+    [WorkOrders, TaskMaster].each do |script|
+      expect(replies.keys).to match_array(script::REPAIR_REPLY_KEYS)
+      expect(replies.select { |_key, value| value.is_a?(Array) }.keys).to match_array(script::REPAIR_REPLY_LISTS)
+    end
+  end
+
+  it 'is taken whole by both scripts, no key from the shipped file' do
+    [WorkOrders, TaskMaster].each do |script|
+      reader = script.allocate
+      allow(reader).to receive(:get_data).with('crafting').and_return(OpenStruct.new('repair_replies' => replies))
+      allow(reader).to receive(:shipped_repair_replies).and_raise('read the shipped file')
+
+      expect(reader.send(:repair_replies)).to eq(replies)
+    end
   end
 end

@@ -1211,30 +1211,268 @@ RSpec.describe WorkOrders do
       expect(DRC).to have_received(:bput).with('look at my ticket', 'should be ready by now', 'Looking at the').twice
     end
 
-    it 'says so once and leaves no tool for repair when base-crafting.yaml has no repair_replies (a stale data/custom copy)' do
-      allow(workorders).to receive(:get_data).with('crafting').and_return({ 'stock' => {} })
-      allow(DRCT).to receive(:walk_to)
-      allow(DRC).to receive(:bput)
-      allow(Lich::Messaging).to receive(:msg)
+    # The shipped data/base-crafting.yaml, as lich-5's SCRIPT_DIR finds it:
+    # its read is stubbed, so no example depends on the file system there.
+    let(:shipped_path) { '/lich/scripts/data/base-crafting.yaml' }
 
-      2.times { workorders.send(:repair_items, info, tools) }
-
-      expect(DRCT).not_to have_received(:walk_to)
-      expect(DRC).not_to have_received(:bput)
-      expect(Lich::Messaging).to have_received(:msg).with('bold', /base-crafting.yaml has no repair_replies quote, prompt, .*Update dr-scripts, or that copy/).once
+    # The shipped file holds these replies, or (file:) is read as that
+    # whole, or (raises:) its read raises that.
+    def ship(replies = repair_replies, raises: nil, file: { 'repair_replies' => replies })
+      stub_const('SCRIPT_DIR', '/lich/scripts')
+      allow(YAML).to receive(:safe_load_file).and_call_original
+      read = allow(YAML).to receive(:safe_load_file).with(shipped_path, aliases: true)
+      raises ? read.and_raise(raises) : read.and_return(file)
     end
 
-    it 'says so and leaves no tool for repair when the repair_replies block lacks one key (prompt, as the data first shipped)' do
-      allow(workorders).to receive(:get_data).with('crafting').and_return({ 'repair_replies' => repair_replies.except('prompt') })
+    it 'takes every reply from the shipped base-crafting.yaml, and says so once, when the data (a stale data/custom copy) has none' do
+      allow(workorders).to receive(:get_data).with('crafting').and_return({ 'stock' => {} })
+      ship
+      bput_lines(quote, handed, "Rangu shrugs and says, \"There isn't a scratch on that, and I'm not one to rob you.\"")
+      allow(DRCI).to receive(:get_item?).with('Rangu ticket').and_return(false)
       allow(DRCT).to receive(:walk_to)
-      allow(DRC).to receive(:bput)
+      allow(workorders).to receive(:get_tool)
+      allow(workorders).to receive(:stow_tool)
+      allow(Lich::Messaging).to receive(:msg)
+      expect(workorders).to receive(:confirm_repair).with(info, 'hammer', 240).and_call_original
+
+      2.times { |run| workorders.send(:repair_items, info, run.zero? ? tools : []) }
+
+      expect(DRCT).to have_received(:walk_to).with(200).twice
+      expect(workorders).to have_received(:stow_tool).with('tongs').once
+      expect(Lich::Messaging).to have_received(:msg).with('bold', 'WorkOrders: data/custom/base-crafting.yaml has no usable repair_replies quote, prompt, offered, declined, ticket, need_coin, ready, not_ready, ticket_handed, ticket_not_taken (a copy from before they were added?); using the shipped data/base-crafting.yaml\'s. Update that copy.').once
+      expect(YAML).to have_received(:safe_load_file).with(shipped_path, aliases: true).once
+    end
+
+    it 'takes from the shipped file only the keys the copy lacks, keeping its own' do
+      # A copy from the first version of repair_replies: no prompt and no
+      # ticket replies; its quote, changed to match the cost alone, is kept.
+      copy = repair_replies.except('prompt', 'ticket_handed', 'ticket_not_taken').merge('quote' => 'cost [\d,]+ \w+ to repair')
+      allow(workorders).to receive(:get_data).with('crafting').and_return({ 'repair_replies' => copy })
+      ship
       allow(Lich::Messaging).to receive(:msg)
 
-      workorders.send(:repair_items, info, tools)
+      expect(workorders.send(:repair_replies)).to eq(copy.merge(repair_replies.slice('prompt', 'ticket_handed', 'ticket_not_taken')))
+      expect(workorders.send(:repair_replies)['quote']).to eq('cost [\d,]+ \w+ to repair')
+      expect(Lich::Messaging).to have_received(:msg).with('bold', /no usable repair_replies prompt, ticket_handed, ticket_not_taken \(/).once
+    end
 
-      expect(DRCT).not_to have_received(:walk_to)
-      expect(DRC).not_to have_received(:bput)
-      expect(Lich::Messaging).to have_received(:msg).with('bold', /base-crafting.yaml has no repair_replies prompt \(.*not left for repair or collected/).once
+    it "confirms Fang Cove's prompt through the shipped prompt when the copy lacks it" do
+      allow(workorders).to receive(:get_data).with('crafting').and_return({ 'repair_replies' => repair_replies.except('prompt') })
+      ship
+      bput_lines('Osmandikar says, "If you agree, give it to me again."')
+      allow(DRCI).to receive(:get_item?).with('Rangu ticket').and_return(false)
+      allow(DRCT).to receive(:walk_to)
+      allow(workorders).to receive(:get_tool)
+      allow(workorders).to receive(:stow_tool)
+      allow(Lich::Messaging).to receive(:msg)
+      expect(workorders).to receive(:confirm_repair).with(info, 'hammer', nil)
+
+      workorders.send(:repair_items, info, ['hammer'])
+
+      expect(workorders).not_to have_received(:stow_tool)
+    end
+
+    it 'takes the shipped value for a key of the wrong kind (declined one string, ticket a list, a broken pattern), rather than crashing' do
+      copy = repair_replies.merge('declined' => 'scratch', 'ticket' => ['repair ticket'], 'need_coin' => 'more coin (')
+      allow(workorders).to receive(:get_data).with('crafting').and_return({ 'repair_replies' => copy })
+      ship
+      bput_lines("Rangu shrugs and says, \"There isn't a scratch on that, and I'm not one to rob you.\"", quote, handed)
+      allow(DRCI).to receive(:get_item?).with('Rangu ticket').and_return(false)
+      allow(DRCI).to receive(:put_away_item?).and_return(true)
+      allow(DRCT).to receive(:walk_to)
+      allow(workorders).to receive(:get_tool)
+      allow(workorders).to receive(:stow_tool)
+      allow(Lich::Messaging).to receive(:msg)
+
+      expect { workorders.send(:repair_items, info, %w[hammer tongs]) }.not_to raise_error
+
+      expect(workorders).to have_received(:stow_tool).with('hammer').once
+      expect(DRCI).to have_received(:put_away_item?).with('ticket').once
+      expect(Lich::Messaging).to have_received(:msg).with('bold', /no usable repair_replies declined, ticket, need_coin \(/).once
+    end
+
+    it 'takes the shipped value for an empty list or an empty pattern (offered none, ready blank), and still waits on a ticket not ready' do
+      # An empty offered would give with no pattern to answer it (bput waits
+      # out its 15 s); an empty ready matches every look, so a ticket not
+      # ready would be handed in at once.
+      copy = repair_replies.merge('offered' => [], 'ready' => '')
+      allow(workorders).to receive(:get_data).with('crafting').and_return({ 'repair_replies' => copy })
+      ship
+      looks = ['Looking at the Rangu ticket you see it is for a mortar.  You recall that your mortar should be ready any moment now.',
+               'Looking at the Rangu ticket you see it is for a mortar.  You recall that your mortar should be ready by now.']
+      replies = { 'give Rangu' => [quote, handed, 'You hand Rangu your ticket and are handed back a mortar.'] }
+      allow(DRC).to receive(:bput) do |command, *patterns|
+        line = command == 'look at my ticket' ? (looks.shift || raise('looked again after ready')) : replies[command].shift.to_s
+        hit = patterns.flatten.lazy.map { |pattern| line.match(pattern.is_a?(Regexp) ? pattern : /#{pattern}/i) }.find(&:itself)
+        hit ? hit[0] : ''
+      end
+      tickets = [true, false]
+      allow(DRCI).to receive(:get_item?).with('Rangu ticket') { tickets.shift }
+      allow(DRCT).to receive(:walk_to)
+      allow(workorders).to receive(:get_tool)
+      allow(workorders).to receive(:stow_tool)
+      allow(workorders).to receive(:pause)
+      allow(Lich::Messaging).to receive(:msg)
+      expect(workorders).to receive(:confirm_repair).with(info, 'hammer', 240).and_call_original
+
+      workorders.send(:repair_items, info, ['hammer'])
+
+      expect(workorders.send(:repair_replies).values_at('offered', 'ready')).to eq(repair_replies.values_at('offered', 'ready'))
+      expect(workorders).to have_received(:pause).with(30).once
+      expect(Lich::Messaging).to have_received(:msg).with('bold', /no usable repair_replies offered, ready \(/).once
+    end
+
+    every_key = /none for quote, prompt, offered, .*ticket_not_taken; tools are not left for repair or collected\. Update dr-scripts\./
+    [['the shipped file cannot be read', { raises: Errno::ENOENT }, every_key],
+     ['the shipped file cannot be parsed', { raises: Psych::SyntaxError.new('base-crafting.yaml', 3, 1, 10, 'did not find expected key', 'while parsing a block mapping') }, every_key],
+     ['the shipped file has no repair_replies block', { file: { 'stock' => {} } }, every_key],
+     ['the shipped file is not a mapping', { file: [1, 2] }, every_key],
+     ['the shipped file has declined as one string too', { file: :declined_string }, /none for declined; tools are not left/]].each do |title, shipped, warning|
+      it "says so once and leaves no tool for repair when #{title}" do
+        allow(workorders).to receive(:get_data).with('crafting').and_return({ 'stock' => {} })
+        if shipped[:raises] then ship(raises: shipped[:raises])
+        elsif shipped[:file] == :declined_string then ship(repair_replies.merge('declined' => 'scratch'))
+        else ship(file: shipped[:file])
+        end
+        allow(DRCT).to receive(:walk_to)
+        allow(DRC).to receive(:bput)
+        allow(Lich::Messaging).to receive(:msg)
+
+        2.times { workorders.send(:repair_items, info, tools) }
+
+        expect(DRCT).not_to have_received(:walk_to)
+        expect(DRC).not_to have_received(:bput)
+        expect(Lich::Messaging).to have_received(:msg).with('bold', warning).once
+      end
+    end
+
+    # What a town repairer answers a tool it will not take or that needs no
+    # repair, as crossing-repair.lic:218 matches them: each is answered by a
+    # data pattern (bput hands it back at once, not '' after its 15 s), and
+    # the tool is put away with no second give.
+    ["Osmandikar says, \"Lucky for you!  That isn't damaged!\"", 'Osmandikar says, "I don\'t work on those here."'].each do |line|
+      it "puts the tool away at once on \"#{line[19, 30]}...\"" do
+        returned = []
+        allow(DRC).to receive(:bput) do |_command, *patterns|
+          hit = patterns.flatten.lazy.map { |pattern| line.match(pattern.is_a?(Regexp) ? pattern : /#{pattern}/i) }.find(&:itself)
+          (hit ? hit[0] : '').tap { |reply| returned << reply }
+        end
+        allow(DRCI).to receive(:get_item?).with('Rangu ticket').and_return(false)
+        allow(DRCT).to receive(:walk_to)
+        allow(workorders).to receive(:get_tool)
+        allow(workorders).to receive(:stow_tool)
+        allow(workorders).to receive(:confirm_repair)
+        allow(Lich::Messaging).to receive(:msg)
+
+        workorders.send(:repair_items, info, ['hammer'])
+
+        expect(returned).to eq([line[/(Lucky for you!  That isn't damaged!|I don't work on those here)/]])
+        expect(workorders).to have_received(:stow_tool).with('hammer').once
+        expect(workorders).not_to have_received(:confirm_repair)
+      end
+    end
+
+    describe 'collecting the tickets' do
+      let(:info) { { 'repair-room' => 8776, 'repair-npc' => 'clerk' } }
+      let(:ready_look) { 'Looking at the clerk ticket you see it is for a diagonal-peen hammer.  You recall that your hammer should be ready by now.' }
+      let(:waiting_look) { 'Looking at the clerk ticket you see it is for a diagonal-peen hammer.  You recall that your hammer should be ready any moment now.' }
+      let(:gives) { [] }
+
+      # Scripts the clerk: each look answers with look, each give with give.
+      # A GET MY CLERK TICKET that always brings one (as one held or stowed
+      # again does) raises after turns gets, so a loop with no way out fails
+      # rather than hangs.
+      def clerk(look:, give:, turns: 30)
+        allow(DRCT).to receive(:walk_to)
+        allow(DRC).to receive(:bput) do |command, *patterns|
+          gives << command if command.start_with?('give')
+          line = command == 'look at my ticket' ? look : give
+          hit = patterns.flatten.lazy.map { |pattern| line.match(pattern.is_a?(Regexp) ? pattern : /#{pattern}/i) }.find(&:itself)
+          hit ? hit[0] : ''
+        end
+        got = 0
+        allow(DRCI).to receive(:get_item?).with('clerk ticket') { (got += 1) > turns ? raise("still collecting after #{turns} gets") : true }
+        allow(DRCI).to receive(:put_away_item?).and_return(true)
+        allow(workorders).to receive(:stow_tool)
+        allow(Lich::Messaging).to receive(:msg)
+      end
+
+      ['', "What is it you're trying to give?"].each do |answer|
+        it "puts away a ticket the clerk does not take (#{answer.empty? ? 'no answer' : answer}), says so once and collects no more" do
+          clerk(look: ready_look, give: answer, turns: 5)
+
+          workorders.send(:repair_items, info, [])
+
+          expect(gives).to eq(['give clerk'])
+          expect(DRCI).to have_received(:put_away_item?).with('clerk ticket').once
+          taken = answer.empty? ? 'no answer' : 'What is it'
+          expect(Lich::Messaging).to have_received(:msg).with('bold', "WorkOrders: clerk did not take the clerk ticket (#{taken}): another repairer's, perhaps, such as another society's clerk. Put it away; collecting no more tickets this run. Take it to the repairer who holds that tool, and hand in yourself any more clerk tickets you carry; until then later runs likely stop at it too.").once
+          expect(Lich::Messaging).to have_received(:msg).with('plain', 'WorkOrders: Tool repair at NPC completed')
+        end
+      end
+
+      it 'says so when a ticket the clerk does not take cannot be put away either' do
+        clerk(look: ready_look, give: "What is it you're trying to give?", turns: 5)
+        allow(DRCI).to receive(:put_away_item?).with('clerk ticket').and_return(false)
+
+        workorders.send(:repair_items, info, [])
+
+        expect(gives).to eq(['give clerk'])
+        expect(Lich::Messaging).to have_received(:msg).with('bold', /\AWorkOrders: clerk did not take the clerk ticket \(What is it\): .*\. Could not put it away; collecting no more tickets this run\. Take it to the repairer who holds that tool,/).once
+      end
+
+      # A look that never matches ready or not_ready (bput hands back '' after
+      # its 15 s each time) is told apart from one that says not ready: the
+      # ticket was never shown as not ready, and the wait was longer.
+      not_ready = "The clerk ticket is still not ready after 20 waits of 30 s. Put it away; collecting no more tickets this run. Hand it, and any more you carry, in yourself."
+      unanswered = "The clerk ticket's look got no answer in 21 looks with 20 waits of 30 s between. Put it away; collecting no more tickets this run. Hand it, and any more you carry, in yourself."
+      [['still not ready', [:waiting_look], not_ready],
+       ['never answered', [''], unanswered],
+       ['not ready once, then never answered', [:waiting_look, ''], not_ready]].each do |title, looks, message|
+        it "puts away a ticket whose look is #{title} after 20 waits of 30 s, without handing it in, and says which" do
+          clerk(look: '', give: 'You hand the clerk your ticket.', turns: 5)
+          answers = looks.map { |look| look.is_a?(Symbol) ? send(look) : look }
+          allow(DRC).to receive(:bput).with('look at my ticket', any_args) do |_command, *patterns|
+            line = answers.size > 1 ? answers.shift : answers.first
+            hit = patterns.lazy.map { |pattern| line.match(/#{pattern}/i) }.find(&:itself)
+            hit ? hit[0] : ''
+          end
+          waits = 0
+          allow(workorders).to receive(:pause) { |seconds| (waits += 1) > 25 ? raise("waited #{waits} times") : seconds }
+
+          workorders.send(:repair_items, info, [])
+
+          expect(workorders).to have_received(:pause).with(30).exactly(20).times
+          expect(DRC).to have_received(:bput).with('look at my ticket', any_args).exactly(21).times
+          expect(gives).to be_empty
+          expect(DRCI).to have_received(:put_away_item?).with('clerk ticket').once
+          expect(Lich::Messaging).to have_received(:msg).with('bold', "WorkOrders: #{message}").once
+        end
+      end
+
+      it 'hands in at most 20 tickets in one run, putting the next one away' do
+        clerk(look: ready_look, give: 'You hand the clerk your ticket and are handed back a diagonal-peen hammer.', turns: 30)
+
+        workorders.send(:repair_items, info, [])
+
+        expect(gives.size).to eq(20)
+        expect(DRCI).to have_received(:put_away_item?).with('clerk ticket').once
+        expect(Lich::Messaging).to have_received(:msg).with('bold', /\AWorkOrders: Handed in 20 clerk tickets already\. Put it away;/).once
+      end
+
+      it 'hands in each ticket the clerk takes, stows the tool, and stops when none is left' do
+        clerk(look: ready_look, give: 'You hand the clerk your ticket and are handed back a diagonal-peen hammer.')
+        tickets = [true, true, false]
+        allow(DRCI).to receive(:get_item?).with('clerk ticket') { tickets.shift }
+        $right_hand = 'diagonal-peen hammer'
+
+        workorders.send(:repair_items, info, [])
+
+        expect(gives).to eq(['give clerk', 'give clerk'])
+        expect(workorders).to have_received(:stow_tool).with('diagonal-peen hammer').twice
+        expect(DRCI).not_to have_received(:put_away_item?)
+        expect(Lich::Messaging).not_to have_received(:msg).with('bold', anything)
+      end
     end
 
     it 'confirms a quote pattern from data/custom that matches the cost alone, and still puts a refused tool away' do

@@ -6122,32 +6122,93 @@ class TaskMaster
   end
 
   # What repairers answer when handed a tool (data/base-crafting.yaml
-  # repair_replies, shared with workorders): quote, prompt, offered,
-  # declined, ticket, need_coin, ready and not_ready.
+  # repair_replies, shared with workorders), each of REPAIR_REPLY_KEYS
+  # present and usable: see complete_repair_replies.
   #
-  # @return [Hash{String => Object}, nil] nil when the data has none
+  # @return [Hash{String => String, Array<String>}, nil] nil when even the
+  #   shipped data has not every one
   def repair_replies
-    @repair_replies ||= get_data('crafting')['repair_replies']
+    return @repair_replies if @repair_replies_checked
+
+    @repair_replies_checked = true
+    @repair_replies = complete_repair_replies(@repair_replies || get_data('crafting')['repair_replies'])
   end
 
-  # The repair_replies keys repair uses.
-  REPAIR_REPLY_KEYS = %w[quote prompt offered declined ticket need_coin ready not_ready].freeze
+  # The repair_replies keys repair uses, and those of them that are lists of
+  # patterns (each other one is a single pattern). workorders.lic has the
+  # same pair; spec/base_crafting_repair_replies_spec.rb checks both against
+  # the shipped data.
+  REPAIR_REPLY_KEYS = %w[quote prompt offered declined ticket need_coin ready not_ready ticket_handed ticket_not_taken].freeze
+  REPAIR_REPLY_LISTS = %w[offered declined ticket_handed ticket_not_taken].freeze
 
-  # Whether base-crafting.yaml has every repair reply. A copy in data/custom
-  # from before they were added replaces the shipped file whole and has none:
-  # then it says so (once) and no tool is left or collected, rather than
-  # giving with no reply to wait for and waiting on a ticket forever.
+  # Whether repair has every reply it needs (repair_replies is not nil).
   #
   # @return [Boolean]
   def repair_replies_known?
-    replies = repair_replies
-    missing = replies.is_a?(Hash) ? REPAIR_REPLY_KEYS.reject { |key| replies.key?(key) } : REPAIR_REPLY_KEYS
-    return true if missing.empty?
+    !repair_replies.nil?
+  end
 
-    unless @repair_replies_warned
-      DRC.message("base-crafting.yaml has no repair_replies #{missing.join(', ')} (a copy in data/custom from before they were added?); tools are not left for repair or collected. Update dr-scripts, or that copy.")
-      @repair_replies_warned = true
+  # The repair replies get_data found, with each one missing or unusable
+  # taken from the shipped data/base-crafting.yaml. A copy in data/custom
+  # replaces the shipped file whole (lich-5 get_data), so one from before
+  # repair_replies was added has none, and a hand-edited one may hold a list
+  # where a pattern belongs. Says once which keys came from the shipped file;
+  # when that file lacks some too, says so and gives nil, and no tool is left
+  # or collected rather than waiting on replies that cannot match.
+  #
+  # @param found [Object] get_data('crafting')['repair_replies']
+  # @return [Hash{String => String, Array<String>}, nil]
+  def complete_repair_replies(found)
+    found = {} unless found.is_a?(Hash)
+    stale = REPAIR_REPLY_KEYS.reject { |key| repair_reply_usable?(key, found[key]) }
+    return found if stale.empty?
+
+    shipped = shipped_repair_replies
+    unusable = stale.reject { |key| repair_reply_usable?(key, shipped[key]) }
+    if unusable.empty?
+      DRC.message("data/custom/base-crafting.yaml has no usable repair_replies #{stale.join(', ')} (a copy from before they were added?); using the shipped data/base-crafting.yaml's. Update that copy.")
+      return found.merge(shipped.slice(*stale))
     end
+
+    DRC.message("base-crafting.yaml has no usable repair_replies #{stale.join(', ')}, and the shipped data/base-crafting.yaml has none for #{unusable.join(', ')}; tools are not left for repair or collected. Update dr-scripts.")
+    nil
+  end
+
+  # The repair_replies of the shipped data/base-crafting.yaml, read past any
+  # copy in data/custom; empty when the file cannot be read.
+  #
+  # @return [Hash]
+  def shipped_repair_replies
+    data = YAML.safe_load_file(File.join(SCRIPT_DIR, 'data', 'base-crafting.yaml'), aliases: true)
+    replies = data['repair_replies'] if data.is_a?(Hash)
+    replies.is_a?(Hash) ? replies : {}
+  rescue SystemCallError, Psych::Exception
+    {}
+  end
+
+  # Whether a repair_replies value is of the kind its key needs: a non-empty
+  # list of patterns for REPAIR_REPLY_LISTS, else one pattern.
+  #
+  # @param key [String]
+  # @param value [Object]
+  # @return [Boolean]
+  def repair_reply_usable?(key, value)
+    return repair_pattern?(value) unless REPAIR_REPLY_LISTS.include?(key)
+
+    value.is_a?(Array) && !value.empty? && value.all? { |pattern| repair_pattern?(pattern) }
+  end
+
+  # Whether a value is a pattern DRC.bput can take: a non-empty String that
+  # makes a valid regular expression.
+  #
+  # @param value [Object]
+  # @return [Boolean]
+  def repair_pattern?(value)
+    return false unless value.is_a?(String) && !value.empty?
+
+    Regexp.new(value)
+    true
+  rescue RegexpError
     false
   end
 
