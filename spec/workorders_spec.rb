@@ -1475,6 +1475,120 @@ RSpec.describe WorkOrders do
       end
     end
 
+    # The repairer's room, the bank and the hands, kept as the game keeps
+    # them. GIVE <npc> hands over what the right hand holds, and is answered
+    # only in the repairer's room ("What is it you're trying to give?"
+    # elsewhere): a tool by its next line in answers (a ticket line takes the
+    # tool and leaves the ticket in that hand); a ticket by ticket_reply,
+    # or else by handing back the oldest tool taken. GET MY <NPC> TICKET puts
+    # a stowed ticket in a free hand, the right one first, and is true when a
+    # ticket is in a hand afterwards (lich-5 get_item? checks only the
+    # noun). SWAP swaps the hands. Each item in a hand has an id. The bank
+    # run of DRCM.ensure_copper_on_hand ends at the bank. Each command is
+    # logged with the room it was sent in.
+    #
+    # @return [Hash] :log ([room, command, line]), :tickets (stowed count)
+    def repair_world(npc:, room:, answers: {}, tickets: 0, held: {}, look: '', ticket_reply: nil, withdraw: true)
+      world = { room: nil, tickets: tickets, taken: [], log: [], ids: 0 }
+      $hand_ids = {}
+      hold = lambda do |hand, name|
+        hand == :right ? ($right_hand = name) : ($left_hand = name)
+        $hand_ids[name] = (world[:ids] += 1).to_s if name
+      end
+      free = -> { [:right, :left].find { |hand| (hand == :right ? $right_hand : $left_hand).nil? } }
+      ticket = "#{npc} ticket"
+      held.each { |hand, name| hold.call(hand, name) }
+
+      allow(DRCT).to receive(:walk_to) { |id| world[:room] = id }
+      allow(DRCM).to receive(:ensure_copper_on_hand) do
+        world[:room] = 'bank'
+        withdraw
+      end
+      allow(workorders).to receive(:get_tool) { |name| hold.call(free.call, name) if free.call }
+      allow(workorders).to receive(:stow_tool) do |name|
+        hand = [:right, :left].find { |each| (each == :right ? $right_hand : $left_hand) == name }
+        hold.call(hand, nil) if hand
+        !hand.nil?
+      end
+      allow(DRCI).to receive(:get_item?).with(ticket) do
+        if world[:tickets].positive? && free.call
+          hold.call(free.call, ticket)
+          world[:tickets] -= 1
+        end
+        [$right_hand, $left_hand].any? { |name| name.to_s.end_with?(' ticket') }
+      end
+      allow(DRCI).to receive(:put_away_item?) do
+        hand = [:right, :left].find { |each| (each == :right ? $right_hand : $left_hand).to_s.end_with?(' ticket') }
+        next false unless hand
+
+        hold.call(hand, nil)
+        world[:tickets] += 1
+        true
+      end
+      allow(DRC).to receive(:bput) do |command, *patterns|
+        line = case command
+               when "give #{npc}"
+                 if world[:room] != room then "What is it you're trying to give?"
+                 elsif $right_hand == ticket
+                   if ticket_reply then ticket_reply
+                   else
+                     tool = world[:taken].shift
+                     hold.call(:right, tool)
+                     "You hand #{npc} your ticket and are handed back a #{tool}."
+                   end
+                 elsif $right_hand
+                   tool = $right_hand
+                   (answers[tool] || []).shift.to_s.tap do |reply|
+                     next unless reply.match?(/repair ticket/)
+
+                     world[:taken] << tool
+                     hold.call(:right, ticket)
+                   end
+                 else ''
+                 end
+               when 'look at my ticket' then look
+               when 'swap'
+                 right, left = $right_hand, $left_hand
+                 hold.call(:right, left)
+                 hold.call(:left, right)
+                 "You move #{left || 'nothing'} to your right hand."
+               else ''
+               end
+        world[:log] << [world[:room], command, line]
+        hit = patterns.flatten.lazy.map { |pattern| line.match(pattern.is_a?(Regexp) ? pattern : /#{pattern}/i) }.find(&:itself)
+        hit ? hit[0] : ''
+      end
+      allow(Lich::Messaging).to receive(:msg)
+      world
+    end
+
+    let(:need_coin) { 'Rangu says, "You will need more coin if I am to be repairing that!"' }
+    let(:rangu_ready) { 'Looking at the Rangu ticket you see it is for a hammer.  You recall that your hammer should be ready by now.' }
+
+    it 'walks back to the repairer when a bank top-up fails, so the rest are offered, and the tickets handed in, there' do
+      world = repair_world(npc: 'Rangu', room: 200, look: rangu_ready, withdraw: false,
+                           answers: { 'hammer' => [quote, handed], 'tongs' => [quote, need_coin], 'shears' => [quote, handed] })
+
+      workorders.send(:repair_items, info, %w[hammer tongs shears])
+
+      gives = world[:log].select { |_room, command, _line| command == 'give Rangu' }
+      expect(gives.map(&:first).uniq).to eq([200])
+      expect(gives.map(&:last).grep(/handed back/)).to eq(['You hand Rangu your ticket and are handed back a hammer.', 'You hand Rangu your ticket and are handed back a shears.'])
+      expect(Lich::Messaging).to have_received(:msg).with('bold', 'WorkOrders: Bank withdrawal failed; skipping tongs repair.')
+      expect(Lich::Messaging).not_to have_received(:msg).with('bold', /did not take/)
+      expect([$right_hand, $left_hand, world[:tickets]]).to eq([nil, nil, 0])
+    end
+
+    it "tells a named repairer's ticket not taken to be handed in by hand, not to be another society's" do
+      world = repair_world(npc: 'Rangu', room: 200, tickets: 1, look: rangu_ready, ticket_reply: '')
+
+      workorders.send(:repair_items, info, [])
+
+      expect(world[:log].count { |_room, command, _line| command == 'give Rangu' }).to eq(1)
+      expect(Lich::Messaging).to have_received(:msg).with('bold', 'WorkOrders: Rangu did not take the Rangu ticket (no answer). Put it away; collecting no more tickets this run. Hand it, and any more Rangu tickets you carry, in yourself.').once
+      expect(world[:tickets]).to eq(1)
+    end
+
     it 'confirms a quote pattern from data/custom that matches the cost alone, and still puts a refused tool away' do
       cost_only = repair_replies.merge('quote' => 'cost [\d,]+ \w+ to repair', 'offered' => ['cost [\d,]+ \w+ to repair', "There isn't a scratch on that", 'give it to me again'])
       allow(workorders).to receive(:get_data).with('crafting').and_return({ 'repair_replies' => cost_only })
