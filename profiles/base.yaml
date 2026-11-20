@@ -3104,7 +3104,8 @@ task_shell_room: 793
 task_cancel_foreign_tasks: false
 # Setting for taskmaster - A second taskmaster (zasele, nezhiri, poltu, bradyn or dorhum) to work a
 # task for when the one asked says you have done the most tasks it allows today ("You have reached the
-# maximum number of TASKs you may complete for <taskmaster> today."). Each run asks the first one
+# maximum number of TASKs you may complete for <taskmaster> today."; only the game's line naming the
+# one asked counts, not a player saying it or a line naming another). Each run asks the first one
 # again, so its tasks resume once its limit resets; a task left open for the fallback is finished, not
 # cancelled. With task_repair_every entries for both (the first one's more than 0), it is also worked,
 # one task, right after the first one's tools are left for repair (unless its own went for repair in the

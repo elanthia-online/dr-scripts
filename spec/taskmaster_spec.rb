@@ -2293,6 +2293,9 @@ RSpec.describe TaskMaster do
         let(:offer) { 'You may accept by typing ACCEPT TASK.' }
 
         # Asks with per-taskmaster replies; records each ask by taskmaster.
+        # Each reply is the game's lines for one ask (one line, or several):
+        # the ask returns what DRC.bput would, the first line a matcher takes
+        # (bput_match), and '' when none does.
         def limited(replies, npc: 'nezhiri', fallback: 'zasele', marathon: false)
           tm = reader(npc: npc, fallback_npc: fallback.to_s, cooldown_poll: 7, marathon: marathon)
           events = []
@@ -2301,11 +2304,11 @@ RSpec.describe TaskMaster do
           allow(tm).to receive(:finish) { events << :finish && :accepted }
           allow(DRC).to receive(:message) { |text| events << [:message, text] }
           asks = replies.keys.to_h do |who|
-            ["ask #{who} for task", lambda do |*|
+            ["ask #{who} for task", lambda do |_command, *matchers|
               events << [:ask, who]
               raise "asked #{who} again after the last reply" if replies[who].empty?
 
-              replies[who].shift
+              Array(replies[who].shift).map { |line| bput_match(line, matchers) }.find { |reply| !reply.empty? }.to_s
             end]
           end
           game(asks.merge('accept task' => 'You can check your progress with the TASK verb.'))
@@ -2321,6 +2324,35 @@ RSpec.describe TaskMaster do
                                 [:find, 'zasele'], [:ask, 'zasele'], :finish])
           expect(tm.instance_variable_get(:@npc)).to eq('zasele')
           expect(tm.instance_variable_get(:@primary_npc)).to eq('nezhiri')
+        end
+
+        # The limit line is the game's, never quoted; a player saying it in
+        # the room ('Mags says, "[You have reached ...]"') is speech.
+        it 'reads on past a player saying the limit line, to the answer the taskmaster gives, and notes no limit' do
+          spoken = %(Mags says, "#{daily_max}")
+          tm, events = limited({ 'nezhiri' => [[spoken, offer]] })
+
+          expect(tm.get_task).to eq(:accepted)
+          expect(events).to eq([[:find, 'nezhiri'], [:ask, 'nezhiri'], :finish])
+          expect(UserVars.taskmaster_capped).to be_nil
+          expect(tm.instance_variable_get(:@npc)).to eq('nezhiri')
+        end
+
+        it "does not take a limit line naming another taskmaster as the one asked's: it asks again and notes no limit" do
+          tm, events = limited({ 'nezhiri' => [daily_max.sub('Nezhiri', 'Zasele'), offer] })
+
+          expect(tm.get_task).to eq(:accepted)
+          expect(events).to eq([[:find, 'nezhiri'], [:ask, 'nezhiri'], [:pause, 7], [:find, 'nezhiri'], [:ask, 'nezhiri'], :finish])
+          expect(UserVars.taskmaster_capped).to be_nil
+          expect(tm.instance_variable_get(:@npc)).to eq('nezhiri')
+        end
+
+        it 'counts such a line as no answer, so the asks stop after MAX_UNKNOWN_TASK_REPLIES of them' do
+          tm, events = limited({ 'nezhiri' => [daily_max.sub('Nezhiri', 'Zasele')] * 3 })
+
+          expect { tm.get_task }.to raise_error(SystemExit)
+          expect(events.last).to eq([:message, 'No answer Nezhiri gives that taskmaster knows, 3 times in a row. Stopping.'])
+          expect(UserVars.taskmaster_capped).to be_nil
         end
 
         it 'stops, naming the setting, when no fallback is set' do
@@ -14246,10 +14278,12 @@ RSpec.describe TaskMaster do
       allow(tm).to receive(:prepare_for_task)
       allow(tm).to receive(:find_npc)
       allow(tm).to receive(:pause)
-      allow(DRC).to receive(:bput) do |command, *_|
+      allow(DRC).to receive(:bput) do |command, *matchers|
         if (ask = command.match(/\Aask (\w+) for task\z/))
           events << [:ask, ask[1]]
-          asks.fetch(ask[1]).shift || raise("asked #{ask[1]} again")
+          # One ask's lines: what bput returns is the first a matcher takes.
+          lines = asks.fetch(ask[1]).shift || raise("asked #{ask[1]} again")
+          Array(lines).map { |line| bput_match(line, matchers) }.find { |reply| !reply.empty? }.to_s
         elsif command == 'accept task'
           'You can check your progress with the TASK verb.'
         else
@@ -14433,6 +14467,14 @@ RSpec.describe TaskMaster do
       events, = detour_run(asks: { 'zasele' => [offer] })
 
       expect(events.first).to eq([:ask, 'zasele'])
+    end
+
+    it 'reads on past a player saying the fallback\'s limit line during a detour, works its task, and notes no limit' do
+      noted('nezhiri')
+      events, = detour_run(asks: { 'zasele' => [[%(Mags says, "#{daily_max}"), offer]] })
+
+      expect(events).to eq([[:ask, 'zasele'], [:work, :zasele], [:complete, 'zasele']])
+      expect(UserVars.taskmaster_capped).to be_nil
     end
 
     it 'notes the limit, with the time, when the fallback gives it during a detour' do

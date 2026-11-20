@@ -23,7 +23,7 @@
   task_rock_room: 793 # room where Dorhum's spongestone and splashstone tasks forage rocks (none can be had on Andreshlew)
   task_shell_room: 793 # room where Dorhum's glow shell tasks forage shells
   task_cancel_foreign_tasks: true/false # a run never works another taskmaster's task; with this it cancels one it finds open, waits out the 10-minute cooldown a cancel brings, then goes back to its own taskmaster. Off: it stops, saying whose task it is and how to finish or cancel it
-  task_fallback_npc: zasele # when the taskmaster asked says you have done the most tasks it allows today, work this taskmaster's task instead; the next run asks the first one again. With task_repair_every entries for both (the first one's more than 0), it is also worked, one task, right after the first one's tools are left for repair (unless its own went for repair in the last 10 minutes, or it has given its limit since the daily rollover), so the run does not wait at the repairer; the run after asks the first one again (with task_get_tools_on_completion each run collects its tools at its end, so only repeat and cycle runs detour, and a run right after one that only finished a task already open, which ends before that pickup). A fallback that has given its limit since the rollover is not asked again until the next one: neither for a detour nor when the first one gives its limit (the run then stops). Unset: the run stops at the limit, and waits for tools at repair. Ignored by marathon (Zasele only)
+  task_fallback_npc: zasele # when the taskmaster asked says you have done the most tasks it allows today (the game's line naming it; a player saying those words, or a line naming another taskmaster, does not count), work this taskmaster's task instead; the next run asks the first one again. With task_repair_every entries for both (the first one's more than 0), it is also worked, one task, right after the first one's tools are left for repair (unless its own went for repair in the last 10 minutes, or it has given its limit since the daily rollover), so the run does not wait at the repairer; the run after asks the first one again (with task_get_tools_on_completion each run collects its tools at its end, so only repeat and cycle runs detour, and a run right after one that only finished a task already open, which ends before that pickup). A fallback that has given its limit since the rollover is not asked again until the next one: neither for a detour nor when the first one gives its limit (the run then stops). Unset: the run stops at the limit, and waits for tools at repair. Ignored by marathon (Zasele only)
   task_cancel_when_instructions_short: true/false # default true. When the task's one replacement set is spent and the instructions carried still have too few uses, cancel the task (losing the items made for it), wait out the 10-minute cooldown and take a new one. False: stop on every run with "Already asked ..." for a person to look at
   alchemy_tools: [bowl, mixing stick, mortar, pestle, sieve] # Nezhiri's tasks use the mortar and pestle or the bowl and mixing stick (whichever her remedy needs) and the sieve; the two used and the sieve go for repair (task_repair_by, task_repair_every) after each task (task_no_repair / task_self_repair as usual)
   alchemy_belt: # the toolbelt the alchemy tools are tied to, if any
@@ -39,7 +39,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.20.14'
+  VERSION = '2026.11.20.18'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -4242,8 +4242,14 @@ class TaskMaster
   # have reached the maximum number of TASKs you may complete for Nezhiri
   # today.  Please try again tomorrow.]" (a player's report, 2026-11-18;
   # Nezhiri first says she is "still working on packaging" what she was
-  # given). Asking again the same day gets the same answer.
-  TASK_DAILY_MAX = /You have reached the maximum number of TASKs you may complete for/
+  # given). Asking again the same day gets the same answer. Taken only
+  # with no quote before the words, like HASTE_OTHER: someone in the room
+  # saying them ('Mags says, "[You have reached ...]"') quotes them, and
+  # the note it brings (note_capped) would hold until the rollover. Not
+  # anchored on the bracket, since the line's start comes from that report,
+  # not a log. The taskmaster it names (name) must be the one asked
+  # (daily_limit_for_asked?).
+  TASK_DAILY_MAX = /^[^"]*You have reached the maximum number of TASKs you may complete for (?<name>[^".\]]+?) today/
   # Unknown replies in a row to ASK FOR TASK before get_task stops.
   MAX_UNKNOWN_TASK_REPLIES = 3
 
@@ -4662,6 +4668,14 @@ class TaskMaster
     @stock_survey = nil
   end
 
+  # Whether a daily-limit line (TASK_DAILY_MAX) names the taskmaster asked.
+  #
+  # @param reply [String] what DRC.bput returned for the ask
+  # @return [Boolean]
+  def daily_limit_for_asked?(reply)
+    reply[TASK_DAILY_MAX, :name].to_s.downcase.split.include?(@npc)
+  end
+
   # task_fallback_npc when it names a taskmaster this script does that is not
   # the one being asked (once a run has fallen back, the one being asked is
   # the fallback, so it never falls back twice). Never in marathon: it works
@@ -4682,7 +4696,9 @@ class TaskMaster
   # (resume_task), which ends the script unless exit_after_resume is false,
   # when this returns nil so the caller's loop goes on to its end-of-task
   # checks and asks again. Another taskmaster's task that had to be
-  # cancelled sends this round to ask its own taskmaster again.
+  # cancelled sends this round to ask its own taskmaster again. A daily
+  # limit (TASK_DAILY_MAX) falls back (fall_back_for_the_day) only when it
+  # names the taskmaster asked; one naming another counts as no answer.
   # The first "you must wait" boosts (BOOST TASK) when the run has the task
   # boost armed; without one, or with no credits for it, Nezhiri's first
   # one is spent on her supplies (nezhiri_wait_chores) and the others, like
@@ -4708,6 +4724,8 @@ class TaskMaster
     while true
       find_npc(@rooms, @npc)
       reply = DRC.bput("ask #{@npc} for task", /if you agree to (his|her) terms/, /You may accept by typing ACCEPT TASK/, /utterly ignoring you/, /you must wait before I can give you a task/, /You are already on a task/, /give you a chance a little later/, TASK_UNRELIABLE, TASK_DAILY_MAX, /^To whom are you speaking/)
+      # Another taskmaster's limit is no answer from this one: counted as none.
+      reply = '' if reply.match?(TASK_DAILY_MAX) && !daily_limit_for_asked?(reply)
       unknown_replies = 0 unless reply.empty?
       case reply
       when /if you agree to (his|her) terms/, /To whom are you speaking/
