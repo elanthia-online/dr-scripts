@@ -1366,14 +1366,37 @@ RSpec.describe WorkOrders do
           expect(gives).to eq(['give clerk'])
           expect(DRCI).to have_received(:put_away_item?).with('clerk ticket').once
           taken = answer.empty? ? 'no answer' : 'What is it'
-          expect(Lich::Messaging).to have_received(:msg).with('bold', "WorkOrders: clerk did not take the clerk ticket (#{taken}): another repairer's, perhaps, such as one taskmaster left with another clerk. Put it away; collecting no more tickets. Hand it in yourself.").once
+          expect(Lich::Messaging).to have_received(:msg).with('bold', "WorkOrders: clerk did not take the clerk ticket (#{taken}): another repairer's, perhaps, such as another society's clerk. Put it away; collecting no more tickets this run. Take it to the repairer who holds that tool, and hand in yourself any more clerk tickets you carry; until then later runs likely stop at it too.").once
           expect(Lich::Messaging).to have_received(:msg).with('plain', 'WorkOrders: Tool repair at NPC completed')
         end
       end
 
-      [['still not ready', :waiting_look], ['never answered', :empty]].each do |title, look|
-        it "puts away a ticket whose look is #{title} after 20 waits of 30 s, without handing it in" do
-          clerk(look: look == :empty ? '' : send(look), give: 'You hand the clerk your ticket.', turns: 5)
+      it 'says so when a ticket the clerk does not take cannot be put away either' do
+        clerk(look: ready_look, give: "What is it you're trying to give?", turns: 5)
+        allow(DRCI).to receive(:put_away_item?).with('clerk ticket').and_return(false)
+
+        workorders.send(:repair_items, info, [])
+
+        expect(gives).to eq(['give clerk'])
+        expect(Lich::Messaging).to have_received(:msg).with('bold', /\AWorkOrders: clerk did not take the clerk ticket \(What is it\): .*\. Could not put it away; collecting no more tickets this run\. Take it to the repairer who holds that tool,/).once
+      end
+
+      # A look that never matches ready or not_ready (bput hands back '' after
+      # its 15 s each time) is told apart from one that says not ready: the
+      # ticket was never shown as not ready, and the wait was longer.
+      not_ready = "The clerk ticket is still not ready after 20 waits of 30 s. Put it away; collecting no more tickets this run. Hand it, and any more you carry, in yourself."
+      unanswered = "The clerk ticket's look got no answer in 21 looks with 20 waits of 30 s between. Put it away; collecting no more tickets this run. Hand it, and any more you carry, in yourself."
+      [['still not ready', [:waiting_look], not_ready],
+       ['never answered', [''], unanswered],
+       ['not ready once, then never answered', [:waiting_look, ''], not_ready]].each do |title, looks, message|
+        it "puts away a ticket whose look is #{title} after 20 waits of 30 s, without handing it in, and says which" do
+          clerk(look: '', give: 'You hand the clerk your ticket.', turns: 5)
+          answers = looks.map { |look| look.is_a?(Symbol) ? send(look) : look }
+          allow(DRC).to receive(:bput).with('look at my ticket', any_args) do |_command, *patterns|
+            line = answers.size > 1 ? answers.shift : answers.first
+            hit = patterns.lazy.map { |pattern| line.match(/#{pattern}/i) }.find(&:itself)
+            hit ? hit[0] : ''
+          end
           waits = 0
           allow(workorders).to receive(:pause) { |seconds| (waits += 1) > 25 ? raise("waited #{waits} times") : seconds }
 
@@ -1383,7 +1406,7 @@ RSpec.describe WorkOrders do
           expect(DRC).to have_received(:bput).with('look at my ticket', any_args).exactly(21).times
           expect(gives).to be_empty
           expect(DRCI).to have_received(:put_away_item?).with('clerk ticket').once
-          expect(Lich::Messaging).to have_received(:msg).with('bold', 'WorkOrders: The clerk ticket is still not ready after 10 minutes. Put it away; collecting no more tickets. Hand it in yourself.').once
+          expect(Lich::Messaging).to have_received(:msg).with('bold', "WorkOrders: #{message}").once
         end
       end
 

@@ -33,9 +33,11 @@ class WorkOrders
   # shop (bingots-room), not its stock shop. smith.lic has the same constant.
   BULK_INGOT_VOLUME = 50
 
-  # How often, and how many seconds apart, a repair ticket not ready yet is
-  # looked at again before it is put away and collection stops: ten minutes,
-  # longer than any repair seen (taskmaster waits as long).
+  # How many times, and how many seconds apart, a repair ticket not ready yet
+  # is looked at again before it is put away and collection stops: 21 looks
+  # with 20 waits of 30 s between them, ten minutes of waiting, longer than
+  # any repair seen. A look that gets no answer also waits out DRC.bput's
+  # 15 s first.
   TICKET_WAIT_POLLS = 20
   TICKET_WAIT_SECONDS = 30
 
@@ -396,24 +398,34 @@ class WorkOrders
   end
 
   # Hands in each <npc> ticket carried once its look says the tool is ready,
-  # and stows what comes back. Society repairers all go by "clerk", so GET MY
-  # CLERK TICKET also brings a ticket another clerk holds a tool for (one
-  # taskmaster left, say): a ticket the repairer does not take is put away and
-  # collection stops, rather than being handed over again forever. So is one
-  # still not ready after TICKET_WAIT_POLLS looks, or one more after
-  # TICKET_LIMIT were handed in. Each says so.
+  # and stows what comes back. GET MY <NPC> TICKET brings any ticket of that
+  # name: society repairers all go by "clerk", so it also brings one another
+  # society's clerk holds a tool for (say, one left from a workorders run in
+  # another discipline, or by hand). A ticket the repairer does not take is
+  # put away and collection stops, rather than being handed over again
+  # forever. So is one whose look still says not ready, or never got an
+  # answer, after TICKET_WAIT_POLLS waits (see ticket_wait), and one more
+  # after TICKET_LIMIT were handed in. Each says so.
   #
   # @param npc [String] the repairer (repair-npc)
   # @return [void]
   def collect_tickets(npc)
     handed = 0
     while DRCI.get_item?("#{npc} ticket")
-      return stop_collecting(npc, "Handed in #{TICKET_LIMIT} #{npc} tickets already") if handed >= TICKET_LIMIT
-      return stop_collecting(npc, "The #{npc} ticket is still not ready after #{TICKET_WAIT_POLLS * TICKET_WAIT_SECONDS / 60} minutes") unless ticket_ready?
+      return stop_collecting(npc, "Handed in #{TICKET_LIMIT} #{npc} tickets already", 'Hand in the rest yourself.') if handed >= TICKET_LIMIT
+
+      waits = "#{TICKET_WAIT_POLLS} waits of #{TICKET_WAIT_SECONDS} s"
+      case ticket_wait
+      when :not_ready
+        return stop_collecting(npc, "The #{npc} ticket is still not ready after #{waits}", 'Hand it, and any more you carry, in yourself.')
+      when :unanswered
+        return stop_collecting(npc, "The #{npc} ticket's look got no answer in #{TICKET_WAIT_POLLS + 1} looks with #{waits} between", 'Hand it, and any more you carry, in yourself.')
+      end
 
       reply = DRC.bput("give #{npc}", *repair_replies['ticket_handed'], *repair_replies['ticket_not_taken'])
       unless repair_replies['ticket_handed'].any? { |taken| reply.match?(/#{taken}/i) }
-        return stop_collecting(npc, "#{npc} did not take the #{npc} ticket (#{reply.empty? ? 'no answer' : reply}): another repairer's, perhaps, such as one taskmaster left with another clerk")
+        return stop_collecting(npc, "#{npc} did not take the #{npc} ticket (#{reply.empty? ? 'no answer' : reply}): another repairer's, perhaps, such as another society's #{npc}",
+                               "Take it to the repairer who holds that tool, and hand in yourself any more #{npc} tickets you carry; until then later runs likely stop at it too.")
       end
 
       handed += 1
@@ -423,30 +435,38 @@ class WorkOrders
     end
   end
 
-  # Whether LOOK AT MY TICKET says the tool is ready, looking again every
-  # TICKET_WAIT_SECONDS up to TICKET_WAIT_POLLS times. A look that gets no
-  # answer counts as not ready.
+  # Looks at the ticket until it says the tool is ready, looking again every
+  # TICKET_WAIT_SECONDS up to TICKET_WAIT_POLLS times (so up to
+  # TICKET_WAIT_POLLS + 1 looks).
   #
-  # @return [Boolean]
-  def ticket_ready?
+  # @return [Symbol] :ready; :not_ready when it never said ready and some
+  #   look said not ready; :unanswered when no look got an answer (each of
+  #   those waited out DRC.bput's 15 s too)
+  def ticket_wait
+    answered = false
     polls = 0
-    until DRC.bput('look at my ticket', repair_replies['ready'], repair_replies['not_ready']).match?(/#{repair_replies['ready']}/i)
-      return false if polls >= TICKET_WAIT_POLLS
+    loop do
+      look = DRC.bput('look at my ticket', repair_replies['ready'], repair_replies['not_ready'])
+      return :ready if look.match?(/#{repair_replies['ready']}/i)
+
+      answered ||= !look.empty?
+      return answered ? :not_ready : :unanswered if polls >= TICKET_WAIT_POLLS
 
       polls += 1
       pause TICKET_WAIT_SECONDS
     end
-    true
   end
 
-  # Puts the ticket in hand away and says why no more are collected.
+  # Puts the ticket in hand away and says why no more are collected, and
+  # what the player should do with the tickets left.
   #
   # @param npc [String] the repairer (repair-npc)
   # @param why [String] what stopped collection
+  # @param advice [String] what to do with the ticket put away and the rest
   # @return [void]
-  def stop_collecting(npc, why)
+  def stop_collecting(npc, why, advice)
     stowed = DRCI.put_away_item?("#{npc} ticket")
-    Lich::Messaging.msg('bold', "WorkOrders: #{why}. #{stowed ? 'Put it away' : 'Could not put it away'}; collecting no more tickets. Hand it in yourself.")
+    Lich::Messaging.msg('bold', "WorkOrders: #{why}. #{stowed ? 'Put it away' : 'Could not put it away'}; collecting no more tickets this run. #{advice}")
   end
 
   # Whether the answer to the first give asks for a second one: the quote or
