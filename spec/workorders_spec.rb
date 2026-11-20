@@ -1523,6 +1523,33 @@ RSpec.describe WorkOrders do
       expect(Lich::Messaging).not_to have_received(:msg).with('bold', /did not take/)
     end
 
+    # A data/custom copy may write a pattern in another case than the
+    # game's line. bput matches it as /pattern/i and hands back the game's
+    # own text, and each check made again on that text (repair_offered?,
+    # confirm_repair's arms, the ticket look and the ticket hand-in) matches
+    # the same way, so the reply still lands where it belongs: the tool is
+    # left, paid for (after a bank run when short), and its ticket handed in.
+    [['quote and prompt', { 'quote' => 'COST [\d,]+ \w+ TO REPAIR.*GIVE IT TO ME AGAIN', 'prompt' => 'GIVE IT TO ME AGAIN' }, %i[quote need_coin quote handed]],
+     ['ticket', { 'ticket' => 'REPAIR TICKET' }, %i[quote handed]],
+     ['need_coin', { 'need_coin' => 'MORE COIN' }, %i[quote need_coin quote handed]],
+     ['ready', { 'ready' => 'SHOULD BE READY BY NOW' }, %i[quote handed]],
+     ['ticket_handed', { 'ticket_handed' => ['^YOU HAND', 'TAKES YOUR TICKET'] }, %i[quote handed]]].each do |keys, copy, lines|
+      it "leaves the tool and hands in its ticket when a data/custom copy writes #{keys} in upper case" do
+        allow(workorders).to receive(:get_data).with('crafting').and_return({ 'repair_replies' => repair_replies.merge(copy) })
+        answers = lines.map { |line| send(line) }
+        world = repair_world(npc: 'Rangu', room: 200, look: rangu_ready, answers: { 'hammer' => answers.dup })
+
+        workorders.send(:repair_items, info, ['hammer'])
+
+        gives = world[:log].filter_map { |_room, command, line| line if command == 'give Rangu' }
+        expect(gives).to eq(answers + ['You hand Rangu your ticket and are handed back a hammer.'])
+        expect(DRCM).to have_received(:ensure_copper_on_hand).with(2400, anything, anything).exactly(lines.count(:need_coin)).times
+        expect(workorders).not_to have_received(:pause).with(30)
+        expect(Lich::Messaging).not_to have_received(:msg).with('bold', anything)
+        expect([$right_hand, $left_hand, world[:tickets]]).to eq([nil, nil, 0])
+      end
+    end
+
     describe 'collecting the tickets' do
       let(:info) { { 'repair-room' => 8776, 'repair-npc' => 'clerk' } }
       let(:ready_look) { 'Looking at the clerk ticket you see it is for a diagonal-peen hammer.  You recall that your hammer should be ready by now.' }
