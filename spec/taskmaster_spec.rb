@@ -8922,6 +8922,27 @@ RSpec.describe TaskMaster do
         expect(DRCI).to have_received(:stow_hands)
       end
 
+      # A stray '-' line in the list loads as nil ("crafting_items_in_container:
+      # \n  - chisels\n  -\n" gives ["chisels", nil]); main never matched
+      # these entries, so such a profile ran.
+      it 'ignores a blank or non-String crafting_items_in_container entry: no crash, no stow by an empty name' do
+        bag_items = YAML.safe_load("crafting_items_in_container:\n  - chisels\n  -\n  - ''\n  - 5\n")['crafting_items_in_container']
+        expect(bag_items).to eq(['chisels', nil, '', 5])
+        hold(right: obj('iron chisels', 'chisels', '9'), left: obj('polished loimic slender awl', 'awl', '10'))
+        expect { build(npc: 'bradyn', bag_items: bag_items).put_hands_away(nil) }.not_to raise_error
+        expect(DRCC).to have_received(:stow_crafting_item).once
+        expect(DRCC).to have_received(:stow_crafting_item).with('chisels', 'duffel bag', nil)
+        expect(DRCI).to have_received(:stow_hands)
+      end
+
+      it 'ignores a blank or nil belt entry the same way' do
+        hold(right: obj('polished loimic slender awl', 'awl', '10'))
+        tied = { 'name' => 'toolbelt', 'items' => [nil, ' ', 'scissors'] }
+        expect { build.put_hands_away(tied) }.not_to raise_error
+        expect(DRCC).not_to have_received(:stow_crafting_item)
+        expect(DRCI).to have_received(:stow_hands)
+      end
+
       it 'leaves an unfinished piece to the default container even when crafting_items_in_container names its noun' do
         hold(left: obj('coil of unfinished burlap reinforced rope', 'rope', '3'))
         build(bag_items: ['rope']).put_hands_away

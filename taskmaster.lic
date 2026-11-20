@@ -39,7 +39,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.21.3'
+  VERSION = '2026.11.21.7'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -594,7 +594,8 @@ class TaskMaster
   # Zasele's stock (task_stock_piece?) goes back in the crafting bag by its
   # id; instructions and a tool +belt+ lists go through DRCC.stow_crafting_item
   # (tied to the belt, else the crafting bag), and so does a tool
-  # crafting_items_in_container lists (into the crafting bag). Anything
+  # crafting_items_in_container lists (into the crafting bag; a blank or
+  # non-String entry in either list names nothing, see belt_tool). Anything
   # else goes to default stow (DRCI.stow_hands), which alone would send all
   # of it to the default container: after sew stopped on a piece too
   # small to use, the scrap went into the pack, and sew's next GET by its
@@ -642,14 +643,18 @@ class TaskMaster
   end
 
   # The item +belt+ lists for the held tool +name+, as the belt names it.
+  # An entry that is not a String, or is blank (a stray '-' line in the
+  # list, which YAML reads as nil), names nothing: a blank one would match
+  # every name, and Regexp.escape raises on anything but a String.
   #
   # @param name [String] the held tool's name
-  # @param belt [Hash, nil] belt settings ('name', 'items')
+  # @param belt [Hash, nil] belt settings ('name', 'items'), or
+  #   crafting_items_in_container as { 'items' => list }
   # @return [String, nil] e.g. "knitting needles"; nil when not listed
   def belt_tool(name, belt)
     return nil if name.empty? || !belt.is_a?(Hash)
 
-    Array(belt['items']).find { |item| /\b#{Regexp.escape(item)}/i.match?(name) }
+    Array(belt['items']).find { |item| item.is_a?(String) && !item.strip.empty? && /\b#{Regexp.escape(item)}/i.match?(name) }
   end
 
   # A new task is offered about 30 seconds after a turn-in, so the poll
