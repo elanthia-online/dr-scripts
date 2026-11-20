@@ -3105,7 +3105,9 @@ task_cancel_foreign_tasks: false
 task_fallback_npc:
 # Setting for taskmaster - Where tools go for repair (unless task_no_repair or task_self_repair):
 # rangu (Rangu, Crossing Engineering Society), hometown (your town's repairer in base-town.yaml) or
-# task_type (the repairer of the task's crafting discipline in base-crafting.yaml). The town is
+# task_type (the repairer, in base-crafting.yaml, of the discipline taskmaster gives each taskmaster:
+# tailoring for Zasele, remedies for Nezhiri, blacksmithing for Poltu, shaping for Bradyn, his metal
+# tasks too, artificing for Dorhum). The town is
 # task_hometown, else Crossing, where tasks are worked; always Crossing for Nezhiri. With no such
 # repairer in the data it says so and uses Rangu.
 task_repair_by: rangu
