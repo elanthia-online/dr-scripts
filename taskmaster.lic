@@ -590,8 +590,9 @@ class TaskMaster
   # Zasele's stock (task_stock_piece?) goes back in the crafting bag by its
   # id; instructions and a tool +belt+ lists go through DRCC.stow_crafting_item
   # (tied to the belt, else the crafting bag), and so does a tool
-  # crafting_items_in_container lists (into the crafting bag). DRCI.stow_hands alone sends
-  # all of it to the default container: after sew stopped on a piece too
+  # crafting_items_in_container lists (into the crafting bag). Anything
+  # else goes to default stow (DRCI.stow_hands), which alone would send all
+  # of it to the default container: after sew stopped on a piece too
   # small to use, the scrap went into the pack, and sew's next GET by its
   # remembered id took it back out from there (Lilwea, 2026-11-11 08:32:01
   # "You get some burlap cloth from inside your traveler's pack."), and its
@@ -2651,8 +2652,9 @@ class TaskMaster
   NEZHIRI_SURVEY_RUBS = 6
   # The tools each vessel is worked with: a mortar with a pestle, a bowl
   # with a mixing stick (remedy picks them the same way). A task needs its
-  # vessel's two, and the sieve when the game asks for it; Rangu repaired
-  # the mortar, pestle, bowl and stick in the logs (6100:9659, 6100:11156).
+  # vessel's two, and the sieve when the game asks for it; the two and the
+  # sieve go for repair after it (remedy_tools). Rangu repaired the mortar,
+  # pestle, bowl and stick in the logs (6100:9659, 6100:11156).
   REMEDY_VESSEL_TOOLS = { 'mortar' => /mortar|pestle/i, 'bowl' => /bowl|cauldron|mixing stick/i }.freeze
   # COUNT of a finished remedy: "You count out 6 uses remaining."
   # (6100:9223). Captures the doses.
@@ -2684,8 +2686,10 @@ class TaskMaster
   # brine (Andreshlew), herbs and a coal nugget (and water or alcohol when
   # none is on hand: missing_remedy_supplies) (Crossing),
   # crafts each with remedy's instructions form, combining every new stack
-  # into one, and leaves the mortar and pestle (or bowl and stick) with
-  # the repairer (task_repair_by). The hand-in (give_item) makes the stack the size she asked for.
+  # into one, and leaves the mortar and pestle (or bowl and stick) and the
+  # sieve, those due (task_repair_every), with the repairer (task_repair_by),
+  # or repairs them itself (task_self_repair). The hand-in (give_item) makes
+  # the stack the size she asked for.
   # With the doses already on hand it buys and crafts nothing. The crafts
   # are planned at the fewest doses one craft made the last time this
   # character crafted the product, never more than NEZHIRI_DOSES_PER_CRAFT
@@ -4427,8 +4431,7 @@ class TaskMaster
   # Put the instructions just read into the crafting bag by name, where the
   # crafting scripts put them after studying, rather than leaving them to
   # default stow. Anything else still in hand goes where put_hands_away puts
-  # it (stock to the bag, a belt tool to the belt, anything else to default
-  # stow as before).
+  # it (see there).
   #
   # @param item [String] item noun
   # @return [void]
