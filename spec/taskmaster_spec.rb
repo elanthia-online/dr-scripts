@@ -15113,6 +15113,18 @@ RSpec.describe TaskMaster do
       expect(tm.game_day_turned_since?(later)).to be(false)
       at.call(2026, 11, 21, 6, 0)
       expect(tm.game_day_turned_since?(later)).to be(true)
+      # The edge, 5 minutes (RESET_GRACE_SECONDS) after the turn: a note in
+      # the last second of the grace is the old day's (not capped), one at
+      # its end the new day's (capped until the next turn).
+      last_grace = Time.utc(2026, 11, 20, 6, 4, 59).to_i
+      grace_over = Time.utc(2026, 11, 20, 6, 5, 0).to_i
+      at.call(2026, 11, 20, 16, 0)
+      expect(tm.game_day_turned_since?(last_grace)).to be(true)
+      expect(tm.game_day_turned_since?(grace_over)).to be(false)
+      at.call(2026, 11, 21, 5, 59, 59)
+      expect(tm.game_day_turned_since?(grace_over)).to be(false)
+      at.call(2026, 11, 21, 6, 0)
+      expect(tm.game_day_turned_since?(grace_over)).to be(true)
       # July, daylight time: 05:00 UTC.
       at.call(2026, 7, 4, 5, 10)
       expect(tm.game_day_turned_since?(Time.utc(2026, 7, 4, 5, 0, 20).to_i)).to be(true)
@@ -15316,6 +15328,25 @@ RSpec.describe TaskMaster do
         expect(tm.instance_variable_get(:@primary_npc)).to eq('bradyn')
       end
 
+      # Poltu's task marks with the stamp too (mark_crafted_goods), so a
+      # stamp Bradyn's shaping_tools sent holds back a detour to Poltu even
+      # after a task that left no forging tool.
+      it "does not detour Bradyn's run to Poltu after a task that left a stamp from its shaping tools, with mark_crafted_goods" do
+        settings = smith_settings.merge(shaping_tools: ['drawknife', 'iron stamp'], mark_crafted_goods: true)
+        UserVars.taskmaster_repairs = [smith_note('bradyn', 'drawknife', 'balsa drawknife'), smith_note('bradyn', 'iron stamp', 'iron stamp')]
+        tm = build(npc: 'bradyn', fallback_npc: 'poltu', settings: settings)
+
+        tm.detour_while_tools_repair
+
+        expect(tm.instance_variable_get(:@npc)).to eq('bradyn')
+        expect(UserVars.taskmaster_repairs).to all(satisfy { |record| !record.key?('detoured') })
+        tm = build(npc: 'bradyn', fallback_npc: 'poltu', settings: settings.merge(mark_crafted_goods: false))
+
+        tm.detour_while_tools_repair
+
+        expect(tm.instance_variable_get(:@npc)).to eq('poltu')
+      end
+
       # Bradyn's tasks use the forging tools Poltu left, so the detour is
       # for them too; left unmarked, every later Bradyn run in those ten
       # minutes would detour again.
@@ -15374,6 +15405,27 @@ RSpec.describe TaskMaster do
       tm.detour_while_tools_repair
 
       expect(tm.instance_variable_get(:@npc)).to eq('poltu')
+    end
+
+    # Bradyn's lumber and metal tasks mark with the stamp too (marking_tools
+    # leaves it out only for his stone and stack tasks). The task is not
+    # known before the ask, so the hold-back counts it for him: here a stamp
+    # Nezhiri's toolset sent long ago, which none of Bradyn's settings names.
+    it 'is held back by a stamp at repair when the fallback is Bradyn, whose task is not known before the ask (mark_crafted_goods)' do
+      settings = { task_repair_every: { 'zasele' => 43_200, 'bradyn' => 10_800 }, mark_crafted_goods: true, forging_tools: %w[hammer tongs], shaping_tools: %w[drawknife rasp] }
+      UserVars.taskmaster_repairs = [{ 'npc' => 'zasele', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'scissors', 'item' => 'steel scissors', 'left_at' => Time.now.to_i - 60 },
+                                     { 'npc' => 'nezhiri', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'stamp', 'item' => 'iron stamp', 'left_at' => Time.now.to_i - 7200 }]
+      tm = build(npc: 'zasele', fallback_npc: 'bradyn', settings: settings)
+
+      tm.detour_while_tools_repair
+
+      expect(tm.instance_variable_get(:@npc)).to eq('zasele')
+      expect(UserVars.taskmaster_repairs.first).not_to have_key('detoured')
+      tm = build(npc: 'zasele', fallback_npc: 'bradyn', settings: settings.merge(mark_crafted_goods: false))
+
+      tm.detour_while_tools_repair
+
+      expect(tm.instance_variable_get(:@npc)).to eq('bradyn')
     end
 
     it "marks only the notes the detour was for: another taskmaster's fresh note for tools of its own is left as it was" do
