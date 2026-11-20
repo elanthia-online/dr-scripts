@@ -637,6 +637,9 @@ class TaskMaster
   end
 
   # The item +belt+ lists for the held tool +name+, as the belt names it.
+  # An entry that is not a String, or is blank (a stray '-' line in the
+  # list, which YAML reads as nil), names nothing: a blank one would match
+  # every name, and Regexp.escape raises on anything but a String.
   #
   # @param name [String] the held tool's name
   # @param belt [Hash, nil] belt settings ('name', 'items')
@@ -644,7 +647,7 @@ class TaskMaster
   def belt_tool(name, belt)
     return nil if name.empty? || !belt.is_a?(Hash)
 
-    Array(belt['items']).find { |item| /\b#{Regexp.escape(item)}/i.match?(name) }
+    Array(belt['items']).find { |item| item.is_a?(String) && !item.strip.empty? && /\b#{Regexp.escape(item)}/i.match?(name) }
   end
 
   # A new task is offered about 30 seconds after a turn-in, so the poll
@@ -6991,13 +6994,17 @@ class TaskMaster
 
   # Whether a toolbelt setting lists the tool held: one of its items names
   # it ('bowl' for "large purpleheart bowl edged with ivory"), every word of
-  # the item starting a word of the tool's full name.
+  # the item starting a word of the tool's full name. An entry that is not
+  # a String, or is blank, names nothing (belt_tool), rather than listing
+  # every tool for want of a word to miss.
   #
   # @param belt [Hash, nil] toolbelt settings ('name', 'items')
   # @param tool [String] the tool's full name in hand
   # @return [Boolean]
   def belt_lists_tool?(belt, tool)
-    Array(belt && belt['items']).any? { |item| item.to_s.split.all? { |word| tool.match?(/\b#{Regexp.escape(word)}/i) } }
+    Array(belt.is_a?(Hash) ? belt['items'] : nil).any? do |item|
+      item.is_a?(String) && !item.strip.empty? && item.split.all? { |word| tool.match?(/\b#{Regexp.escape(word)}/i) }
+    end
   end
 
   # Hands one ticket to the repairer and stows the tool that comes back on

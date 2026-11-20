@@ -12756,6 +12756,25 @@ RSpec.describe TaskMaster do
       end
     end
 
+    # A stray '-' line in a belt's items loads as nil, which matched every
+    # tool (no words to miss) and then raised in belt_tool, after the
+    # repairer had the ticket. Such an entry names nothing.
+    it 'stows the tool handed back on the belt that lists it, past a belt with a blank or nil entry' do
+      ticket = OpenStruct.new(id: '9', noun: 'ticket', name: 'Rangu ticket')
+      bowl = OpenStruct.new(id: '10', noun: 'bowl', name: 'large purpleheart bowl')
+      tm = build(settings: { forging_belt: { 'name' => 'forging belt', 'items' => [nil, ' ', 5] }, alchemy_belt: { 'name' => 'alchemy belt', 'items' => ['bowl'] } })
+      allow(tm).to receive(:pause)
+      allow(tm).to receive(:put_away_tickets)
+      allow(tm).to receive(:held_objects).and_return([], [ticket], [ticket], [bowl])
+      allow(DRCI).to receive(:get_item?).with('first Rangu ticket').and_return(true)
+      allow(tm).to receive(:move_to_right_hand).and_return(true)
+      allow(DRC).to receive(:bput).with('give Rangu', any_args).and_return('You hand Rangu your ticket and are handed back a large purpleheart bowl.')
+      allow(DRCC).to receive(:stow_crafting_item)
+
+      expect(tm.redeem_ticket('Rangu', 'first')).to eq(bowl)
+      expect(DRCC).to have_received(:stow_crafting_item).with('bowl', 'duffel bag', { 'name' => 'alchemy belt', 'items' => ['bowl'] })
+    end
+
     every_key = /none for quote, prompt, offered, .*ticket_not_taken; tools are not left for repair or collected\. Update dr-scripts\./
     [['the shipped file cannot be read', { raises: Errno::ENOENT }, every_key],
      ['the shipped file cannot be parsed', { raises: Psych::SyntaxError.new('base-crafting.yaml', 3, 1, 10, 'did not find expected key', 'while parsing a block mapping') }, every_key],
