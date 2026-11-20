@@ -3130,8 +3130,9 @@ task_cancel_foreign_tasks: false
 # collects its tools at its end, so only repeat and cycle runs detour, and a run right after one that only finished
 # a task already open (that run ends before the pickup). A fallback that has given its limit since
 # the daily rollover is not asked again until the next one: neither for a detour nor when the first one
-# gives its limit (the run then stops). The game resets the limit some seconds after the rollover, so a
-# limit given in the first 5 minutes after it counts as the old day's and does not hold for the new day.
+# gives its limit (the run then stops, saying the fallback gave its limit earlier this game day). The
+# game resets the limit some seconds after the rollover, so a limit given in the first 5 minutes after
+# it counts as the old day's and does not hold for the new day.
 # Unset: the run stops at the limit, and waits for tools at repair. Ignored by marathon, which works only Zasele's tasks.
 task_fallback_npc:
 # Setting for taskmaster - Where tools go for repair (unless task_no_repair or task_self_repair): rangu

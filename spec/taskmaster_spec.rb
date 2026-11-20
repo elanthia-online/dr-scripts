@@ -2428,6 +2428,20 @@ RSpec.describe TaskMaster do
           expect(events.last).to eq([:message, 'Zasele has given you all the tasks allowed today. No other taskmaster to ask. Stopping.'])
         end
 
+        # A set fallback whose limit an earlier run noted this game day is
+        # not asked (fallback_capped?), and the stop names it rather than
+        # saying there is no other taskmaster.
+        it 'stops, naming the fallback, when its limit was noted earlier this game day, without walking to it' do
+          allow(Time).to receive(:now).and_return(Time.utc(2026, 11, 20, 12))
+          UserVars.taskmaster_capped = { 'zasele' => Time.utc(2026, 11, 20, 11).to_i }
+          # No 'zasele' replies: a walk to her shows as [:find, 'zasele'], her asks go unanswered.
+          tm, events = limited({ 'nezhiri' => [daily_max] })
+
+          expect { tm.get_task }.to raise_error(SystemExit)
+          expect(events).not_to include([:find, 'zasele'])
+          expect(events.last).to eq([:message, 'Nezhiri has given you all the tasks allowed today, and so did Zasele (task_fallback_npc) earlier this game day (the limit resets at midnight US Central). Stopping.'])
+        end
+
         it 'does not fall back to the taskmaster it was asking' do
           tm, = limited({ 'zasele' => [daily_max.sub('Nezhiri', 'Zasele')] }, npc: 'zasele', fallback: 'zasele')
 
@@ -15139,7 +15153,7 @@ RSpec.describe TaskMaster do
       expect do
         detour_run(asks: { 'zasele' => [daily_max], 'nezhiri' => [daily_max.sub('Zasele', 'Nezhiri')] })
       end.to raise_error(SystemExit)
-      expect(DRC).to have_received(:message).with('Nezhiri has given you all the tasks allowed today. No other taskmaster to ask. Stopping.')
+      expect(DRC).to have_received(:message).with('Nezhiri has given you all the tasks allowed today, and so did Zasele (task_fallback_npc) earlier this game day (the limit resets at midnight US Central). Stopping.')
     end
 
     # A fallback note older than REPAIR_READY_SECONDS may be one a pickup
@@ -15240,7 +15254,7 @@ RSpec.describe TaskMaster do
 
       # 'zasele' => []: asking Zasele again would raise "asked zasele again".
       expect { detour_run(asks: { 'nezhiri' => [nezhiri_max], 'zasele' => [] }) }.to raise_error(SystemExit)
-      expect(DRC).to have_received(:message).with('Nezhiri has given you all the tasks allowed today. No other taskmaster to ask. Stopping.')
+      expect(DRC).to have_received(:message).with('Nezhiri has given you all the tasks allowed today, and so did Zasele (task_fallback_npc) earlier this game day (the limit resets at midnight US Central). Stopping.')
     end
 
     it "keeps the fallback's limit until midnight US Central, not an hour early (#game_day_turned_since?)" do
