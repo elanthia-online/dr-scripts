@@ -6483,6 +6483,14 @@ class TaskMaster
     walked = false
     polls = 0
     told = []
+    # Every read after the first: the refusal backstop counts the most
+    # tickets any read saw, and a fresh read is one a look that finds none
+    # (while a TAP still finds one) can be trusted against.
+    reread = lambda do
+      tickets, whole, cut = reread_tickets(name, tickets, refusals)
+      most = [most, tickets.size].max
+      fresh = true
+    end
     loop do
       notes = waited + extra
       # Every note of a repairer of this name, in any room: society clerks
@@ -6517,16 +6525,18 @@ class TaskMaster
       live = claims.select { |_, ticket| ticket.is_a?(Hash) }
       own = live.select { |record, _| waited.include?(record) }.map(&:last)
       loose = unnoted ? unaccounted_tickets(tickets, claims).reject { |ticket| ticket[:refused] } : []
-      ready = own.find { |ticket| ticket[:ready] } || live.map(&:last).find { |ticket| ticket[:ready] } || loose.find { |ticket| ticket[:ready] }
+      # The work's own tickets first (the waited notes come first in notes,
+      # so in live), then the ready_only ones, then those no note accounts
+      # for: a visit a full hand or an unseen tool cuts short has handed in
+      # what the work needs.
+      ready = live.map(&:last).find { |ticket| ticket[:ready] } || loose.find { |ticket| ticket[:ready] }
       unless ready
         waiting = (own + loose).uniq
         if waiting.empty?
           # The tickets were kept up to date by hand: a look that stopped
           # short (more than TICKET_ORDINALS) may now reach further.
           unless whole || fresh
-            tickets, whole, cut = reread_tickets(name, tickets, refusals)
-            most = [most, tickets.size].max
-            fresh = true
+            reread.call
             next
           end
           unseen = whole ? [] : waited.select { |record| claims.assoc(record)&.last.nil? }
@@ -6542,9 +6552,7 @@ class TaskMaster
               break
             end
             pause 30
-            tickets, whole, cut = reread_tickets(name, tickets, refusals)
-            most = [most, tickets.size].max
-            fresh = true
+            reread.call
             next
           end
           DRC.message("Could not look at every #{name} ticket carried (more than #{TICKET_ORDINALS.size}); #{note_names(unseen)} left for a later pickup. Hand some of the #{name} tickets in by hand, or put them in another container.")
@@ -6565,9 +6573,7 @@ class TaskMaster
         # (a noted one among them) are not among those polled.
         next if (whole || cut != :unanswered) && poll_tickets(name, (waiting + live.map(&:last)).uniq)
 
-        tickets, whole, cut = reread_tickets(name, tickets, refusals)
-        most = [most, tickets.size].max
-        fresh = true
+        reread.call
         next
       end
 
@@ -6586,9 +6592,7 @@ class TaskMaster
           DRC.message("#{name} did not take #{refusals.values.sum} tickets, more than the #{most} read; handing in no more this time.")
           break
         end
-        tickets, whole, cut = reread_tickets(name, tickets, refusals)
-        most = [most, tickets.size].max
-        fresh = true
+        reread.call
         next
       end
       drop_ticket(tickets, ready)
@@ -6599,9 +6603,7 @@ class TaskMaster
         # The ticket handed in may not be the one its ordinal was read for:
         # read them again, and the note is kept or forgotten as at any look.
         DRC.message("#{name} handed back #{back.name}, not the noted #{note_names([record])}; looking at the #{name} tickets again, and keeping its note only while one is for it.")
-        tickets, whole, cut = reread_tickets(name, tickets, refusals)
-        most = [most, tickets.size].max
-        fresh = true
+        reread.call
         next
       end
       forget_repair(record)

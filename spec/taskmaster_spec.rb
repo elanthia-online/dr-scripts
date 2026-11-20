@@ -12610,6 +12610,8 @@ RSpec.describe TaskMaster do
       allow(DRCC).to receive(:stow_crafting_item)
       allow(DRC).to receive(:bput) do |command, *matchers|
         sent << command
+        # Bounded, so a pickup that reads on and on fails here rather than hanging.
+        raise 'looked on and on' if sent.size > 20
         next 'You put' if command == 'stow ticket'
 
         bput_match(command.start_with?('look at my ') ? 'I could not find what you were referring to.' : queue.shift, matchers)
@@ -13158,6 +13160,59 @@ RSpec.describe TaskMaster do
         expect(DRC).to have_received(:message).with("large purpleheart bowl still at repair (see above); stopping before Nezhiri's task is worked. It stays open, and the next run collects it first.")
       end
 
+      it "takes a note's ticket for its very name in hand before a longer one that begins with it" do
+        UserVars.taskmaster_repairs = [bowl]
+        tm = pickup_world({ 'Rangu' => [[bowl_ticket, true], ['large purpleheart bowl', true]] }, rangu_ticket: false)
+
+        tm.collect_task_tools(['bowl'])
+
+        expect(gives).to eq(1)
+        expect(sent).to include([:get, 'second Rangu ticket'])
+        expect(sent).not_to include([:get, 'first Rangu ticket'])
+        expect(DRC).not_to have_received(:message).with(/More than one/)
+        expect(UserVars.taskmaster_repairs).to eq([])
+      end
+
+      it "never takes for a note a longer ticket another note has by its very name" do
+        long = bowl.merge('item' => bowl_ticket)
+        tm = build
+
+        expect(tm.ticket_for(bowl, [{ ordinal: 'first', item: bowl_ticket }], [long, bowl])).to be_nil
+        expect(tm.ticket_for(bowl, [{ ordinal: 'first', item: bowl_ticket }], [bowl])).to eq({ ordinal: 'first', item: bowl_ticket })
+      end
+
+      context 'a note with no name in hand' do
+        let(:nameless) { { 'npc' => 'nezhiri', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'bowl', 'left_at' => 0 } }
+        let(:two_bowls) { [{ ordinal: 'first', item: 'large purpleheart bowl' }, { ordinal: 'second', item: 'small wooden bowl' }] }
+
+        it 'takes the first ticket whose item has every word of its setting name, not :unclear' do
+          expect(build.ticket_for(nameless, two_bowls)).to eq(two_bowls.first)
+        end
+
+        it "fits a ticket by its setting name's words, and so keeps a ticket of its tool out of the Rangu sweep when the repairer refused it" do
+          tm = build
+          mortar_ticket = { ordinal: 'third', item: 'heavy iron mortar' }
+
+          expect(tm.fits_note?(nameless, 'small wooden bowl')).to be(true)
+          expect(tm.fits_note?(nameless, 'heavy iron mortar')).to be(false)
+          expect(tm.unaccounted_tickets([two_bowls.last, mortar_ticket], [[nameless, :refused]])).to eq([mortar_ticket])
+        end
+      end
+
+      # A full hand (:not_got) or an unseen tool ends the visit, so whichever
+      # ticket goes first is the one sure to be handed in.
+      it "hands in the work's own ticket before a Rangu ticket no note accounts for, so a visit cut short has collected it" do
+        UserVars.taskmaster_repairs = [bowl]
+        fill_hands = ->(gets) { ($right_hand = 'iron mortar') && ($left_hand = 'iron pestle') if gets == 2 }
+        tm = pickup_world({ 'Rangu' => [['steel hammer', true], [bowl_ticket, true]] }, rangu_ticket: true, on_get: fill_hands)
+
+        tm.collect_task_tools(['bowl'])
+
+        expect(sent.select { |step| step.is_a?(Array) && step.first == :get }.first).to eq([:get, 'second Rangu ticket'])
+        expect(UserVars.taskmaster_repairs).to eq([])
+        expect { tm.stop_if_tools_at_repair(['bowl']) }.not_to raise_error
+      end
+
       it 'pairs a note with a name in hand before one without, so the nameless note does not take the named one\'s ticket' do
         nameless = { 'npc' => 'nezhiri', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'bowl', 'left_at' => 0 }
         UserVars.taskmaster_repairs = [nameless, bowl]
@@ -13535,6 +13590,31 @@ RSpec.describe TaskMaster do
         expect(sent).to include('give Rangu', [:stow, 'bowl'])
         expect(UserVars.taskmaster_repairs).to eq([])
         expect { tm.stop_if_tools_at_repair(['bowl']) }.not_to raise_error
+        expect(DRC).not_to have_received(:message).with(/Could not put away/)
+      end
+
+      it "says so when the repairer's ticket in a hand will not go away" do
+        tm = build
+        $right_hand = 'Rangu ticket'
+        $hand_ids = { 'Rangu ticket' => '901' }
+        allow(DRCI).to receive(:put_away_item?).with('#901').and_return(false)
+
+        tm.put_away_tickets('Rangu')
+
+        expect(DRC).to have_received(:message).with('Could not put away the Rangu ticket in hand; a pickup may not get its tickets.')
+      end
+
+      it "puts away nothing in a hand that is not one of the repairer's tickets with an id: a clerk's ledger, or a ticket GameObj shows no id for" do
+        tm = build
+        $right_hand = "clerk's ledger"
+        $left_hand = 'clerk ticket'
+        $hand_ids = { "clerk's ledger" => '111' }
+        $hand_nouns = { "clerk's ledger" => 'ledger', 'clerk ticket' => 'ticket' }
+        allow(DRCI).to receive(:put_away_item?)
+
+        tm.put_away_tickets('clerk')
+
+        expect(DRCI).not_to have_received(:put_away_item?)
       end
 
       it "never hands a society clerk's ticket to another clerk: a ticket noted at one clerk's room stays carried at another's" do
@@ -13859,6 +13939,7 @@ RSpec.describe TaskMaster do
 
         expect(sent).to eq(['look at my first Rangu ticket', 'look at my second Rangu ticket', [:walk, 19_209]])
         expect(UserVars.taskmaster_repairs).to eq([bowl])
+        expect(DRC).to have_received(:message).with('Could not reach Rangu (room 19209) to collect the tools left there; the tickets stay for a later pickup.')
       end
 
       it "walks before the first wait, and waits for nothing, when the repairer's room can't be reached and the ticket is not ready" do
@@ -13944,6 +14025,49 @@ RSpec.describe TaskMaster do
         expect(gives).to eq(3)
         expect(DRC).not_to have_received(:message).with(/did not take \d+ tickets/)
         expect(sent).to include([:stow, 'bellows'])
+      end
+
+      it 'keeps a note when the read after a refusal finds no ticket while a TAP still finds one, though a ticket was handed in before it' do
+        UserVars.taskmaster_repairs = [bowl, stick]
+        tm = build
+        reads = [[[{ ordinal: 'first', item: bowl_ticket, ready: true }, { ordinal: 'second', item: 'grooved agonite mixing stick', ready: true }], true, nil],
+                 [[], true, nil]]
+        allow(tm).to receive(:carried_tickets) { reads.shift || raise('read on and on') }
+        allow(tm).to receive(:redeem_ticket).and_return(OpenStruct.new(name: 'large purpleheart bowl'), false)
+        allow(DRCI).to receive(:exists?).with('Rangu ticket').and_return(true)
+        allow(tm).to receive(:put_away_tickets)
+        allow(tm).to receive(:reach_repairer).and_return(true)
+
+        tm.collect_tools(19_209, 'Rangu', [bowl, stick])
+
+        expect(UserVars.taskmaster_repairs).to eq([stick])
+        expect(DRC).to have_received(:message).with('Could not look at the Rangu tickets carried; keeping the notes of grooved agonite mixing stick.')
+        expect(DRC).not_to have_received(:message).with(/forgetting/)
+      end
+
+      it 'reads again once past the last ordinal after a hand-in, and stops when that read still stops short' do
+        others = Array.new(20) { |index| ["iron tongs #{index}", false] }
+        UserVars.taskmaster_repairs = [stick, bowl]
+        tm = pickup_world({ 'Rangu' => [['grooved agonite mixing stick', true], *others, [bowl_ticket, true]] }, ready_after: 999, rangu_ticket: false)
+
+        tm.collect_task_tools(['bowl', 'mixing stick'])
+
+        expect(sent).to include([:stow, 'mixing stick'])
+        expect(looks).to eq(2 * TaskMaster::TICKET_ORDINALS.size)
+        expect(DRC).to have_received(:message).with('Could not look at every Rangu ticket carried (more than 20); large purpleheart bowl left for a later pickup. Hand some of the Rangu tickets in by hand, or put them in another container.')
+        expect(UserVars.taskmaster_repairs).to eq([bowl])
+      end
+
+      it 'counts toward the refusal backstop the most tickets a later read saw, when the first read was cut short' do
+        sieve = { 'npc' => 'nezhiri', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'sieve', 'item' => 'wide sieve', 'left_at' => 1 }
+        UserVars.taskmaster_repairs = [bowl, stick, sieve]
+        tm = pickup_world({ 'Rangu' => [[bowl_ticket, true], ['grooved agonite mixing stick', true], ['wide sieve', true]] },
+                          silent_looks: [2], refused: "What is it you're trying to give?", rangu_ticket: false)
+
+        tm.collect_task_tools(['bowl', 'mixing stick', 'sieve'])
+
+        expect(gives).to eq(3)
+        expect(DRC).not_to have_received(:message).with(/more than the/)
       end
 
       it 'hands in no more once the repairer has refused more tickets than were read (a ticket read as another item each time)' do
@@ -14451,7 +14575,7 @@ RSpec.describe TaskMaster do
       end
 
       it 'stops a Bradyn bone task when its forged bone saw is at repair, noted by the shortened name in hand ("steel saw")' do
-        tm = build(npc: 'bradyn', tools_left_at_repair: [{ 'tool' => 'steel saw', 'item' => 'steel straight bone saw' }])
+        tm = build(npc: 'bradyn', tools_left_at_repair: [{ 'npc' => 'bradyn', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'steel saw', 'item' => 'steel straight bone saw', 'left_at' => 1 }])
         allow(tm).to receive(:buy_stackables)
         # Stubbed so a missing stop fails at once rather than carving on the harness.
         allow(tm).to receive(:carve_bone)
@@ -14462,7 +14586,7 @@ RSpec.describe TaskMaster do
       end
 
       it 'stops a Bradyn lumber task when a shaping tool is at repair, before any lumber is bought' do
-        tm = build(npc: 'bradyn', settings: { shaping_tools: ['carving knife', 'rasp'] }, tools_left_at_repair: [{ 'tool' => 'carving knife', 'item' => 'bronze carving knife' }])
+        tm = build(npc: 'bradyn', settings: { shaping_tools: ['carving knife', 'rasp'] }, tools_left_at_repair: [{ 'npc' => 'bradyn', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'carving knife', 'item' => 'bronze carving knife', 'left_at' => 1 }])
         allow(tm).to receive(:buy_stackables)
         # Stubbed so a missing stop fails at once rather than shaping on the harness.
         allow(tm).to receive(:shape_item)
@@ -14475,7 +14599,7 @@ RSpec.describe TaskMaster do
       end
 
       it 'stops a Poltu (or Bradyn) metal task when a forging tool is at repair, before any ingot is handled' do
-        tm = build(npc: 'poltu', settings: { forging_tools: %w[hammer tongs] }, tools_left_at_repair: [{ 'tool' => 'hammer', 'item' => 'steel hammer' }])
+        tm = build(npc: 'poltu', settings: { forging_tools: %w[hammer tongs] }, tools_left_at_repair: [{ 'npc' => 'poltu', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'hammer', 'item' => 'steel hammer', 'left_at' => 1 }])
         allow(tm).to receive(:bin_stray_ingots)
 
         expect { tm.poltu('sword', 2, 5, 'ingot', 'bronze') }.to raise_error(SystemExit)
@@ -14483,7 +14607,7 @@ RSpec.describe TaskMaster do
       end
 
       it 'stops a Dorhum task when an enchanting tool is at repair, before the tools are checked or a sigil is bought' do
-        tm = build(npc: 'dorhum', loot_bag_checked: true, tools_left_at_repair: [{ 'tool' => 'burin', 'item' => 'iron burin' }])
+        tm = build(npc: 'dorhum', loot_bag_checked: true, tools_left_at_repair: [{ 'npc' => 'dorhum', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'burin', 'item' => 'iron burin', 'left_at' => 1 }])
         allow(tm).to receive(:check_loot_bag)
         allow(tm).to receive(:dorhum_recipe).and_return({ noun: 'rock' })
         allow(tm).to receive(:dorhum_tools).and_return(%w[burin rod])
@@ -14509,14 +14633,35 @@ RSpec.describe TaskMaster do
         expect(tm).not_to have_received(:brew_remedy_round)
       end
 
-      it "stops a Bradyn stone task when the chisels (noted by the name in hand) are at repair, before buying rocks" do
-        tm = build(npc: 'bradyn', tools_left_at_repair: [{ 'tool' => 'iron chisels', 'item' => 'iron chisels' }])
+      # bradyn() leaves the chisels by the name in hand (repair([DRC.right_hand])),
+      # and tool_drop notes 'npc' with every tool: only the taskmaster's own
+      # note matches the one-word "chisels" by names_tool?.
+      it "stops a Bradyn stone task when the chisels (noted by the name in hand, as tool_drop notes them) are at repair, before buying rocks" do
+        chisels = { 'npc' => 'bradyn', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'iron chisels', 'item' => 'iron chisels', 'left_at' => 1 }
+        tm = build(npc: 'bradyn', tools_left_at_repair: [chisels])
         allow(tm).to receive(:buy_rocks)
         # Stubbed so a missing stop fails at once rather than carving on the harness.
         allow(tm).to receive(:carve_stone)
 
         expect { tm.bradyn('idol', 2, 'boulder', 'stone', 'alabaster') }.to raise_error(SystemExit)
         expect(tm).not_to have_received(:buy_rocks)
+      end
+
+      it 'stops a Bradyn stone task on an un-noted Rangu ticket for its chisels (no npc)' do
+        tm = build(npc: 'bradyn', tools_left_at_repair: [{ 'repairer' => 'Rangu', 'room' => 19_209, 'item' => 'iron chisels' }])
+        allow(tm).to receive(:buy_rocks)
+        allow(tm).to receive(:carve_stone)
+
+        expect { tm.bradyn('idol', 2, 'boulder', 'stone', 'alabaster') }.to raise_error(SystemExit)
+        expect(tm).not_to have_received(:buy_rocks)
+      end
+
+      it "matches a one-word setting name to the taskmaster's own note of a longer name in hand, not to another taskmaster's" do
+        own = { 'npc' => 'bradyn', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'iron chisels', 'item' => 'iron chisels', 'left_at' => 1 }
+        other = own.merge('npc' => 'zasele')
+        tm = build(npc: 'bradyn')
+
+        expect(tm.tools_left_for(['chisels'], [own, other])).to eq([own])
       end
 
       # shape, forge and enchant get "stamp" with no skip when
@@ -14747,6 +14892,23 @@ RSpec.describe TaskMaster do
       expect(DRC).to have_received(:bput).with('give Catrox', any_args).exactly(3).times
       expect(UserVars.taskmaster_repairs).to match([a_hash_including('npc' => 'zasele', 'repairer' => 'Catrox', 'room' => 19_093, 'tool' => 'knitting needles',
                                                                      'item' => 'slender bone knitting needles', 'left_at' => be_within(5).of(Time.now.to_i))])
+    end
+
+    # lich-5's Vars keeps whatever it is given, so a hand-edited value of
+    # the wrong kind persists across runs.
+    it 'reads only the notes from taskmaster_repairs of the wrong kind (a Hash, or a list with junk), and notes the next tool in a list' do
+      tm = build
+      allow(tm).to receive(:save_user_vars)
+      note = { 'npc' => 'zasele', 'repairer' => 'Catrox', 'room' => 19_093, 'tool' => 'awl', 'item' => 'loimic slender awl', 'left_at' => 1 }
+      UserVars.taskmaster_repairs = { 'x' => 1 }
+      expect(tm.repairs_out).to eq([])
+
+      UserVars.taskmaster_repairs = ['junk', note]
+      expect(tm.repairs_out).to eq([note])
+
+      UserVars.taskmaster_repairs = { 'x' => 1 }
+      tm.note_repair(note)
+      expect(UserVars.taskmaster_repairs).to eq([note])
     end
 
     it 'notes the tool before it stows the ticket, so a run stopped in between leaves a note, not an un-noted ticket' do
