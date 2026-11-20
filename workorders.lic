@@ -364,6 +364,16 @@ class WorkOrders
     DRCC.stow_crafting_item(name, @bag, @belt)
   end
 
+  # Gets the tools repaired after a work order: with the character's own
+  # materials (workorders_repair_own_tools), or by leaving each at the
+  # repairer, answering its reply through the data repair_replies (a
+  # declined tool is put away; a quote is confirmed; any other answer is
+  # put away with a message), then collecting the tickets carried.
+  #
+  # @param info [Hash] the discipline's base-crafting.yaml data
+  #   (repair-room, repair-npc)
+  # @param tools [Array<String>] the tool names
+  # @return [void]
   def repair_items(info, tools)
     skip = Array(@settings.workorders_no_repair_tools)
     tools = tools.reject { |t| skip.any? { |s| t.include?(s) } } unless skip.empty?
@@ -389,6 +399,7 @@ class WorkOrders
       elsif repair_offered?(result)
         confirm_repair(info, tool_name, repair_cost_copper(result))
       else
+        Lich::Messaging.msg('bold', "WorkOrders: #{info['repair-npc']} did not take the #{tool_name} for repair (#{result.empty? ? 'no answer' : result}); putting it away.")
         stow_tool(tool_name)
       end
     end

@@ -1445,7 +1445,46 @@ RSpec.describe WorkOrders do
         expect(returned).to eq([line[/(Lucky for you!  That isn't damaged!|I don't work on those here)/]])
         expect(workorders).to have_received(:stow_tool).with('hammer').once
         expect(workorders).not_to have_received(:confirm_repair)
+        # A tool declined (no wear) is put away quietly; a refusal says so.
+        if line.include?('work on')
+          expect(Lich::Messaging).to have_received(:msg).with('bold', "WorkOrders: Rangu did not take the hammer for repair (I don't work on those here); putting it away.").once
+        else
+          expect(Lich::Messaging).not_to have_received(:msg).with('bold', /did not take/)
+        end
       end
+    end
+
+    it 'says so when a tool gets no answer at all, and puts it away' do
+      bput_lines('')
+      allow(DRCI).to receive(:get_item?).with('Rangu ticket').and_return(false)
+      allow(DRCT).to receive(:walk_to)
+      allow(workorders).to receive(:get_tool)
+      allow(workorders).to receive(:stow_tool)
+      allow(Lich::Messaging).to receive(:msg)
+
+      workorders.send(:repair_items, info, ['hammer'])
+
+      expect(workorders).to have_received(:stow_tool).with('hammer').once
+      expect(Lich::Messaging).to have_received(:msg).with('bold', 'WorkOrders: Rangu did not take the hammer for repair (no answer); putting it away.').once
+    end
+
+    # DRC.bput matches each pattern as /pattern/i and hands back the text as
+    # the game wrote it; the declined check matches the same way, so a reply
+    # in another case than the data's pattern is still declined (quietly),
+    # not taken for one it did not know.
+    it 'declines a reply whose case differs from the data pattern, as bput matched it' do
+      bput_lines("Rangu shrugs and says, \"There isn't a SCRATCH on that, and I'm not one to rob you.\"")
+      allow(DRCI).to receive(:get_item?).with('Rangu ticket').and_return(false)
+      allow(DRCT).to receive(:walk_to)
+      allow(workorders).to receive(:get_tool)
+      allow(workorders).to receive(:stow_tool)
+      allow(Lich::Messaging).to receive(:msg)
+
+      workorders.send(:repair_items, info, ['hammer'])
+
+      expect(DRC).to have_received(:bput).with('give Rangu', any_args).once
+      expect(workorders).to have_received(:stow_tool).with('hammer').once
+      expect(Lich::Messaging).not_to have_received(:msg).with('bold', /did not take/)
     end
 
     describe 'collecting the tickets' do
@@ -1745,8 +1784,11 @@ RSpec.describe WorkOrders do
 
         expect(workorders).to receive(:get_tool).with('hammer')
         expect(workorders).to receive(:get_tool).with('tongs')
-        # First tool triggers 'give' branch with stow failure, second tool gets 'repair ticket' (no 'give')
+        # First tool triggers 'give' branch with stow failure, second tool gets 'repair ticket' (no 'give'),
+        # an answer to the first give no data pattern knows: put away, saying so.
+        allow(Lich::Messaging).to receive(:msg)
         expect(Lich::Messaging).to receive(:msg).with('bold', 'WorkOrders: Failed to stow repair ticket').once
+        expect(Lich::Messaging).to receive(:msg).with('bold', 'WorkOrders: Rangu did not take the tongs for repair (repair ticket); putting it away.').once
         expect(Lich::Messaging).to receive(:msg).with('plain', 'WorkOrders: Tool repair at NPC completed')
 
         workorders.send(:repair_items, info, tools)
