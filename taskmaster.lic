@@ -4060,8 +4060,12 @@ class TaskMaster
     return if giver.nil? || giver == @npc
 
     if @cycle && CYCLE_NPCS.include?(giver)
-      # The next task is picked at random again, so no going back after it.
+      # The next task is picked at random again, so no going back after it:
+      # a fallback this run made (found asking task_fallback_npc) is undone,
+      # so nothing later in this task's loop takes the first taskmaster for
+      # the one to go back to.
       DRC.message("You are on a task for #{giver.capitalize}, one of the taskmasters cycle works; finishing it.")
+      @primary_npc = nil
       @npc = giver
       return
     end

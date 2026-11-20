@@ -2432,6 +2432,16 @@ RSpec.describe TaskMaster do
             expect(DRC).to have_received(:message).with('You are on a task for Zasele, the fallback taskmaster; finishing it.')
           end
 
+          it "in a cycle run, when a cycled taskmaster's task turns up while asking the fallback, leaves nothing to go back to" do
+            tm = build(npc: 'nezhiri', primary_npc: 'poltu', cycle: true, fallback_npc: 'nezhiri', task_giver: 'bradyn')
+            allow(DRC).to receive(:message)
+
+            tm.check_task_giver
+
+            expect([tm.instance_variable_get(:@npc), tm.instance_variable_get(:@primary_npc)]).to eq(['bradyn', nil])
+            expect(DRC).to have_received(:message).with('You are on a task for Bradyn, one of the taskmasters cycle works; finishing it.')
+          end
+
           it 'stays foreign in marathon, which would tailor it' do
             tm = build(npc: 'zasele', fallback_npc: 'nezhiri', task_giver: 'nezhiri', cancel_foreign_tasks: false, marathon: true)
             allow(DRC).to receive(:message)
