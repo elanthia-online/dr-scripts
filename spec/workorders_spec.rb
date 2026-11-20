@@ -2,6 +2,7 @@
 
 require 'ostruct'
 require 'time'
+require 'tmpdir'
 require 'yaml'
 
 require_relative 'spec_helper'
@@ -1356,8 +1357,8 @@ RSpec.describe WorkOrders do
     # whole, or (raises:) its read raises that.
     def ship(replies = repair_replies, raises: nil, file: { 'repair_replies' => replies })
       stub_const('SCRIPT_DIR', '/lich/scripts')
-      allow(YAML).to receive(:safe_load_file).and_call_original
-      read = allow(YAML).to receive(:safe_load_file).with(shipped_path, aliases: true)
+      allow(YAML).to receive(:unsafe_load_file).and_call_original
+      read = allow(YAML).to receive(:unsafe_load_file).with(shipped_path)
       raises ? read.and_raise(raises) : read.and_return(file)
     end
 
@@ -1377,7 +1378,24 @@ RSpec.describe WorkOrders do
       expect(DRCT).to have_received(:walk_to).with(200).twice
       expect(workorders).to have_received(:stow_tool).with('tongs').once
       expect(Lich::Messaging).to have_received(:msg).with('bold', 'WorkOrders: data/custom/base-crafting.yaml has no usable repair_replies quote, prompt, offered, declined, ticket, need_coin, ready, not_ready, ticket_handed, ticket_not_taken (a copy from before they were added?); using the shipped data/base-crafting.yaml\'s. Update that copy.').once
-      expect(YAML).to have_received(:safe_load_file).with(shipped_path, aliases: true).once
+      expect(YAML).to have_received(:unsafe_load_file).with(shipped_path).once
+    end
+
+    # Unstubbed: the real shipped file, and a copy of it with a line that only
+    # a permissive load reads (lich-5's get_data reads it so), as the file may
+    # later gain. A safe load raises on the Date and hides every reply.
+    { 'the shipped file' => '', 'the shipped file with a Date in it' => "added_on: 2026-11-21\n" }.each do |label, extra|
+      it "reads every repair reply from #{label}, unstubbed" do
+        allow(workorders).to receive(:get_data).with('crafting').and_return({ 'stock' => {} })
+        allow(Lich::Messaging).to receive(:msg)
+        root = Dir.mktmpdir
+        FileUtils.mkdir_p(File.join(root, 'data'))
+        File.write(File.join(root, 'data', 'base-crafting.yaml'), File.read(File.expand_path('../data/base-crafting.yaml', __dir__)) + extra)
+        stub_const('SCRIPT_DIR', root)
+
+        expect(workorders.send(:repair_replies)).to eq(repair_replies)
+        expect(workorders.send(:repair_replies_known?)).to be(true)
+      end
     end
 
     # A hand-edited copy whose repair_replies is a list, a pattern or a

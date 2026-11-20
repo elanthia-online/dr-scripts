@@ -3140,7 +3140,8 @@ task_cancel_foreign_tasks: false
 # Unset: the run stops at the limit, and waits for tools at repair. Ignored by marathon, which works only Zasele's tasks.
 task_fallback_npc:
 # Setting for taskmaster - Where tools go for repair (unless task_no_repair or task_self_repair): rangu
-# (Rangu, Crossing Engineering Society), hometown (Crossing's town repairer in base-town.yaml, Catrox) or
+# (Rangu, Crossing Engineering Society), town (Crossing's town repairer in base-town.yaml, Catrox; hometown,
+# its earlier name, is taken as town) or
 # task_type (Crossing's repairer, in base-crafting.yaml, of the discipline taskmaster gives each
 # taskmaster: tailoring for Zasele, remedies for Nezhiri, blacksmithing for Poltu, shaping for Bradyn,
 # his metal tasks too, artificing for Dorhum). Always Crossing's, where every task is bought and crafted,
@@ -3174,7 +3175,7 @@ task_fallback_npc:
 # ;workorders in another discipline picks such a ticket up with its own and stops collecting at one its
 # clerk does not take; a ticket whose item is noted at two clerks is not handed in (it says so), and work
 # that uses that tool stops until you hand it in yourself at the right clerk and run ;taskmaster pickup.
-# With hometown, crossing-repair (which training-manager runs after hunts) and ;repair hand in every
+# With town, crossing-repair (which training-manager runs after hunts) and ;repair hand in every
 # Catrox ticket, taskmaster's included: crossing-repair puts such a tool in your default stow container,
 # not your crafting bag or toolbelt, and taskmaster's next pickup forgets its note (no ticket carried).
 # Run ;taskmaster pickup before those scripts run, or use rangu or task_type with them.
