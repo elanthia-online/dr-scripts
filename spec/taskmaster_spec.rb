@@ -12744,6 +12744,15 @@ RSpec.describe TaskMaster do
       expect($right_hand).to be_nil
     end
 
+    it 'marks the note ticketed only when the game hands over the ticket; an unanswered confirming give leaves it unticketed' do
+      drop(rangu_quote, rangu_ticket)
+      expect(UserVars.taskmaster_repairs.map { |record| record['ticketed'] }).to eq([true])
+
+      UserVars.taskmaster_repairs = []
+      drop(rangu_quote, '')
+      expect(UserVars.taskmaster_repairs.map { |record| record['ticketed'] }).to eq([false])
+    end
+
     it 'saves the note at once, before the confirming give, so a crash before Lich saves leaves it' do
       vars = double('Vars', save: nil)
       stub_const('Vars', vars)
@@ -12759,9 +12768,9 @@ RSpec.describe TaskMaster do
 
       tm.tool_drop(['mortar'], 'alchemy belt')
 
-      # The second save is the repaired stamp (note_repaired), once the
-      # ticket is kept.
-      expect(sent).to eq(['give Rangu', :saved, 'give Rangu', :saved, 'stow ticket'])
+      # Saved at the note, then on the ticket line twice: the note marked
+      # ticketed (confirm_note) and the repaired stamp (note_repaired).
+      expect(sent).to eq(['give Rangu', :saved, 'give Rangu', :saved, :saved, 'stow ticket'])
     end
 
     it 'saves at once when a note is forgotten' do
@@ -15343,7 +15352,8 @@ RSpec.describe TaskMaster do
 
       tm.tool_drop(['knitting needles'], nil)
 
-      expect(order).to eq(%i[note stow])
+      # The note, then its mark as ticketed, both before the stow.
+      expect(order).to eq(%i[note note stow])
     end
 
     it 'notes nothing when no ticket is kept' do
@@ -15822,6 +15832,18 @@ RSpec.describe TaskMaster do
       allow(tm).to receive(:complete_task) { events << [:complete, tm.instance_variable_get(:@npc)] }
       tm.run_tasks(OpenStruct.new)
       [events, tm]
+    end
+
+    it "does not detour for a note whose confirming give went unanswered ('ticketed' false: the tool may still be carried), but does for one whose ticket came" do
+      noted('nezhiri')
+      UserVars.taskmaster_repairs = UserVars.taskmaster_repairs.map { |record| record.merge('ticketed' => false) }
+      events, = detour_run(asks: { 'nezhiri' => [offer] })
+      expect(events.first).to eq([:ask, 'nezhiri'])
+
+      noted('nezhiri')
+      UserVars.taskmaster_repairs = UserVars.taskmaster_repairs.map { |record| record.merge('ticketed' => true) }
+      events, = detour_run(asks: { 'zasele' => [offer] })
+      expect(events.first).to eq([:ask, 'zasele'])
     end
 
     it "works one of the fallback's tasks, picking up nothing, when the first one's tools are at repair" do

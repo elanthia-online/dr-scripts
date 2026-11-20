@@ -23,7 +23,7 @@
   task_rock_room: 793 # room where Dorhum's spongestone and splashstone tasks forage rocks (none can be had on Andreshlew)
   task_shell_room: 793 # room where Dorhum's glow shell tasks forage shells
   task_cancel_foreign_tasks: true/false # a run never works another taskmaster's task; with this it cancels one it finds open, waits out the 10-minute cooldown a cancel brings, then goes back to its own taskmaster. Off: it stops, saying whose task it is and how to finish or cancel it. A cycle run finishes an open task of Poltu, Bradyn or Zasele (the taskmasters it picks from) as its own, whichever it picked
-  task_fallback_npc: zasele # when the taskmaster asked says you have done the most tasks it allows today (the game's line naming it; a player saying those words, or a line naming another taskmaster, does not count), work this taskmaster's task instead; the next run asks the first one again (in a cycle run the next taskmaster is picked at random as usual). With task_repair_every entries for both (the first one's more than 0; the default entry does not count, and a run says so at its start), it is also worked, one task, right after the first one's tools are left for repair (unless any of its own is still at repair (matched as its own pickup matches them, the stamp its task marks with under mark_crafted_goods included), however long ago it was left, since its task could wait for it, or stop with the task open on one a pickup could not get back, and the task is not known before the ask; a ready one is collected by the next task whose pickup goes to its repairer, task_get_tools_on_completion or ;taskmaster pickup; or it has given its limit since the daily rollover; Poltu and Bradyn share the forging tools, so a Poltu run never detours to Bradyn, and a Bradyn run detours to Poltu only after a task that left no forging tool (and, with mark_crafted_goods, no stamp: Zasele's, Poltu's, Bradyn's and Dorhum's tasks all mark with it, so a stamp at repair, whichever toolset sent it, holds back a detour to any of them)), so the run does not wait at the repairer; the run after asks the first one again (in a cycle run the next pick is random as usual, and the next task that uses the first one's tools collects them; with task_get_tools_on_completion each run collects its tools at its end, so only repeat and cycle runs detour, and a run right after one that only finished a task already open, which ends before that pickup). A fallback that has given its limit since the rollover is not asked again until the next one: neither for a detour nor when the first one gives its limit (the run then stops, saying the fallback gave its limit earlier this game day). The game resets the limit some seconds after the rollover, so a limit given in the first 5 minutes after it counts as the old day's and does not hold for the new day. Unset: the run stops at the limit, and waits for tools at repair. Ignored by marathon (Zasele only)
+  task_fallback_npc: zasele # when the taskmaster asked says you have done the most tasks it allows today (the game's line naming it; a player saying those words, or a line naming another taskmaster, does not count), work this taskmaster's task instead; the next run asks the first one again (in a cycle run the next taskmaster is picked at random as usual). With task_repair_every entries for both (the first one's more than 0; the default entry does not count, and a run says so at its start), it is also worked, one task, right after the first one's tools are left for repair (unless any of its own is still at repair (matched as its own pickup matches them, the stamp its task marks with under mark_crafted_goods included), however long ago it was left, since its task could wait for it, or stop with the task open on one a pickup could not get back, and the task is not known before the ask; a ready one is collected by the next task whose pickup goes to its repairer, task_get_tools_on_completion or ;taskmaster pickup; or it has given its limit since the daily rollover; Poltu and Bradyn share the forging tools, so a Poltu run never detours to Bradyn, and a Bradyn run detours to Poltu only after a task that left no forging tool (and, with mark_crafted_goods, no stamp: Zasele's, Poltu's, Bradyn's and Dorhum's tasks all mark with it, so a stamp at repair, whichever toolset sent it, holds back a detour to any of them)), so the run does not wait at the repairer; the run after asks the first one again (in a cycle run the next pick is random as usual, and the next task that uses the first one's tools collects them; with task_get_tools_on_completion each run collects its tools at its end, so only repeat and cycle runs detour, and a run right after one whose tools were still out when it ended: one that only finished a task already open, which ends before that pickup, or one whose end-of-run pickup could not reach the repairer or found a tool not ready; only tools whose ticket the game handed over count, as a tool whose confirming give went unanswered may still be carried). A fallback that has given its limit since the rollover is not asked again until the next one: neither for a detour nor when the first one gives its limit (the run then stops, saying the fallback gave its limit earlier this game day). The game resets the limit some seconds after the rollover, so a limit given in the first 5 minutes after it counts as the old day's and does not hold for the new day. Unset: the run stops at the limit, and waits for tools at repair. Ignored by marathon (Zasele only)
   task_cancel_when_instructions_short: true/false # default true. When the task's one replacement set is spent and the instructions carried still have too few uses, cancel the task (losing the items made for it), wait out the 10-minute cooldown and take a new one. False: stop on every run with "Already asked ..." for a person to look at
   alchemy_tools: [bowl, mixing stick, mortar, pestle, sieve] # Nezhiri's tasks use the mortar and pestle or the bowl and mixing stick (whichever her remedy needs) and the sieve; the two used and the sieve go for repair (task_repair_by, task_repair_every) after each task (task_no_repair / task_self_repair as usual)
   alchemy_belt: # the toolbelt the alchemy tools are tied to, if any
@@ -39,7 +39,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.21.9'
+  VERSION = '2026.11.21.10'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -389,7 +389,10 @@ class TaskMaster
     other = usable_fallback_npc
     return unless other && !fallback_capped?(other) && repair_every_setting.key?(other) && repair_every_setting.fetch(@npc, 0).positive?
 
-    fresh = repairs_out_for(@npc).reject { |record| record['detoured'] }.select { |record| just_left?(record) }
+    # Only notes whose ticket the game handed over ('ticketed' not false; a
+    # note from before the key counts as ticketed): one whose confirming
+    # give went unanswered may be for a tool still in the bag.
+    fresh = repairs_out_for(@npc).reject { |record| record['detoured'] || record['ticketed'] == false }.select { |record| just_left?(record) }
     return if fresh.empty?
     return unless repairs_out_for(other).empty?
 
@@ -519,6 +522,21 @@ class TaskMaster
   def note_capped(npc)
     capped = UserVars.taskmaster_capped.is_a?(Hash) ? UserVars.taskmaster_capped : {}
     UserVars.taskmaster_capped = capped.merge(npc => Time.now.to_i)
+    save_user_vars
+  end
+
+  # Marks a note as one whose ticket the game handed over (tool_drop), so
+  # it can start a detour.
+  #
+  # @param record [Hash{String => Object}] the note as tool_drop saved it
+  # @return [void]
+  def confirm_note(record)
+    left = repairs_out
+    index = left.index(record)
+    return unless index
+
+    left[index] = record.merge('ticketed' => true)
+    UserVars.taskmaster_repairs = left
     save_user_vars
   end
 
@@ -6828,10 +6846,14 @@ class TaskMaster
         # ticket is stowed) leaves a note that leads the next pickup to the
         # ticket, at any repairer. Had the give not gone through, the next
         # whole look finds no ticket for it and forgets it.
-        record = { 'npc' => @npc, 'repairer' => name, 'room' => repairer['id'], 'tool' => tool_name, 'item' => item, 'left_at' => Time.now.to_i }
+        # 'ticketed' false until the game's ticket line comes: a note whose
+        # confirming give went unanswered may be for a tool still carried,
+        # so it starts no detour (detour_while_tools_repair).
+        record = { 'npc' => @npc, 'repairer' => name, 'room' => repairer['id'], 'tool' => tool_name, 'item' => item, 'left_at' => Time.now.to_i, 'ticketed' => false }
         note_repair(record)
         confirmed = DRC.bput("give #{name}", ticket_handed_over, repair_replies['need_coin'])
         if confirmed.match?(ticket_handed_over)
+          confirm_note(record)
           note_repaired(tool_name)
           DRC.bput('stow ticket', 'You put')
           next
