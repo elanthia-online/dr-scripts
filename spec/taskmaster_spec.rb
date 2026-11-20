@@ -15279,6 +15279,17 @@ RSpec.describe TaskMaster do
       expect(tm.game_day_turned_since?(Time.utc(2026, 3, 8, 4, 0).to_i)).to be(false)
       at.call(2026, 11, 1, 5, 0)
       expect(tm.game_day_turned_since?(Time.utc(2026, 11, 1, 4, 0).to_i)).to be(true)
+      # The day after each change: the first daylight-time midnight (05:00
+      # UTC on 2026-03-09) and the first standard-time one (06:00 UTC on
+      # 2026-11-02). A rule a day or a month off at either end fails here.
+      at.call(2026, 3, 9, 4, 59)
+      expect(tm.game_day_turned_since?(Time.utc(2026, 3, 9, 3, 0).to_i)).to be(false)
+      at.call(2026, 3, 9, 5, 0)
+      expect(tm.game_day_turned_since?(Time.utc(2026, 3, 9, 3, 0).to_i)).to be(true)
+      at.call(2026, 11, 2, 5, 59)
+      expect(tm.game_day_turned_since?(Time.utc(2026, 11, 2, 4, 0).to_i)).to be(false)
+      at.call(2026, 11, 2, 6, 0)
+      expect(tm.game_day_turned_since?(Time.utc(2026, 11, 2, 4, 0).to_i)).to be(true)
     end
 
     # The game resets the limit some seconds after the turn (Nezhiri's limit
@@ -15382,11 +15393,44 @@ RSpec.describe TaskMaster do
       expect(UserVars.taskmaster_capped['zasele']).to be_within(5).of(Time.now.to_i)
     end
 
-    it 'does not detour for tools left long enough ago to be ready (overnight): it asks the first one and collects them' do
-      noted('nezhiri', ago: TaskMaster::REPAIR_READY_SECONDS)
-      events, = detour_run(asks: { 'nezhiri' => [offer] })
+    # REPAIR_READY_SECONDS is 600: the literal seconds here pin the value
+    # as well as the edge. The clock stands still so the note's age is exact.
+    it 'does not detour for tools left long enough ago to be ready (600 s or more, overnight): it asks the first one and collects them' do
+      allow(Time).to receive(:now).and_return(Time.utc(2026, 11, 20, 12))
+      [600, 601, 86_400].each do |ago|
+        noted('nezhiri', ago: ago)
+        # 'zasele' => []: a detour would raise "asked zasele again".
+        events, = detour_run(asks: { 'nezhiri' => [offer], 'zasele' => [] })
 
-      expect(events).to eq([[:ask, 'nezhiri'], [:tool_pickup, 'nezhiri'], [:work, :nezhiri], [:complete, 'nezhiri']])
+        expect(events).to eq([[:ask, 'nezhiri'], [:tool_pickup, 'nezhiri'], [:work, :nezhiri], [:complete, 'nezhiri']]), "left #{ago} s ago"
+        expect(UserVars.taskmaster_repairs.first).not_to have_key('detoured')
+      end
+    end
+
+    it 'detours for tools left from 0 to 599 s ago (#just_left?)' do
+      allow(Time).to receive(:now).and_return(Time.utc(2026, 11, 20, 12))
+      [0, 599].each do |ago|
+        noted('nezhiri', ago: ago)
+        events, = detour_run(asks: { 'zasele' => [offer] })
+
+        expect(events).to eq([[:ask, 'zasele'], [:work, :zasele], [:complete, 'zasele']]), "left #{ago} s ago"
+        expect(UserVars.taskmaster_repairs.first).to include('detoured' => true)
+      end
+    end
+
+    # A note left later than now (the Lich clock set back since, say by an
+    # NTP correction) is of unknown age: just_left? counts it as long ago,
+    # so the run asks the first one and its pickup collects the tools.
+    it "does not count the first one's tools left later than now (the clock set back) as just left" do
+      allow(Time).to receive(:now).and_return(Time.utc(2026, 11, 20, 12))
+      [-1, -120].each do |ago|
+        noted('nezhiri', ago: ago)
+        # 'zasele' => []: a detour would raise "asked zasele again".
+        events, = detour_run(asks: { 'nezhiri' => [offer], 'zasele' => [] })
+
+        expect(events).to eq([[:ask, 'nezhiri'], [:tool_pickup, 'nezhiri'], [:work, :nezhiri], [:complete, 'nezhiri']]), "left #{-ago} s from now"
+        expect(UserVars.taskmaster_repairs.first).not_to have_key('detoured')
+      end
     end
 
     it 'with repeat, does not walk to the fallback again in the run once it has given its daily limit' do
