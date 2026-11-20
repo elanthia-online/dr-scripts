@@ -8928,8 +8928,14 @@ RSpec.describe TaskMaster do
         expect(DRCI).to have_received(:stow_hands)
       end
 
+      # GLANCE as the game words it (reconcile_hands' fixtures).
+      def glance(reply)
+        allow(DRC).to receive(:bput).with('glance', any_args).and_return(reply)
+      end
+
       it 'puts a tool crafting_items_in_container lists in the crafting bag, with no belt listing it (Bradyn\'s chisels)' do
         hold(right: obj('iron chisels', 'chisels', '9'))
+        glance('You glance down to see some iron chisels in your right hand.')
         build(npc: 'bradyn', bag_items: ['chisels', 'bone saw']).put_hands_away
         expect(DRCC).to have_received(:stow_crafting_item).with('chisels', 'duffel bag', nil)
         expect(DRCI).to have_received(:stow_hands)
@@ -8942,6 +8948,7 @@ RSpec.describe TaskMaster do
         bag_items = YAML.safe_load("crafting_items_in_container:\n  - chisels\n  -\n  - ''\n  - 5\n")['crafting_items_in_container']
         expect(bag_items).to eq(['chisels', nil, '', 5])
         hold(right: obj('iron chisels', 'chisels', '9'), left: obj('polished loimic slender awl', 'awl', '10'))
+        glance('You glance down to see some iron chisels in your right hand and a polished loimic slender awl in your left hand.')
         expect { build(npc: 'bradyn', bag_items: bag_items).put_hands_away(nil) }.not_to raise_error
         expect(DRCC).to have_received(:stow_crafting_item).once
         expect(DRCC).to have_received(:stow_crafting_item).with('chisels', 'duffel bag', nil)
@@ -8952,6 +8959,22 @@ RSpec.describe TaskMaster do
         hold(right: obj('polished loimic slender awl', 'awl', '10'))
         tied = { 'name' => 'toolbelt', 'items' => [nil, ' ', 'scissors'] }
         expect { build.put_hands_away(tied) }.not_to raise_error
+        expect(DRCC).not_to have_received(:stow_crafting_item)
+        expect(DRCI).to have_received(:stow_hands)
+      end
+
+      it 'leaves an unfinished piece whose hand tag leaves "unfinished" out to the default container, by its full name from GLANCE' do
+        hold(left: obj('reinforced rope', 'rope', '3'))
+        glance('You glance down to see a coil of unfinished burlap reinforced rope in your left hand.')
+        build(bag_items: ['rope']).put_hands_away
+        expect(DRCC).not_to have_received(:stow_crafting_item)
+        expect(DRCI).to have_received(:stow_hands)
+      end
+
+      it 'leaves a bag item in hand to the default container when GLANCE does not name it' do
+        hold(right: obj('iron chisels', 'chisels', '9'))
+        glance('')
+        build(npc: 'bradyn', bag_items: ['chisels']).put_hands_away
         expect(DRCC).not_to have_received(:stow_crafting_item)
         expect(DRCI).to have_received(:stow_hands)
       end
