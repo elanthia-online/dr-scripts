@@ -7188,8 +7188,11 @@ class TaskMaster
     if fits.empty?
       others = rivals - [record]
       free = tickets.reject { |ticket| others.any? { |other| exact_tool?(other, ticket[:item]) } }
+      # A note with no name in hand takes a ticket by its setting's words
+      # only when one item fits: two (an unrelated heavy iron mortar and
+      # the stone mortar) are :unclear, and the note is kept.
       fits = if record['item'].to_s.empty?
-               free.select { |ticket| same_tool?(record, ticket[:item]) }.first(1)
+               free.select { |ticket| same_tool?(record, ticket[:item]) }
              else
                free.select { |ticket| extends_item?(ticket[:item], record['item']) }
              end
@@ -7213,10 +7216,13 @@ class TaskMaster
     extends_item?(item, record['item'])
   end
 
-  # Whether +item+ is the tool named +name+: the same name, or +name+
-  # followed by more words whose noun (lich-5's DRC.get_noun, which drops
-  # the description after it) is +name+'s last word, as a hand tag ends
-  # with the noun. A leading article is ignored, and so is case.
+  # Whether +item+ is the tool named +name+: the same name, or a name that
+  # holds +name+ as a run of whole words, in order, whose noun (lich-5's
+  # DRC.get_noun, which drops the description after it) is +name+'s last
+  # word, as a hand tag is a run of the full name's words ending at the
+  # noun. A leading article is ignored, and so is case. When more than one
+  # ticket fits a note this way, ticket_for calls it :unclear and the note
+  # is kept, not forgotten.
   #
   # @param item [String] the longer name (a ticket's item)
   # @param name [String] the shorter one (a hand tag)
@@ -7227,7 +7233,10 @@ class TaskMaster
     return false if long.empty? || short.empty?
     return true if long.casecmp?(short)
 
-    long.downcase.start_with?("#{short.downcase} ") && DRC.get_noun(long).to_s.casecmp?(short.split.last)
+    # A hand tag is a run of the full name's words that ends at the noun:
+    # "large purpleheart bowl" (edged with ivory), "sewing needles" (slender
+    # agonite ...), "reinforced rope" (coil of unfinished burlap ...).
+    long.match?(/(?:\A|\s)#{Regexp.escape(short)}(?:\s|\z)/i) && DRC.get_noun(long).to_s.casecmp?(short.split.last)
   end
 
   # Whether the tool handed back is the noted one: by the name in hand
