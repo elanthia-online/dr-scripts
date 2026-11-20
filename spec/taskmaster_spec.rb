@@ -13325,6 +13325,56 @@ RSpec.describe TaskMaster do
           expect(UserVars.taskmaster_repairs.size).to eq(1)
         end
 
+        # A look that goes unanswered hides a ticket that may fit too: the one
+        # seen only looks unique. An approximate claim waits for a whole read;
+        # an exact one does not.
+        it 'hands in no ticket that only approximately fits a named note while a look goes unanswered, and keeps the note' do
+          mortar = { 'npc' => 'nezhiri', 'repairer' => 'Catrox', 'room' => 19_093, 'tool' => 'mortar', 'item' => 'stone mortar', 'left_at' => 0 }
+          UserVars.taskmaster_repairs = [mortar]
+          tm = pickup_world({ 'Catrox' => [['rough granite stone mortar', true], ['polished belzune stone mortar', true]] }, unanswered: ['second Catrox'], rangu_ticket: false)
+
+          tm.collect_task_tools(['mortar'])
+
+          expect(gives).to eq(0)
+          expect(UserVars.taskmaster_repairs).to eq([mortar])
+        end
+
+        it 'still hands in a ticket for the very name in hand while a later look goes unanswered' do
+          mortar = { 'npc' => 'nezhiri', 'repairer' => 'Catrox', 'room' => 19_093, 'tool' => 'mortar', 'item' => 'polished belzune stone mortar', 'left_at' => 0 }
+          UserVars.taskmaster_repairs = [mortar]
+          tm = pickup_world({ 'Catrox' => [['polished belzune stone mortar', true], ['rough granite stone mortar', true]] }, unanswered: ['second Catrox'], rangu_ticket: false)
+
+          tm.collect_task_tools(['mortar'])
+
+          expect(gives).to eq(1)
+          expect(UserVars.taskmaster_repairs).to eq([])
+        end
+
+        it 'holds back an approximate claim, but not an exact one, when the read was not whole' do
+          tm = build
+          named = { 'npc' => 'nezhiri', 'repairer' => 'Catrox', 'room' => 19_093, 'tool' => 'mortar', 'item' => 'stone mortar', 'left_at' => 0 }
+          seen = [{ ordinal: 'first', item: 'rough granite stone mortar' }]
+
+          expect(tm.ticket_for(named, seen, [named], [], whole: false)).to be_nil
+          expect(tm.ticket_for(nameless, two_bowls.first(1), [nameless], [], whole: false)).to be_nil
+          expect(tm.ticket_for(named.merge('item' => 'rough granite stone mortar'), seen, [named], [], whole: false)).to eq(seen.first)
+          expect(tm.ticket_for(named, seen)).to eq(seen.first)
+          # Nor does the Rangu sweep hand in the ticket held back.
+          expect(tm.unaccounted_tickets(seen, [[named, nil]], whole: false)).to eq([])
+          expect(tm.unaccounted_tickets(seen, [[named, nil]])).to eq(seen)
+        end
+
+        it 'sweeps no Rangu ticket that approximately fits a named note while a look goes unanswered' do
+          mortar = { 'npc' => 'nezhiri', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'mortar', 'item' => 'stone mortar', 'left_at' => 0 }
+          UserVars.taskmaster_repairs = [mortar]
+          tm = pickup_world({ 'Rangu' => [['rough granite stone mortar', true], ['polished belzune stone mortar', true]] }, unanswered: ['second Rangu'], rangu_ticket: true)
+
+          tm.collect_task_tools(['mortar'])
+
+          expect(gives).to eq(0)
+          expect(UserVars.taskmaster_repairs).to eq([mortar])
+        end
+
         it "fits a ticket by its setting name's words, and so keeps a ticket of its tool out of the Rangu sweep when the repairer refused it" do
           tm = build
           mortar_ticket = { ordinal: 'third', item: 'heavy iron mortar' }

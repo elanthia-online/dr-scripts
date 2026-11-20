@@ -6511,7 +6511,7 @@ class TaskMaster
         DRC.message("Could not look at the #{name} tickets carried; keeping the notes of #{note_names(notes)}.")
         break
       end
-      claims = pair_tickets(notes, tickets, rivals, elsewhere)
+      claims = pair_tickets(notes, tickets, rivals, elsewhere, whole: whole)
       if whole
         lost = claims.select { |_, ticket| ticket.nil? }.map(&:first)
         unless lost.empty?
@@ -6533,7 +6533,7 @@ class TaskMaster
       end
       live = claims.select { |_, ticket| ticket.is_a?(Hash) }
       own = live.select { |record, _| waited.include?(record) }.map(&:last)
-      loose = unnoted ? unaccounted_tickets(tickets, claims).reject { |ticket| ticket[:refused] } : []
+      loose = unnoted ? unaccounted_tickets(tickets, claims, whole: whole).reject { |ticket| ticket[:refused] } : []
       # The work's own tickets first (the waited notes come first in notes,
       # so in live), then the ready_only ones, then those no note accounts
       # for: a visit a full hand or an unseen tool cuts short has handed in
@@ -6621,11 +6621,11 @@ class TaskMaster
     end
     notes = waited + extra
     rivals = repairer_notes(name)
-    claims = pair_tickets(notes, tickets, rivals, rivals.reject { |record| record['room'] == room })
+    claims = pair_tickets(notes, tickets, rivals, rivals.reject { |record| record['room'] == room }, whole: whole)
     # Kept for want of the player's hand, not of time: every run would read
     # the same tickets again (stop_if_tools_at_repair says so).
     (@tools_held_back ||= []).concat(claims.select { |_, claim| claim.is_a?(Symbol) }.map(&:first))
-    unnoted ? unaccounted_tickets(tickets, claims) : []
+    unnoted ? unaccounted_tickets(tickets, claims, whole: whole) : []
   end
 
   # What collect_tools says of notes whose one ticket could as well be a
@@ -6662,14 +6662,16 @@ class TaskMaster
   #   of this name
   # @param elsewhere [Array<Hash{String => Object}>] those of them in
   #   another room
+  # @param whole [Boolean] whether every ticket carried was read
+  #   (ticket_for)
   # @return [Array<Array(Hash, Object)>] each note, in order, with what
   #   ticket_for gave it
-  def pair_tickets(notes, tickets, rivals, elsewhere)
+  def pair_tickets(notes, tickets, rivals, elsewhere, whole: true)
     taken = []
     claims = Array.new(notes.size)
     notes.each_index.sort_by { |index| [notes[index]['item'].to_s.empty? ? 1 : 0, index] }.each do |index|
       free = tickets.reject { |ticket| taken.any? { |other| other.equal?(ticket) } }
-      claims[index] = ticket_for(notes[index], free, rivals, elsewhere)
+      claims[index] = ticket_for(notes[index], free, rivals, elsewhere, whole: whole)
       taken << claims[index] if claims[index].is_a?(Hash)
     end
     notes.zip(claims)
@@ -6677,7 +6679,8 @@ class TaskMaster
 
   # The tickets no note accounts for: neither paired with a note, nor one
   # that could be a note's that has none to itself (more than one could be
-  # for it, or the repairer refused them all). Only Rangu's tickets are
+  # for it, the repairer refused them all, or the read was not whole and
+  # ticket_for held its claim back). Only Rangu's tickets are
   # swept (collect_tools' +unnoted+), and every Rangu note is in his one
   # room, so +claims+ pairs all of them: no note of his is collected
   # elsewhere.
@@ -6685,10 +6688,11 @@ class TaskMaster
   # @param tickets [Array<Hash{Symbol => Object}>]
   # @param claims [Array<Array(Hash, Object)>] pair_tickets, over every
   #   note of the repairer's
+  # @param whole [Boolean] whether +tickets+ is every ticket carried
   # @return [Array<Hash{Symbol => Object}>]
-  def unaccounted_tickets(tickets, claims)
+  def unaccounted_tickets(tickets, claims, whole: true)
     tickets.reject do |ticket|
-      claims.any? { |record, claim| claim.is_a?(Hash) ? claim.equal?(ticket) : claim.is_a?(Symbol) && fits_note?(record, ticket[:item]) }
+      claims.any? { |record, claim| claim.is_a?(Hash) ? claim.equal?(ticket) : (claim.is_a?(Symbol) || (claim.nil? && !whole)) && fits_note?(record, ticket[:item]) }
     end
   end
 
@@ -6875,7 +6879,10 @@ class TaskMaster
   # in for it. Of the tickets that fit,
   # the first the repairer has not refused this pickup (:refused, marked by
   # collect_tools) is the one; when it refused them all: :refused, and the
-  # note is kept.
+  # note is kept. Only a ticket for the very name in hand is taken from a
+  # read that is not whole (a look went unanswered, or the ordinals ran
+  # out): a ticket not seen could fit the note as well, so the one seen
+  # only looks unique, and an approximate claim waits for a whole read.
   #
   # @param record [Hash{String => Object}] the note
   # @param tickets [Array<Hash{Symbol => Object}>] the repairer's tickets read
@@ -6883,11 +6890,15 @@ class TaskMaster
   #   of this name, the note among them
   # @param elsewhere [Array<Hash{String => Object}>] those of them in
   #   another room
+  # @param whole [Boolean] whether +tickets+ is every ticket carried
   # @return [Hash{Symbol => Object}, Symbol, nil] the ticket; :unclear;
-  #   :elsewhere; :refused; nil when no ticket is for it
-  def ticket_for(record, tickets, rivals = [record], elsewhere = [])
+  #   :elsewhere; :refused; nil when no ticket is for it (or, from a read
+  #   not whole, none for its very name)
+  def ticket_for(record, tickets, rivals = [record], elsewhere = [], whole: true)
     fits = tickets.select { |ticket| exact_tool?(record, ticket[:item]) }
     if fits.empty?
+      return nil unless whole
+
       others = rivals - [record]
       free = tickets.reject { |ticket| others.any? { |other| exact_tool?(other, ticket[:item]) } }
       # A note with no name in hand takes a ticket by its setting's words
