@@ -1215,11 +1215,13 @@ RSpec.describe WorkOrders do
     # its read is stubbed, so no example depends on the file system there.
     let(:shipped_path) { '/lich/scripts/data/base-crafting.yaml' }
 
-    def ship(replies = repair_replies, raises: nil)
+    # The shipped file holds these replies, or (file:) is read as that
+    # whole, or (raises:) its read raises that.
+    def ship(replies = repair_replies, raises: nil, file: { 'repair_replies' => replies })
       stub_const('SCRIPT_DIR', '/lich/scripts')
       allow(YAML).to receive(:safe_load_file).and_call_original
       read = allow(YAML).to receive(:safe_load_file).with(shipped_path, aliases: true)
-      raises ? read.and_raise(raises) : read.and_return({ 'repair_replies' => replies })
+      raises ? read.and_raise(raises) : read.and_return(file)
     end
 
     it 'takes every reply from the shipped base-crafting.yaml, and says so once, when the data (a stale data/custom copy) has none' do
@@ -1289,11 +1291,49 @@ RSpec.describe WorkOrders do
       expect(Lich::Messaging).to have_received(:msg).with('bold', /no usable repair_replies declined, ticket, need_coin \(/).once
     end
 
-    [['the shipped file cannot be read', { raises: Errno::ENOENT }, /none for quote, prompt, offered, .*ticket_not_taken; tools are not left for repair or collected\. Update dr-scripts\./],
-     ['the shipped file has declined as one string too', { replies: :declined_string }, /none for declined; tools are not left/]].each do |title, shipped, warning|
+    it 'takes the shipped value for an empty list or an empty pattern (offered none, ready blank), and still waits on a ticket not ready' do
+      # An empty offered would give with no pattern to answer it (bput waits
+      # out its 15 s); an empty ready matches every look, so a ticket not
+      # ready would be handed in at once.
+      copy = repair_replies.merge('offered' => [], 'ready' => '')
+      allow(workorders).to receive(:get_data).with('crafting').and_return({ 'repair_replies' => copy })
+      ship
+      looks = ['Looking at the Rangu ticket you see it is for a mortar.  You recall that your mortar should be ready any moment now.',
+               'Looking at the Rangu ticket you see it is for a mortar.  You recall that your mortar should be ready by now.']
+      replies = { 'give Rangu' => [quote, handed, 'You hand Rangu your ticket and are handed back a mortar.'] }
+      allow(DRC).to receive(:bput) do |command, *patterns|
+        line = command == 'look at my ticket' ? (looks.shift || raise('looked again after ready')) : replies[command].shift.to_s
+        hit = patterns.flatten.lazy.map { |pattern| line.match(pattern.is_a?(Regexp) ? pattern : /#{pattern}/i) }.find(&:itself)
+        hit ? hit[0] : ''
+      end
+      tickets = [true, false]
+      allow(DRCI).to receive(:get_item?).with('Rangu ticket') { tickets.shift }
+      allow(DRCT).to receive(:walk_to)
+      allow(workorders).to receive(:get_tool)
+      allow(workorders).to receive(:stow_tool)
+      allow(workorders).to receive(:pause)
+      allow(Lich::Messaging).to receive(:msg)
+      expect(workorders).to receive(:confirm_repair).with(info, 'hammer', 240).and_call_original
+
+      workorders.send(:repair_items, info, ['hammer'])
+
+      expect(workorders.send(:repair_replies).values_at('offered', 'ready')).to eq(repair_replies.values_at('offered', 'ready'))
+      expect(workorders).to have_received(:pause).with(30).once
+      expect(Lich::Messaging).to have_received(:msg).with('bold', /no usable repair_replies offered, ready \(/).once
+    end
+
+    every_key = /none for quote, prompt, offered, .*ticket_not_taken; tools are not left for repair or collected\. Update dr-scripts\./
+    [['the shipped file cannot be read', { raises: Errno::ENOENT }, every_key],
+     ['the shipped file cannot be parsed', { raises: Psych::SyntaxError.new('base-crafting.yaml', 3, 1, 10, 'did not find expected key', 'while parsing a block mapping') }, every_key],
+     ['the shipped file has no repair_replies block', { file: { 'stock' => {} } }, every_key],
+     ['the shipped file is not a mapping', { file: [1, 2] }, every_key],
+     ['the shipped file has declined as one string too', { file: :declined_string }, /none for declined; tools are not left/]].each do |title, shipped, warning|
       it "says so once and leaves no tool for repair when #{title}" do
         allow(workorders).to receive(:get_data).with('crafting').and_return({ 'stock' => {} })
-        shipped[:replies] ? ship(repair_replies.merge('declined' => 'scratch')) : ship(raises: shipped[:raises])
+        if shipped[:raises] then ship(raises: shipped[:raises])
+        elsif shipped[:file] == :declined_string then ship(repair_replies.merge('declined' => 'scratch'))
+        else ship(file: shipped[:file])
+        end
         allow(DRCT).to receive(:walk_to)
         allow(DRC).to receive(:bput)
         allow(Lich::Messaging).to receive(:msg)

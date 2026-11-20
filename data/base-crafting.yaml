@@ -1,13 +1,16 @@
 ---
 # What a repairer (Rangu, a society clerk, Catrox and the like) answers when
 # handed a tool with GIVE <name>, read by the scripts that leave tools for
-# repair (workorders, taskmaster) so each keeps no copy of its own. Each entry
-# is a pattern as DRC.bput takes one: a regular expression, matched without
-# regard to case, and the scripts match them the same way. A copy of this file
-# in data/custom replaces this one whole: any of these it lacks (one from
-# before they were added), or has as the wrong kind of value (offered,
-# declined, ticket_handed and ticket_not_taken are lists of strings, the rest
-# strings), is taken from this shipped file, and the scripts say once which.
+# repair: workorders reads them all; taskmaster reads all but ticket_handed and
+# ticket_not_taken (its ticket hand-in still matches 'You hand' itself). Each
+# entry is a pattern as DRC.bput takes one: a regular expression, matched
+# without regard to case, and the scripts match them the same way. A copy of
+# this file in data/custom replaces this one whole: any of these it lacks (one
+# from before they were added), or has as the wrong kind of value, is taken
+# from this shipped file, and the scripts say once which. offered, declined,
+# ticket_handed and ticket_not_taken must be non-empty lists of patterns, the
+# rest one pattern each; a pattern must be a non-empty string that makes a
+# valid regular expression.
 repair_replies:
   # The quote, cost included: "That will cost 4,447 Kronars to repair.  Just
   # give it to me again if you want, and I'll have it ready in 2 roisaen."
@@ -37,7 +40,7 @@ repair_replies:
     - I will not
     - "I can't fix those.  They only have so many uses and then you must buy another."
   # Answers that mean the tool needs no repair or can't have one: it is put
-  # away (workorders; taskmaster also notes when it last looked the tool over).
+  # away.
   # A refusal of the tool itself ("I don't repair those here", "I don't work
   # on those here") is not one of these.
   declined:
@@ -63,10 +66,11 @@ repair_replies:
   ticket_handed:
     - ^You hand
     - takes your ticket
-  # ... or it does not: the tool is not done yet, or nobody there takes the
-  # ticket (crossing-repair.lic:277). Another answer (a clerk handed another
-  # clerk's ticket, whose words no script has yet) is waited out and read as
-  # not taken too.
+  # ... or it does not: the tool is not done yet (the three replies
+  # crossing-repair.lic:277 waits on), or nobody there takes the ticket ("What
+  # is it you're trying to give?", workorders' NPC_NOT_FOUND_PATTERN). Another
+  # answer (a clerk handed another clerk's ticket, whose words no script has
+  # yet) is waited out and read as not taken too.
   ticket_not_taken:
     - almost done
     - "isn't gonna be done"

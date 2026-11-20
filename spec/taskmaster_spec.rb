@@ -12299,11 +12299,13 @@ RSpec.describe TaskMaster do
     # its read is stubbed, so no example depends on the file system there.
     let(:shipped_path) { '/lich/scripts/data/base-crafting.yaml' }
 
-    def ship(replies = real_repair_replies, raises: nil)
+    # The shipped file holds these replies, or (file:) is read as that
+    # whole, or (raises:) its read raises that.
+    def ship(replies = real_repair_replies, raises: nil, file: { 'repair_replies' => replies })
       stub_const('SCRIPT_DIR', '/lich/scripts')
       allow(YAML).to receive(:safe_load_file).and_call_original
       read = allow(YAML).to receive(:safe_load_file).with(shipped_path, aliases: true)
-      raises ? read.and_raise(raises) : read.and_return({ 'repair_replies' => replies })
+      raises ? read.and_raise(raises) : read.and_return(file)
     end
 
     it 'takes every reply from the shipped base-crafting.yaml, and says so once, when the data (a stale data/custom copy) has none' do
@@ -12356,10 +12358,45 @@ RSpec.describe TaskMaster do
       expect(DRC).to have_received(:message).with(/no usable repair_replies declined, ticket, need_coin \(/).once
     end
 
-    [['the shipped file cannot be read', { raises: Errno::ENOENT }, /none for quote, prompt, offered, .*ticket_not_taken; tools are not left for repair or collected\. Update dr-scripts\./],
-     ['the shipped file has declined as one string too', { replies: true }, /none for declined; tools are not left/]].each do |title, shipped, warning|
+    it 'takes the shipped value for an empty list or an empty pattern (offered none, ready blank), and still waits on a ticket not ready' do
+      # An empty offered would give with no pattern to answer it (bput waits
+      # out its 15 s); an empty ready matches every look, so a ticket not
+      # ready would be handed in at once.
+      ship
+      copy = real_repair_replies.merge('offered' => [], 'ready' => '')
+      tm = drop(rangu_quote, rangu_ticket, data: copy)
+
+      expect(sent).to eq(['give Rangu', 'give Rangu', 'stow ticket'])
+      expect(tm.repair_replies.values_at('offered', 'ready')).to eq(real_repair_replies.values_at('offered', 'ready'))
+      expect(DRC).to have_received(:message).with(/no usable repair_replies offered, ready \(/).once
+
+      looks = ['Looking at the Rangu ticket you see it is for a mortar.  You recall that your mortar should be ready any moment now.',
+               'Looking at the Rangu ticket you see it is for a mortar.  You recall that your mortar should be ready by now.']
+      tickets = [true, false]
+      tm.instance_variable_set(:@settings, OpenStruct.new(%i[forging_belt engineering_belt outfitting_belt alchemy_belt enchanting_belt].to_h { |belt| [belt, { 'items' => [] }] }))
+      allow(DRCI).to receive(:get_item?).with('rangu ticket') { tickets.shift }
+      allow(tm).to receive(:pause) { |seconds| $right_hand = 'stone mortar' if seconds < 1 }
+      allow(DRC).to receive(:bput) do |command, *matchers|
+        line = command == 'look at my ticket' ? (looks.shift || raise('looked again after ready')) : 'You hand Rangu your ticket and are handed back a mortar.'
+        bput_match(line, matchers)
+      end
+
+      tm.tool_pickup
+
+      expect(tm).to have_received(:pause).with(30).once
+    end
+
+    every_key = /none for quote, prompt, offered, .*ticket_not_taken; tools are not left for repair or collected\. Update dr-scripts\./
+    [['the shipped file cannot be read', { raises: Errno::ENOENT }, every_key],
+     ['the shipped file cannot be parsed', { raises: Psych::SyntaxError.new('base-crafting.yaml', 3, 1, 10, 'did not find expected key', 'while parsing a block mapping') }, every_key],
+     ['the shipped file has no repair_replies block', { file: { 'stock' => {} } }, every_key],
+     ['the shipped file is not a mapping', { file: [1, 2] }, every_key],
+     ['the shipped file has declined as one string too', { file: :declined_string }, /none for declined; tools are not left/]].each do |title, shipped, warning|
       it "says so once and leaves nothing for repair, or collects nothing, when #{title}" do
-        shipped[:replies] ? ship(real_repair_replies.merge('declined' => 'scratch')) : ship(raises: shipped[:raises])
+        if shipped[:raises] then ship(raises: shipped[:raises])
+        elsif shipped[:file] == :declined_string then ship(real_repair_replies.merge('declined' => 'scratch'))
+        else ship(file: shipped[:file])
+        end
         tm = build(repair_replies: nil)
         allow(tm).to receive(:get_data).with('crafting').and_return({ 'stock' => {} })
         allow(DRCT).to receive(:walk_to)
