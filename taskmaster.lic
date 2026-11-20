@@ -5784,7 +5784,7 @@ class TaskMaster
   end
 
   # The repair_replies keys repair uses.
-  REPAIR_REPLY_KEYS = %w[quote prompt offered declined ticket need_coin ready not_ready].freeze
+  REPAIR_REPLY_KEYS = %w[quote prompt offered declined ticket need_coin ready not_ready ticket_handed ticket_not_taken].freeze
 
   # Whether base-crafting.yaml has every repair reply. A copy in data/custom
   # from before they were added replaces the shipped file whole and has none:

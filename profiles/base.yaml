@@ -1267,6 +1267,9 @@ workorder_cash_on_hand:
 #   Only implemented for remedies
 retain_crafting_materials: false
 # Whether you want to repair your crafting tools after completing workorders or not. For those with tools setup under gear, set to false in your yaml.
+# After leaving the tools, workorders hands in each of the repairer's tickets you carry once it is ready. A ticket the repairer
+# does not take (society clerks all go by "clerk", so one taskmaster left with another clerk is picked up too), one still not
+# ready after 10 minutes, or one more after 20 handed in, is put away and no more are collected that run; it says so.
 workorders_repair: true
 # ADVANCED OPTION to repair your own tools after completing a workorder. This is ONLY recommended if you have the Proper Forging Tool Care technique
 # from the blacksmithing tree, and intend to do more than one workorder within the 2 hour time online.

@@ -33,6 +33,15 @@ class WorkOrders
   # shop (bingots-room), not its stock shop. smith.lic has the same constant.
   BULK_INGOT_VOLUME = 50
 
+  # How often, and how many seconds apart, a repair ticket not ready yet is
+  # looked at again before it is put away and collection stops: ten minutes,
+  # longer than any repair seen (taskmaster waits as long).
+  TICKET_WAIT_POLLS = 20
+  TICKET_WAIT_SECONDS = 30
+
+  # The most repair tickets one run hands in; the next one found is put away.
+  TICKET_LIMIT = 20
+
   BUNDLE_SUCCESS_PATTERNS = [
     '^You notate the',
     '^This work order has expired',
@@ -382,14 +391,62 @@ class WorkOrders
       end
     end
 
-    while DRCI.get_item?("#{info['repair-npc']} ticket")
-      pause 30 until DRC.bput('look at my ticket', repair_replies['ready'], repair_replies['not_ready']).match?(/#{repair_replies['ready']}/i)
-      DRC.bput("give #{info['repair-npc']}", 'You hand')
+    collect_tickets(info['repair-npc'])
+    Lich::Messaging.msg('plain', 'WorkOrders: Tool repair at NPC completed')
+  end
+
+  # Hands in each <npc> ticket carried once its look says the tool is ready,
+  # and stows what comes back. Society repairers all go by "clerk", so GET MY
+  # CLERK TICKET also brings a ticket another clerk holds a tool for (one
+  # taskmaster left, say): a ticket the repairer does not take is put away and
+  # collection stops, rather than being handed over again forever. So is one
+  # still not ready after TICKET_WAIT_POLLS looks, or one more after
+  # TICKET_LIMIT were handed in. Each says so.
+  #
+  # @param npc [String] the repairer (repair-npc)
+  # @return [void]
+  def collect_tickets(npc)
+    handed = 0
+    while DRCI.get_item?("#{npc} ticket")
+      return stop_collecting(npc, "Handed in #{TICKET_LIMIT} #{npc} tickets already") if handed >= TICKET_LIMIT
+      return stop_collecting(npc, "The #{npc} ticket is still not ready after #{TICKET_WAIT_POLLS * TICKET_WAIT_SECONDS / 60} minutes") unless ticket_ready?
+
+      reply = DRC.bput("give #{npc}", *repair_replies['ticket_handed'], *repair_replies['ticket_not_taken'])
+      unless repair_replies['ticket_handed'].any? { |taken| reply.match?(/#{taken}/i) }
+        return stop_collecting(npc, "#{npc} did not take the #{npc} ticket (#{reply.empty? ? 'no answer' : reply}): another repairer's, perhaps, such as one taskmaster left with another clerk")
+      end
+
+      handed += 1
       pause 1
       stow_tool(DRC.right_hand) if DRC.right_hand
       stow_tool(DRC.left_hand) if DRC.left_hand
     end
-    Lich::Messaging.msg('plain', 'WorkOrders: Tool repair at NPC completed')
+  end
+
+  # Whether LOOK AT MY TICKET says the tool is ready, looking again every
+  # TICKET_WAIT_SECONDS up to TICKET_WAIT_POLLS times. A look that gets no
+  # answer counts as not ready.
+  #
+  # @return [Boolean]
+  def ticket_ready?
+    polls = 0
+    until DRC.bput('look at my ticket', repair_replies['ready'], repair_replies['not_ready']).match?(/#{repair_replies['ready']}/i)
+      return false if polls >= TICKET_WAIT_POLLS
+
+      polls += 1
+      pause TICKET_WAIT_SECONDS
+    end
+    true
+  end
+
+  # Puts the ticket in hand away and says why no more are collected.
+  #
+  # @param npc [String] the repairer (repair-npc)
+  # @param why [String] what stopped collection
+  # @return [void]
+  def stop_collecting(npc, why)
+    stowed = DRCI.put_away_item?("#{npc} ticket")
+    Lich::Messaging.msg('bold', "WorkOrders: #{why}. #{stowed ? 'Put it away' : 'Could not put it away'}; collecting no more tickets. Hand it in yourself.")
   end
 
   # Whether the answer to the first give asks for a second one: the quote or
@@ -412,7 +469,7 @@ class WorkOrders
   end
 
   # The repair_replies keys repair uses.
-  REPAIR_REPLY_KEYS = %w[quote prompt offered declined ticket need_coin ready not_ready].freeze
+  REPAIR_REPLY_KEYS = %w[quote prompt offered declined ticket need_coin ready not_ready ticket_handed ticket_not_taken].freeze
 
   # Whether base-crafting.yaml has every repair reply. A copy in data/custom
   # from before they were added replaces the shipped file whole and has none:

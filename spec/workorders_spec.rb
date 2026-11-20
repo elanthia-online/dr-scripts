@@ -1263,6 +1263,86 @@ RSpec.describe WorkOrders do
       end
     end
 
+    describe 'collecting the tickets' do
+      let(:info) { { 'repair-room' => 8776, 'repair-npc' => 'clerk' } }
+      let(:ready_look) { 'Looking at the clerk ticket you see it is for a diagonal-peen hammer.  You recall that your hammer should be ready by now.' }
+      let(:waiting_look) { 'Looking at the clerk ticket you see it is for a diagonal-peen hammer.  You recall that your hammer should be ready any moment now.' }
+      let(:gives) { [] }
+
+      # Scripts the clerk: each look answers with look, each give with give.
+      # A GET MY CLERK TICKET that always brings one (as one held or stowed
+      # again does) raises after turns gets, so a loop with no way out fails
+      # rather than hangs.
+      def clerk(look:, give:, turns: 30)
+        allow(DRCT).to receive(:walk_to)
+        allow(DRC).to receive(:bput) do |command, *patterns|
+          gives << command if command.start_with?('give')
+          line = command == 'look at my ticket' ? look : give
+          hit = patterns.flatten.lazy.map { |pattern| line.match(pattern.is_a?(Regexp) ? pattern : /#{pattern}/i) }.find(&:itself)
+          hit ? hit[0] : ''
+        end
+        got = 0
+        allow(DRCI).to receive(:get_item?).with('clerk ticket') { (got += 1) > turns ? raise("still collecting after #{turns} gets") : true }
+        allow(DRCI).to receive(:put_away_item?).and_return(true)
+        allow(workorders).to receive(:stow_tool)
+        allow(Lich::Messaging).to receive(:msg)
+      end
+
+      ['', "What is it you're trying to give?"].each do |answer|
+        it "puts away a ticket the clerk does not take (#{answer.empty? ? 'no answer' : answer}), says so once and collects no more" do
+          clerk(look: ready_look, give: answer, turns: 5)
+
+          workorders.send(:repair_items, info, [])
+
+          expect(gives).to eq(['give clerk'])
+          expect(DRCI).to have_received(:put_away_item?).with('clerk ticket').once
+          taken = answer.empty? ? 'no answer' : 'What is it'
+          expect(Lich::Messaging).to have_received(:msg).with('bold', "WorkOrders: clerk did not take the clerk ticket (#{taken}): another repairer's, perhaps, such as one taskmaster left with another clerk. Put it away; collecting no more tickets. Hand it in yourself.").once
+          expect(Lich::Messaging).to have_received(:msg).with('plain', 'WorkOrders: Tool repair at NPC completed')
+        end
+      end
+
+      [['still not ready', :waiting_look], ['never answered', :empty]].each do |title, look|
+        it "puts away a ticket whose look is #{title} after 20 waits of 30 s, without handing it in" do
+          clerk(look: look == :empty ? '' : send(look), give: 'You hand the clerk your ticket.', turns: 5)
+          waits = 0
+          allow(workorders).to receive(:pause) { |seconds| (waits += 1) > 25 ? raise("waited #{waits} times") : seconds }
+
+          workorders.send(:repair_items, info, [])
+
+          expect(workorders).to have_received(:pause).with(30).exactly(20).times
+          expect(DRC).to have_received(:bput).with('look at my ticket', any_args).exactly(21).times
+          expect(gives).to be_empty
+          expect(DRCI).to have_received(:put_away_item?).with('clerk ticket').once
+          expect(Lich::Messaging).to have_received(:msg).with('bold', 'WorkOrders: The clerk ticket is still not ready after 10 minutes. Put it away; collecting no more tickets. Hand it in yourself.').once
+        end
+      end
+
+      it 'hands in at most 20 tickets in one run, putting the next one away' do
+        clerk(look: ready_look, give: 'You hand the clerk your ticket and are handed back a diagonal-peen hammer.', turns: 30)
+
+        workorders.send(:repair_items, info, [])
+
+        expect(gives.size).to eq(20)
+        expect(DRCI).to have_received(:put_away_item?).with('clerk ticket').once
+        expect(Lich::Messaging).to have_received(:msg).with('bold', /\AWorkOrders: Handed in 20 clerk tickets already\. Put it away;/).once
+      end
+
+      it 'hands in each ticket the clerk takes, stows the tool, and stops when none is left' do
+        clerk(look: ready_look, give: 'You hand the clerk your ticket and are handed back a diagonal-peen hammer.')
+        tickets = [true, true, false]
+        allow(DRCI).to receive(:get_item?).with('clerk ticket') { tickets.shift }
+        $right_hand = 'diagonal-peen hammer'
+
+        workorders.send(:repair_items, info, [])
+
+        expect(gives).to eq(['give clerk', 'give clerk'])
+        expect(workorders).to have_received(:stow_tool).with('diagonal-peen hammer').twice
+        expect(DRCI).not_to have_received(:put_away_item?)
+        expect(Lich::Messaging).not_to have_received(:msg).with('bold', anything)
+      end
+    end
+
     it 'confirms a quote pattern from data/custom that matches the cost alone, and still puts a refused tool away' do
       cost_only = repair_replies.merge('quote' => 'cost [\d,]+ \w+ to repair', 'offered' => ['cost [\d,]+ \w+ to repair', "There isn't a scratch on that", 'give it to me again'])
       allow(workorders).to receive(:get_data).with('crafting').and_return({ 'repair_replies' => cost_only })

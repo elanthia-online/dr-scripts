@@ -54,6 +54,22 @@ repair_replies:
   # (Cithrin, Catrox, 2026-11-20 07:59:19).
   ready: should be ready by now
   not_ready: Looking at the
+  # GIVE <name> with a ticket in hand: the tool comes back ("You hand Catrox
+  # your ticket and are handed back a large purpleheart bowl edged with
+  # ivory.", Kurtus, 2026-11-18 23:15:27; crossing-repair.lic:277 also takes
+  # "takes your ticket") ...
+  ticket_handed:
+    - ^You hand
+    - takes your ticket
+  # ... or it does not: the tool is not done yet, or nobody there takes the
+  # ticket (crossing-repair.lic:277). Another answer (a clerk handed another
+  # clerk's ticket, whose words no script has yet) is waited out and read as
+  # not taken too.
+  ticket_not_taken:
+    - almost done
+    - "isn't gonna be done"
+    - not ready yet
+    - ^What is it
 stock:
   bronze:
     stock-volume: 5
