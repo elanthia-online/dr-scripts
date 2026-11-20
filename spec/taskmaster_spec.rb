@@ -12720,6 +12720,42 @@ RSpec.describe TaskMaster do
       expect(tm).to have_received(:pause).with(30).once
     end
 
+    # lich-5's get_item? looks only for the noun (ticket) in a hand, so with
+    # another shop's ticket held it is true whatever the GET did. The object
+    # new in a hand is taken only when it is the repairer's ticket: a tool
+    # whose hand update trails in is not offered on GIVE, and the ticket,
+    # should it show a moment later, still is.
+    context 'the object new in a hand after the GET' do
+      let(:catrox_ticket) { OpenStruct.new(id: '7', noun: 'ticket', name: 'Catrox ticket') }
+      let(:hammer) { OpenStruct.new(id: '8', noun: 'hammer', name: 'steel hammer') }
+      let(:rangu_ticket) { OpenStruct.new(id: '9', noun: 'ticket', name: 'Rangu ticket') }
+
+      def redeem_with(*hands)
+        tm = build
+        allow(tm).to receive(:pause)
+        allow(tm).to receive(:held_objects).and_return(*hands)
+        allow(tm).to receive(:put_away_tickets)
+        allow(DRCI).to receive(:get_item?).with('first Rangu ticket').and_return(true)
+        allow(tm).to receive(:move_to_right_hand).and_return(false)
+        allow(DRC).to receive(:bput).and_return('You put')
+        [tm, tm.redeem_ticket('Rangu', 'first')]
+      end
+
+      it 'is never a tool that shows in a hand while another shop\'s ticket is held' do
+        tm, result = redeem_with([catrox_ticket], [catrox_ticket, hammer])
+
+        expect(result).to eq(:not_got)
+        expect(tm).not_to have_received(:move_to_right_hand)
+        expect(DRC).not_to have_received(:bput).with('give Rangu', any_args)
+      end
+
+      it 'is the repairer\'s ticket when it shows after the tool' do
+        tm, = redeem_with([catrox_ticket], [catrox_ticket, hammer], [catrox_ticket, hammer, rangu_ticket])
+
+        expect(tm).to have_received(:move_to_right_hand).with('9')
+      end
+    end
+
     every_key = /none for quote, prompt, offered, .*ticket_not_taken; tools are not left for repair or collected\. Update dr-scripts\./
     [['the shipped file cannot be read', { raises: Errno::ENOENT }, every_key],
      ['the shipped file cannot be parsed', { raises: Psych::SyntaxError.new('base-crafting.yaml', 3, 1, 10, 'did not find expected key', 'while parsing a block mapping') }, every_key],

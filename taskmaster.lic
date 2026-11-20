@@ -7026,8 +7026,8 @@ class TaskMaster
     # lich-5's get_item? looks only for the noun (ticket) in a hand after the
     # GET, so another ticket held makes it true whatever the GET did, and
     # at once, without its own wait for the hand to show the ticket: the
-    # ticket got is the object new in a hand, looked for a moment.
-    ticket = DRCI.get_item?("#{ordinal} #{name} ticket") && new_in_hand(held)
+    # ticket got is the repairer's ticket new in a hand, looked for a moment.
+    ticket = DRCI.get_item?("#{ordinal} #{name} ticket") && new_in_hand(held, name)
     unless ticket
       # One that shows only now is put away, so a later GET's ordinals hold.
       put_away_tickets(name)
@@ -7085,15 +7085,18 @@ class TaskMaster
     true
   end
 
-  # Looks, TICKET_IN_HAND_POLLS times 0.1 s apart, for an object in a hand
-  # that was not there before (by id): a GET's hand update may trail its
-  # reply, as lich-5's get_item? allows for (up to 1 s).
+  # Looks, TICKET_IN_HAND_POLLS times 0.1 s apart, for one of the
+  # repairer's tickets in a hand that was not there before (by id): a GET's
+  # hand update may trail its reply, as lich-5's get_item? allows for (up
+  # to 1 s). Anything else new in a hand (a tool whose hand update trails
+  # in) is passed over, so it is never what GIVE offers.
   #
   # @param held [Array<String, nil>] the ids in hand before
-  # @return [Object, nil] the new object's GameObj
-  def new_in_hand(held)
+  # @param name [String] the repairer
+  # @return [Object, nil] the new ticket's GameObj
+  def new_in_hand(held, name)
     TICKET_IN_HAND_POLLS.times do
-      found = held_objects.find { |obj| !held.include?(obj.id) }
+      found = held_objects.find { |obj| !held.include?(obj.id) && repairer_ticket?(obj, name) }
       return found if found
 
       pause 0.1
