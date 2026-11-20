@@ -39,7 +39,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.20.7'
+  VERSION = '2026.11.20.8'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -5774,8 +5774,14 @@ class TaskMaster
   # task_repair_every (repair_due?) go, after the hands are put away (a tool
   # not due can still be in hand from the craft); with none due, the hands
   # are put away as with task_no_repair. With task_self_repair only the due
-  # tools a TAP finds are repaired and noted; own repairs that stop (engaged
-  # in combat) note nothing, so every tool due is tried again next time.
+  # tools a TAP finds are handed to Lich's repair_own_tools and noted, so one
+  # not carried stays due; own repairs that stop (engaged in combat) note
+  # nothing, so every tool due is tried again next time. repair_own_tools
+  # gives no result per tool, so a tool it then skips is noted all the same
+  # and waits out its interval: one it cannot get (a belt untie refused for
+  # wounds, a tool in a container other than the crafting bag), and one on
+  # its immune list (repaired with Proper Forging Tool Care in the last two
+  # hours or so, which needs no repair).
   #
   # @param tools [Array<String>] tool names (Bradyn's stone and bone tasks
   #   give the tool in hand, by the name DRC.right_hand shows, which is then
@@ -5788,8 +5794,9 @@ class TaskMaster
     return if due.empty? # skipping repair, tool(s) and stock put away, moving on
 
     if @self_repair
-      # Only tools carried are noted repaired: repair_own_tools skips one it
-      # cannot get without saying so, and that one stays due.
+      # Only tools a TAP finds are handed over and noted repaired; one not
+      # carried stays due. One repair_own_tools then skips is noted too (see
+      # above): it says nothing per tool.
       present = due.select { |tool| DRCI.exists?(tool) }
       return if present.empty?
 

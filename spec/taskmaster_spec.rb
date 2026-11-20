@@ -13267,6 +13267,8 @@ RSpec.describe TaskMaster do
         warned({ 'default' => 0 })
         expect(DRC).to have_received(:message).with('task_repair_every has no entry for nezhiri; its tools go for repair after every task (the default entry).')
         expect(DRC).to have_received(:message).with('task_repair_every has no entry for zasele; its tools go for repair after every task (the default entry).')
+        # base.yaml's default key is not taken for a misspelt taskmaster.
+        expect(DRC).not_to have_received(:message).with(/misspelling/)
       end
 
       it 'warns when the setting is not there at all' do
@@ -13316,6 +13318,19 @@ RSpec.describe TaskMaster do
     it "keys a yarn task's needles by outfitting_tools' name for them, the one a cloth task uses" do
       expect(build(settings: { outfitting_tools: ['knitting needle', 'scissors'] }).knitting_needles_name).to eq('knitting needle')
       expect(build(settings: { outfitting_tools: ['scissors'] }).knitting_needles_name).to eq('knitting needles')
+    end
+
+    it "sends a yarn task's needles for repair by that name, so yarn and cloth tasks share one clock" do
+      tm = build(settings: { outfitting_tools: ['knitting needle', 'scissors'] })
+      allow(tm).to receive(:buy_yarn)
+      allow(tm).to receive(:tailor_item)
+      allow(tm).to receive(:repair)
+      allow(tm).to receive(:trash)
+      allow(tm).to receive(:bins_task_stock?).and_return(true)
+
+      tm.zasele('hat', 2, 4, 'yarn', 'wool')
+
+      expect(tm).to have_received(:repair).with(['knitting needle'], anything)
     end
   end
 end
