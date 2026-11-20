@@ -6030,6 +6030,7 @@ class TaskMaster
     stray = @rangu_ticket.nil? ? rangu_ticket_carried? : @rangu_ticket
     @rangu_ticket = nil
     @tools_left_at_repair = []
+    @tools_held_back = []
     return if @self_repair
 
     notes = repairs_out
@@ -6119,7 +6120,12 @@ class TaskMaster
   # Stops the run before a task's work when one of the tools it is about to
   # use is still at repair (collect_task_tools could not get it back): a
   # note of it, or a Rangu ticket no note accounts for whose item names it.
-  # The task stays open, and the next run collects the tool first.
+  # The task stays open, and the next run collects the tool first; but a
+  # note collect_tools kept because no ticket can be handed in for it (more
+  # than one could be its, one could as well be another clerk's, or the
+  # repairer refused every one: @tools_held_back) stops every run the same
+  # way, so for such a note it says to hand the right ticket in by hand and
+  # then run ;taskmaster pickup (which forgets the note).
   #
   # @param tools [Array<String>] the tools the work uses, by setting name
   # @return [void]
@@ -6128,7 +6134,15 @@ class TaskMaster
     left = tools_left_for(tools, @tools_left_at_repair)
     return if left.empty?
 
-    DRC.message("#{left.map { |record| record['item'] || record['tool'] }.join(', ')} still at repair (see above); stopping before #{@npc.capitalize}'s task is worked. It stays open, and the next run collects #{left.size == 1 ? 'it' : 'them'} first.")
+    held = left.select { |record| Array(@tools_held_back).include?(record) }
+    later = left - held
+    said = "#{note_names(left)} still at repair (see above); stopping before #{@npc.capitalize}'s task is worked. It stays open"
+    said += ", and the next run collects #{held.empty? ? (later.size == 1 ? 'it' : 'them') : note_names(later)} first" unless later.empty?
+    unless held.empty?
+      repairers = held.map { |record| record['repairer'] || 'repair' }.uniq.join(' or ')
+      said += "#{later.empty? ? ', and' : ';'} every run stops here until you hand the right #{repairers} ticket in#{later.empty? ? '' : " for #{note_names(held)}"} yourself, then run ;taskmaster pickup"
+    end
+    DRC.message("#{said}.")
     exit
   end
 
@@ -6493,6 +6507,11 @@ class TaskMaster
         DRC.message("More than one #{name} ticket carried could be for #{note_names(unclear)}; handing in none for #{unclear.size == 1 ? 'it' : 'them'}, and keeping the note#{unclear.size == 1 ? '' : 's'}. Hand the right one in yourself.")
         told.concat(unclear)
       end
+      shared = claims.select { |record, ticket| ticket == :elsewhere && !told.include?(record) }.map(&:first)
+      unless shared.empty?
+        DRC.message(shared_ticket_message(name, shared, tickets, elsewhere))
+        told.concat(shared)
+      end
       live = claims.select { |_, ticket| ticket.is_a?(Hash) }
       own = live.select { |record, _| waited.include?(record) }.map(&:last)
       loose = unnoted ? unaccounted_tickets(tickets, claims).reject { |ticket| ticket[:refused] } : []
@@ -6587,11 +6606,30 @@ class TaskMaster
       waited.delete(record)
       extra.delete(record)
     end
-    return [] unless unnoted
-
     notes = waited + extra
     rivals = repairer_notes(name)
-    unaccounted_tickets(tickets, pair_tickets(notes, tickets, rivals, rivals.reject { |record| record['room'] == room }))
+    claims = pair_tickets(notes, tickets, rivals, rivals.reject { |record| record['room'] == room })
+    # Kept for want of the player's hand, not of time: every run would read
+    # the same tickets again (stop_if_tools_at_repair says so).
+    (@tools_held_back ||= []).concat(claims.select { |_, claim| claim.is_a?(Symbol) }.map(&:first))
+    unnoted ? unaccounted_tickets(tickets, claims) : []
+  end
+
+  # What collect_tools says of notes whose one ticket could as well be a
+  # note's of a repairer of the same name in another room (ticket_for's
+  # :elsewhere; society clerks all go by "clerk").
+  #
+  # @param name [String] the repairer
+  # @param shared [Array<Hash{String => Object}>] those notes
+  # @param tickets [Array<Hash{Symbol => Object}>] the tickets read
+  # @param elsewhere [Array<Hash{String => Object}>] the notes of a
+  #   repairer of this name in another room
+  # @return [String]
+  def shared_ticket_message(name, shared, tickets, elsewhere)
+    items = tickets.map { |ticket| ticket[:item] }.select { |item| shared.any? { |record| fits_note?(record, item) } }
+    rooms = elsewhere.select { |other| items.any? { |item| fits_note?(other, item) } }.map { |other| other['room'] }.uniq
+    one = shared.size == 1
+    "The #{name} ticket carried for #{note_names(shared)} could as well be for the same tool noted at the #{name} in room #{rooms.join(', ')}; handing in none for #{one ? 'it' : 'them'}, and keeping the note#{one ? '' : 's'}. Hand it in yourself at the right #{name}, then run ;taskmaster pickup."
   end
 
   # @param name [String] the repairer
@@ -6815,10 +6853,11 @@ class TaskMaster
   # first ticket whose item has every word of the tool's setting name,
   # again one no other note has by its very name. So an un-noted "heavy
   # iron mortar" ticket is never taken for the noted "polished belzune
-  # stone mortar". When tickets for more than one item fit a named note, or
-  # the ticket that fits could be a note's of a repairer of the same name
-  # in another room (another society clerk's), which is its own can't be
-  # told: :unclear, and none is handed in for it. Of the tickets that fit,
+  # stone mortar". When tickets for more than one item fit a named note,
+  # which is its own can't be told: :unclear; when the ticket that fits
+  # could as well be a note's of a repairer of the same name in another
+  # room (another society clerk's): :elsewhere. Either way none is handed
+  # in for it. Of the tickets that fit,
   # the first the repairer has not refused this pickup (:refused, marked by
   # collect_tools) is the one; when it refused them all: :refused, and the
   # note is kept.
@@ -6830,7 +6869,7 @@ class TaskMaster
   # @param elsewhere [Array<Hash{String => Object}>] those of them in
   #   another room
   # @return [Hash{Symbol => Object}, Symbol, nil] the ticket; :unclear;
-  #   :refused; nil when no ticket is for it
+  #   :elsewhere; :refused; nil when no ticket is for it
   def ticket_for(record, tickets, rivals = [record], elsewhere = [])
     fits = tickets.select { |ticket| exact_tool?(record, ticket[:item]) }
     if fits.empty?
@@ -6844,7 +6883,7 @@ class TaskMaster
     end
     return nil if fits.empty?
     return :unclear if fits.map { |ticket| ticket[:item].downcase }.uniq.size > 1
-    return :unclear if elsewhere.any? { |other| fits_note?(other, fits.first[:item]) }
+    return :elsewhere if elsewhere.any? { |other| fits_note?(other, fits.first[:item]) }
 
     fits.find { |ticket| !ticket[:refused] } || :refused
   end

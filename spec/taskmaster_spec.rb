@@ -13108,6 +13108,56 @@ RSpec.describe TaskMaster do
         expect(DRC).to have_received(:message).with('More than one Rangu ticket carried could be for large purpleheart bowl; handing in none for it, and keeping the note. Hand the right one in yourself.').once
       end
 
+      it 'still sweeps an un-noted Rangu ticket for another item when two tickets a note could be for are carried' do
+        UserVars.taskmaster_repairs = [bowl]
+        tm = pickup_world({ 'Rangu' => [[bowl_ticket, true], ['large purpleheart bowl edged with silver', true], ['iron forging hammer', true]] }, rangu_ticket: true)
+
+        tm.collect_task_tools(['bowl'])
+
+        expect(gives).to eq(1)
+        expect(sent).to include([:get, 'third Rangu ticket'])
+        expect(sent).not_to include([:get, 'first Rangu ticket'], [:get, 'second Rangu ticket'])
+        expect(UserVars.taskmaster_repairs).to eq([bowl])
+      end
+
+      # Nothing between runs changes what the tickets read, so a note kept
+      # for want of the player's hand stops every run the same way.
+      it 'says, at the stop, that every run stops until the player hands the right ticket in, run after run, when two tickets could be the note\'s' do
+        UserVars.taskmaster_repairs = [bowl]
+        2.times do
+          tm = pickup_world({ 'Rangu' => [[bowl_ticket, true], ['large purpleheart bowl edged with silver', true]] }, rangu_ticket: false)
+          tm.collect_task_tools(['bowl'])
+          expect { tm.stop_if_tools_at_repair(['bowl']) }.to raise_error(SystemExit)
+        end
+
+        expect(gives).to eq(0)
+        expect(DRC).to have_received(:message).with("large purpleheart bowl still at repair (see above); stopping before Nezhiri's task is worked. It stays open, and every run stops here until you hand the right Rangu ticket in yourself, then run ;taskmaster pickup.").twice
+        expect(DRC).not_to have_received(:message).with(/the next run collects/)
+      end
+
+      it 'names apart, at the stop, a tool the next run collects and one held back for the player\'s hand' do
+        UserVars.taskmaster_repairs = [bowl, stick]
+        tm = pickup_world({ 'Rangu' => [[bowl_ticket, true], ['large purpleheart bowl edged with silver', true], ['grooved agonite mixing stick', false]] }, ready_after: 999, rangu_ticket: false)
+
+        tm.collect_task_tools(['bowl', 'mixing stick'])
+
+        expect { tm.stop_if_tools_at_repair(['bowl', 'mixing stick']) }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message).with("large purpleheart bowl, grooved agonite mixing stick still at repair (see above); stopping before Nezhiri's task is worked. It stays open, and the next run collects grooved agonite mixing stick first; every run stops here until you hand the right Rangu ticket in for large purpleheart bowl yourself, then run ;taskmaster pickup.")
+      end
+
+      it 'forgets, at the next task\'s pickup on the same run, that a note was held back once a ticket can be handed in for it' do
+        UserVars.taskmaster_repairs = [bowl]
+        tickets = { 'Rangu' => [[bowl_ticket, false], ['large purpleheart bowl edged with silver', false]] }
+        tm = pickup_world(tickets, ready_after: 999, rangu_ticket: false)
+        tm.collect_task_tools(['bowl'])
+        tickets['Rangu'].pop
+
+        tm.collect_task_tools(['bowl'])
+
+        expect { tm.stop_if_tools_at_repair(['bowl']) }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message).with("large purpleheart bowl still at repair (see above); stopping before Nezhiri's task is worked. It stays open, and the next run collects it first.")
+      end
+
       it 'pairs a note with a name in hand before one without, so the nameless note does not take the named one\'s ticket' do
         nameless = { 'npc' => 'nezhiri', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'bowl', 'left_at' => 0 }
         UserVars.taskmaster_repairs = [nameless, bowl]
@@ -13509,8 +13559,14 @@ RSpec.describe TaskMaster do
         expect(sent).not_to include(a_string_starting_with('give '))
         expect(UserVars.taskmaster_repairs).to eq([twin, needles])
         # Both are the work's tools, so each clerk's room is looked at, and each says so.
-        expect(DRC).to have_received(:message).with(/\AMore than one clerk ticket carried could be for knitting needles; handing in none/).twice
+        expect(DRC).to have_received(:message).with('The clerk ticket carried for knitting needles could as well be for the same tool noted at the clerk in room 8860; handing in none for it, and keeping the note. Hand it in yourself at the right clerk, then run ;taskmaster pickup.')
+        expect(DRC).to have_received(:message).with('The clerk ticket carried for knitting needles could as well be for the same tool noted at the clerk in room 16659; handing in none for it, and keeping the note. Hand it in yourself at the right clerk, then run ;taskmaster pickup.')
+        # One ticket is carried: not "more than one".
+        expect(DRC).not_to have_received(:message).with(/More than one/)
         expect(sent).not_to include(a_collection_starting_with(:walk))
+        # Every run would stop on it the same way, so the stop says what to do.
+        expect { tm.stop_if_tools_at_repair(['knitting needles']) }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message).with("knitting needles, knitting needles still at repair (see above); stopping before Zasele's task is worked. It stays open, and every run stops here until you hand the right clerk ticket in yourself, then run ;taskmaster pickup.")
       end
 
       it "stows a forged bone saw back on the toolbelt by the belt's own name for it, not the shortened name noted" do
@@ -13717,6 +13773,9 @@ RSpec.describe TaskMaster do
         expect(sent.count('stow ticket')).to eq(2)
         expect(UserVars.taskmaster_repairs).to eq([bowl, stick])
         expect(DRC).to have_received(:message).with('Rangu did not take the ticket (almost done); keeping it for a later pickup.').twice
+        # Refused this visit, refused again the next: the player's hand is needed.
+        expect { tm.stop_if_tools_at_repair(['bowl', 'mixing stick']) }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:message).with("large purpleheart bowl, grooved agonite mixing stick still at repair (see above); stopping before Nezhiri's task is worked. It stays open, and every run stops here until you hand the right Rangu ticket in yourself, then run ;taskmaster pickup.")
       end
 
       # The hand-in matches the repair_replies ticket_handed and
