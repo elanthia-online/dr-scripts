@@ -21,7 +21,7 @@
   task_hometown: Crossing # town other scripts (sew, restock) treat as your hometown while a task runs; unset leaves hometown alone
   task_rock_room: 793 # room where Dorhum's spongestone and splashstone tasks forage rocks (none can be had on Andreshlew)
   task_shell_room: 793 # room where Dorhum's glow shell tasks forage shells
-  task_cancel_foreign_tasks: true/false # a run never works another taskmaster's task; with this it cancels one it finds open, waits out the 10-minute cooldown a cancel brings, then goes back to its own taskmaster. Off: it stops, saying whose task it is and how to finish or cancel it
+  task_cancel_foreign_tasks: true/false # a run never works another taskmaster's task; with this it cancels one it finds open, waits out the 10-minute cooldown a cancel brings, then goes back to its own taskmaster. Off: it stops, saying whose task it is and how to finish or cancel it. A cycle run finishes an open task of Poltu, Bradyn or Zasele (the taskmasters it picks from) as its own, whichever it picked
   task_fallback_npc: zasele # when the taskmaster asked says you have done the most tasks it allows today, work this taskmaster's task instead; the next run asks the first one again. Unset: the run stops there. Ignored by marathon (Zasele only)
   task_cancel_when_instructions_short: true/false # default true. When the task's one replacement set is spent and the instructions carried still have too few uses, cancel the task (losing the items made for it), wait out the 10-minute cooldown and take a new one. False: stop on every run with "Already asked ..." for a person to look at
   alchemy_tools: [bowl, mixing stick, mortar, pestle, sieve] # Nezhiri's tasks use the mortar and pestle or the bowl and mixing stick (whichever her remedy needs) and the sieve; the two used go to the repairer (task_repair_by) after each task (task_no_repair / task_self_repair as usual)
@@ -74,7 +74,7 @@ class TaskMaster
     [
       { name: 'reset_output', regex: /^reset_output/i, optional: true, description: 'Clears prize window' },
       { name: 'pickup', regex: /^pickup/i, optional: true, description: 'Picks up every tool left for repair, at every repairer holding one, and any Rangu ticket carried' },
-      { name: 'cycle', regex: /^cycle/i, optional: true, description: 'Cycles through each taskmaster randomly and completes their task' },
+      { name: 'cycle', regex: /^cycle/i, optional: true, description: 'Cycles through each taskmaster randomly and completes their task (a task of Poltu, Bradyn or Zasele already open is finished first, whichever it picked)' },
       { name: 'marathon', regex: /^marathon/i, optional: true, description: 'stocks up and runs zasele tasks, repairs during restock' },
       { name: 'loot_history', regex: /^loot_history/i, optional: true, description: 'Prints out saved sack contents history, potentially scrollish' },
       { name: 'script_summary', optional: true, description: 'Completes Hollows Eve tasks for the crafting taskmasters on the island' }
@@ -199,6 +199,7 @@ class TaskMaster
       _respond("<clearStream id='Task Master'/>")
       exit
     elsif args.cycle
+      @cycle = true
       @npc = ['poltu', 'bradyn', 'zasele'].sample
     elsif args.loot_history
       print_loot_history
@@ -2314,6 +2315,9 @@ class TaskMaster
   TASK_JOURNAL = /(?:(\w+) has asked you to craft .*?)?wanted you to craft (.*) and indicated that (\d+)(?: doses)? would suffice\.(?:\s+So far, you have returned (\d+))?/
   # The taskmasters this script works for.
   TASKMASTERS = %w[poltu bradyn zasele dorhum nezhiri].freeze
+  # The taskmasters cycle picks from, at random, for each task (run and
+  # run_tasks sample a literal of these).
+  CYCLE_NPCS = %w[poltu bradyn zasele].freeze
   # TASK reply when not on a task.
   NOT_ON_TASK = /^You are not currently on a task/
   # Any other taskmaster's journal entry: a title, the taskmaster's name, "in"
@@ -4015,9 +4019,11 @@ class TaskMaster
   # taskmaster's task: its items, tools and hand-in are theirs, and a
   # character set up for one craft may not be for another. So it says whose
   # task it is and how to clear it, and stops; a task for task_fallback_npc
-  # is the exception, finished as this run's own. With task_cancel_foreign_tasks
-  # it cancels that task instead, waits out the cooldown a cancel brings,
-  # and goes back to asking its own taskmaster.
+  # is the exception, finished as this run's own, and so, in a cycle run,
+  # is a task of any taskmaster cycle picks from (one a cycle run stopped on
+  # before its work, say: the next pick is random). With
+  # task_cancel_foreign_tasks it cancels that task instead, waits out the
+  # cooldown a cancel brings, and goes back to asking its own taskmaster.
   #
   # @return [void]
   # @raise [SystemExit] when the journal names another taskmaster and
@@ -4027,6 +4033,13 @@ class TaskMaster
   def check_task_giver
     giver = @task_giver
     return if giver.nil? || giver == @npc
+
+    if @cycle && CYCLE_NPCS.include?(giver)
+      # The next task is picked at random again, so no going back after it.
+      DRC.message("You are on a task for #{giver.capitalize}, one of the taskmasters cycle works; finishing it.")
+      @npc = giver
+      return
+    end
 
     if giver == usable_fallback_npc
       # A task for task_fallback_npc left open (a run that fell back and

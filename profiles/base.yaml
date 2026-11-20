@@ -3101,6 +3101,8 @@ task_shell_room: 793
 # Setting for taskmaster - a run never works another taskmaster's task. When one is open, cancel it
 # with ASK <taskmaster> FOR TASK CANCEL, wait out the 10-minute "unreliable" cooldown a cancel brings,
 # then carry on with this run's taskmaster. Off: stop, saying whose task it is and how to clear it.
+# A cycle run finishes an open task of Poltu, Bradyn or Zasele (the taskmasters it picks from) as
+# its own, whichever it picked, and neither stops on nor cancels it.
 task_cancel_foreign_tasks: false
 # Setting for taskmaster - A second taskmaster (zasele, nezhiri, poltu, bradyn or dorhum) to work a
 # task for when the one asked says you have done the most tasks it allows today ("You have reached the

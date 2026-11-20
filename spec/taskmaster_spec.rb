@@ -1184,6 +1184,29 @@ RSpec.describe TaskMaster do
           expect(events.last(2)).to eq([[:message, 'You are on a task for Dorhum, not Zasele. Finish it with ;taskmaster dorhum, or cancel it with ASK DORHUM FOR TASK CANCEL (taskmasters then refuse you for about ten minutes). Or set task_cancel_foreign_tasks to have taskmaster cancel such tasks itself.'], :exit])
           expect(events.map { |event| Array(event).first }).not_to include(:banked, :work, :complete)
         end
+
+        # A cycle run that stopped before a task's work (a tool still at
+        # repair, say) leaves that task open, and the next cycle run picks
+        # its taskmaster at random.
+        describe 'in a cycle run' do
+          let(:poltu_journal) { dorhum_journal.sub('Dorhum', 'Poltu') }
+
+          it "finishes an open task of another taskmaster cycle works, whichever it picked, and neither stops nor cancels it" do
+            [{}, { settings: { task_cancel_foreign_tasks: true } }].each do |mode|
+              events = open_run(npc: 'zasele', cycle: true, wrap_up_after: 2, samples: %w[zasele bradyn], asks: [on_task, offer],
+                                journals: [poltu_journal, journal('a coil of reinforced cloth rope', 3, 0)], **mode)
+              expect(events).to include([:message, 'You are on a task for Poltu, one of the taskmasters cycle works; finishing it.']), mode.inspect
+              expect(events.map { |event| Array(event).first }).not_to include(:cancel, :exit)
+              expect(events.grep(Array).select { |event| %i[work ask].include?(event.first) })
+                .to eq([[:ask, 'zasele'], [:work, :poltu, 'rope', 3, 4, 'cloth', 'burlap'], [:ask, 'bradyn'], [:work, :bradyn, 'rope', 3, 4, 'cloth', 'burlap']]), mode.inspect
+            end
+          end
+
+          it "still stops on an open task of a taskmaster cycle does not work (Dorhum's)" do
+            events = open_run(npc: 'zasele', cycle: true, samples: %w[zasele], asks: [on_task], journals: [dorhum_journal])
+            expect(events.last(2)).to eq([[:message, 'You are on a task for Dorhum, not Zasele. Finish it with ;taskmaster dorhum, or cancel it with ASK DORHUM FOR TASK CANCEL (taskmasters then refuse you for about ten minutes). Or set task_cancel_foreign_tasks to have taskmaster cancel such tasks itself.'], :exit])
+          end
+        end
       end
     end
 
