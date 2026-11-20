@@ -12521,22 +12521,28 @@ RSpec.describe TaskMaster do
       end
     end
 
-    it "is Crossing's repairer from base-town.yaml with hometown, whatever the task: tasks are worked there, whatever hometown says" do
-      %w[nezhiri zasele bradyn].each do |npc|
-        expect(repairer(npc: npc, task_repair_by: 'hometown').repairer_for).to eq('id' => 19_093, 'name' => 'Catrox')
+    it "is Crossing's repairer from base-town.yaml with hometown, whatever the task and whatever task_hometown says: tasks are crafted there" do
+      [nil, 'Riverhaven', 'Shard', 'Fang Cove', 'Nowhere'].each do |home|
+        %w[nezhiri zasele bradyn].each do |npc|
+          expect(repairer(npc: npc, task_repair_by: 'hometown', task_hometown: home).repairer_for).to eq('id' => 19_093, 'name' => 'Catrox'), "#{npc} #{home.inspect}"
+        end
+      end
+      expect(DRC).not_to have_received(:get_town_name)
+    end
+
+    it "is Crossing's discipline repairer with task_type whatever task_hometown says, for Nezhiri as for the rest" do
+      %w[Riverhaven Shard].each do |home|
+        expect(repairer(npc: 'zasele', task_repair_by: 'task_type', task_hometown: home).repairer_for)
+          .to eq('id' => 16_659, 'name' => crafting_data['tailoring']['Crossing']['repair-npc'])
+        expect(repairer(task_repair_by: 'task_type', task_hometown: home).repairer_for).to eq('id' => 8860, 'name' => crafting_data['remedies']['Crossing']['repair-npc'])
       end
     end
 
-    it "is task_hometown's repairer when that is set" do
-      expect(repairer(npc: 'zasele', task_repair_by: 'hometown', task_hometown: 'Riverhaven').repairer_for)
-        .to eq('id' => town_data['Riverhaven']['metal_repair']['id'], 'name' => town_data['Riverhaven']['metal_repair']['name'])
-      expect(repairer(npc: 'zasele', task_repair_by: 'task_type', task_hometown: 'Riverhaven').repairer_for)
-        .to eq('id' => crafting_data['tailoring']['Riverhaven']['repair-room'], 'name' => crafting_data['tailoring']['Riverhaven']['repair-npc'])
-    end
+    it "takes Crossing's leather_repair with hometown when the town data has no metal_repair" do
+      tm = repairer(npc: 'zasele', task_repair_by: 'hometown')
+      allow(tm).to receive(:get_data).and_return({ 'Crossing' => { 'leather_repair' => { 'id' => 1234, 'name' => 'Tanner' } } })
 
-    it "is always Crossing's for Nezhiri, whose remedies are made there whatever task_hometown says" do
-      expect(repairer(task_repair_by: 'task_type', task_hometown: 'Riverhaven').repairer_for).to eq('id' => 8860, 'name' => crafting_data['remedies']['Crossing']['repair-npc'])
-      expect(repairer(task_repair_by: 'hometown', task_hometown: 'Riverhaven').repairer_for).to eq('id' => 19_093, 'name' => 'Catrox')
+      expect(tm.repairer_for).to eq('id' => 1234, 'name' => 'Tanner')
     end
 
     it "is the task's discipline repairer from base-crafting.yaml with task_type" do
@@ -12555,21 +12561,22 @@ RSpec.describe TaskMaster do
       expect(DRC).to have_received(:message).with("task_repair_by 'catrox' is not one of rangu, hometown, task_type; using Rangu.").once
     end
 
-    it 'says so and uses Rangu when task_hometown names no town, or the town has no such repairer' do
-      tm = repairer(npc: 'zasele', task_repair_by: 'task_type', task_hometown: 'Nowhere')
+    it "says so and uses Rangu when Crossing has no such repairer in the data" do
+      tm = repairer(npc: 'zasele', task_repair_by: 'task_type', task_hometown: 'Riverhaven')
+      allow(tm).to receive(:get_data).and_return({ 'tailoring' => { 'Riverhaven' => { 'repair-room' => 1, 'repair-npc' => 'clerk' } } })
       expect(tm.repairer_for).to eq('id' => 19_209, 'name' => 'Rangu')
-      expect(DRC).to have_received(:message).with('No tailoring repairer for Nowhere in the data (task_repair_by task_type); using Rangu.')
+      expect(DRC).to have_received(:message).with('No tailoring repairer for Crossing in the data (task_repair_by task_type); using Rangu.')
       tm = repairer(npc: 'zasele', task_repair_by: 'hometown')
       allow(tm).to receive(:get_data).and_return({ 'Crossing' => {} })
       expect(tm.repairer_for).to eq('id' => 19_209, 'name' => 'Rangu')
       expect(DRC).to have_received(:message).with('No repairer for Crossing in the data (task_repair_by hometown); using Rangu.')
     end
 
-    it "leaves a tool with Fang Cove's repairer (hometown) on its wording of the prompt, and notes it there" do
+    it "leaves a tool with Crossing's repairer (hometown) on a bare prompt with no cost on the line (Fang Cove's wording), and notes it there" do
       tm = repairer(npc: 'zasele', task_repair_by: 'hometown', task_hometown: 'Fang Cove')
-      fang = town_data['Fang Cove']['metal_repair']
+      catrox = town_data['Crossing']['metal_repair']
       sent = []
-      replies = ["#{fang['name']} says, \"If you agree, give it to me again.\"", "You hand #{fang['name']} 240 Kronars and he gives you back a repair ticket."]
+      replies = ["#{catrox['name']} says, \"If you agree, give it to me again.\"", "You hand #{catrox['name']} 240 Kronars and he gives you back a repair ticket."]
       allow(DRCT).to receive(:walk_to) { |room| sent << [:walk, room] }
       allow(DRCC).to receive(:get_crafting_item)
       allow(DRCC).to receive(:stow_crafting_item)
@@ -12580,8 +12587,8 @@ RSpec.describe TaskMaster do
 
       tm.tool_drop(['scissors'], nil)
 
-      expect(sent).to eq([[:walk, fang['id']], "give #{fang['name']}", "give #{fang['name']}", 'stow ticket'])
-      expect(UserVars.taskmaster_repairs.map { |record| record.values_at('repairer', 'room', 'tool') }).to eq([[fang['name'], fang['id'], 'scissors']])
+      expect(sent).to eq([[:walk, catrox['id']], "give #{catrox['name']}", "give #{catrox['name']}", 'stow ticket'])
+      expect(UserVars.taskmaster_repairs.map { |record| record.values_at('repairer', 'room', 'tool') }).to eq([[catrox['name'], catrox['id'], 'scissors']])
     end
 
     it 'keeps one repairer per taskmaster' do

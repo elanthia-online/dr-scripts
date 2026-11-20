@@ -4,7 +4,7 @@
   task_no_repair: true/false # skip repairing tools entirely
   task_self_repair: true/false # use own brush and oil for repairs
   task_get_tools_on_completion: true/false # If you want taskmaster to pickup any remaining tools in the repair shop. Useful if you're using clerk-tools after each task
-  task_repair_by: rangu # where tools go for repair: rangu (the default: Rangu, Crossing Engineering Society), hometown (the town's repairer in base-town.yaml) or task_type (the repairer, in base-crafting.yaml, of the discipline taskmaster gives each taskmaster: tailoring for Zasele, remedies for Nezhiri, blacksmithing for Poltu, shaping for Bradyn (his metal tasks too), artificing for Dorhum). The town is task_hometown, else Crossing, where tasks are worked; with no such repairer in the data it says so and uses Rangu. Each tool left is noted (UserVars.taskmaster_repairs) and picked up by its ticket after the next task accepted that uses it (Poltu's and Bradyn's metal tasks share the forging tools); a task stops before its work while a tool it uses is still at repair, and stays open for the next run. After upgrading, runs first hand Rangu any of his tickets that no note accounts for (UserVars.taskmaster_old_tickets_done once none is left)
+  task_repair_by: rangu # where tools go for repair: rangu (the default: Rangu, Crossing Engineering Society), hometown (Crossing's town repairer in base-town.yaml, Catrox) or task_type (Crossing's repairer, in base-crafting.yaml, of the discipline taskmaster gives each taskmaster: tailoring for Zasele, remedies for Nezhiri, blacksmithing for Poltu, shaping for Bradyn (his metal tasks too), artificing for Dorhum). Always Crossing's, where every task is bought and crafted, whatever task_hometown says; with no such repairer in the data it says so and uses Rangu. Each tool left is noted (UserVars.taskmaster_repairs) and picked up by its ticket after the next task accepted that uses it (Poltu's and Bradyn's metal tasks share the forging tools); a task stops before its work while a tool it uses is still at repair, and stays open for the next run. After upgrading, runs first hand Rangu any of his tickets that no note accounts for (UserVars.taskmaster_old_tickets_done once none is left)
   task_use_boost: true/false # use boost to eliminate task cooldowns, useful if you have a few and you're doing a lot of tasks
   task_cooldown_poll: 15 # seconds between asks while the taskmaster makes you wait (minimum 3)
   task_boosts: [task, haste] # boosts to use. task: BOOST TASK when a task is on cooldown (same as task_use_boost). haste: keep BOOST HASTE (1 hour, roundtimes -1 second) running between tasks. Once the game says you have no credits for one, it is not asked for again until the game's daily rollover (midnight US Central, when login rewards can add boosts in the middle of a login) or your next login; to ask again sooner, ;e $taskmaster_boost_unavailable = nil
@@ -38,7 +38,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.20.12'
+  VERSION = '2026.11.20.16'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -5773,8 +5773,8 @@ class TaskMaster
   # before task_repair_by, and still do by default.
   RANGU = { 'id' => 19_209, 'name' => 'Rangu' }.freeze
 
-  # task_repair_by: Rangu (the default); your town's repairer in
-  # base-town.yaml (hometown); or the repairer of the task's crafting
+  # task_repair_by: Rangu (the default); Crossing's town repairer in
+  # base-town.yaml (hometown); or Crossing's repairer of the task's crafting
   # discipline in base-crafting.yaml (task_type).
   REPAIR_BY = %w[rangu hometown task_type].freeze
 
@@ -5810,9 +5810,11 @@ class TaskMaster
   TICKET_WAIT_POLLS = 20
 
   # Where this taskmaster's tools go for repair, by task_repair_by: Rangu,
-  # the town's repairer or the discipline's. The town is task_hometown, else
-  # Crossing (repair_town). When the data has no repairer for the town (or the setting
-  # names no known way), it says so once and uses Rangu.
+  # Crossing's town repairer or Crossing's repairer of the task's
+  # discipline. Always Crossing (REPAIR_TOWN), where taskmaster buys and
+  # crafts every task, whatever task_hometown says. When the data has no
+  # such repairer (or the setting names no known way), it says so once and
+  # uses Rangu.
   #
   # @param npc [String] the taskmaster
   # @return [Hash{String => Object}] 'id' (room) and 'name'
@@ -5820,6 +5822,11 @@ class TaskMaster
     @repairers ||= {}
     @repairers[npc] ||= find_repairer(npc)
   end
+
+  # The town task_repair_by hometown and task_type take their repairer
+  # from: tasks are always bought and crafted there, so a repairer anywhere
+  # else would mean a trip to another town (and its coin) after every task.
+  REPAIR_TOWN = 'Crossing'
 
   # @param npc [String]
   # @return [Hash{String => Object}]
@@ -5832,48 +5839,32 @@ class TaskMaster
       return RANGU
     end
 
-    town = repair_town(npc)
-    found = mode == 'hometown' ? town_repairer(town) : discipline_repairer(npc, town)
+    found = mode == 'hometown' ? town_repairer : discipline_repairer(npc)
     return found if found
 
     what = mode == 'hometown' ? 'repairer' : "#{REPAIR_DISCIPLINES[npc]} repairer"
-    DRC.message("No #{what} for #{town || @task_hometown} in the data (task_repair_by #{mode}); using Rangu.")
+    DRC.message("No #{what} for #{REPAIR_TOWN} in the data (task_repair_by #{mode}); using Rangu.")
     RANGU
   end
 
-  # The town whose repairer task_repair_by hometown or task_type uses:
-  # task_hometown, as its canonical name, else Crossing, where taskmaster
-  # buys and crafts for every taskmaster (hometown plays no part in a task).
-  # Always Crossing for Nezhiri, whose remedies are bought and crafted there
-  # whatever task_hometown says.
+  # Crossing's town repairer in base-town.yaml: metal_repair, else
+  # leather_repair (each repairs every tool).
   #
-  # @param npc [String]
-  # @return [String, nil] nil when task_hometown names no town
-  def repair_town(npc = @npc)
-    name = @task_hometown.to_s.strip
-    npc == 'nezhiri' || name.empty? ? 'Crossing' : DRC.get_town_name(name)
-  end
-
-  # The town's repairer in base-town.yaml: metal_repair, else leather_repair
-  # (each repairs every tool).
-  #
-  # @param town [String, nil]
   # @return [Hash{String => Object}, nil]
-  def town_repairer(town)
-    data = town && get_data('town')[town]
+  def town_repairer
+    data = get_data('town')[REPAIR_TOWN]
     entry = data && (data['metal_repair'] || data['leather_repair'])
     entry && entry['id'] && entry['name'] ? { 'id' => entry['id'], 'name' => entry['name'] } : nil
   end
 
-  # The repairer of the taskmaster's discipline in the town, from
+  # Crossing's repairer of the taskmaster's discipline, from
   # base-crafting.yaml (repair-room, repair-npc).
   #
   # @param npc [String]
-  # @param town [String, nil]
   # @return [Hash{String => Object}, nil]
-  def discipline_repairer(npc, town)
+  def discipline_repairer(npc)
     discipline = REPAIR_DISCIPLINES[npc]
-    info = discipline && town && get_data('crafting')[discipline]&.[](town)
+    info = discipline && get_data('crafting')[discipline]&.[](REPAIR_TOWN)
     info && info['repair-room'] && info['repair-npc'] ? { 'id' => info['repair-room'], 'name' => info['repair-npc'] } : nil
   end
 
