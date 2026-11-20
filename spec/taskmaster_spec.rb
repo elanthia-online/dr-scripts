@@ -12322,6 +12322,19 @@ RSpec.describe TaskMaster do
       expect(DRC).to have_received(:message).with(/base-crafting.yaml has no repair_replies quote, prompt, .*Update dr-scripts, or that copy/).once
     end
 
+    it 'says so and leaves nothing for repair when the repair_replies block lacks one key (prompt, as the data first shipped)' do
+      tm = build(repair_replies: real_repair_replies.except('prompt'))
+      allow(DRCT).to receive(:walk_to)
+      allow(DRC).to receive(:bput)
+
+      tm.tool_drop(['mortar'], nil)
+      tm.tool_pickup
+
+      expect(DRCT).not_to have_received(:walk_to)
+      expect(DRC).not_to have_received(:bput)
+      expect(DRC).to have_received(:message).with(/base-crafting.yaml has no repair_replies prompt \(/).once
+    end
+
     it 'puts the tool away when the first give gets no answer, and says so' do
       drop('')
 

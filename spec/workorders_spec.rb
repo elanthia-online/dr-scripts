@@ -1224,6 +1224,37 @@ RSpec.describe WorkOrders do
       expect(Lich::Messaging).to have_received(:msg).with('bold', /base-crafting.yaml has no repair_replies quote, prompt, .*Update dr-scripts, or that copy/).once
     end
 
+    it 'says so and leaves no tool for repair when the repair_replies block lacks one key (prompt, as the data first shipped)' do
+      allow(workorders).to receive(:get_data).with('crafting').and_return({ 'repair_replies' => repair_replies.except('prompt') })
+      allow(DRCT).to receive(:walk_to)
+      allow(DRC).to receive(:bput)
+      allow(Lich::Messaging).to receive(:msg)
+
+      workorders.send(:repair_items, info, tools)
+
+      expect(DRCT).not_to have_received(:walk_to)
+      expect(DRC).not_to have_received(:bput)
+      expect(Lich::Messaging).to have_received(:msg).with('bold', /base-crafting.yaml has no repair_replies prompt \(.*not left for repair or collected/).once
+    end
+
+    it 'confirms a quote by the data prompt, not by a word of its own: a prompt reworded in the data is still confirmed' do
+      reworded = repair_replies.merge('quote'   => 'cost [\d,]+ \w+ to repair.*bring it back',
+                                      'prompt'  => 'Bring it back',
+                                      'offered' => ['cost [\d,]+ \w+ to repair.*bring it back', 'Bring it back', "There isn't a scratch on that"])
+      allow(workorders).to receive(:get_data).with('crafting').and_return({ 'repair_replies' => reworded })
+      bput_lines('Rangu looks over the hammer and says, "That will cost 240 Kronars to repair.  Bring it back if you want."')
+      allow(DRCI).to receive(:get_item?).with('Rangu ticket').and_return(false)
+      allow(DRCT).to receive(:walk_to)
+      allow(workorders).to receive(:get_tool)
+      allow(workorders).to receive(:stow_tool)
+      allow(Lich::Messaging).to receive(:msg)
+      expect(workorders).to receive(:confirm_repair).with(info, 'hammer', 240)
+
+      workorders.send(:repair_items, info, ['hammer'])
+
+      expect(workorders).not_to have_received(:stow_tool)
+    end
+
     context 'when tool needs no repair' do
       it 'stows tool when repair not needed' do
         allow(DRC).to receive(:bput).and_return("There isn't a scratch on that")
