@@ -3150,8 +3150,10 @@ task_repair_by: rangu
 # (10800) before taskmaster sees them. A value that is not whole seconds, 0 or more (3h, 10800.9, -5),
 # is named and ignored. Each tool's last repair is kept per character: a kept ticket, or the
 # repairer's own no-wear or past-repair answer (its line, by its name: the same words in someone
-# else's speech heard first are named and do not count), starts the tool's clock; a refusal or no
-# answer does not, so the tool goes again after the next task. With task_self_repair and an interval above 0, only the
+# else's speech heard first are named and do not count), starts the tool's clock (a confirming give
+# that got no answer but went through starts it once a pickup brings the tool back by its ticket, as of
+# when the tool was left); a refusal, or no answer and no ticket, does not, so the tool goes again
+# after the next task. With task_self_repair and an interval above 0, only the
 # due tools carried (the inventory feed or hands, else a TAP) are repaired and noted, except one on
 # Lich's immune list (repaired with Proper Forging Tool Care in the last two hours or so), which is
 # skipped and stays due; at 0 every tool goes to your own repair unchecked and none is noted, as

@@ -13132,6 +13132,63 @@ RSpec.describe TaskMaster do
       tm
     end
 
+    # task_repair_every: a tool its ticket brings back was repaired, so its
+    # clock runs from when it was left (#note_collected).
+    describe 'the repair clock of a tool collected by its ticket' do
+      let(:every_nezhiri) { { alchemy_belt: alchemy_belt, task_repair_every: { 'nezhiri' => 10_800 } } }
+      let(:quote) { "Rangu looks over the mortar and says, \"That will cost 240 Kronars to repair.  Just give it to me again if you want, and I'll have it ready in 1 roisaen.\"" }
+
+      # tool_drop leaves the mortar with Rangu: the quote, then a confirming
+      # give that bput gets no answer to in 15 s (lag) though it went
+      # through (the mortar leaves the hand; its ticket shows up later).
+      def leave_mortar_unanswered
+        tm = build(npc: 'nezhiri', settings: every_nezhiri)
+        replies = [quote, '']
+        allow(DRCT).to receive(:walk_to).and_return(true)
+        allow(DRCC).to receive(:get_crafting_item) { $right_hand = 'polished belzune stone mortar' }
+        allow(DRCC).to receive(:stow_crafting_item)
+        allow(DRC).to receive(:bput) do |_command, *matchers|
+          reply = bput_match(replies.shift, matchers)
+          $right_hand = nil if replies.empty?
+          reply
+        end
+        tm.tool_drop(['mortar'], nil)
+      end
+
+      it 'starts, as of when it was left, for one whose confirming give went unanswered but went through' do
+        leave_mortar_unanswered
+        expect(UserVars.taskmaster_repairs).to match([a_hash_including('tool' => 'mortar', 'item' => 'polished belzune stone mortar', 'left_at' => be_within(5).of(Time.now.to_i))])
+        expect(Hash(UserVars.taskmaster_repaired_at)).not_to have_key('mortar')
+        # The pickup comes a while later (the next task's).
+        left_at = Time.now.to_i - 600
+        UserVars.taskmaster_repairs = [UserVars.taskmaster_repairs.first.merge('left_at' => left_at)]
+
+        tm = pickup_world({ 'Rangu' => [['polished belzune stone mortar', true]] }, settings: every_nezhiri)
+        tm.tool_pickup
+
+        expect(sent).to include('give Rangu', [:stow, 'mortar'])
+        expect(UserVars.taskmaster_repairs).to eq([])
+        expect(UserVars.taskmaster_repaired_at).to eq('mortar' => left_at)
+        expect(tm.repair_due?('mortar')).to be(false)
+      end
+
+      it 'keeps a stamp from when it was left or later (the kept ticket stamped it at the give), and stamps none for a note forgotten for want of a ticket' do
+        left_at = Time.now.to_i - 600
+        UserVars.taskmaster_repairs = [mortar.merge('repairer' => 'Rangu', 'room' => 19_209, 'left_at' => left_at)]
+        UserVars.taskmaster_repaired_at = { 'mortar' => left_at + 5 }
+        pickup_world({ 'Rangu' => [['polished belzune stone mortar', true]] }, settings: every_nezhiri).tool_pickup
+        expect(UserVars.taskmaster_repairs).to eq([])
+        expect(UserVars.taskmaster_repaired_at).to eq('mortar' => left_at + 5)
+
+        sent.clear
+        UserVars.taskmaster_repairs = [mortar.merge('repairer' => 'Rangu', 'room' => 19_209, 'left_at' => left_at)]
+        UserVars.taskmaster_repaired_at = nil
+        pickup_world({ 'Rangu' => [] }, settings: every_nezhiri).tool_pickup
+        expect(UserVars.taskmaster_repairs).to eq([])
+        expect(UserVars.taskmaster_repaired_at).to be_nil
+      end
+    end
+
     describe 'after the accept (#collect_task_tools)' do
       it 'hands in the tickets of the noted tools the work uses, matched by the hand tag noted (the ticket names more), and forgets them once back' do
         UserVars.taskmaster_repairs = [bowl, needles, stick]

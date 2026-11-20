@@ -4,7 +4,7 @@
   task_no_repair: true/false # skip repairing tools entirely
   task_self_repair: true/false # use own brush and oil for repairs
   task_get_tools_on_completion: true/false # If you want taskmaster to pickup any remaining tools in the repair shop. Useful if you're using clerk-tools after each task
-  task_repair_every: { default: 0 } # seconds between repairs of each tool, by taskmaster ({ nezhiri: 10800, zasele: 43200 }), written as plain digits with no leading 0 (YAML reads an unquoted 0600 as octal, 384, 0x10 as hex, 16, and 3:00:00 as base 60, 10800, before taskmaster sees them, as it reads any other plain YAML number; a value that is not a plain YAML number, quoted or not, is read as base-10 digits (an unquoted 0800, not valid octal, is 800); one that is not whole seconds, 0 or more, such as 3h, 10800.9 or -5, is named and ignored); a taskmaster with no entry uses default, and with no default 0, which repairs after every task (as before). Each tool's last repair is kept per character (UserVars.taskmaster_repaired_at; ;e UserVars.taskmaster_repaired_at = nil forgets them all). A kept ticket, or the repairer's own no-wear or past-repair answer (its line, by its name: the same words in someone else's speech heard first are named and do not count), starts the tool's clock; a refusal or no answer does not, so the tool goes again after the next task. Applies to task_self_repair too: with an interval above 0 only the due tools carried (the inventory feed or hands, else a TAP) are repaired and noted, except one on Lich's immune list (repaired with Proper Forging Tool Care in the last two hours or so), which is skipped and stays due; at 0 every tool goes to your own repair with no TAP and none is noted, as before the setting. A run that repairs says which taskmaster it may work (the one named and task_fallback_npc; in cycle, the three it picks from and task_fallback_npc) has no entry, and names a key that is not a taskmaster (a misspelling)
+  task_repair_every: { default: 0 } # seconds between repairs of each tool, by taskmaster ({ nezhiri: 10800, zasele: 43200 }), written as plain digits with no leading 0 (YAML reads an unquoted 0600 as octal, 384, 0x10 as hex, 16, and 3:00:00 as base 60, 10800, before taskmaster sees them, as it reads any other plain YAML number; a value that is not a plain YAML number, quoted or not, is read as base-10 digits (an unquoted 0800, not valid octal, is 800); one that is not whole seconds, 0 or more, such as 3h, 10800.9 or -5, is named and ignored); a taskmaster with no entry uses default, and with no default 0, which repairs after every task (as before). Each tool's last repair is kept per character (UserVars.taskmaster_repaired_at; ;e UserVars.taskmaster_repaired_at = nil forgets them all). A kept ticket, or the repairer's own no-wear or past-repair answer (its line, by its name: the same words in someone else's speech heard first are named and do not count), starts the tool's clock (a confirming give that got no answer but went through starts it once a pickup brings the tool back by its ticket, as of when the tool was left); a refusal, or no answer and no ticket, does not, so the tool goes again after the next task. Applies to task_self_repair too: with an interval above 0 only the due tools carried (the inventory feed or hands, else a TAP) are repaired and noted, except one on Lich's immune list (repaired with Proper Forging Tool Care in the last two hours or so), which is skipped and stays due; at 0 every tool goes to your own repair with no TAP and none is noted, as before the setting. A run that repairs says which taskmaster it may work (the one named and task_fallback_npc; in cycle, the three it picks from and task_fallback_npc) has no entry, and names a key that is not a taskmaster (a misspelling)
   task_repair_by: rangu # where tools go for repair: rangu (the default: Rangu, Crossing Engineering Society), hometown (Crossing's town repairer in base-town.yaml, Catrox) or task_type (Crossing's repairer, in base-crafting.yaml, of the discipline taskmaster gives each taskmaster: tailoring for Zasele, remedies for Nezhiri, blacksmithing for Poltu, shaping for Bradyn (his metal tasks too), artificing for Dorhum). Always Crossing's, where every task is bought and crafted, whatever task_hometown says; with no such repairer in the data it says so and uses Rangu. Each tool left is noted (UserVars.taskmaster_repairs, with its name in hand). Once a task is accepted, the noted tools its work uses are picked up by their tickets, waiting up to 10 minutes at each repairer for them to be ready (Poltu's and Bradyn's metal tasks share the forging tools); another noted tool at a repairer it goes to is picked up if it is ready then, or by the end of a wait there for the work's own tools; and when a TAP before the ask finds a Rangu ticket, every Rangu ticket no note accounts for (an older taskmaster's, or one whose note was lost) is handed in too, waited for the same way. A task stops before its work while a tool it uses is still at repair (a noted one, or an un-noted Rangu ticket still carried whose item names it, or one the repairer would not take), and stays open for the next run; with mark_crafted_goods that includes the stamp for Zasele's (yarn, cloth and leather), Poltu's, Bradyn's lumber and metal, and Dorhum's tasks, whose crafting scripts stop without it. Any other tool still out waits for a later task or ;taskmaster pickup, and is not sent for repair again meanwhile (a tool still noted is taken to be at repair). A tool collected by hand keeps its note, so it is not sent for repair until ;taskmaster pickup (or a task's pickup at that repairer) forgets the note: run ;taskmaster pickup after handing tickets in yourself. Another taskmaster's note counts for a task by its setting name, or by a name of two words or more: a one-word name such as "rod" is not taken for another toolset's "stirring rod" or "imbuement rod", and Dorhum's rod with none in enchanting_tools (enchant's fallback "rod") is matched as "imbuement rod". Two settings that give different tools the very same name ("rod" in both forging_tools and enchanting_tools) are still taken for each other. A ticket is matched to a note by the tool's name in hand, which a ticket may follow with more words ("large purpleheart bowl edged with ivory"); when tickets for two different items fit one note, none is handed in and it says so. With task_type, Zasele's, Nezhiri's and Poltu's tools go to society clerks, who are all called clerk: their tickets stay carried until a task, ;taskmaster pickup or task_get_tools_on_completion collects them, and ;workorders in another discipline picks such a ticket up with its own and stops collecting at one its clerk does not take
   task_use_boost: true/false # use boost to eliminate task cooldowns, useful if you have a few and you're doing a lot of tasks
   task_cooldown_poll: 15 # seconds between asks while the taskmaster makes you wait (minimum 3)
@@ -6015,6 +6015,23 @@ class TaskMaster
     save_user_vars
   end
 
+  # Starts the clock (note_repaired) of a noted tool its ticket brought
+  # back, as of when it was left ('left_at'), unless it has a stamp from
+  # then or later: one whose confirming give got no answer from bput but
+  # went through (its ticket turned up later) was never stamped at the
+  # give, and would be sent again after the next task. A tool collected by
+  # hand, or one whose note is forgotten for want of a ticket, is not
+  # stamped here.
+  #
+  # @param record [Hash{String => Object}] the note of the tool collected
+  # @return [void]
+  def note_collected(record)
+    left = record['left_at'].to_i
+    return unless left.positive? && repaired_at[record['tool']].to_i < left
+
+    note_repaired(record['tool'], Time.at(left))
+  end
+
   # Says, at the start of a run that repairs tools (not task_no_repair), for
   # each taskmaster the run may work (the one named and task_fallback_npc;
   # in cycle, the three it picks from and task_fallback_npc), once each,
@@ -6395,7 +6412,9 @@ class TaskMaster
   # own declined answer turns away (no wear, or past repair:
   # repairer_declined_pattern), is noted repaired (note_repaired,
   # task_repair_every); one turned away any other way is not, and stays due
-  # for the next task. That includes a declined word heard in another line
+  # for the next task. One whose confirming give got no answer keeps its
+  # note unstamped: should the give have gone through, the pickup that
+  # brings it back by its ticket stamps it (note_collected). That includes a declined word heard in another line
   # first (room speech, which bput can answer with ahead of the
   # repairer's quote), which is named and the tool put away, as main did. When the repairer's room can't be reached nothing is
   # given.
@@ -6442,8 +6461,9 @@ class TaskMaster
           next
         end
         # A reply that says no (short of coin) drops the note. With no answer
-        # the give may still have gone through: the note stays, and the next
-        # whole look forgets it should no ticket turn up. A ticket that comes
+        # the give may still have gone through: the note stays, unstamped,
+        # and the next whole look forgets it should no ticket turn up (the
+        # pickup that brings it back stamps it: note_collected). A ticket that comes
         # late is put away before the next tool, or after the last, so the
         # next give and the next pickup's LOOK and GET ordinals count it
         # among the stowed ones.
@@ -6635,9 +6655,12 @@ class TaskMaster
   # second ticket for a noted item, or one whose note was just forgotten. A
   # noted tool is forgotten, and named, only when a whole look through the
   # tickets (one ending on "no such ticket") finds none for it (ticket_for),
-  # a tool not the noted one handed back included; a look that goes
-  # unanswered keeps every note, and so does a look that finds none while a
-  # TAP still finds such a ticket. A note more than one ticket could be for
+  # a tool not the noted one handed back included (no clock is started for
+  # it). A noted tool brought back by its ticket is forgotten too, its
+  # clock first started as of when it was left unless stamped since
+  # (note_collected, task_repair_every). A look that goes unanswered keeps
+  # every note, and so does a look that finds none while a TAP still finds
+  # such a ticket. A note more than one ticket could be for
   # is named once and kept, and no ticket is handed in for it. A ticket the
   # repairer does not take is not tried again: it is marked refused at the
   # ordinal it was read at, and every ticket for its item is once the
@@ -6786,6 +6809,7 @@ class TaskMaster
         fresh = true
         next
       end
+      note_collected(record)
       forget_repair(record)
       waited.delete(record)
       extra.delete(record)
