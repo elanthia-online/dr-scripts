@@ -15370,6 +15370,24 @@ RSpec.describe TaskMaster do
       expect(build.fallback_capped?('zasele')).to be(true)
     end
 
+    # UserVars keeps whatever value it is given (lich-5 Vars checks no
+    # type), so a hand-set taskmaster_capped of the wrong kind persists.
+    it 'notes a limit over a taskmaster_capped of the wrong kind (a String set by hand), keeping no junk (#note_capped)' do
+      allow(Time).to receive(:now).and_return(Time.utc(2026, 11, 20, 12))
+      UserVars.taskmaster_capped = 'x'
+
+      build.note_capped('zasele')
+
+      expect(UserVars.taskmaster_capped).to eq({ 'zasele' => Time.now.to_i })
+    end
+
+    it 'counts no limit for a note that is not epoch seconds (a String timestamp set by hand) (#fallback_capped?)' do
+      allow(Time).to receive(:now).and_return(Time.utc(2026, 11, 20, 12))
+      UserVars.taskmaster_capped = { 'zasele' => (Time.now.to_i - 60).to_s }
+
+      expect(build.fallback_capped?('zasele')).to be(false)
+    end
+
     it 'asks the fallback again once a daily rollover has passed since its limit' do
       noted('nezhiri')
       UserVars.taskmaster_capped = { 'zasele' => Time.now.to_i - (2 * 86_400) }
