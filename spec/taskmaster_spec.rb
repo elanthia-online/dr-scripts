@@ -12992,6 +12992,8 @@ RSpec.describe TaskMaster do
       it 'stops a Bradyn bone task when its forged bone saw is at repair, noted by the shortened name in hand ("steel saw")' do
         tm = build(npc: 'bradyn', tools_left_at_repair: [{ 'tool' => 'steel saw', 'item' => 'steel straight bone saw' }])
         allow(tm).to receive(:buy_stackables)
+        # Stubbed so a missing stop fails at once rather than carving on the harness.
+        allow(tm).to receive(:carve_bone)
 
         expect { tm.bradyn('comb', 2, 5, 'stack', 'deer') }.to raise_error(SystemExit)
         expect(tm).not_to have_received(:buy_stackables)
@@ -13036,6 +13038,8 @@ RSpec.describe TaskMaster do
       it "stops a Bradyn stone task when the chisels (noted by the name in hand) are at repair, before buying rocks" do
         tm = build(npc: 'bradyn', tools_left_at_repair: [{ 'tool' => 'iron chisels', 'item' => 'iron chisels' }])
         allow(tm).to receive(:buy_rocks)
+        # Stubbed so a missing stop fails at once rather than carving on the harness.
+        allow(tm).to receive(:carve_stone)
 
         expect { tm.bradyn('idol', 2, 'boulder', 'stone', 'alabaster') }.to raise_error(SystemExit)
         expect(tm).not_to have_received(:buy_rocks)
