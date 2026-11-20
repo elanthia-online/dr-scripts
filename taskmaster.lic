@@ -23,7 +23,7 @@
   task_rock_room: 793 # room where Dorhum's spongestone and splashstone tasks forage rocks (none can be had on Andreshlew)
   task_shell_room: 793 # room where Dorhum's glow shell tasks forage shells
   task_cancel_foreign_tasks: true/false # a run never works another taskmaster's task; with this it cancels one it finds open, waits out the 10-minute cooldown a cancel brings, then goes back to its own taskmaster. Off: it stops, saying whose task it is and how to finish or cancel it
-  task_fallback_npc: zasele # when the taskmaster asked says you have done the most tasks it allows today (the game's line naming it; a player saying those words, or a line naming another taskmaster, does not count), work this taskmaster's task instead; the next run asks the first one again. With task_repair_every entries for both (the first one's more than 0), it is also worked, one task, right after the first one's tools are left for repair (unless its own went for repair in the last 10 minutes, or it has given its limit since the daily rollover), so the run does not wait at the repairer; the run after asks the first one again (with task_get_tools_on_completion each run collects its tools at its end, so only repeat and cycle runs detour, and a run right after one that only finished a task already open, which ends before that pickup). A fallback that has given its limit since the rollover is not asked again until the next one: neither for a detour nor when the first one gives its limit (the run then stops). Unset: the run stops at the limit, and waits for tools at repair. Ignored by marathon (Zasele only)
+  task_fallback_npc: zasele # when the taskmaster asked says you have done the most tasks it allows today (the game's line naming it; a player saying those words, or a line naming another taskmaster, does not count), work this taskmaster's task instead; the next run asks the first one again. With task_repair_every entries for both (the first one's more than 0), it is also worked, one task, right after the first one's tools are left for repair (unless its own went for repair in the last 10 minutes, which its task would wait for too, or it has given its limit since the daily rollover; Poltu and Bradyn share the forging tools, so a Poltu run never detours to Bradyn, and a Bradyn run detours to Poltu only after a task that left no forging tool), so the run does not wait at the repairer; the run after asks the first one again (with task_get_tools_on_completion each run collects its tools at its end, so only repeat and cycle runs detour, and a run right after one that only finished a task already open, which ends before that pickup). A fallback that has given its limit since the rollover is not asked again until the next one: neither for a detour nor when the first one gives its limit (the run then stops). Unset: the run stops at the limit, and waits for tools at repair. Ignored by marathon (Zasele only)
   task_cancel_when_instructions_short: true/false # default true. When the task's one replacement set is spent and the instructions carried still have too few uses, cancel the task (losing the items made for it), wait out the 10-minute cooldown and take a new one. False: stop on every run with "Already asked ..." for a person to look at
   alchemy_tools: [bowl, mixing stick, mortar, pestle, sieve] # Nezhiri's tasks use the mortar and pestle or the bowl and mixing stick (whichever her remedy needs) and the sieve; the two used and the sieve go for repair (task_repair_by, task_repair_every) after each task (task_no_repair / task_self_repair as usual)
   alchemy_belt: # the toolbelt the alchemy tools are tied to, if any
@@ -335,16 +335,26 @@ class TaskMaster
   # both taskmasters and the first one's is more than 0 (so a fallback set
   # only for the daily limit is left alone, and so is one given 0 just to
   # quiet the start-of-run warning: with tools going after every task, a
-  # detour would alternate the two), and not while any of the fallback's own tools went for repair
-  # less than REPAIR_READY_SECONDS ago (older ones are ready, and its task
-  # collects them). Not while the fallback's daily limit holds
-  # (fallback_capped?), and not in a run already switched (the fallback for
-  # the day). With no detour the run asks as usual, and the pickup after the
-  # accept collects the tools.
+  # detour would alternate the two), and not while any of the fallback's
+  # own tools (repairs_out_for) went for repair less than
+  # REPAIR_READY_SECONDS ago: its task would wait for them too (older ones
+  # are ready, and its task collects them). Poltu and Bradyn share the
+  # forging tools, so a forging tool either left holds back a detour to the
+  # other (the fallback's task would wait for it, or stop with the task
+  # open): a Poltu run never detours to Bradyn, and a Bradyn run detours to
+  # Poltu only after a task that left no forging tool. The notes marked are
+  # those the detour was for, a shared tool another taskmaster left
+  # included, so the next run does not detour again for it. Not while the
+  # fallback's daily limit holds (fallback_capped?), and not in a run
+  # already switched (the fallback for the day, or the detour itself): the
+  # one asked is then the fallback, and usable_fallback_npc gives none.
+  # Never with task_self_repair, which leaves nothing at a repairer. With no
+  # detour the run asks as usual, and the pickup after the accept collects
+  # the tools.
   #
   # @return [void]
   def detour_while_tools_repair
-    return if @primary_npc || @self_repair
+    return if @self_repair
 
     other = usable_fallback_npc
     return unless other && !fallback_capped?(other) && repair_every_setting.key?(other) && repair_every_setting.fetch(@npc, 0).positive?
@@ -358,8 +368,6 @@ class TaskMaster
     @primary_npc = @npc
     @npc = other
     @repair_detour = true
-    # What Nezhiri's wait found is not for another taskmaster's task.
-    @stock_survey = nil
   end
 
   # The noted tools (repairs_out) a taskmaster's tasks use: those it left,
@@ -458,7 +466,8 @@ class TaskMaster
     save_user_vars
   end
 
-  # Marks the noted tools as detoured for (detour_while_tools_repair).
+  # Marks the noted tools as detoured for (detour_while_tools_repair):
+  # +records+ only, every other note as it was.
   #
   # @param records [Array<Hash{String => Object}>]
   # @return [void]
@@ -4635,7 +4644,11 @@ class TaskMaster
   # taskmaster for this task and get_task asks it next; run_tasks switches
   # back after the task, and every new run asks the first taskmaster again,
   # so its tasks resume once the limit resets. Without a fallback, or when
-  # the fallback has hit its limit too, the run stops.
+  # the fallback has hit its limit too, the run stops. On a detour
+  # (detour_while_tools_repair) the one asked is the fallback: its limit is
+  # noted and get_task asks the first one again, whose pickup waits for the
+  # tools. Either way what Nezhiri's wait found (@stock_survey) is dropped,
+  # since the next ask is another taskmaster's.
   #
   # @return [void]
   # @raise [SystemExit] when there is no taskmaster left to ask today
@@ -4648,6 +4661,7 @@ class TaskMaster
       @npc = @primary_npc
       @primary_npc = nil
       @repair_detour = false
+      # What the fallback's wait found (Nezhiri's) is not for the first one's task.
       @stock_survey = nil
       return
     end

@@ -3109,8 +3109,10 @@ task_cancel_foreign_tasks: false
 # again, so its tasks resume once its limit resets; a task left open for the fallback is finished, not
 # cancelled. With task_repair_every entries for both (the first one's more than 0), it is also worked,
 # one task, right after the first one's tools are left for repair (unless its own went for repair in the
-# last 10 minutes, or it has given its limit since the daily rollover), so the run does not wait at the
-# repairer; the run after asks the first one again. With task_get_tools_on_completion each run collects
+# last 10 minutes, which its task would wait for too, or it has given its limit since the daily
+# rollover), so the run does not wait at the repairer; the run after asks the first one again. Poltu and
+# Bradyn share the forging tools, so a Poltu run never detours to Bradyn, and a Bradyn run detours to
+# Poltu only after a task that left no forging tool. With task_get_tools_on_completion each run collects
 # its tools at its end, so only repeat and cycle runs detour, and a run right after one that only finished
 # a task already open (that run ends before the pickup). A fallback that has given its limit since
 # the daily rollover is not asked again until the next one: neither for a detour nor when the first one

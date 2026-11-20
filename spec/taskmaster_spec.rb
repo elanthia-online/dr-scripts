@@ -14386,10 +14386,12 @@ RSpec.describe TaskMaster do
       expect(events.first).to eq([:ask, 'zasele'])
     end
 
-    it 'leaves a fallback set only for the daily limit alone: no detour without task_repair_every entries for both, or with 0 for the first one' do
+    it 'leaves a fallback set only for the daily limit alone: no detour without task_repair_every entries for both (default does not stand in for the first one\'s), or with 0 for the first one' do
       noted('nezhiri')
-      [{ 'default' => 10_800 }, { 'nezhiri' => 10_800 }, {}, { 'nezhiri' => 0, 'zasele' => 0 }].each do |every|
-        events, = detour_run(every: every, asks: { 'nezhiri' => [offer] })
+      [{ 'default' => 10_800 }, { 'nezhiri' => 10_800 }, {}, { 'nezhiri' => 0, 'zasele' => 0 },
+       { 'zasele' => 43_200 }, { 'zasele' => 43_200, 'default' => 10_800 }].each do |every|
+        # 'zasele' => []: a detour would raise "asked zasele again".
+        events, = detour_run(every: every, asks: { 'nezhiri' => [offer], 'zasele' => [] })
         expect(events.first).to eq([:ask, 'nezhiri']), every.inspect
       end
     end
@@ -14541,6 +14543,114 @@ RSpec.describe TaskMaster do
       expect(tm.instance_variable_get(:@npc)).to eq('poltu')
     end
 
+    describe 'Poltu and Bradyn, who share the forging tools' do
+      let(:smith_settings) { { task_repair_every: { 'poltu' => 10_800, 'bradyn' => 10_800 }, forging_tools: ['forging hammer', 'tongs'], shaping_tools: ['drawknife', 'rasp'] } }
+
+      def smith_note(npc, tool, item)
+        { 'npc' => npc, 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => tool, 'item' => item, 'left_at' => Time.now.to_i - 60 }
+      end
+
+      # A detour into a task that needs the tools at repair would wait for
+      # them there, or stop with that task open.
+      it "does not detour Poltu's run to Bradyn for the forging tools Poltu's own task left: a metal task of Bradyn's would need them" do
+        UserVars.taskmaster_repairs = [smith_note('poltu', 'tongs', 'steel tongs')]
+        tm = build(npc: 'poltu', fallback_npc: 'bradyn', settings: smith_settings)
+
+        tm.detour_while_tools_repair
+
+        expect(tm.instance_variable_get(:@npc)).to eq('poltu')
+        expect(UserVars.taskmaster_repairs.first).not_to have_key('detoured')
+      end
+
+      it "does not detour Bradyn's run to Poltu after a task that left a forging tool" do
+        UserVars.taskmaster_repairs = [smith_note('bradyn', 'tongs', 'steel tongs')]
+        tm = build(npc: 'bradyn', fallback_npc: 'poltu', settings: smith_settings)
+
+        tm.detour_while_tools_repair
+
+        expect(tm.instance_variable_get(:@npc)).to eq('bradyn')
+      end
+
+      it "detours Bradyn's run to Poltu after a task that left only shaping tools" do
+        UserVars.taskmaster_repairs = [smith_note('bradyn', 'drawknife', 'balsa drawknife')]
+        tm = build(npc: 'bradyn', fallback_npc: 'poltu', settings: smith_settings)
+
+        tm.detour_while_tools_repair
+
+        expect(tm.instance_variable_get(:@npc)).to eq('poltu')
+        expect(tm.instance_variable_get(:@primary_npc)).to eq('bradyn')
+      end
+
+      # Bradyn's tasks use the forging tools Poltu left, so the detour is
+      # for them too; left unmarked, every later Bradyn run in those ten
+      # minutes would detour again.
+      it "marks another taskmaster's shared tool the detour was for, so the next run asks the first one" do
+        UserVars.taskmaster_repairs = [smith_note('poltu', 'tongs', 'steel tongs')]
+        settings = smith_settings.merge(task_repair_every: { 'bradyn' => 10_800, 'zasele' => 43_200 })
+        first = build(npc: 'bradyn', fallback_npc: 'zasele', settings: settings)
+
+        first.detour_while_tools_repair
+
+        expect(first.instance_variable_get(:@npc)).to eq('zasele')
+        expect(UserVars.taskmaster_repairs.first).to include('detoured' => true)
+        second = build(npc: 'bradyn', fallback_npc: 'zasele', settings: settings)
+        second.detour_while_tools_repair
+        expect(second.instance_variable_get(:@npc)).to eq('bradyn')
+      end
+    end
+
+    it "marks only the notes the detour was for: another taskmaster's fresh note for tools of its own is left as it was" do
+      noted('nezhiri', 'poltu')
+      detour_run(asks: { 'zasele' => [offer] })
+
+      nezhiri, poltu = UserVars.taskmaster_repairs
+      expect(nezhiri).to include('npc' => 'nezhiri', 'detoured' => true)
+      expect(poltu).to include('npc' => 'poltu')
+      expect(poltu).not_to have_key('detoured')
+    end
+
+    it 'does not detour in a run already switched to the fallback for the day (the one asked is then the fallback), whose own tools went for repair' do
+      noted('zasele')
+      tm = build(npc: 'zasele', primary_npc: 'nezhiri', fallback_npc: 'zasele', settings: { task_repair_every: { 'nezhiri' => 10_800, 'zasele' => 43_200 } })
+
+      tm.detour_while_tools_repair
+
+      expect(tm.instance_variable_get(:@npc)).to eq('zasele')
+      expect(tm.instance_variable_get(:@primary_npc)).to eq('nezhiri')
+      expect(UserVars.taskmaster_repairs.first).not_to have_key('detoured')
+    end
+
+    # get_task mid-detour: the real ask loop, each ask's reply from asks
+    # (per taskmaster, in order; any other ask raises), finish returning
+    # what Nezhiri's wait left in @stock_survey.
+    def asking_mid_detour(asks, **ivars)
+      tm = build(cooldown_poll: 3, **ivars)
+      sent = []
+      allow(tm).to receive(:find_npc)
+      allow(tm).to receive(:pause)
+      allow(tm).to receive(:finish) { [:accepted, tm.instance_variable_get(:@npc), tm.instance_variable_get(:@stock_survey)] }
+      allow(DRC).to receive(:bput) do |command, *matchers|
+        ask = command.match(/\Aask (\w+) for task\z/)
+        next 'You can check your progress with the TASK verb.' if command == 'accept task'
+        raise "unexpected #{command.inspect}" unless ask && asks.key?(ask[1])
+
+        sent << ask[1]
+        bput_match(asks[ask[1]].shift || raise("asked #{ask[1]} again"), matchers)
+      end
+      [tm, sent]
+    end
+
+    it "forgets what Nezhiri's wait found when, worked as the fallback, she gives her limit and the first one is asked again" do
+      wait = 'Potion Peddler Nezhiri says, "I am sorry, you must wait before I can give you a task."'
+      nezhiri_max = daily_max.sub('Zasele', 'Nezhiri')
+      tm, sent = asking_mid_detour({ 'nezhiri' => [wait, nezhiri_max], 'zasele' => [offer] },
+                                   npc: 'nezhiri', primary_npc: 'zasele', repair_detour: true, fallback_npc: 'nezhiri')
+      allow(tm).to receive(:nezhiri_wait_chores) { tm.instance_variable_set(:@stock_survey, { copper: 50_000, missing_tools: [] }) }
+
+      expect(tm.get_task).to eq([:accepted, 'zasele', nil])
+      expect(sent).to eq(%w[nezhiri nezhiri zasele])
+    end
+
     it 'clears the detour once the task is done (back_to_primary_npc)' do
       tm = build(npc: 'zasele', primary_npc: 'nezhiri', repair_detour: true)
 
@@ -14560,7 +14670,26 @@ RSpec.describe TaskMaster do
         expect(tm).not_to have_received(:cancel_foreign_task)
         expect(tm.instance_variable_get(:@npc)).to eq('nezhiri')
         expect(tm.instance_variable_get(:@primary_npc)).to be_nil
+        expect(tm.instance_variable_get(:@repair_detour)).to be(false)
         expect(DRC).to have_received(:message).with("You are on a task for Nezhiri; finishing it instead of working one of Zasele's.")
+      end
+
+      # The first one's task, finished as its own, is cancelled for short
+      # instructions (cancel_short_task), and the first one then gives its
+      # limit: the run falls back for the day as usual, not as a detour
+      # whose first taskmaster it has already gone back to.
+      it 'after that task is cancelled, takes the first one\'s limit as an ordinary one and works the fallback for the day' do
+        tm, sent = asking_mid_detour({ 'zasele' => ['You are already on a task.', offer], 'nezhiri' => [daily_max.sub('Zasele', 'Nezhiri')] },
+                                     npc: 'zasele', primary_npc: 'nezhiri', repair_detour: true, fallback_npc: 'zasele', task_giver: 'nezhiri')
+        allow(tm).to receive(:resume_task) do
+          tm.check_task_giver
+          throw TaskMaster::FOREIGN_TASK_CANCELLED
+        end
+
+        expect(tm.get_task).to eq([:accepted, 'zasele', nil])
+        expect(sent).to eq(%w[zasele nezhiri zasele])
+        expect(tm.instance_variable_get(:@primary_npc)).to eq('nezhiri')
+        expect(UserVars.taskmaster_capped).to include('nezhiri')
       end
 
       it "treats the first one's open task as another's when the run is not on a detour (fallback for the day)" do
