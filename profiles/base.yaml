@@ -3106,11 +3106,14 @@ task_cancel_foreign_tasks: false
 # task for when the one asked says you have done the most tasks it allows today ("You have reached the
 # maximum number of TASKs you may complete for <taskmaster> today."; only the game's line naming the
 # one asked counts, not a player saying it or a line naming another). Each run asks the first one
-# again, so its tasks resume once its limit resets; a task left open for the fallback is finished, not
-# cancelled. With task_repair_every entries for both (the first one's more than 0), it is also worked,
-# one task, right after the first one's tools are left for repair (unless its own went for repair in the
-# last 10 minutes, which its task would wait for too, or it has given its limit since the daily
-# rollover), so the run does not wait at the repairer; the run after asks the first one again. Poltu and
+# again (in a cycle run the next taskmaster is picked at random as usual), so its tasks resume once its
+# limit resets; a task left open for the fallback is finished, not cancelled. With task_repair_every
+# entries for both (the first one's more than 0; the default entry does not count, and a run says so at
+# its start), it is also worked, one task, right after the first one's tools are left for repair (unless
+# any of its own went for repair in the last 10 minutes, which its task could wait for too, since the
+# task is not known before the ask, or it has given its limit since the daily rollover), so the run does
+# not wait at the repairer; the run after asks the first one again (in a cycle run the next pick is
+# random as usual, and the next task that uses the first one's tools collects them). Poltu and
 # Bradyn share the forging tools, so a Poltu run never detours to Bradyn, and a Bradyn run detours to
 # Poltu only after a task that left no forging tool. With task_get_tools_on_completion each run collects
 # its tools at its end, so only repeat and cycle runs detour, and a run right after one that only finished
@@ -3147,8 +3150,10 @@ task_repair_by: rangu
 # tools carried (the inventory feed or hands, else a TAP) are repaired and noted, except one on Lich's
 # immune list (repaired with Proper Forging Tool Care in the last two hours), which is skipped and
 # stays due; at 0 every tool goes to your own repair unchecked and none is noted, as before the setting.
-# A run that repairs tools says when a taskmaster it may work (the one named, task_fallback_npc) has
-# no entry of its own.
+# A run that repairs tools says when a taskmaster it may work (the one named, or in cycle the three it
+# picks from, and task_fallback_npc) has no entry of its own, and which taskmaster's tools going for
+# repair bring no detour to task_fallback_npc for want of an entry (the default entry does not count
+# for the detour).
 task_repair_every:
   default: 0
 

@@ -2338,6 +2338,20 @@ RSpec.describe TaskMaster do
           expect(tm.instance_variable_get(:@npc)).to eq('nezhiri')
         end
 
+        # Logged lines start with the bracket, but the match is deliberately
+        # not anchored on it: a line without it, or with unquoted text joined
+        # in front, is still the game's limit, not an unknown reply (three of
+        # which would stop the run instead of falling back).
+        it 'takes the limit line without its leading bracket, or with unquoted text joined in front, and falls back' do
+          joined = "Nezhiri shakes her head.  #{daily_max.delete_prefix('[')}"
+          tm, events = limited({ 'nezhiri' => [joined], 'zasele' => [offer] })
+
+          expect(tm.get_task).to eq(:accepted)
+          expect(events.grep(Array).select { |event| event.first == :ask }).to eq([[:ask, 'nezhiri'], [:ask, 'zasele']])
+          expect(UserVars.taskmaster_capped).to include('nezhiri')
+          expect(tm.instance_variable_get(:@primary_npc)).to eq('nezhiri')
+        end
+
         it "does not take a limit line naming another taskmaster as the one asked's: it asks again and notes no limit" do
           tm, events = limited({ 'nezhiri' => [daily_max.sub('Nezhiri', 'Zasele'), offer] })
 
@@ -14240,6 +14254,26 @@ RSpec.describe TaskMaster do
         expect(DRC).to have_received(:message).with(/no entry for bradyn/)
         expect(DRC).not_to have_received(:message).with(/no entry for zasele/)
       end
+
+      # A cycle run starts with no taskmaster named (args.npc is nil) and
+      # detours all the same.
+      it 'in cycle, names the picks whose tools bring no detour for want of an entry, leaving out the fallback itself' do
+        tm = build(settings: { task_repair_every: { 'zasele' => 43_200, 'poltu' => 10_800 } }, npc: nil, fallback_npc: 'zasele')
+        tm.warn_repair_intervals(%w[poltu bradyn zasele])
+        expect(DRC).to have_received(:message).with("No Zasele task is worked while Bradyn's tools are at repair until task_repair_every has entries for both (and Bradyn's is more than 0).")
+      end
+
+      it 'in cycle, names every pick when the fallback has no entry' do
+        tm = build(settings: { task_repair_every: { 'poltu' => 10_800, 'bradyn' => 10_800, 'zasele' => 43_200 } }, npc: nil, fallback_npc: 'nezhiri')
+        tm.warn_repair_intervals(%w[poltu bradyn zasele])
+        expect(DRC).to have_received(:message).with("No Nezhiri task is worked while Poltu's, Bradyn's or Zasele's tools are at repair until task_repair_every has entries for Nezhiri and each of them (theirs more than 0).")
+      end
+
+      it 'in cycle, leaves the fallback out of the picks it names when it is one of them and has no entry' do
+        tm = build(settings: { task_repair_every: { 'poltu' => 10_800, 'bradyn' => 10_800 } }, npc: nil, fallback_npc: 'zasele')
+        tm.warn_repair_intervals(%w[poltu bradyn zasele])
+        expect(DRC).to have_received(:message).with("No Zasele task is worked while Poltu's or Bradyn's tools are at repair until task_repair_every has entries for Zasele and each of them (theirs more than 0).")
+      end
     end
   end
 
@@ -14523,6 +14557,43 @@ RSpec.describe TaskMaster do
       tm.run_tasks(OpenStruct.new(repeat: true))
 
       expect(asks).to eq(%w[zasele nezhiri nezhiri])
+    end
+
+    # run_tasks: in cycle, the task after the detour goes to a taskmaster
+    # picked at random (here Poltu), not back to the first one.
+    it 'in a cycle run, says the next taskmaster is picked as usual, not that the first one is asked next' do
+      noted('zasele')
+      tm = build(npc: 'zasele', fallback_npc: 'nezhiri', cooldown_poll: 3, settings: { task_repair_every: { 'zasele' => 43_200, 'nezhiri' => 10_800 } })
+      asks = []
+      replies = { 'nezhiri' => [offer], 'poltu' => [offer] }
+      completed = 0
+      allow(tm).to receive(:reconcile_hands)
+      allow(tm).to receive(:prepare_for_task)
+      allow(tm).to receive(:find_npc)
+      allow(tm).to receive(:pause)
+      allow(tm).to receive(:finish) { rope_task }
+      allow(tm).to receive(:task_tools).and_return([])
+      allow(tm).to receive(:collect_task_tools)
+      allow(DRC).to receive(:bput) do |command, *matchers|
+        if (ask = command.match(/\Aask (\w+) for task\z/))
+          asks << ask[1]
+          bput_match(replies.fetch(ask[1]).shift || raise("asked #{ask[1]} again"), matchers)
+        else
+          'You can check your progress with the TASK verb.'
+        end
+      end
+      %i[nezhiri poltu].each { |giver| allow(tm).to receive(giver) }
+      allow(tm).to receive(:complete_task) do
+        completed += 1
+        Flags['wrap-up'] = true if completed == 2
+      end
+      allow_any_instance_of(Array).to receive(:sample) { |list| list == %w[poltu bradyn zasele] ? 'poltu' : raise("sampled #{list}") }
+
+      tm.run_tasks(OpenStruct.new(cycle: true))
+
+      expect(asks).to eq(%w[nezhiri poltu])
+      expect(DRC).to have_received(:message).with("Zasele's tools are at repair; working one of Nezhiri's tasks meanwhile (cycle then picks a taskmaster as usual, and the next task that uses Zasele's tools collects them).")
+      expect(DRC).not_to have_received(:message).with(/the next run asks Zasele again/)
     end
 
     it "does not detour Poltu's run to Bradyn for the forging tools Bradyn's task left, fresh or long ready (shared tools)" do
