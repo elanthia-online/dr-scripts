@@ -13942,10 +13942,17 @@ RSpec.describe TaskMaster do
         expect(every({ 'nezhiri' => '  ', 'default' => 600 }).repair_interval).to eq(600)
       end
 
-      it 'names and ignores values that are not whole seconds, 0 or more: fractions, negatives, hex; reads base-10 digits as given' do
+      it "names and ignores values that are not whole seconds, 0 or more: fractions, negatives, quoted hex text ('0x10'); reads quoted digits in base 10 ('010' is 10)" do
         tm = every({ 'nezhiri' => 10_800.9, 'zasele' => -5, 'poltu' => '0x10', 'bradyn' => '010', 'dorhum' => 7200.0 })
         expect(tm.repair_every_setting).to eq('bradyn' => 10, 'dorhum' => 7200)
         %w[nezhiri:\ '10800.9' zasele:\ '-5' poltu:\ '0x10'].each { |part| expect(DRC).to have_received(:message).with(/task_repair_every #{part}/) }
+      end
+
+      it 'takes unquoted YAML 0600 and 0x10 as the octal and hex Integers Psych makes of them (why base.yaml asks for plain digits)' do
+        # As lich-5 setup_files.rb loads a profile.
+        setting = YAML.unsafe_load("task_repair_every:\n  nezhiri: 0600\n  poltu: 0x10\n  zasele: '0x10'\n  bradyn: '0600'\n")['task_repair_every']
+        expect(every(setting).repair_every_setting).to eq('nezhiri' => 384, 'poltu' => 16, 'bradyn' => 600)
+        expect(DRC).to have_received(:message).with("task_repair_every zasele: '0x10' is not a whole number of seconds (0 or more); ignoring it.")
       end
 
       it 'names a setting that is not a mapping (a bare number) instead of dropping it silently' do
@@ -14052,6 +14059,24 @@ RSpec.describe TaskMaster do
         repair_with(due: %w[mortar pestle], self_repair: true, carried: %w[pestle sieve])
         expect(DRCC).to have_received(:repair_own_tools).with(anything, ['pestle'], 'duffel bag', [], 'alchemy belt')
         expect(UserVars.taskmaster_repaired_at.keys).to contain_exactly('sieve', 'pestle')
+        expect(DRCI).to have_received(:exists?).twice
+      end
+
+      it 'with task_self_repair at interval 0 (every task), hands every tool to repair_own_tools with no TAP and notes none, as before the setting' do
+        tm = every({ 'default' => 0 }, self_repair: true)
+        # A TAP that finds nothing: were the tools still tapped, none would
+        # reach repair_own_tools.
+        allow(DRCI).to receive(:exists?).and_return(false)
+        allow(tm).to receive(:put_hands_away)
+        allow(DRCC).to receive(:repair_own_tools).and_return(nil)
+        UserVars.taskmaster_repaired_at = nil
+
+        tm.repair(%w[mortar pestle sieve], 'alchemy belt')
+
+        expect(DRCI).not_to have_received(:exists?)
+        expect(DRCC).to have_received(:repair_own_tools)
+          .with({ 'finisher-room' => 8776, 'finisher-number' => 6 }, %w[mortar pestle sieve], 'duffel bag', [], 'alchemy belt').once
+        expect(UserVars.taskmaster_repaired_at).to be_nil
       end
 
       it "does not note a tool on Lich's immune list: repair_own_tools drops it from the array it is given, in place" do

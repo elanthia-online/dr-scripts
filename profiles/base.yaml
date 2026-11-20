@@ -3130,8 +3130,12 @@ task_fallback_npc:
 task_repair_by: rangu
 # Setting for taskmaster - Seconds between repairs of each tool, by taskmaster: e.g.
 # { nezhiri: 10800, zasele: 43200 } sends Nezhiri's tools at most every 3 hours and Zasele's every 12.
-# A taskmaster with no entry uses default; 0 repairs after every task. A run that repairs tools says
-# when a taskmaster it may work (the one named, task_fallback_npc) has no entry of its own.
+# A taskmaster with no entry uses default; 0 repairs after every task. Write plain digits with no
+# leading 0: YAML reads an unquoted 0600 as octal (384) and 0x10 as hex (16) before taskmaster sees
+# them. With task_self_repair and an interval above 0, only the due tools a TAP finds are repaired and
+# noted; at 0 every tool goes to your own repair untapped and none is noted, as before the setting.
+# A run that repairs tools says when a taskmaster it may work (the one named, task_fallback_npc) has
+# no entry of its own.
 task_repair_every:
   default: 0
 
