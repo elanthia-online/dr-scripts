@@ -37,7 +37,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.21.1'
+  VERSION = '2026.11.21.5'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -5738,7 +5738,10 @@ class TaskMaster
   # replies are the repair_replies of data/base-crafting.yaml, which
   # workorders reads too: a quote (or its bare prompt) is confirmed with a
   # second give, which takes the coin and hands over the ticket; any other
-  # answer to that give (short of coin, say) puts the tool away.
+  # answer to that give (short of coin, say) puts the tool away. A Rangu
+  # ticket in a hand is put away (put_away_tickets) before each tool is got
+  # and after the last: a bare GIVE hands over the right hand, and a ticket
+  # that came after bput gave up on a confirming give sits there.
   #
   # @param toolslist [Array<String>] tool names
   # @param belt [Hash, nil] toolbelt settings the tools live on
@@ -5749,6 +5752,10 @@ class TaskMaster
     DRCT.walk_to(19209)
     @belt = belt
     toolslist.each do |tool_name|
+      # A ticket that came after bput gave up on the last confirming give
+      # shows in a hand by now (the stow since has been answered): put away
+      # by its id before the next bare give, which hands over the right hand.
+      put_away_tickets('Rangu')
       DRCC.get_crafting_item(tool_name, @bag, @bag_items, belt, true)
       reply = DRC.bput("give Rangu", *repair_replies['offered'])
       if repair_offered?(reply)
@@ -5757,10 +5764,34 @@ class TaskMaster
           DRC.bput('stow ticket', 'You put')
           next
         end
+        # With no answer the give may still have gone through: a ticket
+        # that comes late is put away before the next tool, or after the
+        # last.
         DRC.message("No repair ticket for the #{tool_name} (#{confirmed.empty? ? 'no answer' : confirmed}); putting it away.")
       end
       DRCC.stow_crafting_item(tool_name, @bag, belt)
     end
+    put_away_tickets('Rangu')
+  end
+
+  # Puts away, by id, each of the repairer's tickets in a hand (as main's
+  # STOW TICKET after every confirming give did), so that the next bare
+  # GIVE, which hands over the right hand, hands over the tool and not the
+  # ticket. Says so of one that will not go.
+  #
+  # @param name [String] the repairer
+  # @return [void]
+  def put_away_tickets(name)
+    held_objects.select { |obj| repairer_ticket?(obj, name) }.each do |obj|
+      DRC.message("Could not put away the #{obj.name} in hand; a pickup may not get its tickets.") unless DRCI.put_away_item?("##{obj.id}")
+    end
+  end
+
+  # @param obj [Object] a hand's GameObj
+  # @param name [String] the repairer
+  # @return [Boolean] whether it is one of the repairer's tickets
+  def repairer_ticket?(obj, name)
+    !obj.id.nil? && obj.noun.to_s == 'ticket' && obj.name.to_s.match?(/\b#{Regexp.escape(name)}\b/i)
   end
 
   # Whether a repairer's answer to the first give asks for a second one (a
