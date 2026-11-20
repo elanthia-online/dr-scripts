@@ -2815,7 +2815,7 @@ RSpec.describe TaskMaster do
         bag_items = banked
         given = 0
         events = []
-        allow(tm).to receive(:tool_pickup)
+        allow(tm).to receive(:tool_pickup) { events << :tool_pickup }
         allow(tm).to receive(:refresh_haste) { events << :haste }
         allow(tm).to receive(:top_up_copper) { events << :copper }
         allow(tm).to receive(:sort_sack) { events << :sack }
@@ -13655,6 +13655,8 @@ RSpec.describe TaskMaster do
     end
 
     it 'does not ask the fallback again, in this run or the next, until the daily rollover after it gave its limit' do
+      # Away from the day's turn (06:00 UTC in November), so a minute back is the same game day.
+      allow(Time).to receive(:now).and_return(Time.utc(2026, 11, 20, 12))
       noted('nezhiri')
       UserVars.taskmaster_capped = { 'zasele' => Time.now.to_i - 60 }
       events, = detour_run(asks: { 'nezhiri' => [offer] })
@@ -13678,6 +13680,37 @@ RSpec.describe TaskMaster do
       # 'zasele' => []: asking Zasele again would raise "asked zasele again".
       expect { detour_run(asks: { 'nezhiri' => [nezhiri_max], 'zasele' => [] }) }.to raise_error(SystemExit)
       expect(DRC).to have_received(:message).with('Nezhiri has given you all the tasks allowed today. No other taskmaster to ask. Stopping.')
+    end
+
+    it "keeps the fallback's limit until midnight US Central, not an hour early (#game_day_turned_since?)" do
+      tm = build
+      at = ->(*args) { allow(Time).to receive(:now).and_return(Time.utc(*args)) }
+      # November, standard time: the day turns at 06:00 UTC.
+      noted = Time.utc(2026, 11, 20, 4, 59).to_i
+      at.call(2026, 11, 20, 5, 1)
+      expect(tm.game_day_turned_since?(noted)).to be(false)
+      at.call(2026, 11, 20, 5, 59)
+      expect(tm.game_day_turned_since?(noted)).to be(false)
+      at.call(2026, 11, 20, 6, 0)
+      expect(tm.game_day_turned_since?(noted)).to be(true)
+      # After the turn, the next one is a day later.
+      at.call(2026, 11, 21, 5, 59)
+      expect(tm.game_day_turned_since?(Time.utc(2026, 11, 20, 6, 30).to_i)).to be(false)
+      # July, daylight time: 05:00 UTC.
+      at.call(2026, 7, 4, 5, 0)
+      expect(tm.game_day_turned_since?(Time.utc(2026, 7, 4, 4, 59).to_i)).to be(true)
+      # The changeover days: midnight still on the old offset.
+      at.call(2026, 3, 8, 5, 30)
+      expect(tm.game_day_turned_since?(Time.utc(2026, 3, 8, 4, 0).to_i)).to be(false)
+      at.call(2026, 11, 1, 5, 0)
+      expect(tm.game_day_turned_since?(Time.utc(2026, 11, 1, 4, 0).to_i)).to be(true)
+    end
+
+    it 'counts a limit noted at 04:59 UTC in November as holding at 05:01 (fallback_capped?)' do
+      allow(Time).to receive(:now).and_return(Time.utc(2026, 11, 20, 5, 1))
+      UserVars.taskmaster_capped = { 'zasele' => Time.utc(2026, 11, 20, 4, 59).to_i }
+
+      expect(build.fallback_capped?('zasele')).to be(true)
     end
 
     it 'asks the fallback again once a daily rollover has passed since its limit' do

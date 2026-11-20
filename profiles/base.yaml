@@ -3105,7 +3105,8 @@ task_cancel_foreign_tasks: false
 # one task, right after the first one's tools are left for repair (unless its own went for repair in the
 # last 10 minutes, or it has given its limit since the daily rollover), so the run does not wait at the
 # repairer; the run after asks the first one again. With task_get_tools_on_completion each run collects
-# its tools at its end, so only repeat and cycle runs detour. A fallback that has given its limit since
+# its tools at its end, so only repeat and cycle runs detour, and a run right after one that only finished
+# a task already open (that run ends before the pickup). A fallback that has given its limit since
 # the daily rollover is not asked again until the next one: neither for a detour nor when the first one
 # gives its limit (the run then stops). Unset: the run stops at the
 # limit, and waits for tools at repair. Ignored by marathon, which works only Zasele's tasks.
