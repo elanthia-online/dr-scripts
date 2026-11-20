@@ -1267,6 +1267,11 @@ workorder_cash_on_hand:
 #   Only implemented for remedies
 retain_crafting_materials: false
 # Whether you want to repair your crafting tools after completing workorders or not. For those with tools setup under gear, set to false in your yaml.
+# After leaving the tools, workorders hands in each of the repairer's tickets you carry once it is ready. It stops collecting,
+# puts the ticket in hand away and says why, at a ticket the repairer does not take, at one whose look still says not ready
+# (or never answers) after 20 waits of 30 s, and at one more after 20 handed in. Society clerks all go by "clerk", so a ticket
+# another society's clerk holds a tool for (one left from a workorders run in another discipline, say) is picked up too and
+# stops collection; take it to that clerk, as later runs will likely stop at it again until it is handed in.
 workorders_repair: true
 # ADVANCED OPTION to repair your own tools after completing a workorder. This is ONLY recommended if you have the Proper Forging Tool Care technique
 # from the blacksmithing tree, and intend to do more than one workorder within the 2 hour time online.
@@ -3104,12 +3109,24 @@ task_cancel_foreign_tasks: false
 # cancelled. Unset: the run stops at the limit. Ignored by marathon, which works only Zasele's tasks.
 task_fallback_npc:
 # Setting for taskmaster - Where tools go for repair (unless task_no_repair or task_self_repair):
-# rangu (Rangu, Crossing Engineering Society), hometown (your town's repairer in base-town.yaml) or
-# task_type (the repairer, in base-crafting.yaml, of the discipline taskmaster gives each taskmaster:
-# tailoring for Zasele, remedies for Nezhiri, blacksmithing for Poltu, shaping for Bradyn, his metal
-# tasks too, artificing for Dorhum). The town is
-# task_hometown, else Crossing, where tasks are worked; always Crossing for Nezhiri. With no such
-# repairer in the data it says so and uses Rangu.
+# rangu (Rangu, Crossing Engineering Society), hometown (Crossing's town repairer in base-town.yaml,
+# Catrox) or task_type (Crossing's repairer, in base-crafting.yaml, of the discipline taskmaster gives
+# each taskmaster: tailoring for Zasele, remedies for Nezhiri, blacksmithing for Poltu, shaping for
+# Bradyn, his metal tasks too, artificing for Dorhum). Always Crossing's, where every task is bought and
+# crafted, whatever task_hometown says. With no such repairer in the data it says so and uses Rangu.
+# Each tool left is noted (UserVars.taskmaster_repairs, with its name in hand). Once a task is
+# accepted, the noted tools its work uses are picked up by their tickets, waiting up to 10 minutes at
+# each repairer for them to be ready (Poltu's and Bradyn's metal tasks share the forging tools);
+# another noted tool at a repairer it goes to is picked up only if ready then; and when a TAP before
+# the ask finds a Rangu ticket, every Rangu ticket no note accounts for (an older taskmaster's, or one
+# whose note was lost) is handed in too, waited for the same way. A task stops before its work while a
+# tool it uses is still at repair (a noted one, or an un-noted Rangu ticket still carried whose item
+# names it), and stays open for the next run; any other tool still out waits for a later task or
+# ;taskmaster pickup. When tickets for two different items fit one note, none is handed in and it
+# says so. With task_type, Zasele's, Nezhiri's and Poltu's tools go to society clerks, who are all
+# called clerk: their tickets stay carried until a task, ;taskmaster pickup or
+# task_get_tools_on_completion collects them, and ;workorders in another discipline picks such a
+# ticket up with its own and stops collecting at one its clerk does not take.
 task_repair_by: rangu
 # Setting for taskmaster - Seconds between repairs of each tool, by taskmaster: e.g.
 # { nezhiri: 10800, zasele: 43200 } sends Nezhiri's tools at most every 3 hours and Zasele's every 12.
