@@ -37,7 +37,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.20.5'
+  VERSION = '2026.11.20.11'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -5764,12 +5764,14 @@ class TaskMaster
   end
 
   # Whether a repairer's answer to the first give asks for a second one (a
-  # quote, or its bare prompt) rather than turning the tool away.
+  # quote, or its bare prompt; a quote pattern changed in data/custom may
+  # match the cost alone) rather than turning the tool away.
   #
   # @param reply [String] the answer to the first give
   # @return [Boolean]
   def repair_offered?(reply)
-    reply.match?(/#{repair_replies['prompt']}/i) && repair_replies['declined'].none? { |declined| reply.match?(/#{declined}/i) }
+    [repair_replies['quote'], repair_replies['prompt']].any? { |pattern| reply.match?(/#{pattern}/i) } &&
+      repair_replies['declined'].none? { |declined| reply.match?(/#{declined}/i) }
   end
 
   # What repairers answer when handed a tool (data/base-crafting.yaml

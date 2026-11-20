@@ -1237,6 +1237,35 @@ RSpec.describe WorkOrders do
       expect(Lich::Messaging).to have_received(:msg).with('bold', /base-crafting.yaml has no repair_replies prompt \(.*not left for repair or collected/).once
     end
 
+    it 'confirms a quote pattern from data/custom that matches the cost alone, and still puts a refused tool away' do
+      cost_only = repair_replies.merge('quote' => 'cost [\d,]+ \w+ to repair', 'offered' => ['cost [\d,]+ \w+ to repair', "There isn't a scratch on that", 'give it to me again'])
+      allow(workorders).to receive(:get_data).with('crafting').and_return({ 'repair_replies' => cost_only })
+      bput_lines('Rangu says, "That will cost 240 Kronars to repair."', "Rangu says, \"There isn't a scratch on that, and I'm not one to rob you.\"")
+      allow(DRCI).to receive(:get_item?).with('Rangu ticket').and_return(false)
+      allow(DRCT).to receive(:walk_to)
+      allow(workorders).to receive(:get_tool)
+      allow(workorders).to receive(:stow_tool)
+      allow(Lich::Messaging).to receive(:msg)
+      expect(workorders).to receive(:confirm_repair).with(info, 'hammer', 240)
+
+      workorders.send(:repair_items, info, %w[hammer tongs])
+
+      expect(workorders).to have_received(:stow_tool).with('tongs').once
+      expect(workorders).not_to have_received(:stow_tool).with('hammer')
+    end
+
+    it "confirms Fang Cove's wording of the prompt (\"If you agree, give it to me again\")" do
+      bput_lines('Osmandikar says, "If you agree, give it to me again."')
+      allow(DRCI).to receive(:get_item?).with('Rangu ticket').and_return(false)
+      allow(DRCT).to receive(:walk_to)
+      allow(workorders).to receive(:get_tool)
+      allow(workorders).to receive(:stow_tool)
+      allow(Lich::Messaging).to receive(:msg)
+      expect(workorders).to receive(:confirm_repair).with(info, 'hammer', nil)
+
+      workorders.send(:repair_items, info, ['hammer'])
+    end
+
     it 'confirms a quote by the data prompt, not by a word of its own: a prompt reworded in the data is still confirmed' do
       reworded = repair_replies.merge('quote'   => 'cost [\d,]+ \w+ to repair.*bring it back',
                                       'prompt'  => 'Bring it back',

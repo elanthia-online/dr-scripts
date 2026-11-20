@@ -11,8 +11,10 @@ repair_replies:
   # give it to me again if you want, and I'll have it ready in 2 roisaen."
   # Matched only when the cost and the prompt share one line (as seen so far).
   quote: &repair_quote 'cost [\d,]+ \w+ to repair.*give it to me again'
-  # The quote's prompt alone, should the line ever split from the cost.
-  prompt: &repair_prompt Just give it to me again
+  # The quote's prompt alone, should the line ever split from the cost. Most
+  # repairers say "Just give it to me again"; Fang Cove's says "If you
+  # agree, give it to me again" (crossing-repair and mining-buddy match both).
+  prompt: &repair_prompt give it to me again
   # Every answer to the first give: the quote (or its bare prompt), or why the
   # tool is not taken. DRC.bput tries them in this order and hands back what
   # the first one to match matched, so the quote must stay ahead of the
