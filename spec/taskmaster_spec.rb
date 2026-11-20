@@ -40,6 +40,19 @@ RSpec.describe TaskMaster do
     @real_repair_replies ||= YAML.load_file(File.expand_path('../data/base-crafting.yaml', __dir__), aliases: true)['repair_replies']
   end
 
+  # The shipped data/base-crafting.yaml, as lich-5's SCRIPT_DIR finds it:
+  # its read is stubbed, so no example depends on the file system there.
+  let(:shipped_path) { '/lich/scripts/data/base-crafting.yaml' }
+
+  # The shipped file holds these replies, or (file:) is read as that
+  # whole, or (raises:) its read raises that.
+  def ship(replies = real_repair_replies, raises: nil, file: { 'repair_replies' => replies })
+    stub_const('SCRIPT_DIR', '/lich/scripts')
+    allow(YAML).to receive(:safe_load_file).and_call_original
+    read = allow(YAML).to receive(:safe_load_file).with(shipped_path, aliases: true)
+    raises ? read.and_raise(raises) : read.and_return(file)
+  end
+
   # A bare instance: initialize runs the whole script, so each example builds
   # one with allocate and injects only the state the method under test reads.
   # settings: becomes @settings; every other keyword sets the ivar of that
@@ -12348,37 +12361,26 @@ RSpec.describe TaskMaster do
       expect(DRCC).to have_received(:stow_crafting_item).with('mortar', 'duffel bag', 'alchemy belt')
     end
 
-    # The shipped data/base-crafting.yaml, as lich-5's SCRIPT_DIR finds it:
-    # its read is stubbed, so no example depends on the file system there.
-    let(:shipped_path) { '/lich/scripts/data/base-crafting.yaml' }
-
-    # The shipped file holds these replies, or (file:) is read as that
-    # whole, or (raises:) its read raises that.
-    def ship(replies = real_repair_replies, raises: nil, file: { 'repair_replies' => replies })
-      stub_const('SCRIPT_DIR', '/lich/scripts')
-      allow(YAML).to receive(:safe_load_file).and_call_original
-      read = allow(YAML).to receive(:safe_load_file).with(shipped_path, aliases: true)
-      raises ? read.and_raise(raises) : read.and_return(file)
-    end
-
     it 'takes every reply from the shipped base-crafting.yaml, and says so once, when the data (a stale data/custom copy) has none' do
       ship
       tm = build(repair_replies: nil)
       allow(tm).to receive(:get_data).with('crafting').and_return({ 'stock' => {} })
       queue = [rangu_quote, rangu_ticket]
-      allow(DRCT).to receive(:walk_to)
+      allow(DRCT).to receive(:walk_to).and_return(true)
       allow(DRCC).to receive(:get_crafting_item)
       allow(DRCC).to receive(:stow_crafting_item)
       allow(DRC).to receive(:bput) do |command, *matchers|
         sent << command
-        command == 'stow ticket' ? 'You put' : bput_match(queue.shift, matchers)
+        next 'You put' if command == 'stow ticket'
+
+        bput_match(command.start_with?('look at my ') ? 'I could not find what you were referring to.' : queue.shift, matchers)
       end
-      allow(DRCI).to receive(:get_item?).with('rangu ticket').and_return(false)
+      allow(DRCI).to receive(:exists?).with('Rangu ticket').and_return(false)
 
       tm.tool_drop(['mortar'], nil)
       tm.tool_pickup
 
-      expect(sent).to eq(['give Rangu', 'give Rangu', 'stow ticket'])
+      expect(sent).to eq(['give Rangu', 'give Rangu', 'stow ticket', 'look at my first Rangu ticket'])
       expect(DRC).to have_received(:message).with("data/custom/base-crafting.yaml has no usable repair_replies quote, prompt, offered, declined, ticket, need_coin, ready, not_ready, ticket_handed, ticket_not_taken (a copy from before they were added?); using the shipped data/base-crafting.yaml's. Update that copy.").once
       expect(YAML).to have_received(:safe_load_file).with(shipped_path, aliases: true).once
     end
@@ -12423,19 +12425,24 @@ RSpec.describe TaskMaster do
       expect(tm.repair_replies.values_at('offered', 'ready')).to eq(real_repair_replies.values_at('offered', 'ready'))
       expect(DRC).to have_received(:message).with(/no usable repair_replies offered, ready \(/).once
 
+      # The note tool_drop left leads the pickup to Rangu's first ticket:
+      # not ready at the first look, ready at the second (after one wait).
       looks = ['Looking at the Rangu ticket you see it is for a mortar.  You recall that your mortar should be ready any moment now.',
                'Looking at the Rangu ticket you see it is for a mortar.  You recall that your mortar should be ready by now.']
-      tickets = [true, false]
-      tm.instance_variable_set(:@settings, OpenStruct.new(%i[forging_belt engineering_belt outfitting_belt alchemy_belt enchanting_belt].to_h { |belt| [belt, { 'items' => [] }] }))
-      allow(DRCI).to receive(:get_item?).with('rangu ticket') { tickets.shift }
-      allow(tm).to receive(:pause) { |seconds| $right_hand = 'stone mortar' if seconds < 1 }
+      allow(DRCI).to receive(:exists?).with('Rangu ticket').and_return(true)
+      allow(tm).to receive(:pause)
+      allow(tm).to receive(:redeem_ticket).and_return(:unseen)
       allow(DRC).to receive(:bput) do |command, *matchers|
-        line = command == 'look at my ticket' ? (looks.shift || raise('looked again after ready')) : 'You hand Rangu your ticket and are handed back a mortar.'
+        line = case command
+               when 'look at my first Rangu ticket' then looks.shift || raise('looked again after ready')
+               else 'I could not find what you were referring to.'
+               end
         bput_match(line, matchers)
       end
 
       tm.tool_pickup
 
+      expect(tm).to have_received(:redeem_ticket).with('Rangu', 'first', 'mortar').once
       expect(tm).to have_received(:pause).with(30).once
     end
 
@@ -12472,7 +12479,7 @@ RSpec.describe TaskMaster do
       it "puts the tool away at once on \"#{line[19, 30]}...\"" do
         returned = []
         tm = build
-        allow(DRCT).to receive(:walk_to)
+        allow(DRCT).to receive(:walk_to).and_return(true)
         allow(DRCC).to receive(:get_crafting_item)
         allow(DRCC).to receive(:stow_crafting_item)
         allow(DRC).to receive(:bput) do |command, *matchers|
@@ -12796,6 +12803,34 @@ RSpec.describe TaskMaster do
       expect(DRC).to have_received(:message).with('Rangu did not take the ticket (almost done); keeping it for a later pickup.')
     end
 
+    # The hand-in matches the repair_replies ticket_handed and
+    # ticket_not_taken that workorders reads, so a refusal added to the data
+    # (a clerk handed another clerk's ticket, say) is answered at once and
+    # named, rather than waited out as no answer.
+    it "answers the ticket hand-in with the data's ticket_not_taken, and names the refusal it matched" do
+      UserVars.taskmaster_repairs = [bowl]
+      data = real_repair_replies.merge('ticket_not_taken' => real_repair_replies['ticket_not_taken'] + ["isn't one of mine"])
+      tm = pickup_world({ 'Rangu' => [['large purpleheart bowl edged with ivory', true]] },
+                        refused: "Rangu frowns and says, \"That ticket isn't one of mine.\"", repair_replies: data)
+
+      tm.tool_pickup(npc: 'nezhiri')
+
+      expect(UserVars.taskmaster_repairs).to eq([bowl])
+      expect(DRC).to have_received(:message).with("Rangu did not take the ticket (isn't one of mine); keeping it for a later pickup.")
+    end
+
+    it "takes the tool back on the data's ticket_handed" do
+      UserVars.taskmaster_repairs = [bowl]
+      data = real_repair_replies.merge('ticket_handed' => ['^You hand \w+ your ticket'])
+      tm = pickup_world({ 'Rangu' => [['large purpleheart bowl edged with ivory', true]] }, repair_replies: data)
+
+      tm.tool_pickup(npc: 'nezhiri')
+
+      expect(DRC).to have_received(:bput).with('give Rangu', '^You hand \w+ your ticket', *real_repair_replies['ticket_not_taken'])
+      expect(sent).to include([:stow, 'bowl'])
+      expect(UserVars.taskmaster_repairs).to eq([])
+    end
+
     it "keeps every note when the repairer's room can't be reached" do
       UserVars.taskmaster_repairs = [bowl]
       tm = pickup_world({ 'Rangu' => [['large purpleheart bowl edged with ivory', true]] }, unreached: [19_209])
@@ -12924,7 +12959,20 @@ RSpec.describe TaskMaster do
         expect(UserVars.taskmaster_old_tickets_done).to be(true)
       end
 
-      it 'works the task, and is not done, when base-crafting.yaml has no repair_replies and a Rangu ticket is carried' do
+      it 'hands the old tickets in through the shipped replies when the data (a stale data/custom copy) has none' do
+        ship
+        tm = pickup_world({ 'Rangu' => [['polished belzune stone mortar', true]] }, repair_replies: nil)
+        allow(tm).to receive(:get_data).with('crafting').and_return({ 'stock' => {} })
+
+        tm.pickup_old_tickets
+
+        expect(sent).to include([:get, 'first Rangu ticket'], 'give Rangu', [:stow, 'mortar'])
+        expect(UserVars.taskmaster_old_tickets_done).to be(true)
+        expect(DRC).to have_received(:message).with(/no usable repair_replies quote, .*; using the shipped data/).once
+      end
+
+      it 'works the task, and is not done, when even the shipped base-crafting.yaml has no repair_replies and a Rangu ticket is carried' do
+        ship(raises: Errno::ENOENT)
         tm = pickup_world({ 'Rangu' => [['polished belzune stone mortar', true]] }, repair_replies: nil)
         allow(tm).to receive(:get_data).with('crafting').and_return({ 'stock' => {} })
 
@@ -12932,7 +12980,7 @@ RSpec.describe TaskMaster do
 
         expect(sent).to eq([[:tap, 'Rangu ticket']])
         expect(UserVars.taskmaster_old_tickets_done).to be_nil
-        expect(DRC).to have_received(:message).with(/base-crafting.yaml has no repair_replies quote, prompt, /).once
+        expect(DRC).to have_received(:message).with(/no usable repair_replies quote, prompt, .*none for quote, prompt, .*tools are not left for repair or collected/).once
       end
 
       it 'does nothing once done, or with task_self_repair' do

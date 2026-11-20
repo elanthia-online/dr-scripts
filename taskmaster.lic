@@ -5802,14 +5802,6 @@ class TaskMaster
   # ticket.
   NO_TICKET = [/^I could not find/, /^What were you referring to/].freeze
 
-  # A repairer taking a ticket and handing the tool back ("You hand Catrox
-  # your ticket and are handed back a large purpleheart bowl edged with
-  # ivory.", Kurtus, 2026-11-18 23:15:27; crossing-repair also takes "takes
-  # your ticket"), and the answers that mean it did not: not done yet, or
-  # nobody there to take it.
-  TICKET_HANDED = [/^You hand/, /takes your ticket/].freeze
-  TICKET_NOT_TAKEN = [/almost done/, /isn't gonna be done/, /not ready yet/, /^What is it/].freeze
-
   # Seconds to wait for the tool to show in a hand after the ticket is taken.
   TOOL_BACK_WAIT = 3
 
@@ -6420,7 +6412,11 @@ class TaskMaster
 
   # Hands one ticket to the repairer and stows the tool that comes back on
   # the toolbelt that lists it, by its setting name when the ticket was
-  # noted, else by its noun. A ticket the repairer does not take goes back
+  # noted, else by its noun. The repairer's answer is matched against the
+  # repair_replies ticket_handed (the tool comes back) and ticket_not_taken
+  # (not done yet, or nobody there to take it) of data/base-crafting.yaml,
+  # which workorders reads too; any other answer is waited out (bput's 15 s)
+  # and read as not taken. A ticket the repairer does not take goes back
   # where tickets are stowed.
   #
   # @param name [String] the repairer
@@ -6446,8 +6442,8 @@ class TaskMaster
     end
 
     before = held_objects.map { |obj| [obj.id, obj.name] }
-    reply = DRC.bput("give #{name}", *TICKET_HANDED, *TICKET_NOT_TAKEN)
-    unless TICKET_HANDED.any? { |handed| reply.match?(handed) }
+    reply = DRC.bput("give #{name}", *repair_replies['ticket_handed'], *repair_replies['ticket_not_taken'])
+    unless repair_replies['ticket_handed'].any? { |handed| reply.match?(/#{handed}/i) }
       DRC.message("#{name} did not take the ticket (#{reply.empty? ? 'no answer' : reply}); keeping it for a later pickup.")
       DRC.bput('stow ticket', 'You put')
       return false
