@@ -39,7 +39,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.20.17'
+  VERSION = '2026.11.21.3'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -5919,11 +5919,11 @@ class TaskMaster
   end
 
   # Whether the tool is due a repair: its task_repair_every interval has run
-  # out since it was last repaired (or a repairer last found nothing to
-  # repair on it), by UserVars.taskmaster_repaired_at, kept per character
-  # across runs and keyed by the tool's name as repair is given it. A tool
-  # never noted is due, and so is one noted later than now (the clock was
-  # set back).
+  # out since it was last repaired (or a repairer last found no wear on it,
+  # or said it is past repair), by UserVars.taskmaster_repaired_at, kept per
+  # character across runs and keyed by the tool's name as repair is given
+  # it. A tool never noted is due, and so is one noted later than now (the
+  # clock was set back).
   #
   # @param tool [String] the tool's name
   # @param now [Time]
@@ -5942,7 +5942,9 @@ class TaskMaster
     stamps.is_a?(Hash) ? stamps : {}
   end
 
-  # Notes the tool as just repaired (or found needing none).
+  # Notes the tool as just repaired, or as found needing none or past repair
+  # (a declined answer). A refusal of the tool itself ("I don't repair those
+  # here") is not noted.
   #
   # @param tool [String] the tool's name
   # @param now [Time]
@@ -6267,7 +6269,10 @@ class TaskMaster
   # the coin and hands over the ticket; any other answer to that give (short
   # of coin, say) puts the tool away. A refusal that is not one of the
   # declined answers (no repairer there, "I don't repair those here", no
-  # answer) is named. When the repairer's room can't be reached nothing is
+  # answer) is named. A tool whose ticket is kept, or that a declined answer
+  # turns away (no wear, or past repair), is noted repaired (note_repaired,
+  # task_repair_every); one turned away any other way is not, and stays due
+  # for the next task. When the repairer's room can't be reached nothing is
   # given.
   #
   # @param toolslist [Array<String>] tool names

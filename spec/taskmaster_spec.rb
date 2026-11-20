@@ -13942,6 +13942,11 @@ RSpec.describe TaskMaster do
         expect(every({ 'nezhiri' => '  ', 'default' => 600 }).repair_interval).to eq(600)
       end
 
+      it 'drops a blank entry (nil, empty or spaces) without naming it as not whole seconds' do
+        expect(every({ 'nezhiri' => nil, 'zasele' => '', 'poltu' => '  ', 'default' => 600 }).repair_every_setting).to eq('default' => 600)
+        expect(DRC).not_to have_received(:message).with(/is not a whole number/)
+      end
+
       it "names and ignores values that are not whole seconds, 0 or more: fractions, negatives, quoted hex text ('0x10'); reads quoted digits in base 10 ('010' is 10)" do
         tm = every({ 'nezhiri' => 10_800.9, 'zasele' => -5, 'poltu' => '0x10', 'bradyn' => '010', 'dorhum' => 7200.0 })
         expect(tm.repair_every_setting).to eq('bradyn' => 10, 'dorhum' => 7200)
@@ -14128,10 +14133,17 @@ RSpec.describe TaskMaster do
         expect(drop(quote, ticket)).to be_within(5).of(Time.now.to_i)
       end
 
-      it 'when the repairer finds no wear on it, or will not repair it' do
+      it 'when the repairer finds no wear on it, or says it is past repair (the declined answers)' do
         expect(drop("Rangu shrugs and says, \"There isn't a scratch on that, and I'm not one to rob you.\"")).to be_within(5).of(Time.now.to_i)
         UserVars.taskmaster_repaired_at = nil
         expect(drop("I can't fix those.  They only have so many uses and then you must buy another.")).to be_within(5).of(Time.now.to_i)
+      end
+
+      it 'not when the repairer refuses the tool itself, so it goes again after the next task' do
+        expect(drop("Rangu says, \"I don't repair those here.\"")).to be_nil
+        expect(drop("Rangu says, \"I don't work on those here.\"")).to be_nil
+        expect(DRC).to have_received(:message).with("Rangu did not take the mortar (I don't repair those here); putting it away.")
+        expect(DRC).to have_received(:message).with("Rangu did not take the mortar (I don't work on those here); putting it away.")
       end
 
       it 'not when nobody looked at it (no repairer there, no answer) or no ticket came (short of coin)' do
@@ -14187,6 +14199,7 @@ RSpec.describe TaskMaster do
       it 'counts a blank entry as none' do
         warned({ 'nezhiri' => nil, 'zasele' => 43_200 })
         expect(DRC).to have_received(:message).with('task_repair_every has no entry for nezhiri; its tools go for repair after every task.')
+        expect(DRC).not_to have_received(:message).with(/is not a whole number/)
       end
 
       it 'names the three taskmasters cycle picks from' do
