@@ -1267,8 +1267,9 @@ workorder_cash_on_hand:
 #   Only implemented for remedies
 retain_crafting_materials: false
 # Whether you want to repair your crafting tools after completing workorders or not. For those with tools setup under gear, set to false in your yaml.
-# After leaving the tools (back from the bank first, should it run short of coin; a tool it cannot get is skipped, saying so),
-# workorders hands in each of the repairer's tickets you carry once it is ready, starting with one already in your hands. Each
+# After leaving the tools (back from the bank first, should it run short of coin; a tool it cannot get is skipped, saying so;
+# each tool goes to your right hand before it is given, as a give hands over the right hand, and one that cannot is put away,
+# saying so), workorders hands in each of the repairer's tickets you carry once it is ready, starting with one already in your hands. Each
 # ticket goes to your right hand to be handed in, with the right hand's item put away first should both hands be full; should
 # that item not go away, it collects no more tickets and says so. Anything else held when collection starts is put away with
 # the returned tool after a hand-in (into your crafting bag or belt). It stops collecting, puts the ticket in hand away and says

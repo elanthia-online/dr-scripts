@@ -6227,7 +6227,10 @@ class TaskMaster
   # tickets forgets should no ticket be found. A refusal that is not one of the
   # declined answers (no repairer there, "I don't repair those here", no
   # answer) is named. When the repairer's room can't be reached nothing is
-  # given.
+  # given. A ticket of the repairer's in a hand is put away
+  # (put_away_tickets) before each tool is got and after the last: a bare
+  # GIVE hands over the right hand, and a ticket that came after bput gave
+  # up on a confirming give sits there.
   #
   # @param toolslist [Array<String>] tool names
   # @param belt [Hash, nil] toolbelt settings the tools live on
@@ -6743,10 +6746,12 @@ class TaskMaster
     false
   end
 
-  # Puts away, by id, each of the repairer's tickets in a hand: LOOK AT and
-  # GET <ordinal> <name> ticket count a held ticket first, and a GET of one
-  # already held gets "You are already holding that." with nothing new in
-  # hand.
+  # Puts away, by id, each of the repairer's tickets in a hand (as main's
+  # STOW TICKET after every confirming give did): the next bare GIVE, which
+  # hands over the right hand, then hands over the tool and not the ticket;
+  # LOOK AT and GET <ordinal> <name> ticket count a held ticket first; and a
+  # GET of one already held gets "You are already holding that." with
+  # nothing new in hand. Says so of one that will not go.
   #
   # @param name [String] the repairer
   # @return [void]

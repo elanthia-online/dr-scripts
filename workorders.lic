@@ -374,8 +374,10 @@ class WorkOrders
   # (workorders_repair_own_tools), or by leaving each at the repairer,
   # answering its reply through the data repair_replies (a declined tool is
   # put away; a quote or its prompt is confirmed; any other answer is put
-  # away with a message; a tool that cannot be got says so and is skipped),
-  # then collecting the tickets carried. Nothing is left for repair when
+  # away with a message; a tool that cannot be got says so and is skipped,
+  # and one that cannot be got into the right hand, which a bare GIVE hands
+  # over, says so and is put away: see tool_to_right_hand?), then
+  # collecting the tickets carried. Nothing is left for repair when
   # repair_replies is unusable (see repair_replies_known?).
   #
   # @param info [Hash] the discipline's base-crafting.yaml data
@@ -400,9 +402,11 @@ class WorkOrders
     DRCT.walk_to info['repair-room']
 
     tools.each do |tool_name|
+      held = held_objects.map(&:id)
       # get_crafting_item (skip_exit) has said why; a bare give would hand
       # over nothing, or what the right hand holds.
       next Lich::Messaging.msg('bold', "WorkOrders: Could not get the #{tool_name} to leave for repair; skipping it.") unless get_tool(tool_name)
+      next unless tool_to_right_hand?(tool_name, held)
 
       result = DRC.bput("give #{info['repair-npc']}", *repair_replies['offered'])
       if repair_replies['declined'].any? { |declined| result.match?(/#{declined}/i) }
@@ -417,6 +421,56 @@ class WorkOrders
 
     collect_tickets(info['repair-npc'])
     Lich::Messaging.msg('plain', 'WorkOrders: Tool repair at NPC completed')
+  end
+
+  # Puts the tool just got in the right hand, by its id, for the bare GIVE,
+  # which hands over the right hand. Something held already (repair run by
+  # hand, or by restock-shop or trade, with an item held; a tool whose
+  # second give got no answer; a ticket that came late) sends the GET to
+  # the left hand, and the give would hand over what the right hand holds:
+  # the repairer quoted, and was paid for, that instead, and the tool was
+  # never offered. The tool is the object new in a hand (see got_tool). One
+  # that cannot be found in a hand or moved to the right says so and is
+  # put away, not left.
+  #
+  # @param tool_name [String] the tool, as get_tool got it
+  # @param held [Array<String, nil>] the ids in hand before the GET
+  # @return [Boolean] whether the tool is in the right hand
+  def tool_to_right_hand?(tool_name, held)
+    tool = got_tool(tool_name, held)
+    return true if tool && to_right_hand?(tool)
+
+    Lich::Messaging.msg('bold', "WorkOrders: Could not get the #{tool_name} into your right hand to leave for repair (a bare give hands over the right hand); putting it away.")
+    stow_tool(tool_name)
+    false
+  end
+
+  # The tool get_tool put in hand: the object new in a hand (by id); with
+  # none new (it was held already: the GET answers "You are already holding
+  # that."), the one held object whose GameObj noun is the tool's
+  # (DRC.get_noun).
+  #
+  # @param tool_name [String] the tool, as get_tool got it
+  # @param held [Array<String, nil>] the ids in hand before the GET
+  # @return [Object, nil] its GameObj; nil when none, or more than one
+  #   held one, fits
+  def got_tool(tool_name, held)
+    fresh = held_objects.find { |obj| obj.id && !held.include?(obj.id) }
+    return fresh if fresh
+
+    noun = DRC.get_noun(tool_name).to_s.downcase
+    same = held_objects.select { |obj| obj.id && obj.noun.to_s.downcase == noun }
+    same.first if same.size == 1
+  end
+
+  # Moves a held object to the right hand, by its id: SWAP moves it from
+  # the left.
+  #
+  # @param obj [Object] its GameObj
+  # @return [Boolean] whether it is in the right hand
+  def to_right_hand?(obj)
+    DRC.bput('swap', /^You move/, /^You have nothing/) if GameObj.left_hand&.id == obj.id
+    GameObj.right_hand&.id == obj.id
   end
 
   # Hands in each <npc> ticket carried once its look says the tool is ready,
@@ -436,9 +490,9 @@ class WorkOrders
   # with no GET: while it is held, the GET answers "You are already
   # holding that." and brings no other. Otherwise the GET needs a free hand,
   # so with both full the right hand is put away first, and the ticket got
-  # is the object new in a hand (see ticket_got). Either way the ticket goes
-  # to the right hand by its id (see ticket_to_right_hand) before it is
-  # looked at and handed in. After each hand-in both hands are put away
+  # is the <npc> ticket new in a hand (see ticket_got). Either way the
+  # ticket goes to the right hand by its id (see ticket_to_right_hand)
+  # before it is looked at and handed in. After each hand-in both hands are put away
   # (stow_tool), the tool handed back and anything that was held with it.
   #
   # @param npc [String] the repairer (repair-npc)
@@ -486,21 +540,32 @@ class WorkOrders
     [GameObj.right_hand, GameObj.left_hand].compact.reject { |obj| obj.name.to_s == 'Empty' }
   end
 
-  # A <npc> ticket in a hand, the right one first: an object whose noun is
-  # ticket and whose name has the repairer's name as a word, as GET MY
-  # <NPC> TICKET takes one (taskmaster's repairer_ticket? matches the same).
+  # A <npc> ticket in a hand, the right one first (see npc_ticket?).
   #
   # @param npc [String] the repairer (repair-npc)
   # @return [Object, nil] its GameObj
   def held_ticket(npc)
-    held_objects.find { |obj| obj.id && obj.noun.to_s == 'ticket' && obj.name.to_s.match?(/\b#{Regexp.escape(npc)}\b/i) }
+    held_objects.find { |obj| npc_ticket?(obj, npc) }
   end
 
-  # GETs a <npc> ticket and gives the object new in a hand (by id), looked
-  # for TICKET_IN_HAND_POLLS times 0.1 s apart. lich-5's get_item? looks only
-  # for the noun, so a ticket of another name held makes it true whatever
-  # the GET did, and at once: with none new in a hand, the GET brought
-  # nothing (no <npc> ticket left), as when get_item? is false.
+  # Whether a hand's object is a <npc> ticket: it has an id, its noun is
+  # ticket and its name has the repairer's name as a word, as GET MY <NPC>
+  # TICKET takes one (taskmaster's repairer_ticket? matches the same).
+  #
+  # @param obj [Object] a hand's GameObj
+  # @param npc [String] the repairer (repair-npc)
+  # @return [Boolean]
+  def npc_ticket?(obj, npc)
+    !obj.id.nil? && obj.noun.to_s == 'ticket' && obj.name.to_s.match?(/\b#{Regexp.escape(npc)}\b/i)
+  end
+
+  # GETs a <npc> ticket and gives the <npc> ticket new in a hand (by id;
+  # see npc_ticket?), looked for TICKET_IN_HAND_POLLS times 0.1 s apart.
+  # lich-5's get_item? looks only for the noun, so a ticket of another name
+  # held makes it true whatever the GET did, and at once: with no new <npc>
+  # ticket in a hand, the GET brought nothing (no <npc> ticket left), as
+  # when get_item? is false. Anything else new in a hand (the tool of the
+  # last hand-in, shown late) is not taken for the ticket.
   #
   # @param npc [String] the repairer (repair-npc)
   # @return [Object, nil] the ticket's GameObj; nil when none was got
@@ -509,7 +574,7 @@ class WorkOrders
     return unless DRCI.get_item?("#{npc} ticket")
 
     TICKET_IN_HAND_POLLS.times do
-      found = held_objects.find { |obj| obj.id && !held.include?(obj.id) }
+      found = held_objects.find { |obj| !held.include?(obj.id) && npc_ticket?(obj, npc) }
       return found if found
 
       pause 0.1
@@ -517,15 +582,13 @@ class WorkOrders
     nil
   end
 
-  # Moves the ticket to the right hand, by its id: SWAP moves it from the
-  # left.
+  # Moves the ticket to the right hand, by its id (see to_right_hand?).
   #
   # @param npc [String] the repairer (repair-npc)
   # @param ticket [Object] the ticket's GameObj
   # @return [String, nil] why it could not be, or nil once it is there
   def ticket_to_right_hand(npc, ticket)
-    DRC.bput('swap', /^You move/, /^You have nothing/) if GameObj.left_hand&.id == ticket.id
-    return if GameObj.right_hand&.id == ticket.id
+    return if to_right_hand?(ticket)
 
     "Could not move the #{npc} ticket to your right hand"
   end
