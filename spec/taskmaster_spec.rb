@@ -14221,6 +14221,22 @@ RSpec.describe TaskMaster do
       UserVars.taskmaster_repairs = npcs.map { |npc| { 'npc' => npc, 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => "#{npc} tool", 'item' => "#{npc} tool", 'left_at' => Time.now.to_i - ago } }
     end
 
+    # The real collect_task_tools, down to each repairer's visit: no Rangu
+    # ticket carried, the repair replies known, and each task using its
+    # taskmaster's noted tool (noted's 'nezhiri tool', or a mortar; noted's
+    # 'zasele tool', or scissors). Each visit (collect_tools) yields the notes
+    # it waits for, and leaves the notes as they are.
+    def stub_pickup(tm, &visit)
+      uses = { 'nezhiri' => ['nezhiri tool', 'mortar'], 'zasele' => ['zasele tool', 'scissors'] }
+      allow(tm).to receive(:task_tools) { |npc, _task| uses.fetch(npc) }
+      allow(tm).to receive(:rangu_ticket_carried?).and_return(false)
+      allow(tm).to receive(:repair_replies_known?).and_return(true)
+      allow(tm).to receive(:collect_tools) do |_room, _name, records, **|
+        visit&.call(records)
+        []
+      end
+    end
+
     # One pass of run_tasks, with the real get_task asking from asks (per
     # taskmaster, in order). Returns the steps: asks, pickups, work.
     def detour_run(npc: 'nezhiri', fallback: 'zasele', asks: {}, every: { 'nezhiri' => 10_800, 'zasele' => 43_200 }, **ivars)
@@ -14241,7 +14257,7 @@ RSpec.describe TaskMaster do
         end
       end
       allow(tm).to receive(:finish) { rope_task }
-      allow(tm).to receive(:tool_pickup) { |npc: nil| events << [:tool_pickup, npc] }
+      stub_pickup(tm) { |records| events << [:tool_pickup, records.first['npc']] }
       %i[zasele nezhiri].each { |giver| allow(tm).to receive(giver) { events << [:work, giver] } }
       allow(tm).to receive(:complete_task) { events << [:complete, tm.instance_variable_get(:@npc)] }
       tm.run_tasks(OpenStruct.new)
@@ -14444,7 +14460,7 @@ RSpec.describe TaskMaster do
       allow(tm).to receive(:find_npc)
       allow(tm).to receive(:pause)
       allow(tm).to receive(:finish) { rope_task }
-      allow(tm).to receive(:tool_pickup)
+      stub_pickup(tm)
       allow(DRC).to receive(:bput) do |command, *_|
         if (ask = command.match(/\Aask (\w+) for task\z/))
           asks << ask[1]

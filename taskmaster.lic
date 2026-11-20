@@ -349,9 +349,9 @@ class TaskMaster
     other = usable_fallback_npc
     return unless other && !fallback_capped?(other) && repair_every_setting.key?(other) && repair_every_setting.fetch(@npc, 0).positive?
 
-    fresh = repairs_out(@npc).reject { |record| record['detoured'] }.select { |record| just_left?(record) }
+    fresh = repairs_out_for(@npc).reject { |record| record['detoured'] }.select { |record| just_left?(record) }
     return if fresh.empty?
-    return if repairs_out(other).any? { |record| just_left?(record) }
+    return if repairs_out_for(other).any? { |record| just_left?(record) }
 
     mark_detoured(fresh)
     DRC.message("#{@npc.capitalize}'s tools are at repair; working one of #{other.capitalize}'s tasks meanwhile (the next run asks #{@npc.capitalize} again).")
@@ -360,6 +360,35 @@ class TaskMaster
     @repair_detour = true
     # What Nezhiri's wait found is not for another taskmaster's task.
     @stock_survey = nil
+  end
+
+  # The noted tools (repairs_out) a taskmaster's tasks use: those it left,
+  # and those its tool settings name (detour_tool_names), matched as the
+  # pickup matches them (tools_left_for: by setting name or name in hand).
+  # Poltu's and Bradyn's metal tasks share the forging tools, so a hammer
+  # either left counts for both.
+  #
+  # @param npc [String]
+  # @return [Array<Hash{String => Object}>]
+  def repairs_out_for(npc)
+    names = detour_tool_names(npc)
+    repairs_out.select { |record| record['npc'] == npc || tools_left_for(names, [record]).any? }
+  end
+
+  # Every tool name a taskmaster's tasks send for repair, from the settings
+  # (whatever the task: task_tools gives one task's).
+  #
+  # @param npc [String]
+  # @return [Array<String>]
+  def detour_tool_names(npc)
+    case npc
+    when 'zasele' then Array(@settings.outfitting_tools) + [knitting_needles_name]
+    when 'nezhiri' then Array(@settings.alchemy_tools)
+    when 'poltu' then Array(@settings.forging_tools)
+    when 'bradyn' then Array(@settings.forging_tools) + Array(@settings.shaping_tools || @settings.engineering_tools)
+    when 'dorhum' then dorhum_repair_tools
+    else []
+    end
   end
 
   # Whether a noted tool was left less than REPAIR_READY_SECONDS ago (and not
