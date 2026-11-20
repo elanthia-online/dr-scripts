@@ -2352,6 +2352,20 @@ RSpec.describe TaskMaster do
           expect(tm.instance_variable_get(:@primary_npc)).to eq('nezhiri')
         end
 
+        # The deliberate other side of the quote rule: the taskmaster's own
+        # speech joined to the limit on one line is rejected like a player
+        # saying it (never seen: every logged limit line is a line of its
+        # own). Matching the bracketed text wherever it falls would take a
+        # player's '[You have reached ...' again.
+        it "does not take the taskmaster's quoted speech joined in front of the limit line: no answer, asked again, no limit noted" do
+          joined = %(Potion Peddler Nezhiri says, "I am still working on packaging what you gave me."  #{daily_max})
+          tm, events = limited({ 'nezhiri' => [joined, offer] })
+
+          expect(tm.get_task).to eq(:accepted)
+          expect(events).to eq([[:find, 'nezhiri'], [:ask, 'nezhiri'], [:pause, 7], [:find, 'nezhiri'], [:ask, 'nezhiri'], :finish])
+          expect(UserVars.taskmaster_capped).to be_nil
+        end
+
         it "does not take a limit line naming another taskmaster as the one asked's: it asks again and notes no limit" do
           tm, events = limited({ 'nezhiri' => [daily_max.sub('Nezhiri', 'Zasele'), offer] })
 
@@ -14385,12 +14399,22 @@ RSpec.describe TaskMaster do
       expect(DRC).to have_received(:message).with('Nezhiri has given you all the tasks allowed today. No other taskmaster to ask. Stopping.')
     end
 
-    it "treats a fallback note left later than now (the clock set back) as not fresh, like repair_due? does" do
-      noted('nezhiri')
-      UserVars.taskmaster_repairs += [{ 'npc' => 'zasele', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'scissors', 'item' => 'scissors', 'left_at' => Time.now.to_i + 3600 }]
-      events, = detour_run(asks: { 'zasele' => [offer] })
+    # A fallback note older than REPAIR_READY_SECONDS may be one a pickup
+    # already failed on (two tickets fit it, the ticket was refused): a
+    # detour would open a fallback task that stops on it, and every run
+    # after would finish that task as the fallback's and stop again. A note
+    # does not say which, so any note holds the detour back, one left later
+    # than now (the clock set back) too.
+    it "is held back by the fallback's tools still at repair however long ago they were left, or left later than now" do
+      [3600, 7200, 86_400, -3600].each do |ago|
+        noted('nezhiri')
+        UserVars.taskmaster_repairs += [{ 'npc' => 'zasele', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'scissors', 'item' => 'scissors', 'left_at' => Time.now.to_i - ago }]
+        # 'zasele' => []: a detour would raise "asked zasele again".
+        events, = detour_run(asks: { 'nezhiri' => [offer], 'zasele' => [] })
 
-      expect(events.first).to eq([:ask, 'zasele'])
+        expect(events).to eq([[:ask, 'nezhiri'], [:tool_pickup, 'nezhiri'], [:work, :nezhiri], [:complete, 'nezhiri']]), "left #{ago} s ago"
+        expect(UserVars.taskmaster_repairs.first).not_to have_key('detoured')
+      end
     end
 
     it "is held back by the fallback's tools left in the last 10 minutes" do
@@ -14430,12 +14454,21 @@ RSpec.describe TaskMaster do
       end
     end
 
-    it "is not held back by the fallback's tools left long enough ago to be ready" do
-      noted('nezhiri')
-      UserVars.taskmaster_repairs += [{ 'npc' => 'zasele', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'scissors', 'item' => 'scissors', 'left_at' => Time.now.to_i - 3600 }]
-      events, = detour_run(asks: { 'zasele' => [offer] })
+    # The re-audit's case: Zasele's 'steel scissors' left two hours ago, and
+    # the pickup keeps the note (two tickets fit it). Each run asks Nezhiri
+    # and works her task, the note still out after each; a detour would have
+    # opened a Zasele task that stops before its work on the scissors.
+    it "keeps working the first one's tasks, run after run, while a fallback note a pickup could not settle stays out" do
+      scissors = { 'npc' => 'zasele', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'scissors', 'item' => 'steel scissors', 'left_at' => Time.now.to_i - 7200 }
+      2.times do |run|
+        noted('nezhiri')
+        UserVars.taskmaster_repairs += [scissors]
+        events, = detour_run(asks: { 'nezhiri' => [offer], 'zasele' => [] })
 
-      expect(events).to eq([[:ask, 'zasele'], [:tool_pickup, 'zasele'], [:work, :zasele], [:complete, 'zasele']])
+        expect(events).to eq([[:ask, 'nezhiri'], [:tool_pickup, 'nezhiri'], [:work, :nezhiri], [:complete, 'nezhiri']]), "run #{run + 1}"
+        expect(UserVars.taskmaster_repairs).to include(scissors)
+      end
+      expect(DRC).not_to have_received(:message).with(/working one of Zasele's tasks meanwhile/)
     end
 
     it 'does not ask the fallback again, in this run or the next, until the daily rollover after it gave its limit' do
@@ -14488,6 +14521,65 @@ RSpec.describe TaskMaster do
       expect(tm.game_day_turned_since?(Time.utc(2026, 3, 8, 4, 0).to_i)).to be(false)
       at.call(2026, 11, 1, 5, 0)
       expect(tm.game_day_turned_since?(Time.utc(2026, 11, 1, 4, 0).to_i)).to be(true)
+    end
+
+    # The game resets the limit some seconds after the turn (Nezhiri's limit
+    # at 06:00:07 UTC on 2026-11-19, her first offers at 06:00:41): a limit
+    # given in the first RESET_GRACE_SECONDS after it is the old day's.
+    it 'counts a limit given in the minutes just after the turn as the old day\'s, one given later as the new day\'s (RESET_GRACE_SECONDS)' do
+      tm = build
+      at = ->(*args) { allow(Time).to receive(:now).and_return(Time.utc(*args)) }
+      # November, standard time: the day turns at 06:00 UTC.
+      just_after = Time.utc(2026, 11, 20, 6, 0, 20).to_i
+      later = Time.utc(2026, 11, 20, 6, 10).to_i
+      at.call(2026, 11, 20, 6, 10)
+      expect(tm.game_day_turned_since?(just_after)).to be(true)
+      at.call(2026, 11, 20, 16, 0)
+      expect(tm.game_day_turned_since?(just_after)).to be(true)
+      expect(tm.game_day_turned_since?(later)).to be(false)
+      at.call(2026, 11, 21, 5, 59)
+      expect(tm.game_day_turned_since?(later)).to be(false)
+      at.call(2026, 11, 21, 6, 0)
+      expect(tm.game_day_turned_since?(later)).to be(true)
+      # July, daylight time: 05:00 UTC.
+      at.call(2026, 7, 4, 5, 10)
+      expect(tm.game_day_turned_since?(Time.utc(2026, 7, 4, 5, 0, 20).to_i)).to be(true)
+      expect(tm.game_day_turned_since?(Time.utc(2026, 7, 4, 5, 6).to_i)).to be(false)
+    end
+
+    it 'asks the fallback later the same day when its limit came in the seconds after the turn, before the game had reset' do
+      nezhiri_max = daily_max.sub('Zasele', 'Nezhiri')
+      allow(Time).to receive(:now).and_return(Time.utc(2026, 11, 20, 6, 0, 20))
+      UserVars.taskmaster_capped = { 'zasele' => Time.utc(2026, 11, 20, 4, 30).to_i }
+      expect { detour_run(asks: { 'nezhiri' => [nezhiri_max], 'zasele' => [daily_max] }) }.to raise_error(SystemExit)
+      expect(UserVars.taskmaster_capped['zasele']).to eq(Time.now.to_i)
+
+      allow(Time).to receive(:now).and_return(Time.utc(2026, 11, 20, 16, 0))
+      events, = detour_run(asks: { 'nezhiri' => [nezhiri_max], 'zasele' => [offer] })
+
+      expect(events).to eq([[:ask, 'nezhiri'], [:ask, 'zasele'], [:work, :zasele], [:complete, 'zasele']])
+    end
+
+    it 'saves the limit note at once, once written (a crash must not lose it, or the next run walks to the capped fallback)' do
+      allow(Time).to receive(:now).and_return(Time.utc(2026, 11, 20, 12))
+      saved = []
+      stub_const('Vars', double('Vars'))
+      allow(Vars).to receive(:save) { saved << UserVars.taskmaster_capped }
+
+      build.note_capped('zasele')
+
+      expect(saved).to eq([{ 'zasele' => Time.now.to_i }])
+    end
+
+    it 'saves the detoured marks at once, once written (a crash must not lose them, or the next run detours again for the same tools)' do
+      noted('nezhiri')
+      saved = []
+      stub_const('Vars', double('Vars'))
+      allow(Vars).to receive(:save) { saved << UserVars.taskmaster_repairs.map { |record| record['detoured'] } }
+
+      build.mark_detoured(UserVars.taskmaster_repairs)
+
+      expect(saved).to eq([[true]])
     end
 
     it 'counts a limit noted at 04:59 UTC in November as holding at 05:01 (fallback_capped?)' do

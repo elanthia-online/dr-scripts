@@ -3110,8 +3110,10 @@ task_cancel_foreign_tasks: false
 # limit resets; a task left open for the fallback is finished, not cancelled. With task_repair_every
 # entries for both (the first one's more than 0; the default entry does not count, and a run says so at
 # its start), it is also worked, one task, right after the first one's tools are left for repair (unless
-# any of its own went for repair in the last 10 minutes, which its task could wait for too, since the
-# task is not known before the ask, or it has given its limit since the daily rollover), so the run does
+# any of its own is still at repair, however long ago it was left, since its task could wait for it, or
+# stop with the task open on one a pickup could not get back, and the task is not known before the ask;
+# a ready one is collected by the next task whose pickup goes to its repairer, task_get_tools_on_completion
+# or ;taskmaster pickup; or unless it has given its limit since the daily rollover), so the run does
 # not wait at the repairer; the run after asks the first one again (in a cycle run the next pick is
 # random as usual, and the next task that uses the first one's tools collects them). Poltu and
 # Bradyn share the forging tools, so a Poltu run never detours to Bradyn, and a Bradyn run detours to
@@ -3119,8 +3121,9 @@ task_cancel_foreign_tasks: false
 # its tools at its end, so only repeat and cycle runs detour, and a run right after one that only finished
 # a task already open (that run ends before the pickup). A fallback that has given its limit since
 # the daily rollover is not asked again until the next one: neither for a detour nor when the first one
-# gives its limit (the run then stops). Unset: the run stops at the
-# limit, and waits for tools at repair. Ignored by marathon, which works only Zasele's tasks.
+# gives its limit (the run then stops). The game resets the limit some seconds after the rollover, so a
+# limit given in the first 5 minutes after it counts as the old day's and does not hold for the new day.
+# Unset: the run stops at the limit, and waits for tools at repair. Ignored by marathon, which works only Zasele's tasks.
 task_fallback_npc:
 # Setting for taskmaster - Where tools go for repair (unless task_no_repair or task_self_repair):
 # rangu (Rangu, Crossing Engineering Society), hometown (Crossing's town repairer in base-town.yaml,
