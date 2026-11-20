@@ -12586,7 +12586,9 @@ RSpec.describe TaskMaster do
 
       tm.tool_drop(['mortar'], 'alchemy belt')
 
-      expect(sent).to eq(['give Rangu', :saved, 'give Rangu', 'stow ticket'])
+      # The second save is the repaired stamp (note_repaired), once the
+      # ticket is kept.
+      expect(sent).to eq(['give Rangu', :saved, 'give Rangu', :saved, 'stow ticket'])
     end
 
     it 'saves at once when a note is forgotten' do
