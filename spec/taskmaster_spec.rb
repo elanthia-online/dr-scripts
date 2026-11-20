@@ -13292,8 +13292,20 @@ RSpec.describe TaskMaster do
         let(:nameless) { { 'npc' => 'nezhiri', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'bowl', 'left_at' => 0 } }
         let(:two_bowls) { [{ ordinal: 'first', item: 'large purpleheart bowl' }, { ordinal: 'second', item: 'small wooden bowl' }] }
 
-        it 'takes the first ticket whose item has every word of its setting name, not :unclear' do
-          expect(build.ticket_for(nameless, two_bowls)).to eq(two_bowls.first)
+        it 'takes a ticket by its setting name\'s words only when one item fits; two different items are :unclear and the note is kept' do
+          tm = build
+          expect(tm.ticket_for(nameless, two_bowls.first(1))).to eq(two_bowls.first)
+          expect(tm.ticket_for(nameless, two_bowls)).to eq(:unclear)
+        end
+
+        it 'never hands in either of two tickets that fit a note with no name in hand, and keeps the note' do
+          UserVars.taskmaster_repairs = [nameless.merge('repairer' => 'Catrox', 'room' => 19_093)]
+          tm = pickup_world({ 'Catrox' => [['heavy iron bowl', true], ['large purpleheart bowl', true]] }, rangu_ticket: false)
+
+          tm.collect_task_tools(['bowl'])
+
+          expect(gives).to eq(0)
+          expect(UserVars.taskmaster_repairs.size).to eq(1)
         end
 
         it "fits a ticket by its setting name's words, and so keeps a ticket of its tool out of the Rangu sweep when the repairer refused it" do
@@ -14272,8 +14284,31 @@ RSpec.describe TaskMaster do
         expect(DRC).to have_received(:message).with('No Catrox ticket carried for: polished belzune stone mortar; forgetting it (collected by hand or by another script?).')
       end
 
-      it "forgets a note whose name in hand no ticket has or begins with (a named note's setting words take no ticket), leaving that ticket carried" do
-        UserVars.taskmaster_repairs = [mortar.merge('item' => 'stone mortar')]
+      it "takes the ticket for a note noted by a hand tag that leaves words out before the noun (\"sewing needles\" for \"slender agonite sewing needles\")" do
+        needles = mortar.merge('tool' => 'sewing needles', 'item' => 'sewing needles')
+        UserVars.taskmaster_repairs = [needles]
+        tm = pickup_world({ 'Catrox' => [['slender agonite sewing needles', true]] }, rangu_ticket: false)
+
+        tm.collect_task_tools(['sewing needles'])
+
+        expect(sent).to include([:get, 'first Catrox ticket'])
+        expect(gives).to eq(1)
+        expect(UserVars.taskmaster_repairs).to eq([])
+      end
+
+      it 'keeps a hand-tag note, handing in nothing, when two tickets hold its words (its ticket cannot be told)' do
+        needles = mortar.merge('tool' => 'sewing needles', 'item' => 'sewing needles')
+        UserVars.taskmaster_repairs = [needles]
+        tm = pickup_world({ 'Catrox' => [['slender agonite sewing needles', true], ['steel sewing needles', true]] }, rangu_ticket: false)
+
+        tm.collect_task_tools(['sewing needles'])
+
+        expect(gives).to eq(0)
+        expect(UserVars.taskmaster_repairs).to eq([needles])
+      end
+
+      it "forgets a note whose name in hand no ticket holds (a named note's setting words take no ticket), leaving that ticket carried" do
+        UserVars.taskmaster_repairs = [mortar.merge('item' => 'granite mortar')]
         tm = pickup_world({ 'Catrox' => [['polished belzune stone mortar', true]] }, rangu_ticket: false)
 
         tm.collect_task_tools(['mortar'])
@@ -14281,7 +14316,7 @@ RSpec.describe TaskMaster do
         expect(sent).not_to include([:get, 'first Catrox ticket'])
         expect(gives).to eq(0)
         expect(UserVars.taskmaster_repairs).to eq([])
-        expect(DRC).to have_received(:message).with('No Catrox ticket carried for: stone mortar; forgetting it (collected by hand or by another script?).')
+        expect(DRC).to have_received(:message).with('No Catrox ticket carried for: granite mortar; forgetting it (collected by hand or by another script?).')
       end
 
       it "takes a noted tool's ticket by its name before another of the same noun (an un-noted iron mortar ahead of it)" do
