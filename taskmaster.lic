@@ -4,7 +4,7 @@
   task_no_repair: true/false # skip repairing tools entirely
   task_self_repair: true/false # use own brush and oil for repairs
   task_get_tools_on_completion: true/false # If you want taskmaster to pickup any remaining tools in the repair shop. Useful if you're using clerk-tools after each task
-  task_repair_every: { default: 0 } # seconds between repairs of each tool, by taskmaster ({ nezhiri: 10800, zasele: 43200 }), written as plain digits with no leading 0 (YAML reads an unquoted 0600 as octal, 384, and 0x10 as hex, 16, before taskmaster sees them; a quoted value is read as base-10 digits, and one that is not, such as '3h', is named and ignored); a taskmaster with no entry uses default, and with no default 0, which repairs after every task (as before). Each tool's last repair is kept per character (UserVars.taskmaster_repaired_at; ;e UserVars.taskmaster_repaired_at = nil forgets them all). Applies to task_self_repair too: with an interval above 0 only the due tools a TAP finds are repaired and noted, and at 0 every tool goes to your own repair with no TAP and none is noted, as before the setting. A run that repairs says which taskmaster it may work has no entry
+  task_repair_every: { default: 0 } # seconds between repairs of each tool, by taskmaster ({ nezhiri: 10800, zasele: 43200 }), written as plain digits with no leading 0 (YAML reads an unquoted 0600 as octal, 384, 0x10 as hex, 16, and 3:00:00 as base 60, 10800, before taskmaster sees them; any other value, quoted or not, is read as base-10 digits (an unquoted 0800, not octal, is 800), and one that is not digits, such as 3h, is named and ignored); a taskmaster with no entry uses default, and with no default 0, which repairs after every task (as before). Each tool's last repair is kept per character (UserVars.taskmaster_repaired_at; ;e UserVars.taskmaster_repaired_at = nil forgets them all). Applies to task_self_repair too: with an interval above 0 only the due tools carried (the inventory feed or hands, else a TAP) are repaired and noted, except one on Lich's immune list (repaired with Proper Forging Tool Care in the last two hours), which is skipped and stays due; at 0 every tool goes to your own repair with no TAP and none is noted, as before the setting. A run that repairs says which taskmaster it may work has no entry
   task_repair_by: rangu # where tools go for repair: rangu (the default: Rangu, Crossing Engineering Society), hometown (Crossing's town repairer in base-town.yaml, Catrox) or task_type (Crossing's repairer, in base-crafting.yaml, of the discipline taskmaster gives each taskmaster: tailoring for Zasele, remedies for Nezhiri, blacksmithing for Poltu, shaping for Bradyn (his metal tasks too), artificing for Dorhum). Always Crossing's, where every task is bought and crafted, whatever task_hometown says; with no such repairer in the data it says so and uses Rangu. Each tool left is noted (UserVars.taskmaster_repairs, with its name in hand). Once a task is accepted, the noted tools its work uses are picked up by their tickets, waiting up to 10 minutes at each repairer for them to be ready (Poltu's and Bradyn's metal tasks share the forging tools); another noted tool at a repairer it goes to is picked up only if ready then; and when a TAP before the ask finds a Rangu ticket, every Rangu ticket no note accounts for (an older taskmaster's, or one whose note was lost) is handed in too, waited for the same way. A task stops before its work while a tool it uses is still at repair (a noted one, or an un-noted Rangu ticket still carried whose item names it), and stays open for the next run; any other tool still out waits for a later task or ;taskmaster pickup. A ticket is matched to a note by the tool's name in hand, which a ticket may follow with more words ("large purpleheart bowl edged with ivory"); when tickets for two different items fit one note, none is handed in and it says so. With task_type, Zasele's, Nezhiri's and Poltu's tools go to society clerks, who are all called clerk: their tickets stay carried until a task, ;taskmaster pickup or task_get_tools_on_completion collects them, and ;workorders in another discipline picks such a ticket up with its own and stops collecting at one its clerk does not take
   task_use_boost: true/false # use boost to eliminate task cooldowns, useful if you have a few and you're doing a lot of tasks
   task_cooldown_poll: 15 # seconds between asks while the taskmaster makes you wait (minimum 3)
@@ -2688,8 +2688,9 @@ class TaskMaster
   # crafts each with remedy's instructions form, combining every new stack
   # into one, and leaves the mortar and pestle (or bowl and stick) and the
   # sieve, those due (task_repair_every), with the repairer (task_repair_by),
-  # or repairs them itself (task_self_repair). The hand-in (give_item) makes
-  # the stack the size she asked for.
+  # or repairs them itself (task_self_repair); with task_no_repair none goes
+  # (repair). The hand-in (give_item) makes the stack the size she asked
+  # for.
   # With the doses already on hand it buys and crafts nothing. The crafts
   # are planned at the fewest doses one craft made the last time this
   # character crafted the product, never more than NEZHIRI_DOSES_PER_CRAFT
@@ -5790,18 +5791,21 @@ class TaskMaster
   # task_repair_every (repair_due?) go, after the hands are put away (a tool
   # not due can still be in hand from the craft); with none due, the hands
   # are put away as with task_no_repair. With task_self_repair and an
-  # interval above 0, only the due tools a TAP finds are handed to Lich's
+  # interval above 0, only the due tools carried (DRCI.exists?: the
+  # inventory feed or hands, else a TAP) are handed to Lich's
   # repair_own_tools and noted, so one not carried stays due; at 0 every
-  # tool goes untapped and none is noted (own_repair). Own repairs that stop
-  # (engaged in combat) note nothing, so every tool due is tried again next
-  # time. repair_own_tools gives no result per tool, so a tool it cannot get
-  # (a belt untie refused for wounds, or a tool crafting_items_in_container
-  # lists that is not in the crafting bag, which Lich asks for only from
-  # that bag: common-crafting.rb get_crafting_item) is noted all the same
-  # and waits out its interval. A tool on its immune list (repaired with
-  # Proper Forging Tool Care in the last two hours or so) is not noted:
-  # repair_own_tools drops those from the array it is given, in place, so
-  # they stay due and are tried again after the next task.
+  # tool goes unchecked and none is noted (own_repair). Own repairs that
+  # stop (engaged in combat) note nothing, so every tool due is tried again
+  # next time. repair_own_tools gives no result per tool, so a tool it
+  # cannot get (a belt untie refused for wounds, or a tool
+  # crafting_items_in_container lists that is not in the crafting bag,
+  # which Lich asks for by name only from that bag; one it remembers by id
+  # it gets from anywhere: common-crafting.rb get_crafting_item) is noted
+  # all the same and waits out its interval. Above 0, a tool on its immune
+  # list (repaired with Proper Forging Tool Care in the last two hours or
+  # so) is not noted: repair_own_tools drops those from the array it is
+  # given, in place, so they stay due and are tried again after the next
+  # task.
   #
   # @param tools [Array<String>] tool names (Bradyn's stone and bone tasks
   #   give the tool in hand, by the name DRC.right_hand shows, which is then
@@ -5824,13 +5828,15 @@ class TaskMaster
   OWN_REPAIR_INFO = { 'finisher-room' => 8776, 'finisher-number' => 6 }.freeze
 
   # Repairs the due tools with Lich's repair_own_tools (task_self_repair).
-  # With a task_repair_every interval above 0, only the due tools a TAP
-  # finds are handed over and noted repaired, so one not carried stays due.
-  # At 0 every tool is due after every task and a note gates nothing, so
-  # each one goes to repair_own_tools untapped, as before the setting (its
-  # get skips one not carried), and none is noted: a note for a tool not
-  # carried would hold back another taskmaster's repair of the same tool
-  # (Poltu's and Bradyn's forging tools share their clocks).
+  # With a task_repair_every interval above 0, only the due tools carried
+  # (DRCI.exists?: the inventory feed or hands, else a TAP) are handed over
+  # and noted repaired (but for those on its immune list, see repair), so
+  # one not carried stays due. At 0 every tool is due after every task and
+  # a note gates nothing, so each one goes to repair_own_tools unchecked,
+  # as before the setting (its get skips one not carried), and none is
+  # noted: a note for a tool not carried would hold back another
+  # taskmaster's repair of the same tool (Poltu's and Bradyn's forging
+  # tools share their clocks).
   #
   # @param due [Array<String>] the tools due a repair (repair_due?)
   # @param belt [Hash, nil] toolbelt settings the tools live on
@@ -5893,10 +5899,13 @@ class TaskMaster
 
   # A task_repair_every value as whole seconds, 0 or more: an Integer, a
   # Float with no fraction, or a String of base-10 digits ('010' is 10); nil
-  # for anything else (the Strings '3h' and '0x10', 10800.9, -5). Only a
-  # quoted YAML value reaches here as a String: Psych reads an unquoted 0600
-  # as octal and 0x10 as hex, so they arrive as the Integers 384 and 16 and
-  # are taken as given (base.yaml asks for plain digits with no leading 0).
+  # for anything else (the Strings '3h' and '0x10', 10800.9, -5). An
+  # unquoted value Psych reads as a number arrives as an Integer and is
+  # taken as given: 0600 as octal (384), 0x10 as hex (16), 3:00:00 as base
+  # 60 (10800), 10_800 as 10800. Any other value, quoted or not, arrives as
+  # a String: digits are read in base 10 (an unquoted 0800, not octal, is
+  # 800), and anything else (3h, '0x10') is nil (base.yaml asks for plain
+  # digits with no leading 0).
   #
   # @param value [Object]
   # @return [Integer, nil]

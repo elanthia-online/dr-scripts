@@ -13955,6 +13955,14 @@ RSpec.describe TaskMaster do
         expect(DRC).to have_received(:message).with("task_repair_every zasele: '0x10' is not a whole number of seconds (0 or more); ignoring it.")
       end
 
+      it 'reads unquoted YAML 0800 (not octal) in base 10, takes 3:00:00 as the base-60 Integer Psych makes of it, and names an unquoted 3h' do
+        # As lich-5 setup_files.rb loads a profile: Psych leaves 0800 and 3h
+        # as Strings.
+        setting = YAML.unsafe_load("task_repair_every:\n  nezhiri: 0800\n  poltu: 3:00:00\n  zasele: 3h\n")['task_repair_every']
+        expect(every(setting).repair_every_setting).to eq('nezhiri' => 800, 'poltu' => 10_800)
+        expect(DRC).to have_received(:message).with("task_repair_every zasele: '3h' is not a whole number of seconds (0 or more); ignoring it.")
+      end
+
       it 'names a setting that is not a mapping (a bare number) instead of dropping it silently' do
         expect(every(10_800).repair_interval).to eq(0)
         expect(DRC).to have_received(:message).with("task_repair_every should map taskmasters to seconds ({ default: 0, nezhiri: 10800 }), not '10800'; ignoring it.")
@@ -14020,9 +14028,12 @@ RSpec.describe TaskMaster do
     end
 
     describe '#repair' do
+      # bag_items (crafting_items_in_container) is not empty, so an example
+      # sees it passed on: repair_own_tools gets a tool it lists from the
+      # crafting bag (lich-5 common-crafting.rb get_crafting_item).
       def repair_with(due:, own_result: nil, carried: %w[mortar pestle sieve], **ivars)
         allow(DRCI).to receive(:exists?) { |tool| carried.include?(tool) }
-        tm = every({ 'nezhiri' => 10_800 }, **ivars)
+        tm = every({ 'nezhiri' => 10_800 }, bag_items: %w[pestle], **ivars)
         UserVars.taskmaster_repaired_at = (%w[mortar pestle sieve] - due).to_h { |tool| [tool, Time.now.to_i] }
         @steps = []
         allow(tm).to receive(:tool_drop) { |tools, _belt| @steps << [:tool_drop, tools] }
@@ -14051,19 +14062,19 @@ RSpec.describe TaskMaster do
 
       it 'repairs only the tools due with task_self_repair, and notes them repaired' do
         repair_with(due: %w[mortar], self_repair: true)
-        expect(DRCC).to have_received(:repair_own_tools).with(anything, ['mortar'], 'duffel bag', [], 'alchemy belt')
+        expect(DRCC).to have_received(:repair_own_tools).with(anything, ['mortar'], 'duffel bag', ['pestle'], 'alchemy belt')
         expect(UserVars.taskmaster_repaired_at['mortar']).to be_within(5).of(Time.now.to_i)
       end
 
-      it 'with task_self_repair, repairs and notes only the due tools a TAP finds; a missing one stays due' do
+      it 'with task_self_repair, repairs and notes only the due tools found carried (DRCI.exists?); a missing one stays due' do
         repair_with(due: %w[mortar pestle], self_repair: true, carried: %w[pestle sieve])
-        expect(DRCC).to have_received(:repair_own_tools).with(anything, ['pestle'], 'duffel bag', [], 'alchemy belt')
+        expect(DRCC).to have_received(:repair_own_tools).with(anything, ['pestle'], 'duffel bag', ['pestle'], 'alchemy belt')
         expect(UserVars.taskmaster_repaired_at.keys).to contain_exactly('sieve', 'pestle')
         expect(DRCI).to have_received(:exists?).twice
       end
 
       it 'with task_self_repair at interval 0 (every task), hands every tool to repair_own_tools with no TAP and notes none, as before the setting' do
-        tm = every({ 'default' => 0 }, self_repair: true)
+        tm = every({ 'default' => 0 }, self_repair: true, bag_items: %w[pestle sieve])
         # A TAP that finds nothing: were the tools still tapped, none would
         # reach repair_own_tools.
         allow(DRCI).to receive(:exists?).and_return(false)
@@ -14075,7 +14086,7 @@ RSpec.describe TaskMaster do
 
         expect(DRCI).not_to have_received(:exists?)
         expect(DRCC).to have_received(:repair_own_tools)
-          .with({ 'finisher-room' => 8776, 'finisher-number' => 6 }, %w[mortar pestle sieve], 'duffel bag', [], 'alchemy belt').once
+          .with({ 'finisher-room' => 8776, 'finisher-number' => 6 }, %w[mortar pestle sieve], 'duffel bag', %w[pestle sieve], 'alchemy belt').once
         expect(UserVars.taskmaster_repaired_at).to be_nil
       end
 
