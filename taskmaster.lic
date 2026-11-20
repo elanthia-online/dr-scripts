@@ -602,15 +602,17 @@ class TaskMaster
   # GLANCE: the hand tag GameObj shows can leave "unfinished" out ("reinforced
   # rope" for a "coil of unfinished burlap reinforced rope"). Only asked
   # when a crafting_items_in_container entry names the held item. A glance
-  # that names nothing in that hand counts as unfinished, so the item goes
-  # to the default container, as it always did.
+  # that names nothing in that hand, or names an item whose words do not
+  # hold the held item's noun (names_noun?, as hands_in_full reconciles
+  # them: the hand changed between the two), counts as unfinished, so the
+  # item goes to the default container, as it always did.
   #
   # @param obj [Object] a hand's GameObj
   # @return [Boolean]
   def finished_in_hand?(obj)
     hand = GameObj.right_hand&.id == obj.id ? :right : :left
     name = glanced_hands&.[](hand)
-    !name.nil? && !name.match?(/\bunfinished\b/i)
+    !name.nil? && names_noun?(name, obj.noun) && !name.match?(/\bunfinished\b/i)
   end
 
   # Empties both hands where the crafting scripts look for things again, then

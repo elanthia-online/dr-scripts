@@ -8971,6 +8971,17 @@ RSpec.describe TaskMaster do
         expect(DRCI).to have_received(:stow_hands)
       end
 
+      # The hand changed between the hand tag and GLANCE: a well-formed
+      # GLANCE that names another item (no "rope" in it) does not vouch for
+      # the rope held, which goes to the default container.
+      it 'leaves a bag item in hand to the default container when GLANCE names an item without its noun' do
+        hold(left: obj('reinforced rope', 'rope', '3'))
+        glance('You glance down to see a brass hammer in your left hand.')
+        build(bag_items: ['rope']).put_hands_away
+        expect(DRCC).not_to have_received(:stow_crafting_item)
+        expect(DRCI).to have_received(:stow_hands)
+      end
+
       it 'leaves a bag item in hand to the default container when GLANCE does not name it' do
         hold(right: obj('iron chisels', 'chisels', '9'))
         glance('')
