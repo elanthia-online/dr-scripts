@@ -720,11 +720,13 @@ class WorkOrders
   end
 
   # The repair_replies of the shipped data/base-crafting.yaml, read past any
-  # copy in data/custom; empty when the file cannot be read.
+  # copy in data/custom; empty when the file cannot be read. Read the way
+  # lich-5's get_data reads it (YAML.unsafe_load_file), so a tag, Symbol or
+  # Date added to the file later does not hide every reply.
   #
   # @return [Hash]
   def shipped_repair_replies
-    data = YAML.safe_load_file(File.join(SCRIPT_DIR, 'data', 'base-crafting.yaml'), aliases: true)
+    data = YAML.unsafe_load_file(File.join(SCRIPT_DIR, 'data', 'base-crafting.yaml'))
     replies = data['repair_replies'] if data.is_a?(Hash)
     replies.is_a?(Hash) ? replies : {}
   rescue SystemCallError, Psych::Exception

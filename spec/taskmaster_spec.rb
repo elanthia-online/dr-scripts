@@ -65,8 +65,8 @@ RSpec.describe TaskMaster do
   # whole, or (raises:) its read raises that.
   def ship(replies = real_repair_replies, raises: nil, file: { 'repair_replies' => replies })
     stub_const('SCRIPT_DIR', '/lich/scripts')
-    allow(YAML).to receive(:safe_load_file).and_call_original
-    read = allow(YAML).to receive(:safe_load_file).with(shipped_path, aliases: true)
+    allow(YAML).to receive(:unsafe_load_file).and_call_original
+    read = allow(YAML).to receive(:unsafe_load_file).with(shipped_path)
     raises ? read.and_raise(raises) : read.and_return(file)
   end
 
@@ -12744,7 +12744,24 @@ RSpec.describe TaskMaster do
 
       expect(sent).to eq(['give Rangu', 'give Rangu', 'stow ticket', 'look at my first Rangu ticket'])
       expect(DRC).to have_received(:message).with("data/custom/base-crafting.yaml has no usable repair_replies quote, prompt, offered, declined, ticket, need_coin, ready, not_ready, ticket_handed, ticket_not_taken (a copy from before they were added?); using the shipped data/base-crafting.yaml's. Update that copy.").once
-      expect(YAML).to have_received(:safe_load_file).with(shipped_path, aliases: true).once
+      expect(YAML).to have_received(:unsafe_load_file).with(shipped_path).once
+    end
+
+    # Unstubbed: the real shipped file, and a copy of it with a line that only
+    # a permissive load reads (lich-5's get_data reads it so), as the file may
+    # later gain. A safe load raises on the Date and hides every reply.
+    { 'the shipped file' => '', 'the shipped file with a Date in it' => "added_on: 2026-11-21\n" }.each do |label, extra|
+      it "reads every repair reply from #{label}, unstubbed" do
+        root = Dir.mktmpdir
+        FileUtils.mkdir_p(File.join(root, 'data'))
+        File.write(File.join(root, 'data', 'base-crafting.yaml'), File.read(File.expand_path('../data/base-crafting.yaml', __dir__)) + extra)
+        stub_const('SCRIPT_DIR', root)
+        tm = build(repair_replies: nil)
+        allow(tm).to receive(:get_data).with('crafting').and_return({ 'stock' => {} })
+
+        expect(tm.repair_replies).to eq(real_repair_replies)
+        expect(tm.repair_replies_known?).to be(true)
+      end
     end
 
     # A hand-edited copy whose repair_replies is a list, a pattern or a
@@ -12822,6 +12839,61 @@ RSpec.describe TaskMaster do
 
       expect(tm).to have_received(:redeem_ticket).with('Rangu', 'first', hash_including('tool' => 'mortar')).once
       expect(tm).to have_received(:pause).with(30).once
+    end
+
+    # lich-5's get_item? looks only for the noun (ticket) in a hand, so with
+    # another shop's ticket held it is true whatever the GET did. The object
+    # new in a hand is taken only when it is the repairer's ticket: a tool
+    # whose hand update trails in is not offered on GIVE, and the ticket,
+    # should it show a moment later, still is.
+    context 'the object new in a hand after the GET' do
+      let(:catrox_ticket) { OpenStruct.new(id: '7', noun: 'ticket', name: 'Catrox ticket') }
+      let(:hammer) { OpenStruct.new(id: '8', noun: 'hammer', name: 'steel hammer') }
+      let(:rangu_ticket) { OpenStruct.new(id: '9', noun: 'ticket', name: 'Rangu ticket') }
+
+      def redeem_with(*hands)
+        tm = build
+        allow(tm).to receive(:pause)
+        allow(tm).to receive(:held_objects).and_return(*hands)
+        allow(tm).to receive(:put_away_tickets)
+        allow(DRCI).to receive(:get_item?).with('first Rangu ticket').and_return(true)
+        allow(tm).to receive(:move_to_right_hand).and_return(false)
+        allow(DRC).to receive(:bput).and_return('You put')
+        [tm, tm.redeem_ticket('Rangu', 'first')]
+      end
+
+      it 'is never a tool that shows in a hand while another shop\'s ticket is held' do
+        tm, result = redeem_with([catrox_ticket], [catrox_ticket, hammer])
+
+        expect(result).to eq(:not_got)
+        expect(tm).not_to have_received(:move_to_right_hand)
+        expect(DRC).not_to have_received(:bput).with('give Rangu', any_args)
+      end
+
+      it 'is the repairer\'s ticket when it shows after the tool' do
+        tm, = redeem_with([catrox_ticket], [catrox_ticket, hammer], [catrox_ticket, hammer, rangu_ticket])
+
+        expect(tm).to have_received(:move_to_right_hand).with('9')
+      end
+    end
+
+    # A stray '-' line in a belt's items loads as nil, which matched every
+    # tool (no words to miss) and then raised in belt_tool, after the
+    # repairer had the ticket. Such an entry names nothing.
+    it 'stows the tool handed back on the belt that lists it, past a belt with a blank or nil entry' do
+      ticket = OpenStruct.new(id: '9', noun: 'ticket', name: 'Rangu ticket')
+      bowl = OpenStruct.new(id: '10', noun: 'bowl', name: 'large purpleheart bowl')
+      tm = build(settings: { forging_belt: { 'name' => 'forging belt', 'items' => [nil, ' ', 5] }, alchemy_belt: { 'name' => 'alchemy belt', 'items' => ['bowl'] } })
+      allow(tm).to receive(:pause)
+      allow(tm).to receive(:put_away_tickets)
+      allow(tm).to receive(:held_objects).and_return([], [ticket], [ticket], [bowl])
+      allow(DRCI).to receive(:get_item?).with('first Rangu ticket').and_return(true)
+      allow(tm).to receive(:move_to_right_hand).and_return(true)
+      allow(DRC).to receive(:bput).with('give Rangu', any_args).and_return('You hand Rangu your ticket and are handed back a large purpleheart bowl.')
+      allow(DRCC).to receive(:stow_crafting_item)
+
+      expect(tm.redeem_ticket('Rangu', 'first')).to eq(bowl)
+      expect(DRCC).to have_received(:stow_crafting_item).with('bowl', 'duffel bag', { 'name' => 'alchemy belt', 'items' => ['bowl'] })
     end
 
     every_key = /none for quote, prompt, offered, .*ticket_not_taken; tools are not left for repair or collected\. Update dr-scripts\./
@@ -13014,12 +13086,12 @@ RSpec.describe TaskMaster do
 
       it "sends none of a Dorhum task's tools still at Catrox (the brazier, which a public brazier room's task never uses), and goes nowhere when none is left to send" do
         brazier = { 'npc' => 'dorhum', 'repairer' => 'Catrox', 'room' => 19_093, 'tool' => 'brazier', 'item' => 'iron brazier', 'left_at' => 1 }
-        repair_run(npc: 'dorhum', tools: ['augment loop', 'brazier', 'burin'], notes: [brazier], settings: { task_repair_by: 'hometown' })
+        repair_run(npc: 'dorhum', tools: ['augment loop', 'brazier', 'burin'], notes: [brazier], settings: { task_repair_by: 'town' })
 
         expect(sent).to eq([[:walk, 19_093], [:get, 'augment loop'], 'give Catrox', [:get, 'burin'], 'give Catrox'])
 
         sent.clear
-        repair_run(npc: 'dorhum', tools: ['brazier'], notes: [brazier], settings: { task_repair_by: 'hometown' })
+        repair_run(npc: 'dorhum', tools: ['brazier'], notes: [brazier], settings: { task_repair_by: 'town' })
         expect(sent).to be_empty
       end
 
@@ -13065,13 +13137,20 @@ RSpec.describe TaskMaster do
       end
     end
 
-    it "is Crossing's repairer from base-town.yaml with hometown, whatever the task and whatever task_hometown says: tasks are crafted there" do
+    it "is Crossing's repairer from base-town.yaml with town, whatever the task and whatever task_hometown says: tasks are crafted there" do
       [nil, 'Riverhaven', 'Shard', 'Fang Cove', 'Nowhere'].each do |home|
         %w[nezhiri zasele bradyn].each do |npc|
-          expect(repairer(npc: npc, task_repair_by: 'hometown', task_hometown: home).repairer_for).to eq('id' => 19_093, 'name' => 'Catrox'), "#{npc} #{home.inspect}"
+          expect(repairer(npc: npc, task_repair_by: 'town', task_hometown: home).repairer_for).to eq('id' => 19_093, 'name' => 'Catrox'), "#{npc} #{home.inspect}"
         end
       end
       expect(DRC).not_to have_received(:get_town_name)
+    end
+
+    it "takes hometown, town's earlier name, as town, and says nothing of it" do
+      %w[hometown Hometown].each do |name|
+        expect(repairer(npc: 'zasele', task_repair_by: name, task_hometown: 'Shard').repairer_for).to eq('id' => 19_093, 'name' => 'Catrox')
+      end
+      expect(DRC).not_to have_received(:message).with(/task_repair_by/)
     end
 
     it "is Crossing's discipline repairer with task_type whatever task_hometown says, for Nezhiri as for the rest" do
@@ -13082,8 +13161,8 @@ RSpec.describe TaskMaster do
       end
     end
 
-    it "takes Crossing's leather_repair with hometown when the town data has no metal_repair" do
-      tm = repairer(npc: 'zasele', task_repair_by: 'hometown')
+    it "takes Crossing's leather_repair with town when the town data has no metal_repair" do
+      tm = repairer(npc: 'zasele', task_repair_by: 'town')
       allow(tm).to receive(:get_data).and_return({ 'Crossing' => { 'leather_repair' => { 'id' => 1234, 'name' => 'Tanner' } } })
 
       expect(tm.repairer_for).to eq('id' => 1234, 'name' => 'Tanner')
@@ -13102,7 +13181,7 @@ RSpec.describe TaskMaster do
     it 'says so once and uses Rangu when the setting names no known way' do
       tm = repairer(task_repair_by: 'catrox')
       2.times { expect(tm.repairer_for).to eq('id' => 19_209, 'name' => 'Rangu') }
-      expect(DRC).to have_received(:message).with("task_repair_by 'catrox' is not one of rangu, hometown, task_type; using Rangu.").once
+      expect(DRC).to have_received(:message).with("task_repair_by 'catrox' is not one of rangu, town, task_type; using Rangu.").once
     end
 
     it "says so and uses Rangu when Crossing has no such repairer in the data" do
@@ -13110,14 +13189,14 @@ RSpec.describe TaskMaster do
       allow(tm).to receive(:get_data).and_return({ 'tailoring' => { 'Riverhaven' => { 'repair-room' => 1, 'repair-npc' => 'clerk' } } })
       expect(tm.repairer_for).to eq('id' => 19_209, 'name' => 'Rangu')
       expect(DRC).to have_received(:message).with('No tailoring repairer for Crossing in the data (task_repair_by task_type); using Rangu.')
-      tm = repairer(npc: 'zasele', task_repair_by: 'hometown')
+      tm = repairer(npc: 'zasele', task_repair_by: 'town')
       allow(tm).to receive(:get_data).and_return({ 'Crossing' => {} })
       expect(tm.repairer_for).to eq('id' => 19_209, 'name' => 'Rangu')
-      expect(DRC).to have_received(:message).with('No repairer for Crossing in the data (task_repair_by hometown); using Rangu.')
+      expect(DRC).to have_received(:message).with('No repairer for Crossing in the data (task_repair_by town); using Rangu.')
     end
 
-    it "leaves a tool with Crossing's repairer (hometown) on a bare prompt with no cost on the line (Fang Cove's wording), and notes it there" do
-      tm = repairer(npc: 'zasele', task_repair_by: 'hometown', task_hometown: 'Fang Cove')
+    it "leaves a tool with Crossing's repairer (town) on a bare prompt with no cost on the line (Fang Cove's wording), and notes it there" do
+      tm = repairer(npc: 'zasele', task_repair_by: 'town', task_hometown: 'Fang Cove')
       catrox = town_data['Crossing']['metal_repair']
       sent = []
       replies = ["#{catrox['name']} says, \"If you agree, give it to me again.\"", "You hand #{catrox['name']} 240 Kronars and he gives you back a repair ticket."]
@@ -13508,6 +13587,56 @@ RSpec.describe TaskMaster do
 
           expect(gives).to eq(0)
           expect(UserVars.taskmaster_repairs.size).to eq(1)
+        end
+
+        # A look that goes unanswered hides a ticket that may fit too: the one
+        # seen only looks unique. An approximate claim waits for a whole read;
+        # an exact one does not.
+        it 'hands in no ticket that only approximately fits a named note while a look goes unanswered, and keeps the note' do
+          mortar = { 'npc' => 'nezhiri', 'repairer' => 'Catrox', 'room' => 19_093, 'tool' => 'mortar', 'item' => 'stone mortar', 'left_at' => 0 }
+          UserVars.taskmaster_repairs = [mortar]
+          tm = pickup_world({ 'Catrox' => [['rough granite stone mortar', true], ['polished belzune stone mortar', true]] }, unanswered: ['second Catrox'], rangu_ticket: false)
+
+          tm.collect_task_tools(['mortar'])
+
+          expect(gives).to eq(0)
+          expect(UserVars.taskmaster_repairs).to eq([mortar])
+        end
+
+        it 'still hands in a ticket for the very name in hand while a later look goes unanswered' do
+          mortar = { 'npc' => 'nezhiri', 'repairer' => 'Catrox', 'room' => 19_093, 'tool' => 'mortar', 'item' => 'polished belzune stone mortar', 'left_at' => 0 }
+          UserVars.taskmaster_repairs = [mortar]
+          tm = pickup_world({ 'Catrox' => [['polished belzune stone mortar', true], ['rough granite stone mortar', true]] }, unanswered: ['second Catrox'], rangu_ticket: false)
+
+          tm.collect_task_tools(['mortar'])
+
+          expect(gives).to eq(1)
+          expect(UserVars.taskmaster_repairs).to eq([])
+        end
+
+        it 'holds back an approximate claim, but not an exact one, when the read was not whole' do
+          tm = build
+          named = { 'npc' => 'nezhiri', 'repairer' => 'Catrox', 'room' => 19_093, 'tool' => 'mortar', 'item' => 'stone mortar', 'left_at' => 0 }
+          seen = [{ ordinal: 'first', item: 'rough granite stone mortar' }]
+
+          expect(tm.ticket_for(named, seen, [named], [], whole: false)).to be_nil
+          expect(tm.ticket_for(nameless, two_bowls.first(1), [nameless], [], whole: false)).to be_nil
+          expect(tm.ticket_for(named.merge('item' => 'rough granite stone mortar'), seen, [named], [], whole: false)).to eq(seen.first)
+          expect(tm.ticket_for(named, seen)).to eq(seen.first)
+          # Nor does the Rangu sweep hand in the ticket held back.
+          expect(tm.unaccounted_tickets(seen, [[named, nil]], whole: false)).to eq([])
+          expect(tm.unaccounted_tickets(seen, [[named, nil]])).to eq(seen)
+        end
+
+        it 'sweeps no Rangu ticket that approximately fits a named note while a look goes unanswered' do
+          mortar = { 'npc' => 'nezhiri', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'mortar', 'item' => 'stone mortar', 'left_at' => 0 }
+          UserVars.taskmaster_repairs = [mortar]
+          tm = pickup_world({ 'Rangu' => [['rough granite stone mortar', true], ['polished belzune stone mortar', true]] }, unanswered: ['second Rangu'], rangu_ticket: true)
+
+          tm.collect_task_tools(['mortar'])
+
+          expect(gives).to eq(0)
+          expect(UserVars.taskmaster_repairs).to eq([mortar])
         end
 
         it "fits a ticket by its setting name's words, and so keeps a ticket of its tool out of the Rangu sweep when the repairer refused it" do
@@ -14150,9 +14279,12 @@ RSpec.describe TaskMaster do
         expect { tm.stop_if_tools_at_repair(['bowl']) }.not_to raise_error
       end
 
+      # Both tickets are for the very names in hand: the second look stays
+      # unanswered throughout, so no read is whole, and an approximate claim
+      # (bowl_ticket) would wait for one (ticket_for).
       it 'collects a ticket seen before a look that goes unanswered, then the one behind it once a look reaches it' do
         UserVars.taskmaster_repairs = [bowl, stick]
-        tm = pickup_world({ 'Rangu' => [['grooved agonite mixing stick', true], [bowl_ticket, true]] }, unanswered: ['second Rangu'], rangu_ticket: false)
+        tm = pickup_world({ 'Rangu' => [['grooved agonite mixing stick', true], ['large purpleheart bowl', true]] }, unanswered: ['second Rangu'], rangu_ticket: false)
 
         tm.collect_task_tools(['bowl', 'mixing stick'])
 
@@ -15208,7 +15340,7 @@ RSpec.describe TaskMaster do
     end
 
     def drop(replies, tools, hands)
-      tm = build(npc: 'zasele', settings: { task_repair_by: 'hometown' })
+      tm = build(npc: 'zasele', settings: { task_repair_by: 'town' })
       allow(tm).to receive(:get_data).and_return('Crossing' => { 'metal_repair' => { 'id' => 19_093, 'name' => 'Catrox' } })
       allow(DRCT).to receive(:walk_to).and_return(true)
       shorten_right_hand
@@ -15260,7 +15392,7 @@ RSpec.describe TaskMaster do
     it 'notes the tool before it stows the ticket, so a run stopped in between leaves a note, not an un-noted ticket' do
       order = []
       allow(UserVars).to(receive(:taskmaster_repairs=).and_wrap_original { |original, value| order << :note && original.call(value) })
-      tm = build(npc: 'zasele', settings: { task_repair_by: 'hometown' })
+      tm = build(npc: 'zasele', settings: { task_repair_by: 'town' })
       allow(tm).to receive(:get_data).and_return('Crossing' => { 'metal_repair' => { 'id' => 19_093, 'name' => 'Catrox' } })
       allow(DRCT).to receive(:walk_to).and_return(true)
       allow(DRCC).to receive(:get_crafting_item) { $right_hand = 'slender knitting needles' }
