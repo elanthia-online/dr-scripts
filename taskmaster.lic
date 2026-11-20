@@ -383,7 +383,7 @@ class TaskMaster
       end
       find_npc(@rooms, @npc)
     end
-    stop_if_tools_at_repair(base == 'yarn' ? ['knitting needles'] : @settings.outfitting_tools)
+    stop_if_tools_at_repair(tailoring_tools_used(base))
     made = tailor_item(item, count, base, type)
     return made if made.positive?
 
@@ -1290,6 +1290,20 @@ class TaskMaster
     type
   end
 
+  # The tailoring tools a task's work uses, for stop_if_tools_at_repair: the
+  # knitting needles for yarn; outfitting_tools less the entry naming the
+  # knitting needles for cloth and leather, which sewing never uses (they
+  # still go for repair with the rest of outfitting_tools). A bare "needles"
+  # entry may be the sewing needles, so it stays.
+  #
+  # @param base [String] stock base: 'cloth', 'leather' or 'yarn'
+  # @return [Array<String>]
+  def tailoring_tools_used(base)
+    return ['knitting needles'] if base == 'yarn'
+
+    Array(@settings.outfitting_tools).reject { |tool| tool.to_s.match?(/\bknitting needles?\b/i) }
+  end
+
   # Works one of Zasele's tasks: knitting yarn, or sewing cloth or leather.
   #
   # @param item [String] item noun from the task journal
@@ -1300,7 +1314,7 @@ class TaskMaster
   # @return [void]
   def zasele(item, count, volume_per_item, base, type)
     toolset = base == 'yarn' ? ["knitting needles"] : @settings.outfitting_tools
-    stop_if_tools_at_repair(toolset)
+    stop_if_tools_at_repair(tailoring_tools_used(base))
     if base == 'yarn'
       buy_yarn(item, count, volume_per_item, base)
     else
@@ -5872,11 +5886,13 @@ class TaskMaster
   end
 
   # The tools left for repair whose tickets are still carried, each noted
-  # when its ticket was stowed (tool_drop): 'npc', 'repairer' (name), 'room',
-  # 'tool' (the setting's name), 'item' (the tool's full name in hand) and
-  # 'left_at' (epoch seconds). Kept across runs in
-  # UserVars.taskmaster_repairs; nil there means no tool has been noted yet
-  # on this character (pickup_old_tickets).
+  # just before its ticket is stowed (tool_drop): 'npc', 'repairer' (name),
+  # 'room', 'tool' (the setting's name), 'item' (the tool's full name in hand)
+  # and 'left_at' (epoch seconds). Kept across runs in
+  # UserVars.taskmaster_repairs, and forgotten when the noted tool comes back
+  # (or its ticket is no longer carried). The upgrade from an older
+  # taskmaster has its own marker, UserVars.taskmaster_old_tickets_done
+  # (pickup_old_tickets).
   #
   # @param npc [String, nil] only the ones that taskmaster's tasks want
   #   (task_wants?); every one when nil
@@ -5946,7 +5962,8 @@ class TaskMaster
   # Rangu tickets finds none without a note. While one is left (not ready,
   # refused, room not reached, tickets not readable) the run stops before
   # the task, as the older taskmaster waited for its tools, and the next run
-  # tries again. Nothing with task_self_repair.
+  # tries again. Nothing with task_self_repair; nothing, and not marked done,
+  # while base-crafting.yaml has no repair_replies (repair_replies_known?).
   #
   # @return [void]
   # @raise [SystemExit] while an un-noted Rangu ticket is still carried
@@ -5955,6 +5972,10 @@ class TaskMaster
 
     name = RANGU['name']
     if DRCI.exists?("#{name} ticket")
+      # With a stale data file no ticket can be read: the task is worked and
+      # the upgrade waits (not marked done) until the data is fixed.
+      return unless repair_replies_known?
+
       noted = repairs_out.select { |record| record['repairer'] == name }
       collect_tools(RANGU['id'], name, [], any: true, keep: noted)
       tickets, whole = carried_tickets(name)
@@ -5992,7 +6013,10 @@ class TaskMaster
   # @return [void]
   # @raise [SystemExit] when one of them is still at repair
   def stop_if_tools_at_repair(tools)
-    left = Array(@tools_left_at_repair).select { |record| Array(tools).any? { |tool| names_tool?(record['tool'], tool) } }
+    # The full name as well: a held tool is noted by DRC.right_hand, which
+    # shortens names over two words to the first and last ("steel straight
+    # bone saw" is noted as "steel saw", which no "bone saw" names).
+    left = Array(@tools_left_at_repair).select { |record| Array(tools).any? { |tool| names_tool?(record['tool'], tool) || names_tool?(record['item'], tool) } }
     return if left.empty?
 
     DRC.message("#{left.map { |record| record['item'] || record['tool'] }.join(', ')} still at repair (see above); stopping before #{@npc.capitalize}'s task is worked. It stays open, and the next run collects #{left.size == 1 ? 'it' : 'them'} first.")

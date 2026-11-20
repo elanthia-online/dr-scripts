@@ -12574,6 +12574,10 @@ RSpec.describe TaskMaster do
       tm.tool_pickup(npc: 'nezhiri')
 
       expect(sent).to include([:stow, 'mixing stick'])
+      # Once the stick is collected the bowl's ticket is the first, which
+      # answers: the bowl is collected too, not forgotten.
+      expect(sent).to include([:stow, 'bowl'])
+      expect(DRC).not_to have_received(:message).with(/forgetting/)
     end
 
     it 'keeps the note and the ticket, and stops there, when the repairer does not take the ticket' do
@@ -12717,6 +12721,17 @@ RSpec.describe TaskMaster do
         expect(UserVars.taskmaster_old_tickets_done).to be(true)
       end
 
+      it 'works the task, and is not done, when base-crafting.yaml has no repair_replies and a Rangu ticket is carried' do
+        tm = pickup_world({ 'Rangu' => [['polished belzune stone mortar', true]] }, repair_replies: nil)
+        allow(tm).to receive(:get_data).with('crafting').and_return({ 'stock' => {} })
+
+        expect { tm.pickup_old_tickets }.not_to raise_error
+
+        expect(sent).to eq([[:tap, 'Rangu ticket']])
+        expect(UserVars.taskmaster_old_tickets_done).to be_nil
+        expect(DRC).to have_received(:message).with(/base-crafting.yaml has no repair_replies quote, prompt, /).once
+      end
+
       it 'does nothing once done, or with task_self_repair' do
         UserVars.taskmaster_old_tickets_done = true
         pickup_world({ 'Rangu' => [['polished belzune stone mortar', true]] }).pickup_old_tickets
@@ -12795,6 +12810,70 @@ RSpec.describe TaskMaster do
 
         expect { tm.marathon_tailor('rope', 2, 4, 'cloth', 'burlap') }.to raise_error(SystemExit)
         expect(tm).not_to have_received(:tailor_item)
+      end
+
+      it 'does not stop a Zasele cloth task, or a marathon one, when only the knitting needles are at repair (sewing never uses them)' do
+        needles_left = [{ 'tool' => 'knitting needle', 'item' => 'knitting needles' }]
+        tm = build(settings: { outfitting_tools: ['knitting needle', 'scissors'] }, tools_left_at_repair: needles_left)
+        allow(tm).to receive(:buy_yarn)
+        allow(tm).to receive(:buy_stackables)
+        allow(tm).to receive(:tailor_item).and_return(2)
+        allow(tm).to receive(:repair)
+        allow(tm).to receive(:trash)
+        allow(tm).to receive(:bins_task_stock?).and_return(true)
+        allow(tm).to receive(:check_stock).and_return(true)
+
+        expect { tm.zasele('rope', 2, 4, 'cloth', 'burlap') }.not_to raise_error
+        expect { tm.marathon_tailor('rope', 2, 4, 'leather', 'deer') }.not_to raise_error
+        expect { tm.zasele('hat', 2, 4, 'yarn', 'wool') }.to raise_error(SystemExit)
+        expect(tm).to have_received(:repair).with(['knitting needle', 'scissors'], anything)
+        sewing = build(settings: { outfitting_tools: ['knitting needle', 'needles'] }, tools_left_at_repair: [{ 'tool' => 'needles', 'item' => 'steel sewing needles' }])
+        allow(sewing).to receive(:buy_stackables)
+        expect { sewing.zasele('rope', 2, 4, 'cloth', 'burlap') }.to raise_error(SystemExit)
+      end
+
+      it 'stops a Bradyn bone task when its forged bone saw is at repair, noted by the shortened name in hand ("steel saw")' do
+        tm = build(npc: 'bradyn', tools_left_at_repair: [{ 'tool' => 'steel saw', 'item' => 'steel straight bone saw' }])
+        allow(tm).to receive(:buy_stackables)
+
+        expect { tm.bradyn('comb', 2, 5, 'stack', 'deer') }.to raise_error(SystemExit)
+        expect(tm).not_to have_received(:buy_stackables)
+        expect(DRC).to have_received(:message).with(/\Asteel straight bone saw still at repair/)
+      end
+
+      it 'stops a Poltu (or Bradyn) metal task when a forging tool is at repair, before any ingot is handled' do
+        tm = build(npc: 'poltu', settings: { forging_tools: %w[hammer tongs] }, tools_left_at_repair: [{ 'tool' => 'hammer', 'item' => 'steel hammer' }])
+        allow(tm).to receive(:bin_stray_ingots)
+
+        expect { tm.poltu('sword', 2, 5, 'ingot', 'bronze') }.to raise_error(SystemExit)
+        expect(tm).not_to have_received(:bin_stray_ingots)
+      end
+
+      it 'stops a Dorhum task when an enchanting tool is at repair, before the tools are checked or a sigil is bought' do
+        tm = build(npc: 'dorhum', loot_bag_checked: true, tools_left_at_repair: [{ 'tool' => 'burin', 'item' => 'iron burin' }])
+        allow(tm).to receive(:check_loot_bag)
+        allow(tm).to receive(:dorhum_recipe).and_return({ noun: 'rock' })
+        allow(tm).to receive(:dorhum_tools).and_return(%w[burin rod])
+        allow(tm).to receive(:ensure_tools)
+        allow(tm).to receive(:buy_sigils)
+
+        expect { tm.dorhum('spongestone', 6, %w[congruence decay]) }.to raise_error(SystemExit)
+        expect(tm).not_to have_received(:ensure_tools)
+        expect(tm).not_to have_received(:buy_sigils)
+      end
+
+      it 'stops a Nezhiri task with crafts to make when a tool of its vessel is at repair, before the tools are checked or anything is crafted' do
+        tm = build(tools_left_at_repair: [bowl])
+        allow(tm).to receive(:remedy_doses_on_hand).and_return(0)
+        allow(tm).to receive(:remedy_planned_yield).and_return(6)
+        allow(tm).to receive(:check_remedy_uses)
+        allow(tm).to receive(:remedy_tools).and_return(['bowl', 'mixing stick'])
+        allow(tm).to receive(:ensure_tools)
+        allow(tm).to receive(:brew_remedy_round)
+
+        expect { tm.nezhiri('draught', 13, { product: 'deep-sea draught', vessel: 'bowl' }) }.to raise_error(SystemExit)
+        expect(tm).not_to have_received(:ensure_tools)
+        expect(tm).not_to have_received(:brew_remedy_round)
       end
 
       it "stops a Bradyn stone task when the chisels (noted by the name in hand) are at repair, before buying rocks" do
