@@ -14854,6 +14854,40 @@ RSpec.describe TaskMaster do
         expect(@steps).to eq([:put_hands_away, [:tool_drop, ['sieve']]])
       end
 
+      # A toolset with a stray '-' line ([tong, ~, shovel]) gives nil, and so
+      # does Bradyn's stone or bone task when DRC.right_hand finds the right
+      # hand empty (repair([DRC.right_hand], ...)). repair_due?(nil) is true,
+      # so without the .compact a nil would reach tool_drop's get.
+      it 'drops a nil tool entry: only the named tools go to the repairer, or to repair_own_tools at interval 0' do
+        tm = every({ 'nezhiri' => 10_800 })
+        allow(tm).to receive(:put_hands_away)
+        allow(tm).to receive(:tool_drop)
+        UserVars.taskmaster_repaired_at = nil
+        tm.repair(['mortar', nil, 'sieve'], 'alchemy belt')
+        expect(tm).to have_received(:tool_drop).with(%w[mortar sieve], 'alchemy belt').once
+
+        own = every({ 'default' => 0 }, self_repair: true)
+        allow(own).to receive(:put_hands_away)
+        allow(DRCC).to receive(:repair_own_tools).and_return(nil)
+        own.repair(['mortar', nil, 'sieve'], 'alchemy belt')
+        expect(DRCC).to have_received(:repair_own_tools).with(anything, %w[mortar sieve], 'duffel bag', [], 'alchemy belt').once
+      end
+
+      it "puts the hands away and sends nothing after Bradyn's stone task when the right hand is empty (DRC.right_hand nil)" do
+        engineering = { 'name' => 'engineering belt', 'items' => ['chisels'] }
+        tm = build(npc: 'bradyn', settings: { engineering_belt: engineering, task_repair_every: { 'bradyn' => 0 } })
+        %i[stop_if_tools_at_repair buy_rocks carve_stone trash put_hands_away tool_drop].each { |step| allow(tm).to receive(step) }
+        allow(DRCC).to receive(:repair_own_tools)
+        $right_hand = nil
+        expect(DRC.right_hand).to be_nil
+
+        tm.bradyn('stone bowl', 1, 1, 'stone', 'bowl')
+
+        expect(tm).to have_received(:put_hands_away).with(engineering)
+        expect(tm).not_to have_received(:tool_drop)
+        expect(DRCC).not_to have_received(:repair_own_tools)
+      end
+
       it 'puts the hands away and goes nowhere when none is due' do
         tm = repair_with(due: [])
         expect(tm).not_to have_received(:tool_drop)

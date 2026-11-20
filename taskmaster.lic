@@ -34,7 +34,7 @@
   ## For Dorhum's tasks make task_crafting_room a room of your own (a private forge): each finished item is picked up off the floor by its noun, so another rock or shell lying there could be taken instead. A rented room's notice is read before enchanting and the rental renewed when under ten minutes are left ##
   crafting_items_in_container: ['oil', 'glue'] # list of items you might have duplicates of in other bags, but which you only want drawn from crafting bag
   crafting_container: bagname
-   ## Important: set default stow to the same bag as your crafting bag (tools are still stowed that way when task_no_repair is set, and so is anything else in hand when the task instructions are read) ##
+   ## Important: set default stow to the same bag as your crafting bag (after each task's work the hands are put away before any repair, whatever task_repair_by, task_self_repair or task_no_repair say: a tool in hand that is on no belt and not in crafting_items_in_container is stowed that way, and so is anything else in hand when the task instructions are read) ##
 =end
 
 class TaskMaster
@@ -5865,9 +5865,10 @@ class TaskMaster
   # above 0 it is not carried (DRCI.exists?), so it is skipped and stays
   # due; at 0 repair_own_tools' get skips it.
   #
-  # @param tools [Array<String>] tool names (Bradyn's stone and bone tasks
-  #   give the tool in hand, by the name DRC.right_hand shows, which is then
-  #   the key its clock is kept under)
+  # @param tools [Array<String, nil>] tool names (Bradyn's stone and bone
+  #   tasks give the tool in hand, by the name DRC.right_hand shows, which
+  #   is then the key its clock is kept under); a nil entry (an empty right
+  #   hand there, or a stray '-' line in a toolset) is dropped
   # @param belt [Hash, nil] toolbelt settings the tools live on
   # @return [void]
   def repair(tools, belt)
