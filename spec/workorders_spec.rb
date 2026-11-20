@@ -19,6 +19,9 @@ $ORDINALS = %w[first second third fourth fifth sixth seventh eighth ninth tenth 
 load_lic_class('workorders.lic', 'WorkOrders')
 
 RSpec.describe WorkOrders do
+  # More pauses than any example makes; past it the shared pause stub
+  # raises, so a loop made only of pauses fails rather than hangs.
+  let(:pause_limit) { 500 }
   # Allocate a bare instance without calling initialize
   let(:workorders) { described_class.allocate }
   # The real repair replies (data/base-crafting.yaml), shared with taskmaster.
@@ -51,10 +54,12 @@ RSpec.describe WorkOrders do
     workorders.instance_variable_set(:@max_items, 10)
     workorders.instance_variable_set(:@retain_crafting_materials, false)
 
-    # Stub methods that would exit or interact with game
+    # Stub methods that would exit or interact with game. A loop of
+    # pauses with no way out raises rather than hangs.
     allow(workorders).to receive(:exit)
     allow(workorders).to receive(:fput)
-    allow(workorders).to receive(:pause)
+    pauses = 0
+    allow(workorders).to receive(:pause) { raise "paused #{pauses - 1} times: a loop with no way out" if (pauses += 1) > pause_limit }
   end
 
   # ===========================================================================
@@ -1155,15 +1160,22 @@ RSpec.describe WorkOrders do
       }
     end
     let(:tools) { ['hammer', 'tongs'] }
+    # More commands than any example here sends (bput_lines).
+    let(:bput_limit) { 200 }
 
     before do
       workorders.instance_variable_set(:@settings, OpenStruct.new(workorders_repair_own_tools: false))
     end
 
     # What DRC.bput hands back: the text the first given pattern (a String
-    # is /string/i) matches in the next line the game sends, '' if none.
+    # is /string/i) matches in the next line the game sends, '' if none
+    # (once the lines run out, as on bput's timeout). More than bput_limit
+    # commands raise, so a loop with no way out fails rather than hangs.
     def bput_lines(*lines)
+      sent = 0
       allow(DRC).to receive(:bput) do |_command, *patterns|
+        raise "sent #{bput_limit} commands: a loop with no way out" if (sent += 1) > bput_limit
+
         line = lines.shift.to_s
         hit = patterns.flatten.lazy.map { |pattern| line.match(pattern.is_a?(Regexp) ? pattern : /#{pattern}/i) }.find(&:itself)
         hit ? hit[0] : ''
@@ -1186,14 +1198,18 @@ RSpec.describe WorkOrders do
     # a stowed <npc> ticket counts as carried again. Each command is
     # logged with the room it was sent in. look is the ticket look's line,
     # or its lines in turn (raising when they run out). A ticket held before
-    # the run brings back back. More than max_gets GETs raise, so a loop
-    # with no way out fails rather than hangs. swap false: SWAP moves
-    # nothing. stuck: names that will not be stowed.
+    # the run brings back back. Every command the world answers (each walk,
+    # bank run, get_tool, stow_tool, GET, PUT AWAY, bput and pause) is a
+    # step, and more than max_steps raise, as do more than max_gets GETs:
+    # so a loop with no way out, whether it GETs or not, fails rather than
+    # hangs. An example that stubs pause again bounds its own pauses. swap
+    # false: SWAP moves nothing. stuck: names that will not be stowed.
     #
     # @return [Hash] :log ([room, command, line]), :tickets (stowed count)
     def repair_world(npc:, room:, answers: {}, tickets: 0, held: {}, look: '', ticket_reply: nil, withdraw: true, back: 'diagonal-peen hammer', max_gets: 40,
-                     swap: true, stuck: [])
-      world = { room: nil, tickets: tickets, taken: [], log: [], ids: 0, gets: 0 }
+                     max_steps: 300, swap: true, stuck: [])
+      world = { room: nil, tickets: tickets, taken: [], log: [], ids: 0, gets: 0, steps: 0 }
+      step = -> { raise "no way out after #{max_steps} steps" if (world[:steps] += 1) > max_steps }
       $hand_ids = {}
       hold = lambda do |hand, name|
         hand == :right ? ($right_hand = name) : ($left_hand = name)
@@ -1203,18 +1219,28 @@ RSpec.describe WorkOrders do
       ticket = "#{npc} ticket"
       held.each { |hand, name| hold.call(hand, name) }
 
-      allow(DRCT).to receive(:walk_to) { |id| world[:room] = id }
+      allow(DRCT).to receive(:walk_to) do |id|
+        step.call
+        world[:room] = id
+      end
       allow(DRCM).to receive(:ensure_copper_on_hand) do
+        step.call
         world[:room] = 'bank'
         withdraw
       end
-      allow(workorders).to receive(:get_tool) { |name| hold.call(free.call, name) if free.call }
+      allow(workorders).to receive(:pause) { step.call }
+      allow(workorders).to receive(:get_tool) do |name|
+        step.call
+        hold.call(free.call, name) if free.call
+      end
       allow(workorders).to receive(:stow_tool) do |name|
+        step.call
         hand = [:right, :left].find { |each| (each == :right ? $right_hand : $left_hand) == name } unless stuck.include?(name)
         hold.call(hand, nil) if hand
         !hand.nil?
       end
       allow(DRCI).to receive(:get_item?).with(ticket) do
+        step.call
         raise "still collecting after #{max_gets} gets" if (world[:gets] += 1) > max_gets
 
         if world[:tickets].positive? && free.call
@@ -1228,6 +1254,7 @@ RSpec.describe WorkOrders do
         held_name.to_s.split.last == noun && words.all? { |word| held_name.match?(/\b#{Regexp.escape(word)}\b/i) }
       end
       allow(DRCI).to receive(:put_away_item?) do |name|
+        step.call
         hand = [:right, :left].find { |each| fits.call(name, each == :right ? $right_hand : $left_hand) }
         next false unless hand
 
@@ -1236,6 +1263,7 @@ RSpec.describe WorkOrders do
         true
       end
       allow(DRC).to receive(:bput) do |command, *patterns|
+        step.call
         line = case command
                when "give #{npc}"
                  if world[:room] != room then "What is it you're trying to give?"
@@ -1503,8 +1531,9 @@ RSpec.describe WorkOrders do
       # Scripts the clerk (repair_world, at the clerk's room): turns tickets
       # carried; each look answers with look; a ticket given is answered
       # with give, or, when give hands back a tool, by handing back the
-      # diagonal-peen hammer. More than turns GETs raise, so a loop with no
-      # way out fails rather than hangs.
+      # diagonal-peen hammer. More than turns GETs raise, and so do more
+      # than repair_world's max_steps commands of any kind, so a loop with
+      # no way out fails rather than hangs.
       def clerk(look:, give:, turns: 30)
         @world = repair_world(npc: 'clerk', room: 8776, tickets: turns, look: look, max_gets: turns,
                               ticket_reply: give.include?('handed back') ? nil : give)
