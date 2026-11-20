@@ -12330,6 +12330,20 @@ RSpec.describe TaskMaster do
       expect(YAML).to have_received(:safe_load_file).with(shipped_path, aliases: true).once
     end
 
+    # A hand-edited copy whose repair_replies is a list, a pattern or a
+    # number has no usable key: every reply comes from the shipped file,
+    # rather than a TypeError (or NoMethodError) at the first lookup.
+    [['quote', 'prompt'], 'quote', 5].each do |copy|
+      it "takes every reply from the shipped base-crafting.yaml, and says so once, when the data's repair_replies is not a mapping (#{copy.inspect})" do
+        ship
+        tm = build(repair_replies: copy)
+
+        expect(tm.repair_replies).to eq(real_repair_replies)
+        expect(tm.repair_replies_known?).to be(true)
+        expect(DRC).to have_received(:message).with("data/custom/base-crafting.yaml has no usable repair_replies quote, prompt, offered, declined, ticket, need_coin, ready, not_ready, ticket_handed, ticket_not_taken (a copy from before they were added?); using the shipped data/base-crafting.yaml's. Update that copy.").once
+      end
+    end
+
     it 'takes from the shipped file only the keys the copy lacks, keeping its own' do
       ship
       copy = real_repair_replies.except('prompt', 'ticket_handed', 'ticket_not_taken').merge('quote' => 'cost [\d,]+ \w+ to repair')

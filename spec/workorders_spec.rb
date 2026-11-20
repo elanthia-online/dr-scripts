@@ -1366,6 +1366,21 @@ RSpec.describe WorkOrders do
       expect(YAML).to have_received(:safe_load_file).with(shipped_path, aliases: true).once
     end
 
+    # A hand-edited copy whose repair_replies is a list, a pattern or a
+    # number has no usable key: every reply comes from the shipped file,
+    # rather than a TypeError (or NoMethodError) at the first lookup.
+    [['quote', 'prompt'], 'quote', 5].each do |copy|
+      it "takes every reply from the shipped base-crafting.yaml, and says so once, when the data's repair_replies is not a mapping (#{copy.inspect})" do
+        allow(workorders).to receive(:get_data).with('crafting').and_return({ 'repair_replies' => copy })
+        ship
+        allow(Lich::Messaging).to receive(:msg)
+
+        expect(workorders.send(:repair_replies)).to eq(repair_replies)
+        expect(workorders.send(:repair_replies_known?)).to be(true)
+        expect(Lich::Messaging).to have_received(:msg).with('bold', "WorkOrders: data/custom/base-crafting.yaml has no usable repair_replies quote, prompt, offered, declined, ticket, need_coin, ready, not_ready, ticket_handed, ticket_not_taken (a copy from before they were added?); using the shipped data/base-crafting.yaml's. Update that copy.").once
+      end
+    end
+
     it 'takes from the shipped file only the keys the copy lacks, keeping its own' do
       # A copy from the first version of repair_replies: no prompt and no
       # ticket replies; its quote, changed to match the cost alone, is kept.
