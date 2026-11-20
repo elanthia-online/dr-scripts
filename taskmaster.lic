@@ -39,7 +39,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.21.8'
+  VERSION = '2026.11.21.9'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -4299,7 +4299,8 @@ class TaskMaster
   # (detour_while_tools_repair), is a task of the first taskmaster's,
   # finished instead of the fallback's; and so, in a cycle run, is a task
   # of any taskmaster cycle picks from (one a cycle run stopped on before
-  # its work, say: the next pick is random). With
+  # its work, say: the next pick is random, so a fallback or detour this
+  # run made is undone). With
   # task_cancel_foreign_tasks it cancels that task instead, waits out the
   # cooldown a cancel brings, and goes back to asking its own taskmaster.
   #
@@ -4324,11 +4325,15 @@ class TaskMaster
 
     if @cycle && CYCLE_NPCS.include?(giver)
       # The next task is picked at random again, so no going back after it:
-      # a fallback this run made (found asking task_fallback_npc) is undone,
-      # so nothing later in this task's loop takes the first taskmaster for
-      # the one to go back to.
+      # a fallback this run made (found asking task_fallback_npc), or a
+      # detour, is undone, so nothing later in this task's loop takes the
+      # first taskmaster for the one to go back to. Should this task be
+      # cancelled (short instructions) and its taskmaster give its daily
+      # limit, fall_back_for_the_day then falls back as usual, not to the
+      # first one's tools at repair.
       DRC.message("You are on a task for #{giver.capitalize}, one of the taskmasters cycle works; finishing it.")
       @primary_npc = nil
+      @repair_detour = false
       @npc = giver
       return
     end

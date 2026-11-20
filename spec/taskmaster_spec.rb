@@ -16194,6 +16194,47 @@ RSpec.describe TaskMaster do
       expect(DRC).not_to have_received(:message).with(/the next run asks Zasele again/)
     end
 
+    # A cycle detour (Poltu -> Nezhiri) finds a task of Bradyn's open, which
+    # check_task_giver takes as the cycle's own. Its instructions turn out
+    # short, so cancel_short_task (on by default) throws
+    # FOREIGN_TASK_CANCELLED: resume_task stands in for that here, the real
+    # check_task_giver first. get_task then asks Bradyn, who has given his
+    # limit: the run falls back to Nezhiri, not to Poltu, whose tools the
+    # detour was for.
+    it "in a cycle run, falls back as usual, not to the first one's tools at repair, after a cycled taskmaster's open task found on a detour is cancelled" do
+      allow(Time).to receive(:now).and_return(Time.utc(2026, 11, 20, 12))
+      hammer = { 'npc' => 'poltu', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'hammer', 'item' => 'forging hammer', 'left_at' => Time.now.to_i - 60 }
+      UserVars.taskmaster_repairs = [hammer]
+      tm = build(npc: 'poltu', cycle: true, fallback_npc: 'nezhiri', cooldown_poll: 3,
+                 settings: { task_repair_every: { 'poltu' => 10_800, 'nezhiri' => 10_800 }, forging_tools: ['hammer'] })
+      asks = []
+      replies = { 'nezhiri' => ['You are already on a task.', offer], 'bradyn' => [daily_max.sub('Zasele', 'Bradyn')] }
+      allow(tm).to receive(:find_npc)
+      allow(tm).to receive(:pause)
+      allow(tm).to receive(:finish) { rope_task }
+      allow(tm).to receive(:resume_task) do
+        tm.instance_variable_set(:@task_giver, 'bradyn')
+        tm.check_task_giver
+        throw TaskMaster::FOREIGN_TASK_CANCELLED
+      end
+      allow(DRC).to receive(:bput) do |command, *matchers|
+        if (ask = command.match(/\Aask (\w+) for task\z/))
+          asks << ask[1]
+          bput_match(replies.fetch(ask[1]).shift || raise("asked #{ask[1]} again"), matchers)
+        else
+          'You can check your progress with the TASK verb.'
+        end
+      end
+
+      tm.detour_while_tools_repair(cycle: true)
+
+      expect(tm.get_task).to eq(rope_task)
+      expect(asks).to eq(%w[nezhiri bradyn nezhiri])
+      expect(UserVars.taskmaster_capped).to eq({ 'bradyn' => Time.now.to_i })
+      expect(DRC).to have_received(:message).with("Bradyn has given you all the tasks allowed today; working one of Nezhiri's instead (the next run asks Bradyn again).")
+      expect(DRC).not_to have_received(:message).with(/asking Poltu again/)
+    end
+
     it "does not detour Poltu's run to Bradyn for the forging tools Bradyn's task left, fresh or long ready (shared tools)" do
       tm_settings = { task_repair_every: { 'poltu' => 10_800, 'bradyn' => 10_800 }, forging_tools: ['forging hammer', 'tongs'] }
       hammer = { 'npc' => 'bradyn', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'forging hammer', 'item' => 'steel forging hammer', 'left_at' => Time.now.to_i - 60 }
