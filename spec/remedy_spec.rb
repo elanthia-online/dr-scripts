@@ -1316,7 +1316,7 @@ RSpec.describe Remedy do
         herb2: herb2.downcase, catalyst: catalyst, container: recipe['container'], noun: recipe['noun'] }
     end
 
-    it 'parses the workorders remedy_items and craft.lic:680 call of every chaptered base-recipes remedy into the 8-argument form' do
+    it 'parses the workorders remedy_items and craft.lic brew call of every chaptered base-recipes remedy into the 8-argument form' do
       mismatches = chaptered.filter_map do |recipe|
         herb2 = recipe['herb2'] || 'na'
         args = ['remedies', recipe['chapter'], recipe['name'], recipe['herb1'], herb2, 'coal nugget', recipe['container'], recipe['noun']]
