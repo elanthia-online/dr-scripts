@@ -14379,5 +14379,23 @@ RSpec.describe TaskMaster do
 
       expect(UserVars.taskmaster_repairs).to be_nil
     end
+
+    # bput matches each String pattern as /pattern/i and hands back the text
+    # in the game's case (lich-5 common.rb, bput), so the script's own checks
+    # of that text must ignore case too, as the data header says every
+    # pattern is matched. The lines below differ in case from the shipped
+    # patterns, so the script's match, not the double's, decides each one.
+    it "matches the quote, the confirming give's ticket and a declined answer without regard to case, as bput does" do
+      quote_case = quote.sub('cost 4036 Kronars to repair', 'COST 4036 Kronars TO REPAIR').sub('give it to me again', 'GIVE IT TO ME AGAIN')
+      ticket_case = ticket.sub('a repair ticket', 'a REPAIR TICKET')
+      no_scratch_case = no_scratch.sub('scratch', 'SCRATCH')
+
+      drop([quote_case, ticket_case, no_scratch_case], ['knitting needles', 'scissors'], ['slender bone knitting needles', 'jagged steel scissors'])
+
+      expect(DRC).to have_received(:bput).with('give Catrox', any_args).exactly(3).times
+      expect(DRC).to have_received(:bput).with('stow ticket', any_args).once
+      expect(UserVars.taskmaster_repairs).to match([a_hash_including('tool' => 'knitting needles', 'item' => 'slender bone knitting needles')])
+      expect(DRC).not_to have_received(:message).with(/did not take|No repair ticket/)
+    end
   end
 end
