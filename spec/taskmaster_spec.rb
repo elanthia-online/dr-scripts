@@ -12322,6 +12322,30 @@ RSpec.describe TaskMaster do
       expect(DRC).to have_received(:message).with(/base-crafting.yaml has no repair_replies prompt \(/).once
     end
 
+    # A town repairer's no-wear reply and wrong-material refusal, as
+    # crossing-repair.lic:218 matches them: each is answered by a data
+    # pattern (bput hands it back at once, not '' after its 15 s), and the
+    # tool is put away with no second give.
+    ["Osmandikar says, \"Lucky for you!  That isn't damaged!\"", 'Osmandikar says, "I don\'t work on those here."'].each do |line|
+      it "puts the tool away at once on \"#{line[19, 30]}...\"" do
+        returned = []
+        tm = build
+        allow(DRCT).to receive(:walk_to)
+        allow(DRCC).to receive(:get_crafting_item)
+        allow(DRCC).to receive(:stow_crafting_item)
+        allow(DRC).to receive(:bput) do |command, *matchers|
+          sent << command
+          bput_match(line, matchers).tap { |reply| returned << reply }
+        end
+
+        tm.tool_drop(['mortar'], 'alchemy belt')
+
+        expect(sent).to eq(['give Rangu'])
+        expect(returned).to eq([line[/(Lucky for you!  That isn't damaged!|I don't work on those here)/]])
+        expect(DRCC).to have_received(:stow_crafting_item).with('mortar', 'duffel bag', 'alchemy belt')
+      end
+    end
+
     it 'puts the tool away when the first give gets no answer' do
       drop('')
 

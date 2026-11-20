@@ -78,4 +78,19 @@ RSpec.describe 'base-crafting.yaml repair_replies' do
     expect(patterns).to all(be_a(String))
     expect { patterns.each { |pattern| Regexp.new(pattern) } }.not_to raise_error
   end
+
+  # A town repairer's answers to a tool, as crossing-repair.lic:218 matches
+  # them (Fang Cove's Osmandikar among them, base-town.yaml metal_repair).
+  let(:not_damaged) { "Osmandikar says, \"Lucky for you!  That isn't damaged!\"" }
+  let(:wrong_material) { 'Osmandikar says, "I don\'t work on those here."' }
+
+  it "answers the first give for Fang Cove's tool with no wear, and declines it" do
+    expect(replies['offered'].any? { |pattern| bput_match?(pattern, not_damaged) }).to be(true)
+    expect(replies['declined'].any? { |pattern| bput_match?(pattern, not_damaged) }).to be(true)
+  end
+
+  it 'answers the first give for a tool of the wrong material, and does not decline it (a refusal, not no wear)' do
+    expect(replies['offered'].any? { |pattern| bput_match?(pattern, wrong_material) }).to be(true)
+    expect(replies['declined'].none? { |pattern| bput_match?(pattern, wrong_material) }).to be(true)
+  end
 end

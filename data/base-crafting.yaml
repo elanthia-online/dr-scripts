@@ -15,22 +15,32 @@ repair_replies:
   # repairers say "Just give it to me again"; Fang Cove's says "If you
   # agree, give it to me again" (crossing-repair and mining-buddy match both).
   prompt: &repair_prompt give it to me again
-  # Every answer to the first give: the quote (or its bare prompt), or why the
-  # tool is not taken. DRC.bput tries them in this order and hands back what
-  # the first one to match matched, so the quote must stay ahead of the
-  # prompt: then the cost comes back with it (workorders reads the price).
+  # The answers to the first give known so far: the quote (or its bare
+  # prompt), or why the tool is not taken. Another answer is waited out
+  # (bput's 15 s) and the tool put away. The town repairers' no-wear reply
+  # ("Lucky for you!  That isn't damaged!", Fang Cove's Osmandikar) and their
+  # wrong-material refusal ("I don't work on those here") are the ones
+  # crossing-repair.lic:218 matches. DRC.bput tries them in this order and
+  # hands back what the first one to match matched, so the quote must stay
+  # ahead of the prompt: then the cost comes back with it (workorders reads
+  # the price).
   offered:
     - "I don't repair those here"
+    - "I don't work on those here"
     - What is it
     - "There isn't a scratch on that"
+    - "Lucky for you!  That isn't damaged!"
     - *repair_quote
     - *repair_prompt
     - I will not
     - "I can't fix those.  They only have so many uses and then you must buy another."
   # Answers that mean the tool needs no repair or can't have one: it is put
   # away (workorders; taskmaster also notes when it last looked the tool over).
+  # A refusal of the tool itself ("I don't repair those here", "I don't work
+  # on those here") is not one of these.
   declined:
     - scratch
+    - "isn't damaged"
     - I will not
     - They only have so many uses
   # The second give, which takes the coin and hands over a repair ticket.

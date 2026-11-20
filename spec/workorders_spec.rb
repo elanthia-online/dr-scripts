@@ -1237,6 +1237,32 @@ RSpec.describe WorkOrders do
       expect(Lich::Messaging).to have_received(:msg).with('bold', /base-crafting.yaml has no repair_replies prompt \(.*not left for repair or collected/).once
     end
 
+    # What a town repairer answers a tool it will not take or that needs no
+    # repair, as crossing-repair.lic:218 matches them: each is answered by a
+    # data pattern (bput hands it back at once, not '' after its 15 s), and
+    # the tool is put away with no second give.
+    ["Osmandikar says, \"Lucky for you!  That isn't damaged!\"", 'Osmandikar says, "I don\'t work on those here."'].each do |line|
+      it "puts the tool away at once on \"#{line[19, 30]}...\"" do
+        returned = []
+        allow(DRC).to receive(:bput) do |_command, *patterns|
+          hit = patterns.flatten.lazy.map { |pattern| line.match(pattern.is_a?(Regexp) ? pattern : /#{pattern}/i) }.find(&:itself)
+          (hit ? hit[0] : '').tap { |reply| returned << reply }
+        end
+        allow(DRCI).to receive(:get_item?).with('Rangu ticket').and_return(false)
+        allow(DRCT).to receive(:walk_to)
+        allow(workorders).to receive(:get_tool)
+        allow(workorders).to receive(:stow_tool)
+        allow(workorders).to receive(:confirm_repair)
+        allow(Lich::Messaging).to receive(:msg)
+
+        workorders.send(:repair_items, info, ['hammer'])
+
+        expect(returned).to eq([line[/(Lucky for you!  That isn't damaged!|I don't work on those here)/]])
+        expect(workorders).to have_received(:stow_tool).with('hammer').once
+        expect(workorders).not_to have_received(:confirm_repair)
+      end
+    end
+
     it 'confirms a quote pattern from data/custom that matches the cost alone, and still puts a refused tool away' do
       cost_only = repair_replies.merge('quote' => 'cost [\d,]+ \w+ to repair', 'offered' => ['cost [\d,]+ \w+ to repair', "There isn't a scratch on that", 'give it to me again'])
       allow(workorders).to receive(:get_data).with('crafting').and_return({ 'repair_replies' => cost_only })
