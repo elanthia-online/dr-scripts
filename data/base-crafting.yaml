@@ -22,11 +22,11 @@ repair_replies:
   # The answers to the first give known so far: the quote (or its bare
   # prompt), or why the tool is not taken. Another answer is waited out
   # (bput's 15 s) and the tool put away; workorders says so for each answer
-  # neither declined nor a quote (a refusal, no answer at all), and puts a
-  # declined tool away quietly. The town repairers' no-wear reply
-  # ("Lucky for you!  That isn't damaged!", Fang Cove's Osmandikar) and their
-  # wrong-material refusal ("I don't work on those here") are the ones
-  # crossing-repair.lic:218 matches. DRC.bput tries them in this order and
+  # neither declined nor a quote or its prompt (a refusal, no answer at
+  # all), and puts a declined tool away quietly. The town repairers' no-wear
+  # reply ("Lucky for you!  That isn't damaged!", Fang Cove's Osmandikar)
+  # and their wrong-material refusal ("I don't work on those here") are the
+  # ones crossing-repair.lic:218 matches. DRC.bput tries them in this order and
   # hands back what the first one to match matched, so the quote must stay
   # ahead of the prompt: then the cost comes back with it (workorders reads
   # the price).

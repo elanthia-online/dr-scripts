@@ -4,8 +4,8 @@
   task_no_repair: true/false # skip repairing tools entirely
   task_self_repair: true/false # use own brush and oil for repairs
   task_get_tools_on_completion: true/false # If you want taskmaster to pickup any remaining tools in the repair shop. Useful if you're using clerk-tools after each task
-  task_repair_every: { default: 0 } # seconds between repairs of each tool, by taskmaster ({ nezhiri: 10800, zasele: 43200 }), written as plain digits with no leading 0 (YAML reads an unquoted 0600 as octal, 384, 0x10 as hex, 16, and 3:00:00 as base 60, 10800, before taskmaster sees them; any other value, quoted or not, is read as base-10 digits (an unquoted 0800, not octal, is 800), and one that is not digits, such as 3h, is named and ignored); a taskmaster with no entry uses default, and with no default 0, which repairs after every task (as before). Each tool's last repair is kept per character (UserVars.taskmaster_repaired_at; ;e UserVars.taskmaster_repaired_at = nil forgets them all). Applies to task_self_repair too: with an interval above 0 only the due tools carried (the inventory feed or hands, else a TAP) are repaired and noted, except one on Lich's immune list (repaired with Proper Forging Tool Care in the last two hours), which is skipped and stays due; at 0 every tool goes to your own repair with no TAP and none is noted, as before the setting. A run that repairs says which taskmaster it may work has no entry, and, with task_fallback_npc, which taskmaster's tools going for repair bring no detour to the fallback for want of an entry (the default entry does not count for the detour)
-  task_repair_by: rangu # where tools go for repair: rangu (the default: Rangu, Crossing Engineering Society), hometown (Crossing's town repairer in base-town.yaml, Catrox) or task_type (Crossing's repairer, in base-crafting.yaml, of the discipline taskmaster gives each taskmaster: tailoring for Zasele, remedies for Nezhiri, blacksmithing for Poltu, shaping for Bradyn (his metal tasks too), artificing for Dorhum). Always Crossing's, where every task is bought and crafted, whatever task_hometown says; with no such repairer in the data it says so and uses Rangu. Each tool left is noted (UserVars.taskmaster_repairs, with its name in hand). Once a task is accepted, the noted tools its work uses are picked up by their tickets, waiting up to 10 minutes at each repairer for them to be ready (Poltu's and Bradyn's metal tasks share the forging tools); another noted tool at a repairer it goes to is picked up only if ready then; and when a TAP before the ask finds a Rangu ticket, every Rangu ticket no note accounts for (an older taskmaster's, or one whose note was lost) is handed in too, waited for the same way. A task stops before its work while a tool it uses is still at repair (a noted one, or an un-noted Rangu ticket still carried whose item names it, or one the repairer would not take), and stays open for the next run; with mark_crafted_goods that includes the stamp for Poltu's, Bradyn's lumber and metal, and Dorhum's tasks, whose crafting scripts stop without it. Any other tool still out waits for a later task or ;taskmaster pickup, and is not sent for repair again meanwhile. Another taskmaster's note counts for a task by its setting name, or by a name of two words or more: a one-word name such as "rod" is not taken for another toolset's "stirring rod" or "imbuement rod". A ticket is matched to a note by the tool's name in hand, which a ticket may follow with more words ("large purpleheart bowl edged with ivory"); when tickets for two different items fit one note, none is handed in and it says so. With task_type, Zasele's, Nezhiri's and Poltu's tools go to society clerks, who are all called clerk: their tickets stay carried until a task, ;taskmaster pickup or task_get_tools_on_completion collects them, and ;workorders in another discipline picks such a ticket up with its own and stops collecting at one its clerk does not take
+  task_repair_every: { default: 0 } # seconds between repairs of each tool, by taskmaster ({ nezhiri: 10800, zasele: 43200 }), written as plain digits with no leading 0 (YAML reads an unquoted 0600 as octal, 384, 0x10 as hex, 16, and 3:00:00 as base 60, 10800, before taskmaster sees them, as it reads any other plain YAML number; a value that is not a plain YAML number, quoted or not, is read as base-10 digits (an unquoted 0800, not valid octal, is 800); one that is not whole seconds, 0 or more, such as 3h, 10800.9 or -5, is named and ignored); a taskmaster with no entry uses default, and with no default 0, which repairs after every task (as before). Each tool's last repair is kept per character (UserVars.taskmaster_repaired_at; ;e UserVars.taskmaster_repaired_at = nil forgets them all). A kept ticket, or a repairer's no-wear or past-repair answer, starts the tool's clock; a refusal or no answer does not, so the tool goes again after the next task. Applies to task_self_repair too: with an interval above 0 only the due tools carried (the inventory feed or hands, else a TAP) are repaired and noted, except one on Lich's immune list (repaired with Proper Forging Tool Care in the last two hours or so), which is skipped and stays due; at 0 every tool goes to your own repair with no TAP and none is noted, as before the setting. A run that repairs says which taskmaster it may work (the one named and task_fallback_npc; in cycle, the three it picks from and task_fallback_npc) has no entry, and names a key that is not a taskmaster (a misspelling), and, with task_fallback_npc, which taskmaster's tools going for repair bring no detour to the fallback for want of an entry (the default entry does not count for the detour)
+  task_repair_by: rangu # where tools go for repair: rangu (the default: Rangu, Crossing Engineering Society), hometown (Crossing's town repairer in base-town.yaml, Catrox) or task_type (Crossing's repairer, in base-crafting.yaml, of the discipline taskmaster gives each taskmaster: tailoring for Zasele, remedies for Nezhiri, blacksmithing for Poltu, shaping for Bradyn (his metal tasks too), artificing for Dorhum). Always Crossing's, where every task is bought and crafted, whatever task_hometown says; with no such repairer in the data it says so and uses Rangu. Each tool left is noted (UserVars.taskmaster_repairs, with its name in hand). Once a task is accepted, the noted tools its work uses are picked up by their tickets, waiting up to 10 minutes at each repairer for them to be ready (Poltu's and Bradyn's metal tasks share the forging tools); another noted tool at a repairer it goes to is picked up if it is ready then, or by the end of a wait there for the work's own tools; and when a TAP before the ask finds a Rangu ticket, every Rangu ticket no note accounts for (an older taskmaster's, or one whose note was lost) is handed in too, waited for the same way. A task stops before its work while a tool it uses is still at repair (a noted one, or an un-noted Rangu ticket still carried whose item names it, or one the repairer would not take), and stays open for the next run; with mark_crafted_goods that includes the stamp for Zasele's (yarn, cloth and leather), Poltu's, Bradyn's lumber and metal, and Dorhum's tasks, whose crafting scripts stop without it. Any other tool still out waits for a later task or ;taskmaster pickup, and is not sent for repair again meanwhile (a tool still noted is taken to be at repair). A tool collected by hand keeps its note, so it is not sent for repair until ;taskmaster pickup (or a task's pickup at that repairer) forgets the note: run ;taskmaster pickup after handing tickets in yourself. Another taskmaster's note counts for a task by its setting name, or by a name of two words or more: a one-word name such as "rod" is not taken for another toolset's "stirring rod" or "imbuement rod", and Dorhum's rod with none in enchanting_tools (enchant's fallback "rod") is matched as "imbuement rod". Two settings that give different tools the very same name ("rod" in both forging_tools and enchanting_tools) are still taken for each other. A ticket is matched to a note by the tool's name in hand, which a ticket may follow with more words ("large purpleheart bowl edged with ivory"); when tickets for two different items fit one note, none is handed in and it says so. With task_type, Zasele's, Nezhiri's and Poltu's tools go to society clerks, who are all called clerk: their tickets stay carried until a task, ;taskmaster pickup or task_get_tools_on_completion collects them, and ;workorders in another discipline picks such a ticket up with its own and stops collecting at one its clerk does not take
   task_use_boost: true/false # use boost to eliminate task cooldowns, useful if you have a few and you're doing a lot of tasks
   task_cooldown_poll: 15 # seconds between asks while the taskmaster makes you wait (minimum 3)
   task_boosts: [task, haste] # boosts to use. task: BOOST TASK when a task is on cooldown (same as task_use_boost). haste: keep BOOST HASTE (1 hour, roundtimes -1 second) running between tasks. Once the game says you have no credits for one, it is not asked for again until the game's daily rollover (midnight US Central, when login rewards can add boosts in the middle of a login) or your next login; to ask again sooner, ;e $taskmaster_boost_unavailable = nil
@@ -189,6 +189,9 @@ class TaskMaster
     @npc = args.npc
     @marathon = args.marathon
     unless args.find || args.tools || args.reset_output || args.loot_history || args.pickup
+      # A cycle run has no npc argument (lich-5's parse_args takes cycle only
+      # without one), so the fallback (usable_fallback_npc) there is
+      # task_fallback_npc whenever it names a taskmaster.
       warn_repair_intervals(args.cycle ? %w[poltu bradyn zasele] : [@marathon ? 'zasele' : @npc])
     end
     if args.find
@@ -597,7 +600,7 @@ class TaskMaster
     unless check_stock(needed, type, base)
       repair(@settings.outfitting_tools, @settings.outfitting_belt) unless @no_repair
       unbought = restock
-      collect_task_tools(tailoring_tools_used(base))
+      collect_task_tools(zasele_tools(base))
       stop_restock(unbought) unless unbought.empty?
       if still_short?(needed, type, base)
         DRC.message("Restocking left too little #{type} #{base} for #{count} #{item}s (#{needed} yards). Stopping before any is made; the task stays open for the next run.")
@@ -605,7 +608,7 @@ class TaskMaster
       end
       find_npc(@rooms, @npc)
     end
-    stop_if_tools_at_repair(tailoring_tools_used(base))
+    stop_if_tools_at_repair(zasele_tools(base))
     made = tailor_item(item, count, base, type)
     return made if made.positive?
 
@@ -1523,7 +1526,7 @@ class TaskMaster
   # needle"); a bare "needles" may be the sewing needles.
   KNITTING_NEEDLES = /\bknitting needles?\b/i
 
-  # The tailoring tools a task's work uses, for stop_if_tools_at_repair: the
+  # The tailoring tools a task's work uses (zasele_tools adds the stamp): the
   # knitting needles for yarn; outfitting_tools less the entry naming the
   # knitting needles for cloth and leather, which sewing never uses (they
   # still go for repair with the rest of outfitting_tools). A bare "needles"
@@ -1537,6 +1540,17 @@ class TaskMaster
     Array(@settings.outfitting_tools).reject { |tool| tool.to_s.match?(KNITTING_NEEDLES) }
   end
 
+  # The tools one of Zasele's tasks uses, for collect_task_tools and
+  # stop_if_tools_at_repair: tailoring_tools_used, and the stamp sew marks
+  # the items with (marking_tools), which a yarn task's needles leave out
+  # and outfitting_tools may not name.
+  #
+  # @param base [String] stock base: 'cloth', 'leather' or 'yarn'
+  # @return [Array<String>]
+  def zasele_tools(base)
+    tailoring_tools_used(base) | marking_tools('zasele', base)
+  end
+
   # Works one of Zasele's tasks: knitting yarn, or sewing cloth or leather.
   #
   # @param item [String] item noun from the task journal
@@ -1547,7 +1561,7 @@ class TaskMaster
   # @return [void]
   def zasele(item, count, volume_per_item, base, type)
     toolset = base == 'yarn' ? [knitting_needles_name] : @settings.outfitting_tools
-    stop_if_tools_at_repair(tailoring_tools_used(base))
+    stop_if_tools_at_repair(zasele_tools(base))
     if base == 'yarn'
       buy_yarn(item, count, volume_per_item, base)
     else
@@ -1636,7 +1650,7 @@ class TaskMaster
     check_loot_bag
     recipe = dorhum_recipe(item)
     check_loot_bag_clear(recipe[:noun]) unless @loot_bag_checked
-    stop_if_tools_at_repair(dorhum_tools | marking_tools('dorhum'))
+    stop_if_tools_at_repair(dorhum_tools(for_notes: true) | marking_tools('dorhum'))
     ensure_tools(dorhum_tools, 'enchanting')
     buy_sigils(sigils, count)
     # Next door to the sigil-scrolls, before the walk to the base items.
@@ -1952,14 +1966,28 @@ class TaskMaster
   # imbue rod enchant falls back to. With an Imbue spell in waggle_sets
   # enchant casts it and never waves a rod, so no rod is needed then.
   #
+  # @param for_notes [Boolean] whether the names are for matching notes
+  #   (task_tools, stop_if_tools_at_repair): enchant's fallback "rod" is
+  #   then IMBUE_ROD, else as enchant looks for it (ensure_tools)
   # @return [Array<String>]
-  def dorhum_tools
+  def dorhum_tools(for_notes: false)
     tools = Array(@settings.enchanting_tools).reject { |tool| tool =~ /fount|brazier/ }
     tools.reject! { |tool| tool =~ /wand|rod/ } if imbue_spell?
     tools << own_brazier if needs_own_brazier?
-    tools << imbue_tool unless imbue_spell? || tools.any? { |tool| tool =~ /wand|rod/ }
+    unless imbue_spell? || tools.any? { |tool| tool =~ /wand|rod/ }
+      imbue = imbue_tool
+      tools << (for_notes && imbue == 'rod' ? IMBUE_ROD : imbue)
+    end
     tools
   end
+
+  # The imbue rod enchant falls back to when enchanting_tools names none
+  # ("rod"), by the name notes are matched against: every imbue rod's
+  # (base-recipes.yaml's simple, stout and precise imbuement rods). No tool
+  # setting names it, so no task sends it for repair under "rod", and a
+  # note another toolset's one-word "rod" left (a stirring rod in
+  # forging_tools, noted under that very setting name) is not it.
+  IMBUE_ROD = 'imbuement rod'
 
   # @return [Boolean] whether the room Dorhum's items are enchanted in may
   #   have no brazier: a set room that is not one of the towns' public
@@ -6090,11 +6118,17 @@ class TaskMaster
   # given, in place, so they stay due and are tried again after the next
   # task.
   #
-  # A due tool still noted at a repairer (tools_left_for) is not sent
-  # again: it is not carried (a worker repairs more tools than its work
+  # When leaving tools with a repairer (not task_self_repair), a due tool
+  # still noted at a repairer (tools_left_for) is not sent again: it is
+  # taken to be still there (a worker repairs more tools than its work
   # uses, and the pickup after the accept waits only for those), so it is
-  # named as still out, for a later pickup, and its clock is left as it
-  # is.
+  # named as still out, for a later pickup, and its clock is left as it is.
+  # Whether it is carried is not checked: one collected by hand keeps its
+  # note, and is not sent until a pickup at that repairer (;taskmaster
+  # pickup, or a task's) finds no ticket for it and forgets the note. A
+  # tool not due is not looked at for this. With task_self_repair such a tool is not named:
+  # above 0 it is not carried (DRCI.exists?), so it is skipped and stays
+  # due; at 0 repair_own_tools' get skips it.
   #
   # @param tools [Array<String>] tool names (Bradyn's stone and bone tasks
   #   give the tool in hand, by the name DRC.right_hand shows, which is then
@@ -6169,8 +6203,9 @@ class TaskMaster
   # @return [Hash{String => Integer}]
   def repair_every_setting
     @repair_every_setting ||= begin
+      # get_settings wraps only the top level in an OpenStruct, so a mapping
+      # arrives as a Hash.
       setting = @settings.task_repair_every
-      setting = setting.to_h if setting.is_a?(OpenStruct)
       unless setting.nil? || setting.is_a?(Hash)
         DRC.message("task_repair_every should map taskmasters to seconds ({ default: 0, nezhiri: 10800 }), not '#{setting}'; ignoring it.")
         setting = {}
@@ -6245,17 +6280,18 @@ class TaskMaster
     save_user_vars
   end
 
-  # Says, at the start of a run that repairs tools (not task_no_repair), for
-  # each taskmaster the run may work (the one named, or in cycle the three
-  # it picks from, and the fallback) that task_repair_every has no entry
-  # for, how often its tools go for repair instead (the default entry, else
-  # after every task). Then, unless task_self_repair is set, names the
-  # first taskmasters whose tools going for repair bring no detour to the
-  # fallback (detour_while_tools_repair) for want of an entry: each first
-  # one without an entry, or all of them when the fallback has none. The
-  # default entry does not stand in for either. A first one given 0 never
-  # detours either, but is named only when the fallback has no entry (0 is
-  # how this line is quieted).
+  # Says, at the start of a run that repairs tools (not task_no_repair), first
+  # any key that is neither default nor a taskmaster (a misspelling?), then,
+  # for each taskmaster the run may work (the one named and the fallback;
+  # in cycle, the three it picks from and the fallback), once each, that
+  # task_repair_every has no entry for, how often its tools go for repair
+  # instead (the default entry, else after every task). Then, unless
+  # task_self_repair is set, names the first taskmasters whose tools going
+  # for repair bring no detour to the fallback (detour_while_tools_repair)
+  # for want of an entry: each first one without an entry, or all of them
+  # when the fallback has none. The default entry does not stand in for
+  # either. A first one given 0 never detours either, but is named only
+  # when the fallback has no entry (0 is how this line is quieted).
   #
   # @param firsts [Array<String, nil>] the taskmasters the run asks first
   # @param fallback [String, nil] usable_fallback_npc
@@ -6460,7 +6496,8 @@ class TaskMaster
   # tool the task's work uses (task_tools), waiting for them to be ready (up
   # to TICKET_WAIT_POLLS polls 30 s apart at each repairer); at each
   # repairer it goes to for those, any other noted tool there that is ready
-  # now (not waited for); and when a Rangu ticket is carried
+  # then, or by the end of a wait there for the work's own tools (never
+  # waited for itself); and when a Rangu ticket is carried
   # (look_for_rangu_ticket before the ask, else a TAP now), every Rangu
   # ticket no note accounts for, waited for the same way: one an older
   # taskmaster left (it kept no notes), one left from another Lich install,
@@ -6512,7 +6549,7 @@ class TaskMaster
             when 'bradyn' then bradyn_tools(base)
             when 'poltu' then Array(@settings.forging_tools)
             when 'nezhiri' then remedy_tools(recipe)
-            when 'dorhum' then dorhum_tools
+            when 'dorhum' then dorhum_tools(for_notes: true)
             else []
             end
     tools | marking_tools(npc, base)
@@ -6525,9 +6562,12 @@ class TaskMaster
   # (mark_crafted_goods), when that script stops for want of it: shape
   # (Bradyn's lumber), forge (Poltu's and Bradyn's metal) and enchant
   # (Dorhum's) get "stamp" by that name, with no skip
-  # (DRCC.get_crafting_item exits), whatever toolset lists it. sew (Zasele)
-  # marks nothing, remedy (Nezhiri) leaves the item unmarked without one,
-  # and taskmaster carves Bradyn's stone and bone itself, unmarked. Named
+  # (DRCC.get_crafting_item exits), whatever toolset lists it; sew
+  # (Zasele's yarn, cloth and leather alike: knitting and sewing both end in
+  # its finish) gets it with skip, then stops the run itself when the stamp
+  # is not in hand (swap_tool, stop_with_hands_put_away), the item made but
+  # unmarked. remedy (Nezhiri) leaves the item unmarked without one, and
+  # taskmaster carves Bradyn's stone and bone itself, unmarked. Named
   # "stamp", as those scripts ask for it, and by every name a tool setting
   # gives a stamp, so one noted under another taskmaster's name for it
   # matches (tools_left_for).
@@ -6538,7 +6578,7 @@ class TaskMaster
   #   whose script does not stop for the stamp
   def marking_tools(npc, base = nil)
     return [] unless @settings.mark_crafted_goods
-    return [] unless %w[poltu dorhum].include?(npc) || (npc == 'bradyn' && !%w[stone stack].include?(base))
+    return [] unless %w[poltu dorhum zasele].include?(npc) || (npc == 'bradyn' && !%w[stone stack].include?(base))
 
     (['stamp'] + TOOL_LISTS.flat_map { |key| Array(@settings[key]) }.map(&:to_s).grep(/\bstamp\b/i)).uniq
   end
@@ -6567,7 +6607,7 @@ class TaskMaster
   #
   # @param tools [Array<String>] tool names, by setting name
   # @param records [Array<Hash{String => Object}>, nil] notes (repairs_out)
-  # @param npc [String, nil] the taskmaster whose tools they are
+  # @param npc [String] the taskmaster whose tools they are
   # @return [Array<Hash{String => Object}>]
   def tools_left_for(tools, records, npc = @npc)
     Array(records).select { |record| Array(tools).any? { |tool| notes_tool?(record, tool, npc) } }
@@ -6579,17 +6619,21 @@ class TaskMaster
   # Bradyn's metal tasks note the same forging_tools names), or by
   # names_tool? only when both names have two words or more: a one-word
   # name names every tool of that noun, and toolsets name different tools
-  # by one ("rod" in forging_tools is the stirring rod, Dorhum's fallback
-  # "rod" the imbuement rod).
+  # by one (a "rod" in forging_tools is the stirring rod, an "imbuement
+  # rod" in enchanting_tools no stirring rod). Two settings that give two
+  # different tools the very same name (forging_tools and enchanting_tools
+  # both "rod") still match each other: the name is all a note has to go
+  # by. Dorhum's fallback rod is matched as IMBUE_ROD, not by enchant's
+  # bare "rod".
   #
   # @param record [Hash{String => Object}] a note
   # @param tool [String] a tool, by setting name
-  # @param npc [String, nil] the taskmaster whose tool it is
+  # @param npc [String] the taskmaster whose tool it is
   # @return [Boolean]
   def notes_tool?(record, tool, npc)
     names = [record['tool'], record['item']]
     noted = record['npc']
-    return names.any? { |name| names_tool?(name, tool) } if noted.nil? || npc.nil? || noted == npc
+    return names.any? { |name| names_tool?(name, tool) } if noted.nil? || noted == npc
 
     record['tool'].to_s.casecmp?(tool.to_s) || names.any? { |name| names_tool?(name, tool) && [name, tool].all? { |words| words.to_s.split.size > 1 } }
   end
@@ -6912,7 +6956,7 @@ class TaskMaster
       end
       live = claims.select { |_, ticket| ticket.is_a?(Hash) }
       own = live.select { |record, _| waited.include?(record) }.map(&:last)
-      loose = unnoted ? unaccounted_tickets(tickets, claims, repairer_notes(name) - notes).reject { |ticket| ticket[:refused] } : []
+      loose = unnoted ? unaccounted_tickets(tickets, claims).reject { |ticket| ticket[:refused] } : []
       ready = own.find { |ticket| ticket[:ready] } || live.map(&:last).find { |ticket| ticket[:ready] } || loose.find { |ticket| ticket[:ready] }
       unless ready
         waiting = (own + loose).uniq
@@ -7005,7 +7049,7 @@ class TaskMaster
 
     notes = waited + extra
     rivals = repairer_notes(name)
-    unaccounted_tickets(tickets, pair_tickets(notes, tickets, rivals, rivals.reject { |record| record['room'] == room }), rivals - notes)
+    unaccounted_tickets(tickets, pair_tickets(notes, tickets, rivals, rivals.reject { |record| record['room'] == room }))
   end
 
   # @param name [String] the repairer
@@ -7040,18 +7084,18 @@ class TaskMaster
 
   # The tickets no note accounts for: neither paired with a note, nor one
   # that could be a note's that has none to itself (more than one could be
-  # for it, or the repairer refused them all), nor one that could be a note
-  # collected elsewhere (+others+, another clerk's room).
+  # for it, or the repairer refused them all). Only Rangu's tickets are
+  # swept (collect_tools' +unnoted+), and every Rangu note is in his one
+  # room, so +claims+ pairs all of them: no note of his is collected
+  # elsewhere.
   #
   # @param tickets [Array<Hash{Symbol => Object}>]
-  # @param claims [Array<Array(Hash, Object)>] pair_tickets
-  # @param others [Array<Hash{String => Object}>] notes of a repairer of
-  #   this name not collected here
+  # @param claims [Array<Array(Hash, Object)>] pair_tickets, over every
+  #   note of the repairer's
   # @return [Array<Hash{Symbol => Object}>]
-  def unaccounted_tickets(tickets, claims, others)
+  def unaccounted_tickets(tickets, claims)
     tickets.reject do |ticket|
-      claims.any? { |record, claim| claim.is_a?(Hash) ? claim.equal?(ticket) : claim.is_a?(Symbol) && fits_note?(record, ticket[:item]) } ||
-        others.any? { |record| fits_note?(record, ticket[:item]) }
+      claims.any? { |record, claim| claim.is_a?(Hash) ? claim.equal?(ticket) : claim.is_a?(Symbol) && fits_note?(record, ticket[:item]) }
     end
   end
 

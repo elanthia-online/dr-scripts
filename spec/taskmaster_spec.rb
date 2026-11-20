@@ -801,6 +801,12 @@ RSpec.describe TaskMaster do
         expect(events).to include([:message, 'task_repair_every has no entry for dorhum; its tools go for repair after every task.'])
       end
 
+      it "names cycle's task_fallback_npc once when it is one of the three" do
+        events = start(cycle: true, samples: %w[zasele], wrap_up_after: 1, settings: { task_repair_every: { 'default' => 0 }, task_fallback_npc: 'zasele' })
+        expect(events.count([:message, 'task_repair_every has no entry for zasele; its tools go for repair after every task (the default entry).'])).to eq(1)
+        expect(events.count { |event| Array(event).first == :message && event.last.include?('no entry for') }).to eq(3)
+      end
+
       it 'stops after one task without repeat, wrap-up or not' do
         expect(start(npc: 'zasele').count(:get_task)).to eq(1)
       end
@@ -12855,6 +12861,14 @@ RSpec.describe TaskMaster do
         expect(UserVars.taskmaster_repairs).to eq([needles_out])
       end
 
+      it "sends the stirring rod forging_tools names \"rod\" while a Dorhum task's imbuement rod is noted, as its own note's only" do
+        imbuement_rod = { 'npc' => 'dorhum', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'imbuement rod', 'item' => 'cambrinth imbuement rod', 'left_at' => 1 }
+        repair_run(npc: 'poltu', tools: %w[hammer rod], notes: [imbuement_rod], settings: { forging_tools: %w[hammer rod] })
+
+        expect(sent).to eq([[:walk, 19_209], [:get, 'hammer'], 'give Rangu', [:get, 'rod'], 'give Rangu'])
+        expect(DRC).not_to have_received(:message).with(/still at repair/)
+      end
+
       it "sends none of a Dorhum task's tools still at Catrox (the brazier, which a public brazier room's task never uses), and goes nowhere when none is left to send" do
         brazier = { 'npc' => 'dorhum', 'repairer' => 'Catrox', 'room' => 19_093, 'tool' => 'brazier', 'item' => 'iron brazier', 'left_at' => 1 }
         repair_run(npc: 'dorhum', tools: ['augment loop', 'brazier', 'burin'], notes: [brazier], settings: { task_repair_by: 'hometown' })
@@ -12864,6 +12878,29 @@ RSpec.describe TaskMaster do
         sent.clear
         repair_run(npc: 'dorhum', tools: ['brazier'], notes: [brazier], settings: { task_repair_by: 'hometown' })
         expect(sent).to be_empty
+      end
+
+      # Only the due tools (task_repair_every) are looked at for this.
+      it 'neither sends nor names a tool still at Rangu that is not due' do
+        needles_out = { 'npc' => 'zasele', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'knitting needle', 'item' => 'slender knitting needles', 'left_at' => 1 }
+        UserVars.taskmaster_repaired_at = { 'knitting needle' => Time.now.to_i - 60 }
+        repair_run(npc: 'zasele', tools: ['scissors', 'knitting needle'], notes: [needles_out], settings: { task_repair_every: { 'zasele' => 3600 } })
+
+        expect(sent).to eq([[:walk, 19_209], [:get, 'scissors'], 'give Rangu'])
+        expect(DRC).not_to have_received(:message).with(/still at repair/)
+      end
+
+      it "names a due tool still at Rangu and leaves its clock as it is (tool_drop never sees it)" do
+        needles_out = { 'npc' => 'zasele', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'knitting needle', 'item' => 'slender knitting needles', 'left_at' => 1 }
+        stamped = Time.now.to_i - 7200
+        UserVars.taskmaster_repaired_at = { 'knitting needle' => stamped }
+        repair_run(npc: 'zasele', tools: ['scissors', 'knitting needle'], notes: [needles_out], settings: { task_repair_every: { 'zasele' => 3600 } })
+
+        expect(sent).to eq([[:walk, 19_209], [:get, 'scissors'], 'give Rangu'])
+        expect(DRC).to have_received(:message).with('knitting needle still at repair (left earlier); not sent again. A later task or ;taskmaster pickup collects it.')
+        expect(UserVars.taskmaster_repaired_at['knitting needle']).to eq(stamped)
+        # The scissors, sent and found unworn, are stamped: the clock works here.
+        expect(UserVars.taskmaster_repaired_at['scissors']).to be_within(5).of(Time.now.to_i)
       end
     end
   end
@@ -13154,6 +13191,29 @@ RSpec.describe TaskMaster do
         expect(UserVars.taskmaster_repairs).to eq([bowl])
         expect(DRC).to have_received(:message).with('More than one Rangu ticket carried could be for large purpleheart bowl; handing in none for it, and keeping the note. Hand the right one in yourself.').once
         expect { tm.stop_if_tools_at_repair(['bowl']) }.to raise_error(SystemExit)
+      end
+
+      it 'hands in, in the sweep of the Rangu tickets no note accounts for, neither of two tickets a note could be for, and keeps the note' do
+        UserVars.taskmaster_repairs = [bowl]
+        tm = pickup_world({ 'Rangu' => [[bowl_ticket, true], ['large purpleheart bowl edged with silver', true]] }, rangu_ticket: true)
+
+        tm.collect_task_tools(['bowl'])
+
+        expect(gives).to eq(0)
+        expect(UserVars.taskmaster_repairs).to eq([bowl])
+        expect(DRC).to have_received(:message).with('More than one Rangu ticket carried could be for large purpleheart bowl; handing in none for it, and keeping the note. Hand the right one in yourself.').once
+      end
+
+      it 'pairs a note with a name in hand before one without, so the nameless note does not take the named one\'s ticket' do
+        nameless = { 'npc' => 'nezhiri', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'bowl', 'left_at' => 0 }
+        UserVars.taskmaster_repairs = [nameless, bowl]
+        tm = pickup_world({ 'Rangu' => [[bowl_ticket, false], ['small bowl', false]] }, ready_after: 999, rangu_ticket: false)
+
+        tm.collect_task_tools(['bowl'])
+
+        expect(UserVars.taskmaster_repairs).to eq([nameless, bowl])
+        expect(DRC).not_to have_received(:message).with(/No Rangu ticket carried/)
+        expect(gives).to eq(0)
       end
 
       it 'takes either of two tickets for one item (two of the same tool), one per note' do
@@ -13763,6 +13823,18 @@ RSpec.describe TaskMaster do
         expect(UserVars.taskmaster_repairs).to eq([bowl])
       end
 
+      it 'looks again, after a wait, when the first look goes unanswered with no note there, and hands in the Rangu ticket no note accounts for' do
+        UserVars.taskmaster_repairs = []
+        tm = pickup_world({ 'Rangu' => [['iron stirring rod', true]] }, rangu_ticket: true, silent_looks: [1], npc: 'poltu', settings: { forging_tools: %w[hammer rod] })
+
+        tm.collect_task_tools(%w[hammer rod])
+
+        expect(tm).to have_received(:pause).with(30).once
+        expect(gives).to eq(1)
+        expect(sent).to include([:stow, 'rod'])
+        expect(tm.instance_variable_get(:@tools_left_at_repair)).to eq([])
+      end
+
       it 'looks again, after a wait, when the first look goes unanswered (lag), and collects the tool' do
         tongs = { 'npc' => 'poltu', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'tongs', 'item' => 'iron tongs', 'left_at' => 1 }
         UserVars.taskmaster_repairs = [tongs]
@@ -13813,6 +13885,16 @@ RSpec.describe TaskMaster do
           expect(UserVars.taskmaster_repairs).to eq([bowl, stick])
           expect(DRC).to have_received(:message).with('Rangu did not take the ticket (What is it); keeping it for a later pickup.').twice
         end
+      end
+
+      it 'bounds the refusals by the most tickets any read saw, not the first read a lost look cut short' do
+        tm = pickup_world({ 'Rangu' => [['steel hammer', true], ['iron tongs', true], ['bronze bellows', true]] }, refuse_first: 2, silent_looks: [2])
+
+        tm.tool_pickup
+
+        expect(gives).to eq(3)
+        expect(DRC).not_to have_received(:message).with(/did not take \d+ tickets/)
+        expect(sent).to include([:stow, 'bellows'])
       end
 
       it 'hands in no more once the repairer has refused more tickets than were read (a ticket read as another item each time)' do
@@ -14379,7 +14461,7 @@ RSpec.describe TaskMaster do
           expect { tm.bradyn('bowl', 2, 10, 'lumber', 'balsa') }.not_to raise_error
         end
 
-        it 'stops Poltu\'s and Dorhum\'s work on a stamp still at repair, by any name a tool setting gives it, but not Zasele\'s, Nezhiri\'s or Bradyn\'s stone and bone' do
+        it 'stops Poltu\'s and Dorhum\'s work on a stamp still at repair, by any name a tool setting gives it, and counts it for Zasele\'s, but not Nezhiri\'s or Bradyn\'s stone and bone' do
           left = [stamp_out.merge('tool' => 'iron stamp')]
           settings = marking.merge(outfitting_tools: ['iron stamp'], forging_tools: %w[hammer tongs], alchemy_tools: %w[bowl])
           tm = build(npc: 'poltu', settings: settings, tools_left_at_repair: left)
@@ -14398,8 +14480,65 @@ RSpec.describe TaskMaster do
           tm = build(npc: 'bradyn', settings: settings)
           expect(tm.task_tools('bradyn', ['sword', 2, 5, 'ingot', 'bronze'])).to eq(%w[hammer tongs stamp] + ['iron stamp'])
           %w[stone stack].each { |base| expect(tm.task_tools('bradyn', ['idol', 2, 5, base, 'alabaster'])).not_to include('stamp') }
-          expect(tm.task_tools('zasele', ['rope', 2, 4, 'cloth', 'burlap'])).to eq(['iron stamp'])
+          expect(tm.task_tools('zasele', ['rope', 2, 4, 'cloth', 'burlap'])).to eq(['iron stamp', 'stamp'])
+          expect(tm.task_tools('zasele', ['scarf', 2, 4, 'yarn', 'wool'])).to eq(['knitting needles', 'stamp', 'iron stamp'])
           expect(tm.task_tools('nezhiri', ['draught', 13, { vessel: 'bowl' }])).not_to include('stamp')
+        end
+
+        # sew gets the stamp with skip at each item's finish, then stops the
+        # run itself when it is not in hand (sew.lic swap_tool), the item
+        # made but unmarked. A yarn task's work is only the knitting needles,
+        # so the stamp outfitting_tools lists counts only by marking_tools.
+        it 'waits for, and stops a Zasele yarn task (single or marathon) before buying yarn on, the stamp outfitting_tools lists' do
+          UserVars.taskmaster_repairs = [stamp_out]
+          tm = pickup_world({ 'Rangu' => [['iron stamp', false]] }, ready_after: 999, npc: 'zasele', rangu_ticket: false, settings: marking)
+          allow(tm).to receive(:buy_yarn)
+          allow(tm).to receive(:tailor_item).and_return(2)
+
+          tm.collect_task_tools(tm.task_tools('zasele', ['scarf', 2, 4, 'yarn', 'wool']))
+
+          expect(tm).to have_received(:pause).with(30).exactly(TaskMaster::TICKET_WAIT_POLLS).times
+          expect { tm.zasele('scarf', 2, 4, 'yarn', 'wool') }.to raise_error(SystemExit)
+          expect(tm).not_to have_received(:buy_yarn)
+          expect(DRC).to have_received(:message).with("iron stamp still at repair (see above); stopping before Zasele's task is worked. It stays open, and the next run collects it first.")
+
+          allow(tm).to receive(:check_stock).and_return(true)
+          expect { tm.marathon_tailor('scarf', 2, 4, 'yarn', 'wool') }.to raise_error(SystemExit)
+          expect(tm).not_to have_received(:tailor_item)
+        end
+
+        it "waits, after a marathon yarn restock, for the stamp that restock's repair of outfitting_tools left, and knits once it is back" do
+          tm = pickup_world({ 'Rangu' => [['iron stamp', false]] }, ready_after: 1, npc: 'zasele', settings: marking, rangu_ticket: false)
+          allow(tm).to receive(:check_stock).and_return(false)
+          allow(tm).to receive(:repair) { UserVars.taskmaster_repairs = [stamp_out] }
+          allow(tm).to receive(:restock).and_return([])
+          allow(tm).to receive(:still_short?).and_return(false)
+          allow(tm).to receive(:find_npc)
+          allow(tm).to receive(:tailor_item).and_return(2)
+
+          expect(tm.marathon_tailor('scarf', 2, 4, 'yarn', 'wool')).to eq(2)
+
+          expect(tm).to have_received(:pause).with(30).once
+          expect(sent).to include([:stow, 'stamp'])
+          expect(UserVars.taskmaster_repairs).to eq([])
+        end
+
+        it "stops a Zasele cloth task on a stamp another taskmaster's toolset sent, when outfitting_tools names none" do
+          left = [stamp_out.merge('npc' => 'poltu')]
+          settings = marking.merge(outfitting_tools: ['scissors', 'knitting needle'], forging_tools: %w[hammer stamp])
+          tm = build(npc: 'zasele', settings: settings, tools_left_at_repair: left)
+          allow(tm).to receive(:buy_stackables)
+          allow(tm).to receive(:tailor_item)
+
+          expect { tm.zasele('rope', 2, 4, 'cloth', 'burlap') }.to raise_error(SystemExit)
+          expect(tm).not_to have_received(:buy_stackables)
+
+          tm = build(npc: 'zasele', settings: settings.merge(mark_crafted_goods: false), tools_left_at_repair: left)
+          allow(tm).to receive(:buy_stackables)
+          allow(tm).to receive(:tailor_item)
+          allow(tm).to receive(:repair)
+          allow(tm).to receive(:trash)
+          expect { tm.zasele('rope', 2, 4, 'cloth', 'burlap') }.not_to raise_error
         end
       end
 
@@ -14422,13 +14561,35 @@ RSpec.describe TaskMaster do
           tm = pickup_world({ 'Rangu' => [['iron stirring rod', false]] }, ready_after: 999, npc: 'dorhum', rangu_ticket: false, settings: { enchanting_tools: ['augment loop', 'brazier', 'burin'] })
           allow(tm).to receive(:needs_own_brazier?).and_return(false)
 
-          expect(tm.task_tools('dorhum', ['spongestone', 6, %w[congruence]])).to eq(['augment loop', 'burin', 'rod'])
+          expect(tm.task_tools('dorhum', ['spongestone', 6, %w[congruence]])).to eq(['augment loop', 'burin', 'imbuement rod'])
           tm.collect_task_tools(tm.task_tools('dorhum', ['spongestone', 6, %w[congruence]]))
 
           expect(sent).to be_empty
-          expect { tm.stop_if_tools_at_repair(['augment loop', 'burin', 'rod']) }.not_to raise_error
+          expect { tm.stop_if_tools_at_repair(['augment loop', 'burin', 'imbuement rod']) }.not_to raise_error
           tm.instance_variable_set(:@tools_left_at_repair, [imbuement_rod])
-          expect { tm.stop_if_tools_at_repair(['augment loop', 'burin', 'rod']) }.to raise_error(SystemExit)
+          expect { tm.stop_if_tools_at_repair(['augment loop', 'burin', 'imbuement rod']) }.to raise_error(SystemExit)
+        end
+
+        # forging_tools names the stirring rod "rod", and Poltu notes it under
+        # that very setting name; with no rod in enchanting_tools, enchant
+        # falls back to "rod" for the imbue rod, which no note is under.
+        it "neither waits for nor stops a Dorhum task (its fallback rod) on the stirring rod Poltu noted as \"rod\", and still looks for the rod by enchant's \"rod\"" do
+          noted_rod = stirring_rod.merge('tool' => 'rod')
+          UserVars.taskmaster_repairs = [noted_rod]
+          settings = { forging_tools: %w[hammer tongs rod], enchanting_tools: ['augment loop', 'brazier', 'burin'] }
+          tm = pickup_world({ 'Rangu' => [['iron stirring rod', false]] }, ready_after: 999, npc: 'dorhum', rangu_ticket: false, settings: settings)
+          allow(tm).to receive(:needs_own_brazier?).and_return(false)
+
+          tm.collect_task_tools(tm.task_tools('dorhum', ['spongestone', 6, %w[congruence]]))
+
+          expect(sent).to be_empty
+          expect(tm.instance_variable_get(:@tools_left_at_repair)).to eq([noted_rod])
+          allow(tm).to receive(:check_loot_bag)
+          allow(tm).to receive(:dorhum_recipe).and_return({ noun: 'rock' })
+          allow(tm).to receive(:ensure_tools).and_raise('past the stop')
+          tm.instance_variable_set(:@loot_bag_checked, true)
+          expect { tm.dorhum('spongestone', 6, %w[congruence]) }.to raise_error(RuntimeError, 'past the stop')
+          expect(tm).to have_received(:ensure_tools).with(['augment loop', 'burin', 'rod'], 'enchanting')
         end
 
         it "still names another taskmaster's tool by its very setting name, or by names of two words or more" do
