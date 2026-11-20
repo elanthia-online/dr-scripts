@@ -1,7 +1,11 @@
 # frozen_string_literal: true
 
+require 'ostruct'
 require 'yaml'
 require_relative 'spec_helper'
+
+load_lic_class('workorders.lic', 'WorkOrders')
+load_lic_class('taskmaster.lic', 'TaskMaster')
 
 # data/base-crafting.yaml repair_replies: what a repairer answers when handed a
 # tool, read by workorders and taskmaster. Each entry is a pattern as DRC.bput
@@ -106,6 +110,23 @@ RSpec.describe 'base-crafting.yaml repair_replies' do
     not_taken.each do |line|
       expect(replies['ticket_not_taken'].any? { |pattern| bput_match?(pattern, line) }).to be(true)
       expect(replies['ticket_handed'].none? { |pattern| bput_match?(pattern, line) }).to be(true)
+    end
+  end
+
+  it 'has exactly the keys both scripts read, lists where they read lists' do
+    [WorkOrders, TaskMaster].each do |script|
+      expect(replies.keys).to match_array(script::REPAIR_REPLY_KEYS)
+      expect(replies.select { |_key, value| value.is_a?(Array) }.keys).to match_array(script::REPAIR_REPLY_LISTS)
+    end
+  end
+
+  it 'is taken whole by both scripts, no key from the shipped file' do
+    [WorkOrders, TaskMaster].each do |script|
+      reader = script.allocate
+      allow(reader).to receive(:get_data).with('crafting').and_return(OpenStruct.new('repair_replies' => replies))
+      allow(reader).to receive(:shipped_repair_replies).and_raise('read the shipped file')
+
+      expect(reader.send(:repair_replies)).to eq(replies)
     end
   end
 end

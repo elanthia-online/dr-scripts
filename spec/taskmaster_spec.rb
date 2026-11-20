@@ -12295,31 +12295,83 @@ RSpec.describe TaskMaster do
       expect(DRCC).to have_received(:stow_crafting_item).with('mortar', 'duffel bag', 'alchemy belt')
     end
 
-    it 'says so once and leaves nothing for repair, or collects nothing, when base-crafting.yaml has no repair_replies' do
-      tm = build(repair_replies: nil)
-      allow(tm).to receive(:get_data).with('crafting').and_return({ 'stock' => {} })
-      allow(DRCT).to receive(:walk_to)
-      allow(DRC).to receive(:bput)
+    # The shipped data/base-crafting.yaml, as lich-5's SCRIPT_DIR finds it:
+    # its read is stubbed, so no example depends on the file system there.
+    let(:shipped_path) { '/lich/scripts/data/base-crafting.yaml' }
 
-      tm.tool_drop(['mortar'], nil)
-      tm.tool_pickup
-
-      expect(DRCT).not_to have_received(:walk_to)
-      expect(DRC).not_to have_received(:bput)
-      expect(DRC).to have_received(:message).with(/base-crafting.yaml has no repair_replies quote, prompt, .*Update dr-scripts, or that copy/).once
+    def ship(replies = real_repair_replies, raises: nil)
+      stub_const('SCRIPT_DIR', '/lich/scripts')
+      allow(YAML).to receive(:safe_load_file).and_call_original
+      read = allow(YAML).to receive(:safe_load_file).with(shipped_path, aliases: true)
+      raises ? read.and_raise(raises) : read.and_return({ 'repair_replies' => replies })
     end
 
-    it 'says so and leaves nothing for repair when the repair_replies block lacks one key (prompt, as the data first shipped)' do
-      tm = build(repair_replies: real_repair_replies.except('prompt'))
+    it 'takes every reply from the shipped base-crafting.yaml, and says so once, when the data (a stale data/custom copy) has none' do
+      ship
+      tm = build(repair_replies: nil)
+      allow(tm).to receive(:get_data).with('crafting').and_return({ 'stock' => {} })
+      queue = [rangu_quote, rangu_ticket]
       allow(DRCT).to receive(:walk_to)
-      allow(DRC).to receive(:bput)
+      allow(DRCC).to receive(:get_crafting_item)
+      allow(DRCC).to receive(:stow_crafting_item)
+      allow(DRC).to receive(:bput) do |command, *matchers|
+        sent << command
+        command == 'stow ticket' ? 'You put' : bput_match(queue.shift, matchers)
+      end
+      allow(DRCI).to receive(:get_item?).with('rangu ticket').and_return(false)
 
       tm.tool_drop(['mortar'], nil)
       tm.tool_pickup
 
-      expect(DRCT).not_to have_received(:walk_to)
-      expect(DRC).not_to have_received(:bput)
-      expect(DRC).to have_received(:message).with(/base-crafting.yaml has no repair_replies prompt \(/).once
+      expect(sent).to eq(['give Rangu', 'give Rangu', 'stow ticket'])
+      expect(DRC).to have_received(:message).with("data/custom/base-crafting.yaml has no usable repair_replies quote, prompt, offered, declined, ticket, need_coin, ready, not_ready, ticket_handed, ticket_not_taken (a copy from before they were added?); using the shipped data/base-crafting.yaml's. Update that copy.").once
+      expect(YAML).to have_received(:safe_load_file).with(shipped_path, aliases: true).once
+    end
+
+    it 'takes from the shipped file only the keys the copy lacks, keeping its own' do
+      ship
+      copy = real_repair_replies.except('prompt', 'ticket_handed', 'ticket_not_taken').merge('quote' => 'cost [\d,]+ \w+ to repair')
+      tm = build(repair_replies: copy)
+
+      expect(tm.repair_replies).to eq(copy.merge(real_repair_replies.slice('prompt', 'ticket_handed', 'ticket_not_taken')))
+      expect(tm.repair_replies['quote']).to eq('cost [\d,]+ \w+ to repair')
+      expect(DRC).to have_received(:message).with(/no usable repair_replies prompt, ticket_handed, ticket_not_taken \(/).once
+    end
+
+    it "confirms Fang Cove's prompt through the shipped prompt when the copy lacks it" do
+      ship
+      drop('Osmandikar says, "If you agree, give it to me again."', rangu_ticket, data: real_repair_replies.except('prompt'))
+
+      expect(sent).to eq(['give Rangu', 'give Rangu', 'stow ticket'])
+    end
+
+    it 'takes the shipped value for a key of the wrong kind (declined one string, ticket a list, a broken pattern), rather than crashing' do
+      ship
+      copy = real_repair_replies.merge('declined' => 'scratch', 'ticket' => ['repair ticket'], 'need_coin' => 'more coin (')
+
+      expect { drop(rangu_quote, rangu_ticket, no_scratch, tools: %w[mortar pestle], data: copy) }.not_to raise_error
+
+      expect(sent).to eq(['give Rangu', 'give Rangu', 'stow ticket', 'give Rangu'])
+      expect(DRCC).to have_received(:stow_crafting_item).with('pestle', 'duffel bag', 'alchemy belt').once
+      expect(DRC).to have_received(:message).with(/no usable repair_replies declined, ticket, need_coin \(/).once
+    end
+
+    [['the shipped file cannot be read', { raises: Errno::ENOENT }, /none for quote, prompt, offered, .*ticket_not_taken; tools are not left for repair or collected\. Update dr-scripts\./],
+     ['the shipped file has declined as one string too', { replies: true }, /none for declined; tools are not left/]].each do |title, shipped, warning|
+      it "says so once and leaves nothing for repair, or collects nothing, when #{title}" do
+        shipped[:replies] ? ship(real_repair_replies.merge('declined' => 'scratch')) : ship(raises: shipped[:raises])
+        tm = build(repair_replies: nil)
+        allow(tm).to receive(:get_data).with('crafting').and_return({ 'stock' => {} })
+        allow(DRCT).to receive(:walk_to)
+        allow(DRC).to receive(:bput)
+
+        tm.tool_drop(['mortar'], nil)
+        tm.tool_pickup
+
+        expect(DRCT).not_to have_received(:walk_to)
+        expect(DRC).not_to have_received(:bput)
+        expect(DRC).to have_received(:message).with(warning).once
+      end
     end
 
     # A town repairer's no-wear reply and wrong-material refusal, as

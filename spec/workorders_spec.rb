@@ -1211,30 +1211,99 @@ RSpec.describe WorkOrders do
       expect(DRC).to have_received(:bput).with('look at my ticket', 'should be ready by now', 'Looking at the').twice
     end
 
-    it 'says so once and leaves no tool for repair when base-crafting.yaml has no repair_replies (a stale data/custom copy)' do
-      allow(workorders).to receive(:get_data).with('crafting').and_return({ 'stock' => {} })
-      allow(DRCT).to receive(:walk_to)
-      allow(DRC).to receive(:bput)
-      allow(Lich::Messaging).to receive(:msg)
+    # The shipped data/base-crafting.yaml, as lich-5's SCRIPT_DIR finds it:
+    # its read is stubbed, so no example depends on the file system there.
+    let(:shipped_path) { '/lich/scripts/data/base-crafting.yaml' }
 
-      2.times { workorders.send(:repair_items, info, tools) }
-
-      expect(DRCT).not_to have_received(:walk_to)
-      expect(DRC).not_to have_received(:bput)
-      expect(Lich::Messaging).to have_received(:msg).with('bold', /base-crafting.yaml has no repair_replies quote, prompt, .*Update dr-scripts, or that copy/).once
+    def ship(replies = repair_replies, raises: nil)
+      stub_const('SCRIPT_DIR', '/lich/scripts')
+      allow(YAML).to receive(:safe_load_file).and_call_original
+      read = allow(YAML).to receive(:safe_load_file).with(shipped_path, aliases: true)
+      raises ? read.and_raise(raises) : read.and_return({ 'repair_replies' => replies })
     end
 
-    it 'says so and leaves no tool for repair when the repair_replies block lacks one key (prompt, as the data first shipped)' do
-      allow(workorders).to receive(:get_data).with('crafting').and_return({ 'repair_replies' => repair_replies.except('prompt') })
+    it 'takes every reply from the shipped base-crafting.yaml, and says so once, when the data (a stale data/custom copy) has none' do
+      allow(workorders).to receive(:get_data).with('crafting').and_return({ 'stock' => {} })
+      ship
+      bput_lines(quote, handed, "Rangu shrugs and says, \"There isn't a scratch on that, and I'm not one to rob you.\"")
+      allow(DRCI).to receive(:get_item?).with('Rangu ticket').and_return(false)
       allow(DRCT).to receive(:walk_to)
-      allow(DRC).to receive(:bput)
+      allow(workorders).to receive(:get_tool)
+      allow(workorders).to receive(:stow_tool)
+      allow(Lich::Messaging).to receive(:msg)
+      expect(workorders).to receive(:confirm_repair).with(info, 'hammer', 240).and_call_original
+
+      2.times { |run| workorders.send(:repair_items, info, run.zero? ? tools : []) }
+
+      expect(DRCT).to have_received(:walk_to).with(200).twice
+      expect(workorders).to have_received(:stow_tool).with('tongs').once
+      expect(Lich::Messaging).to have_received(:msg).with('bold', 'WorkOrders: data/custom/base-crafting.yaml has no usable repair_replies quote, prompt, offered, declined, ticket, need_coin, ready, not_ready, ticket_handed, ticket_not_taken (a copy from before they were added?); using the shipped data/base-crafting.yaml\'s. Update that copy.').once
+      expect(YAML).to have_received(:safe_load_file).with(shipped_path, aliases: true).once
+    end
+
+    it 'takes from the shipped file only the keys the copy lacks, keeping its own' do
+      # A copy from the first version of repair_replies: no prompt and no
+      # ticket replies; its quote, changed to match the cost alone, is kept.
+      copy = repair_replies.except('prompt', 'ticket_handed', 'ticket_not_taken').merge('quote' => 'cost [\d,]+ \w+ to repair')
+      allow(workorders).to receive(:get_data).with('crafting').and_return({ 'repair_replies' => copy })
+      ship
       allow(Lich::Messaging).to receive(:msg)
 
-      workorders.send(:repair_items, info, tools)
+      expect(workorders.send(:repair_replies)).to eq(copy.merge(repair_replies.slice('prompt', 'ticket_handed', 'ticket_not_taken')))
+      expect(workorders.send(:repair_replies)['quote']).to eq('cost [\d,]+ \w+ to repair')
+      expect(Lich::Messaging).to have_received(:msg).with('bold', /no usable repair_replies prompt, ticket_handed, ticket_not_taken \(/).once
+    end
 
-      expect(DRCT).not_to have_received(:walk_to)
-      expect(DRC).not_to have_received(:bput)
-      expect(Lich::Messaging).to have_received(:msg).with('bold', /base-crafting.yaml has no repair_replies prompt \(.*not left for repair or collected/).once
+    it "confirms Fang Cove's prompt through the shipped prompt when the copy lacks it" do
+      allow(workorders).to receive(:get_data).with('crafting').and_return({ 'repair_replies' => repair_replies.except('prompt') })
+      ship
+      bput_lines('Osmandikar says, "If you agree, give it to me again."')
+      allow(DRCI).to receive(:get_item?).with('Rangu ticket').and_return(false)
+      allow(DRCT).to receive(:walk_to)
+      allow(workorders).to receive(:get_tool)
+      allow(workorders).to receive(:stow_tool)
+      allow(Lich::Messaging).to receive(:msg)
+      expect(workorders).to receive(:confirm_repair).with(info, 'hammer', nil)
+
+      workorders.send(:repair_items, info, ['hammer'])
+
+      expect(workorders).not_to have_received(:stow_tool)
+    end
+
+    it 'takes the shipped value for a key of the wrong kind (declined one string, ticket a list, a broken pattern), rather than crashing' do
+      copy = repair_replies.merge('declined' => 'scratch', 'ticket' => ['repair ticket'], 'need_coin' => 'more coin (')
+      allow(workorders).to receive(:get_data).with('crafting').and_return({ 'repair_replies' => copy })
+      ship
+      bput_lines("Rangu shrugs and says, \"There isn't a scratch on that, and I'm not one to rob you.\"", quote, handed)
+      allow(DRCI).to receive(:get_item?).with('Rangu ticket').and_return(false)
+      allow(DRCI).to receive(:put_away_item?).and_return(true)
+      allow(DRCT).to receive(:walk_to)
+      allow(workorders).to receive(:get_tool)
+      allow(workorders).to receive(:stow_tool)
+      allow(Lich::Messaging).to receive(:msg)
+
+      expect { workorders.send(:repair_items, info, %w[hammer tongs]) }.not_to raise_error
+
+      expect(workorders).to have_received(:stow_tool).with('hammer').once
+      expect(DRCI).to have_received(:put_away_item?).with('ticket').once
+      expect(Lich::Messaging).to have_received(:msg).with('bold', /no usable repair_replies declined, ticket, need_coin \(/).once
+    end
+
+    [['the shipped file cannot be read', { raises: Errno::ENOENT }, /none for quote, prompt, offered, .*ticket_not_taken; tools are not left for repair or collected\. Update dr-scripts\./],
+     ['the shipped file has declined as one string too', { replies: :declined_string }, /none for declined; tools are not left/]].each do |title, shipped, warning|
+      it "says so once and leaves no tool for repair when #{title}" do
+        allow(workorders).to receive(:get_data).with('crafting').and_return({ 'stock' => {} })
+        shipped[:replies] ? ship(repair_replies.merge('declined' => 'scratch')) : ship(raises: shipped[:raises])
+        allow(DRCT).to receive(:walk_to)
+        allow(DRC).to receive(:bput)
+        allow(Lich::Messaging).to receive(:msg)
+
+        2.times { workorders.send(:repair_items, info, tools) }
+
+        expect(DRCT).not_to have_received(:walk_to)
+        expect(DRC).not_to have_received(:bput)
+        expect(Lich::Messaging).to have_received(:msg).with('bold', warning).once
+      end
     end
 
     # What a town repairer answers a tool it will not take or that needs no
