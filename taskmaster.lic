@@ -38,7 +38,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.21.2'
+  VERSION = '2026.11.21.6'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -6491,7 +6491,10 @@ class TaskMaster
         pause 30
         # The ready_only tickets are looked at too, so one ready by now is
         # handed in before the run leaves; only the waited ones keep it here.
-        next if poll_tickets(name, (waiting + live.map(&:last)).uniq)
+        # A read cut short by a look that went unanswered is read again
+        # whole instead, within the same polls: the tickets it never reached
+        # (a noted one among them) are not among those polled.
+        next if (whole || cut != :unanswered) && poll_tickets(name, (waiting + live.map(&:last)).uniq)
 
         tickets, whole, cut = reread_tickets(name, tickets, refusals)
         most = [most, tickets.size].max
@@ -6695,19 +6698,35 @@ class TaskMaster
   # @param ordinal [String]
   # @return [String] the reply to LOOK AT MY <ordinal> <name> TICKET
   def look_at_ticket(name, ordinal)
-    # Grouped, so a data pattern with alternatives ("A|B") still takes the
-    # rest of the line (DRC.bput returns only what matched).
-    DRC.bput("look at my #{ordinal} #{name} ticket", /(?:#{repair_replies['not_ready']}).*/i, *NO_TICKET)
+    DRC.bput("look at my #{ordinal} #{name} ticket", ticket_look_pattern, *NO_TICKET)
+  end
+
+  # The game's line for LOOK AT <ticket>: one starting with repair_replies
+  # not_ready ("Looking at the"), ready or not, and the rest of the line.
+  # Anchored to the start of the line, as NO_TICKET is: DRC.bput returns on
+  # the first line any pattern matches, so another player's "I was looking
+  # at the notice board." would otherwise be read as a ticket. Grouped, so a
+  # data pattern with alternatives ("A|B") still takes the rest of the line
+  # (DRC.bput returns only what matched).
+  #
+  # @return [Regexp]
+  def ticket_look_pattern
+    /^(?:#{repair_replies['not_ready']}).*/i
   end
 
   # @param look [String] a reply to look_at_ticket
   # @param ordinal [String]
   # @return [Hash{Symbol => Object}, nil] :ordinal, :item, :ready; nil when
-  #   the look read no ticket
+  #   the look read no ticket: a line that does not start as a ticket's look
+  #   does, or names no item (TICKET_ITEM), which carried_tickets and
+  #   poll_tickets take as unanswered (looked at again), never as no ticket
   def read_ticket(look, ordinal)
-    return nil unless look.match?(/#{repair_replies['not_ready']}/i)
+    return nil unless look.match?(ticket_look_pattern)
 
-    { ordinal: ordinal, item: look[TICKET_ITEM, :item].to_s, ready: look.match?(/#{repair_replies['ready']}/i) }
+    item = look[TICKET_ITEM, :item]
+    return nil if item.to_s.empty?
+
+    { ordinal: ordinal, item: item, ready: look.match?(/#{repair_replies['ready']}/i) }
   end
 
   # Looks again at just the tickets given (no ticket was handed in, so
@@ -6866,8 +6885,12 @@ class TaskMaster
   # matched against the repair_replies ticket_handed (the tool comes back)
   # and ticket_not_taken (not done yet, or nobody there to take it) of
   # data/base-crafting.yaml, which workorders reads too; any other answer is
-  # waited out (bput's 15 s) and read as not taken. A ticket the repairer
-  # does not take goes back where tickets are stowed.
+  # waited out (bput's 15 s). An answer that is not ticket_handed means not
+  # taken only while the ticket is still in a hand (ticket_still_held?): it
+  # may be another player's line, or no answer at all when the game's came
+  # after bput's 15 s, and a ticket gone from the hand was handed in, so the
+  # tool that comes back is waited for and stowed as on ticket_handed. A
+  # ticket the repairer does not take goes back where tickets are stowed.
   #
   # @param name [String] the repairer
   # @param ordinal [String] which of that repairer's tickets
@@ -6900,7 +6923,10 @@ class TaskMaster
 
     before = held_objects.map { |obj| [obj.id, obj.name] }
     reply = DRC.bput("give #{name}", *repair_replies['ticket_handed'], *repair_replies['ticket_not_taken'])
-    unless repair_replies['ticket_handed'].any? { |handed| reply.match?(/#{handed}/i) }
+    # Any other answer may not be the repairer's: an answer that came after
+    # bput's 15 s, or another player's line ("I am almost done with mine")
+    # ahead of it. The hand tells: only a ticket still held was not taken.
+    if !repair_replies['ticket_handed'].any? { |handed| reply.match?(/#{handed}/i) } && ticket_still_held?(ticket.id)
       DRC.message("#{name} did not take the ticket (#{reply.empty? ? 'no answer' : reply}); keeping it for a later pickup.")
       DRC.bput('stow ticket', 'You put')
       return false
@@ -6920,6 +6946,21 @@ class TaskMaster
     noted = record && returned_tool?(record, tool.name.to_s) ? record['tool'] : nil
     DRCC.stow_crafting_item(belt_tool(tool.name.to_s, toolbelt) || noted || tool.noun, @bag, toolbelt)
     tool
+  end
+
+  # Whether a ticket given is still in a hand, looked at TICKET_IN_HAND_POLLS
+  # times 0.1 s apart (the hand update may trail the reply): gone from both
+  # hands at any look, it was handed in.
+  #
+  # @param id [String] the ticket's id
+  # @return [Boolean]
+  def ticket_still_held?(id)
+    TICKET_IN_HAND_POLLS.times do |poll|
+      return false unless held_objects.any? { |obj| obj.id == id }
+
+      pause 0.1 unless poll == TICKET_IN_HAND_POLLS - 1
+    end
+    true
   end
 
   # Looks, TICKET_IN_HAND_POLLS times 0.1 s apart, for an object in a hand
