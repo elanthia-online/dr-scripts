@@ -1179,7 +1179,11 @@ RSpec.describe WorkOrders do
     # a stowed ticket in a free hand, the right one first, and is true when a
     # ticket is in a hand afterwards (lich-5 get_item? checks only the
     # noun). SWAP swaps the hands. Each item in a hand has an id. The bank
-    # run of DRCM.ensure_copper_on_hand ends at the bank. Each command is
+    # run of DRCM.ensure_copper_on_hand ends at the bank. PUT AWAY <name>
+    # (DRCI.put_away_item?) puts away a held item the name fits as the game
+    # takes it (the last word its noun, each other word a word of its name:
+    # 'ticket' any ticket, 'clerk ticket' a clerk's), the right hand first;
+    # a stowed <npc> ticket counts as carried again. Each command is
     # logged with the room it was sent in. look is the ticket look's line,
     # or its lines in turn (raising when they run out). A ticket held before
     # the run brings back back. More than max_gets GETs raise, so a loop
@@ -1219,12 +1223,16 @@ RSpec.describe WorkOrders do
         end
         [$right_hand, $left_hand].any? { |name| name.to_s.end_with?(' ticket') }
       end
-      allow(DRCI).to receive(:put_away_item?) do
-        hand = [:right, :left].find { |each| (each == :right ? $right_hand : $left_hand).to_s.end_with?(' ticket') }
+      fits = lambda do |name, held_name|
+        *words, noun = name.split
+        held_name.to_s.split.last == noun && words.all? { |word| held_name.match?(/\b#{Regexp.escape(word)}\b/i) }
+      end
+      allow(DRCI).to receive(:put_away_item?) do |name|
+        hand = [:right, :left].find { |each| fits.call(name, each == :right ? $right_hand : $left_hand) }
         next false unless hand
 
+        world[:tickets] += 1 if (hand == :right ? $right_hand : $left_hand) == ticket
         hold.call(hand, nil)
-        world[:tickets] += 1
         true
       end
       allow(DRC).to receive(:bput) do |command, *patterns|
@@ -1273,7 +1281,7 @@ RSpec.describe WorkOrders do
       bput_lines(quote, handed, "Rangu shrugs and says, \"There isn't a scratch on that, and I'm not one to rob you.\"")
       allow(DRCI).to receive(:get_item?).with('Rangu ticket').and_return(false)
       allow(DRCI).to receive(:put_away_item?).and_return(true)
-      allow(workorders).to receive(:get_tool)
+      allow(workorders).to receive(:get_tool).and_return(true)
       allow(workorders).to receive(:stow_tool)
       allow(Lich::Messaging).to receive(:msg)
       expect(workorders).to receive(:confirm_repair).with(info, 'hammer', 240).and_call_original
@@ -1317,7 +1325,7 @@ RSpec.describe WorkOrders do
       bput_lines(quote, handed, "Rangu shrugs and says, \"There isn't a scratch on that, and I'm not one to rob you.\"")
       allow(DRCI).to receive(:get_item?).with('Rangu ticket').and_return(false)
       allow(DRCT).to receive(:walk_to)
-      allow(workorders).to receive(:get_tool)
+      allow(workorders).to receive(:get_tool).and_return(true)
       allow(workorders).to receive(:stow_tool)
       allow(Lich::Messaging).to receive(:msg)
       expect(workorders).to receive(:confirm_repair).with(info, 'hammer', 240).and_call_original
@@ -1349,7 +1357,7 @@ RSpec.describe WorkOrders do
       bput_lines('Osmandikar says, "If you agree, give it to me again."')
       allow(DRCI).to receive(:get_item?).with('Rangu ticket').and_return(false)
       allow(DRCT).to receive(:walk_to)
-      allow(workorders).to receive(:get_tool)
+      allow(workorders).to receive(:get_tool).and_return(true)
       allow(workorders).to receive(:stow_tool)
       allow(Lich::Messaging).to receive(:msg)
       expect(workorders).to receive(:confirm_repair).with(info, 'hammer', nil)
@@ -1367,7 +1375,7 @@ RSpec.describe WorkOrders do
       allow(DRCI).to receive(:get_item?).with('Rangu ticket').and_return(false)
       allow(DRCI).to receive(:put_away_item?).and_return(true)
       allow(DRCT).to receive(:walk_to)
-      allow(workorders).to receive(:get_tool)
+      allow(workorders).to receive(:get_tool).and_return(true)
       allow(workorders).to receive(:stow_tool)
       allow(Lich::Messaging).to receive(:msg)
 
@@ -1435,7 +1443,7 @@ RSpec.describe WorkOrders do
         end
         allow(DRCI).to receive(:get_item?).with('Rangu ticket').and_return(false)
         allow(DRCT).to receive(:walk_to)
-        allow(workorders).to receive(:get_tool)
+        allow(workorders).to receive(:get_tool).and_return(true)
         allow(workorders).to receive(:stow_tool)
         allow(workorders).to receive(:confirm_repair)
         allow(Lich::Messaging).to receive(:msg)
@@ -1458,7 +1466,7 @@ RSpec.describe WorkOrders do
       bput_lines('')
       allow(DRCI).to receive(:get_item?).with('Rangu ticket').and_return(false)
       allow(DRCT).to receive(:walk_to)
-      allow(workorders).to receive(:get_tool)
+      allow(workorders).to receive(:get_tool).and_return(true)
       allow(workorders).to receive(:stow_tool)
       allow(Lich::Messaging).to receive(:msg)
 
@@ -1476,7 +1484,7 @@ RSpec.describe WorkOrders do
       bput_lines("Rangu shrugs and says, \"There isn't a SCRATCH on that, and I'm not one to rob you.\"")
       allow(DRCI).to receive(:get_item?).with('Rangu ticket').and_return(false)
       allow(DRCT).to receive(:walk_to)
-      allow(workorders).to receive(:get_tool)
+      allow(workorders).to receive(:get_tool).and_return(true)
       allow(workorders).to receive(:stow_tool)
       allow(Lich::Messaging).to receive(:msg)
 
@@ -1585,6 +1593,61 @@ RSpec.describe WorkOrders do
         expect(sent).to include(['give clerk', 'You hand clerk your ticket and are handed back a diagonal-peen hammer.'])
         expect(Lich::Messaging).not_to have_received(:msg).with('bold', anything)
         expect(@world[:tickets]).to eq(0)
+        # What was held went to the left hand with the SWAP, and is put away
+        # with the hammer after the hand-in (stow_tool: the crafting bag or
+        # belt), as main put both hands away after each give.
+        expect(workorders).to have_received(:stow_tool).with('diagonal-peen hammer').ordered
+        expect(workorders).to have_received(:stow_tool).with('steel tongs').ordered
+        expect([$right_hand, $left_hand]).to eq([nil, nil])
+      end
+
+      # While a clerk ticket is held, GET MY CLERK TICKET answers "You are
+      # already holding that." and brings no other (lich-5's get_item? is
+      # true all the same): the one held is handed in.
+      # A held item of the clerk's name that is no ticket (noun ledger) is not
+      # taken for one.
+      ['steel tongs', "clerk's ledger"].each do |other|
+        it "hands in a clerk ticket already in hand, from either hand, with no GET for it (#{other} in the other)" do
+          @world = repair_world(npc: 'clerk', room: 8776, tickets: 0, look: ready_look, held: { right: other, left: 'clerk ticket' })
+
+          workorders.send(:repair_items, info, [])
+
+          sent = @world[:log].map { |_room, command, line| [command, line] }
+          expect(sent).to eq([['swap', 'You move clerk ticket to your right hand.'],
+                              ['look at my ticket', ready_look],
+                              ['give clerk', 'You hand clerk your ticket and are handed back a diagonal-peen hammer.']])
+          expect(DRCI).to have_received(:get_item?).once
+          expect(workorders).to have_received(:stow_tool).with(other)
+          expect(Lich::Messaging).not_to have_received(:msg).with('bold', anything)
+          expect([$right_hand, $left_hand, @world[:tickets]]).to eq([nil, nil, 0])
+        end
+      end
+
+      it 'hands in a clerk ticket that shows in a hand only a moment after the GET, a ticket of another name held' do
+        @world = repair_world(npc: 'clerk', room: 8776, tickets: 0, look: ready_look, held: { right: 'Rangu ticket' })
+        late = nil
+        gets = 0
+        # The first GET is true at once on the Rangu ticket's noun; the clerk
+        # ticket it brought shows three looks later. A later GET is true only
+        # with a ticket still in hand, as lich-5's.
+        allow(DRCI).to receive(:get_item?).with('clerk ticket') do
+          raise 'still collecting after 3 gets' if (gets += 1) > 3
+
+          late ||= 3
+          late == :done ? [$right_hand, $left_hand].any? { |name| name.to_s.end_with?(' ticket') } : true
+        end
+        allow(workorders).to receive(:pause).with(0.1) do
+          next unless late.is_a?(Integer) && (late -= 1).zero?
+
+          late = :done
+          $left_hand = 'clerk ticket'
+          $hand_ids['clerk ticket'] = '77'
+        end
+
+        workorders.send(:repair_items, info, [])
+
+        expect(@world[:log].map { |_room, command, line| [command, line] }).to include(['give clerk', 'You hand clerk your ticket and are handed back a diagonal-peen hammer.'])
+        expect(Lich::Messaging).not_to have_received(:msg).with('bold', anything)
       end
 
       it 'puts the right hand away first when both hands are full, so the GET finds a free hand' do
@@ -1608,16 +1671,24 @@ RSpec.describe WorkOrders do
 
         expect(DRCI).not_to have_received(:get_item?)
         expect(gives).to be_empty
-        expect(Lich::Messaging).to have_received(:msg).with('bold', 'WorkOrders: Both hands are full and the steel tongs would not go away; collecting no clerk tickets this run. Hand in yourself any clerk tickets you carry.').once
+        expect(Lich::Messaging).to have_received(:msg).with('bold', 'WorkOrders: Both hands are full and the steel tongs would not go away; collecting no more clerk tickets this run. Hand in yourself any clerk tickets you carry.').once
       end
 
-      it 'hands nothing in when no new object came into a hand (a ticket of another name held makes the GET true)' do
+      # lich-5's get_item? is true on the Rangu ticket's noun, but no clerk
+      # ticket is left: the GET brought nothing, which is the end of
+      # collection, not a ticket to report or put away.
+      it 'ends quietly, handing nothing in and putting nothing away, when a ticket of another name held makes the GET true but nothing new comes' do
         @world = repair_world(npc: 'clerk', room: 8776, tickets: 0, look: ready_look, held: { right: 'Rangu ticket' })
 
         workorders.send(:repair_items, info, [])
 
         expect(gives).to be_empty
-        expect(Lich::Messaging).to have_received(:msg).with('bold', /\AWorkOrders: Could not tell the new clerk ticket from what your hands already held\. .* Hand it, and any more you carry, in yourself\.\z/).once
+        expect(DRCI).to have_received(:get_item?).once
+        expect(workorders).to have_received(:pause).with(0.1).exactly(10).times
+        expect(DRCI).not_to have_received(:put_away_item?)
+        expect(Lich::Messaging).not_to have_received(:msg).with('bold', anything)
+        expect(Lich::Messaging).to have_received(:msg).with('plain', 'WorkOrders: Tool repair at NPC completed')
+        expect($right_hand).to eq('Rangu ticket')
       end
 
       it 'hands nothing in when the ticket cannot be moved to the right hand' do
@@ -1660,6 +1731,35 @@ RSpec.describe WorkOrders do
       expect([$right_hand, $left_hand, world[:tickets]]).to eq([nil, nil, 0])
     end
 
+    # confirm_repair's put-away of the new ticket failed: it is still in the
+    # right hand when collection begins, and is handed in, not stopped at.
+    it 'hands in the repair ticket confirm_repair could not put away, with no GET for it' do
+      world = repair_world(npc: 'Rangu', room: 200, look: rangu_ready, answers: { 'hammer' => [quote, handed] })
+      allow(DRCI).to receive(:put_away_item?).with('ticket').and_return(false)
+
+      workorders.send(:repair_items, info, ['hammer'])
+
+      gives = world[:log].filter_map { |_room, command, line| line if command == 'give Rangu' }
+      expect(gives).to eq([quote, handed, 'You hand Rangu your ticket and are handed back a hammer.'])
+      expect(DRCI).to have_received(:get_item?).once
+      expect(Lich::Messaging).to have_received(:msg).with('bold', 'WorkOrders: Failed to stow repair ticket').once
+      expect(Lich::Messaging).not_to have_received(:msg).with('bold', /did not take|Could not/)
+      expect([$right_hand, $left_hand, world[:tickets]]).to eq([nil, nil, 0])
+    end
+
+    it 'skips a tool it cannot get, saying so, with no give for it' do
+      world = repair_world(npc: 'Rangu', room: 200, look: rangu_ready, answers: { 'tongs' => [quote, handed] })
+      allow(workorders).to receive(:get_tool).with('hammer').and_return(false)
+
+      workorders.send(:repair_items, info, %w[hammer tongs])
+
+      gives = world[:log].filter_map { |_room, command, line| line if command == 'give Rangu' }
+      expect(gives).to eq([quote, handed, 'You hand Rangu your ticket and are handed back a tongs.'])
+      expect(Lich::Messaging).to have_received(:msg).with('bold', 'WorkOrders: Could not get the hammer to leave for repair; skipping it.').once
+      expect(Lich::Messaging).not_to have_received(:msg).with('bold', /did not take/)
+      expect(workorders).not_to have_received(:stow_tool).with('hammer')
+    end
+
     it "tells a named repairer's ticket not taken to be handed in by hand, not to be another society's" do
       world = repair_world(npc: 'Rangu', room: 200, tickets: 1, look: rangu_ready, ticket_reply: '')
 
@@ -1676,7 +1776,7 @@ RSpec.describe WorkOrders do
       bput_lines('Rangu says, "That will cost 240 Kronars to repair."', "Rangu says, \"There isn't a scratch on that, and I'm not one to rob you.\"")
       allow(DRCI).to receive(:get_item?).with('Rangu ticket').and_return(false)
       allow(DRCT).to receive(:walk_to)
-      allow(workorders).to receive(:get_tool)
+      allow(workorders).to receive(:get_tool).and_return(true)
       allow(workorders).to receive(:stow_tool)
       allow(Lich::Messaging).to receive(:msg)
       expect(workorders).to receive(:confirm_repair).with(info, 'hammer', 240)
@@ -1691,7 +1791,7 @@ RSpec.describe WorkOrders do
       bput_lines('Osmandikar says, "If you agree, give it to me again."')
       allow(DRCI).to receive(:get_item?).with('Rangu ticket').and_return(false)
       allow(DRCT).to receive(:walk_to)
-      allow(workorders).to receive(:get_tool)
+      allow(workorders).to receive(:get_tool).and_return(true)
       allow(workorders).to receive(:stow_tool)
       allow(Lich::Messaging).to receive(:msg)
       expect(workorders).to receive(:confirm_repair).with(info, 'hammer', nil)
@@ -1707,7 +1807,7 @@ RSpec.describe WorkOrders do
       bput_lines('Rangu looks over the hammer and says, "That will cost 240 Kronars to repair.  Bring it back if you want."')
       allow(DRCI).to receive(:get_item?).with('Rangu ticket').and_return(false)
       allow(DRCT).to receive(:walk_to)
-      allow(workorders).to receive(:get_tool)
+      allow(workorders).to receive(:get_tool).and_return(true)
       allow(workorders).to receive(:stow_tool)
       allow(Lich::Messaging).to receive(:msg)
       expect(workorders).to receive(:confirm_repair).with(info, 'hammer', 240)
@@ -1722,8 +1822,8 @@ RSpec.describe WorkOrders do
         allow(DRC).to receive(:bput).and_return("There isn't a scratch on that")
         allow(DRCI).to receive(:get_item?).with('Rangu ticket').and_return(false)
 
-        expect(workorders).to receive(:get_tool).with('hammer')
-        expect(workorders).to receive(:get_tool).with('tongs')
+        expect(workorders).to receive(:get_tool).with('hammer').and_return(true)
+        expect(workorders).to receive(:get_tool).with('tongs').and_return(true)
         expect(workorders).to receive(:stow_tool).with('hammer')
         expect(workorders).to receive(:stow_tool).with('tongs')
         expect(Lich::Messaging).to receive(:msg).with('plain', 'WorkOrders: Tool repair at NPC completed')
@@ -1746,8 +1846,8 @@ RSpec.describe WorkOrders do
         allow(DRCI).to receive(:get_item?).with('Rangu ticket').and_return(false)
         allow(DRCI).to receive(:put_away_item?).and_return(true)
 
-        expect(workorders).to receive(:get_tool).with('hammer')
-        expect(workorders).to receive(:get_tool).with('tongs')
+        expect(workorders).to receive(:get_tool).with('hammer').and_return(true)
+        expect(workorders).to receive(:get_tool).with('tongs').and_return(true)
 
         workorders.send(:repair_items, info, tools)
       end
@@ -1782,8 +1882,8 @@ RSpec.describe WorkOrders do
         allow(DRCI).to receive(:get_item?).with('Rangu ticket').and_return(false)
         allow(DRCI).to receive(:put_away_item?).with('ticket').and_return(false)
 
-        expect(workorders).to receive(:get_tool).with('hammer')
-        expect(workorders).to receive(:get_tool).with('tongs')
+        expect(workorders).to receive(:get_tool).with('hammer').and_return(true)
+        expect(workorders).to receive(:get_tool).with('tongs').and_return(true)
         # First tool triggers 'give' branch with stow failure, second tool gets 'repair ticket' (no 'give'),
         # an answer to the first give no data pattern knows: put away, saying so.
         allow(Lich::Messaging).to receive(:msg)
@@ -1802,8 +1902,8 @@ RSpec.describe WorkOrders do
         allow(DRC).to receive(:bput).and_return("I don't repair those here")
         allow(DRCI).to receive(:get_item?).with('Rangu ticket').and_return(false)
 
-        expect(workorders).to receive(:get_tool).with('hammer')
-        expect(workorders).to receive(:get_tool).with('tongs')
+        expect(workorders).to receive(:get_tool).with('hammer').and_return(true)
+        expect(workorders).to receive(:get_tool).with('tongs').and_return(true)
         expect(workorders).to receive(:stow_tool).with('hammer')
         expect(workorders).to receive(:stow_tool).with('tongs')
 
@@ -2143,7 +2243,7 @@ RSpec.describe WorkOrders do
           patterns.include?('repair ticket') ? 'repair ticket' : 'cost 4,447 Kronars to repair.  Just give it to me again'
         end
         allow(DRCI).to receive(:get_item?).and_return(false)
-        allow(workorders).to receive(:get_tool)
+        allow(workorders).to receive(:get_tool).and_return(true)
         allow(Lich::Messaging).to receive(:msg)
 
         expect(DRCI).to receive(:put_away_item?).with('ticket').and_return(true).twice
