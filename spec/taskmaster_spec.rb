@@ -819,9 +819,9 @@ RSpec.describe TaskMaster do
         expect(events).to include(:restock, [:find_npc, 21, 'zasele'])
       end
 
-      it 'picks up the tools left for repair after every accept (once they are back no more), and at the end only when asked' do
+      it 'picks up the tools left for repair right after the opening restock, still in Crossing, and after every accept (once they are back no more), and at the end only when asked' do
         events = start(npc: 'zasele', marathon: true, ticket: true, renote: true, wrap_up_after: 2)
-        expect(events).to eq([:reconcile, :restock, *marathon_task.first(4), :collect, *marathon_task.drop(4), *marathon_task.first(4), :collect, *marathon_task.drop(4), :exit])
+        expect(events).to eq([:reconcile, :restock, :collect, *marathon_task, *marathon_task.first(4), :collect, *marathon_task.drop(4), :exit])
         events = start(npc: 'zasele', marathon: true, ticket: true, stock_ok: false, wrap_up_after: 1)
         expect(events.count(:collect)).to eq(1)
         expect(events.last(2)).to eq([[:complete, 'rope', 2], :exit])
@@ -831,8 +831,10 @@ RSpec.describe TaskMaster do
 
       it "taps for a Rangu ticket before each ask, in the taskmaster's cooldown, not after the accept" do
         events = start(npc: 'zasele', marathon: true, ticket: true, renote: true, taps: true, wrap_up_after: 2)
+        first = [*marathon_task.first(3), [:tap, 'Rangu ticket'], :get_task, *marathon_task.drop(4)]
         task = [*marathon_task.first(3), [:tap, 'Rangu ticket'], :get_task, :collect, *marathon_task.drop(4)]
-        expect(events).to eq([:reconcile, :restock, *task, *task, :exit])
+        # The opening pickup taps for itself (nothing looked before it) and collects the noted scissors.
+        expect(events).to eq([:reconcile, :restock, [:tap, 'Rangu ticket'], :collect, *first, *task, :exit])
       end
 
       # Fizzlestiks, 2026-11-10 23:11: every walk to the outfitting shop
@@ -845,12 +847,13 @@ RSpec.describe TaskMaster do
 
         it 'stops before asking for a task when the opening restock got none of a stock' do
           events = start(npc: 'zasele', marathon: true, ticket: true, restocks: [%w[cloth leather]], wrap_up_after: 1)
-          expect(events).to eq([:reconcile, :restock, [:message, unreached], :exit])
+          # The tools left for repair are picked up first, as main did.
+          expect(events).to eq([:reconcile, :restock, :collect, [:message, unreached], :exit])
         end
 
         it "stops before sewing when a task's restock got none of a stock, after picking up the tools left for repair" do
           events = start(npc: 'zasele', marathon: true, ticket: true, stock_ok: false, restocks: [[], %w[cloth leather]], wrap_up_after: 1)
-          expect(events.first(7)).to eq([:reconcile, :restock, *marathon_task.first(4), :collect])
+          expect(events.first(7)).to eq([:reconcile, :restock, :collect, *marathon_task.first(4)])
           expect(events.last(5)).to eq([[:check_stock, 8, 'burlap', 'cloth'], [:repair, ['scissors'], outfitting_belt], :restock,
                                         [:message, unreached], :exit])
         end
@@ -14298,6 +14301,57 @@ RSpec.describe TaskMaster do
         expect(sent).to include([:stow, 'scissors'])
         expect(UserVars.taskmaster_repairs).to eq([])
         expect(tm).to have_received(:tailor_item)
+      end
+
+      context 'in marathon, collecting while the run is in Crossing' do
+        # Knitting needles left by an earlier restock's repair: outfitting_tools
+        # lists them, but a cloth task never sews with them.
+        let(:needles_out) { { 'npc' => 'zasele', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'knitting needle', 'item' => 'knitting needles', 'left_at' => 1 } }
+        let(:outfitting) { { outfitting_tools: ['knitting needle', 'scissors'] } }
+
+        it 'collects right after the opening restock, so the first accept, on Andreshlew, walks nowhere for a tool the task does not use' do
+          UserVars.taskmaster_repairs = [needles_out]
+          tm = pickup_world({ 'Rangu' => [['knitting needles', true]] }, npc: 'zasele', settings: outfitting)
+          where = nil
+          walks = []
+          allow(DRCT).to receive(:walk_to) do |room|
+            walks << [room, where]
+            true
+          end
+          allow(tm).to receive(:reconcile_hands)
+          allow(tm).to receive(:restock) { (where = :crossing) && [] }
+          allow(tm).to receive(:prepare_for_task)
+          allow(tm).to receive(:get_task) do
+            raise 'runaway task loop' if where == :andreshlew
+
+            where = :andreshlew
+            ['rope', 2, 4, 'cloth', 'burlap']
+          end
+          allow(tm).to receive(:marathon_tailor)
+          allow(tm).to receive(:complete_task) { Flags['wrap-up'] = true }
+
+          expect { tm.run_marathon }.to raise_error(SystemExit)
+
+          expect(walks).to eq([[19_209, :crossing]])
+          expect(sent).to include([:stow, 'knitting needle'])
+          expect(UserVars.taskmaster_repairs).to eq([])
+        end
+
+        it "waits, after a task's restock, for every tool its repair left at the run's repairer, not only those the task uses" do
+          tm = pickup_world({ 'Rangu' => [['knitting needles', false]] }, ready_after: 1, npc: 'zasele', settings: outfitting, rangu_ticket: false)
+          allow(tm).to receive(:check_stock).and_return(false)
+          allow(tm).to receive(:repair) { UserVars.taskmaster_repairs = [needles_out] }
+          allow(tm).to receive(:restock).and_return([])
+          allow(tm).to receive(:still_short?).and_return(false)
+          allow(tm).to receive(:find_npc)
+          allow(tm).to receive(:tailor_item).and_return(2)
+
+          expect(tm.marathon_tailor('rope', 2, 4, 'cloth', 'burlap')).to eq(2)
+
+          expect(tm).to have_received(:pause).with(30).once
+          expect(sent).to include([:stow, 'knitting needle'])
+          expect(UserVars.taskmaster_repairs).to eq([])
+        end
       end
 
       it 'does not stop a Zasele cloth task, or a marathon one, when only the knitting needles are at repair (sewing never uses them)' do

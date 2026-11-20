@@ -320,9 +320,13 @@ class TaskMaster
   # finished by get_task (resume_task, which works it from the carried stock
   # with marathon_tailor too), and the loop then goes on to the wrap-up
   # check and asks again. An opening restock that got none of a stock it
-  # ordered stops the run before it asks for a task (stop_restock). As in
-  # run_tasks, a TAP before each ask looks for a Rangu ticket, and each task
-  # accepted first picks up the tools left for repair (collect_task_tools).
+  # ordered stops the run before it asks for a task (stop_restock). Right
+  # after the opening restock, while the run is still in Crossing, the tools
+  # left at the run's repairer are picked up (collect_after_restock), as
+  # main's tool_pickup there did. As in run_tasks, a TAP before each ask
+  # looks for a Rangu ticket (main TAPped only at the start and after each
+  # restock), and each task accepted first picks up the tools left for
+  # repair that its work uses (collect_task_tools).
   #
   # @return [void]
   # @raise [SystemExit] after the wrap-up call; when the opening restock got
@@ -333,6 +337,9 @@ class TaskMaster
     @npc = 'zasele'
     reconcile_hands
     unbought = restock
+    # Still in Crossing, as main's tool_pickup here was: collected now, the
+    # first accept on Andreshlew does not walk back to the repairer for them.
+    collect_after_restock
     stop_restock(unbought) unless unbought.empty?
     loop do
       prepare_for_task
@@ -366,9 +373,11 @@ class TaskMaster
   # take one of the player's own of the noun (2026-11-10: a run whose
   # restock could not reach the shop sewed no ropes, then gave Zasele a
   # bundling rope five times). Either stop leaves the task open for the
-  # next run. The tools a restock's repair left are picked up after it
-  # (collect_task_tools), and a tool the task uses still at repair stops it
-  # before sewing (stop_if_tools_at_repair), the task left open.
+  # next run. The tools a restock's repair left are picked up after it,
+  # every one waited for while the run is in Crossing, not only those the
+  # task uses (collect_after_restock), and a tool the task uses still at
+  # repair stops it before sewing (stop_if_tools_at_repair), the task left
+  # open.
   #
   # @param item [String] item noun from the task journal
   # @param count [Integer] how many items to make
@@ -383,7 +392,7 @@ class TaskMaster
     unless check_stock(needed, type, base)
       repair(@settings.outfitting_tools, @settings.outfitting_belt) unless @no_repair
       unbought = restock
-      collect_task_tools(zasele_tools(base))
+      collect_after_restock(zasele_tools(base))
       stop_restock(unbought) unless unbought.empty?
       if still_short?(needed, type, base)
         DRC.message("Restocking left too little #{type} #{base} for #{count} #{item}s (#{needed} yards). Stopping before any is made; the task stays open for the next run.")
@@ -6013,8 +6022,11 @@ class TaskMaster
   #
   # @param tools [Array<String>] the tools the task's work uses, by setting
   #   name (task_tools)
+  # @param wait_all_at [Array(Integer, String), nil] a repairer (room, name)
+  #   every note at which is waited for as the work's own
+  #   (collect_after_restock)
   # @return [void]
-  def collect_task_tools(tools)
+  def collect_task_tools(tools, wait_all_at: nil)
     stray = @rangu_ticket.nil? ? rangu_ticket_carried? : @rangu_ticket
     @rangu_ticket = nil
     @tools_left_at_repair = []
@@ -6026,6 +6038,7 @@ class TaskMaster
 
     rangu = [RANGU['id'], RANGU['name']]
     wanted = tools_left_for(tools, notes)
+    wanted |= notes.select { |record| [record['room'], record['repairer']] == wait_all_at } if wait_all_at
     visits = wanted.map { |record| [record['room'], record['repairer']] }
     visits << rangu if stray
     unnoted_left = []
@@ -6035,6 +6048,23 @@ class TaskMaster
       unnoted_left.concat(left.map { |ticket| { 'repairer' => name, 'room' => room, 'item' => ticket[:item] } })
     end
     @tools_left_at_repair = repairs_out + unnoted_left
+  end
+
+  # Picks up, after a marathon restock while the run stands in Crossing,
+  # every tool noted at the run's repairer (repairer_for: Rangu by default),
+  # waiting for each as for the work's own, and, when a TAP finds a Rangu
+  # ticket, every Rangu ticket no note accounts for (collect_task_tools):
+  # as main's tool_pickup after each restock did, so the next accept, on
+  # Andreshlew, has no tool to walk back to Crossing for. Leaves
+  # @tools_left_at_repair for stop_if_tools_at_repair, as collect_task_tools
+  # does.
+  #
+  # @param tools [Array<String>] the tools the task's work uses, by setting
+  #   name; none at the opening restock
+  # @return [void]
+  def collect_after_restock(tools = [])
+    repairer = @self_repair ? nil : repairer_for
+    collect_task_tools(tools, wait_all_at: repairer && [repairer['id'], repairer['name']])
   end
 
   # The tools a task's work uses, by setting name: the list its worker
