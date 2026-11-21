@@ -1,10 +1,9 @@
 ---
 # What a repairer (Rangu, a society clerk, Catrox and the like) answers when
 # handed a tool with GIVE <name>, read by the scripts that leave tools for
-# repair: workorders reads them all; taskmaster reads all but ticket_handed and
-# ticket_not_taken (its ticket hand-in still matches 'You hand' itself). Each
-# entry is a pattern as DRC.bput takes one: a regular expression, matched
-# without regard to case, and the scripts match them the same way. A copy of
+# repair (workorders, taskmaster), each reading them all. Each entry is a
+# pattern as DRC.bput takes one: a regular expression, matched without regard
+# to case, and the scripts match them the same way. A copy of
 # this file in data/custom replaces this one whole: any of these it lacks (one
 # from before they were added), or has as the wrong kind of value, is taken
 # from this shipped file, and the scripts say once which. offered, declined,
@@ -50,7 +49,10 @@ repair_replies:
     - "isn't damaged"
     - I will not
     - They only have so many uses
-  # The second give, which takes the coin and hands over a repair ticket.
+  # The second give, which takes the coin and hands over a repair ticket
+  # ("You hand Rangu 240 Kronars and he gives you back a repair ticket.").
+  # taskmaster takes it only on a line starting "You hand", the game's own,
+  # and keeps its note of the tool on any other answer.
   ticket: repair ticket
   # The answer to the second give when the coin carried is short.
   need_coin: more coin
@@ -58,7 +60,12 @@ repair_replies:
   # at the Granzer ticket you see it is for a small demonscale shield ...  You
   # recall that your shield should be ready by now." A ticket not ready yet
   # starts the same way and ends "... should be ready any moment now."
-  # (Cithrin, Catrox, 2026-11-20 07:59:19).
+  # (Cithrin, Catrox, 2026-11-20 07:59:19). ready tells a ready ticket from
+  # one that is not. not_ready, despite its name, must match the start of
+  # EVERY ticket look, ready ones too ("Looking at the"): taskmaster reads
+  # each ticket by it, from the start of the line, and takes the item from
+  # what it matched; a pattern for the not-ready wording alone would make
+  # taskmaster read no ticket at all.
   ready: should be ready by now
   not_ready: Looking at the
   # GIVE <name> with a ticket in hand: the tool comes back ("You hand Catrox

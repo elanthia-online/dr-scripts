@@ -3106,6 +3106,8 @@ task_shell_room: 793
 # Setting for taskmaster - a run never works another taskmaster's task. When one is open, cancel it
 # with ASK <taskmaster> FOR TASK CANCEL, wait out the 10-minute "unreliable" cooldown a cancel brings,
 # then carry on with this run's taskmaster. Off: stop, saying whose task it is and how to clear it.
+# A cycle run finishes an open task of Poltu, Bradyn or Zasele (the taskmasters it picks from) as
+# its own, whichever it picked, and neither stops on nor cancels it.
 task_cancel_foreign_tasks: false
 # Setting for taskmaster - A second taskmaster (zasele, nezhiri, poltu, bradyn or dorhum) to work a
 # task for when the one asked says you have done the most tasks it allows today ("You have reached the
@@ -3113,6 +3115,47 @@ task_cancel_foreign_tasks: false
 # again, so its tasks resume once its limit resets; a task left open for the fallback is finished, not
 # cancelled. Unset: the run stops at the limit. Ignored by marathon, which works only Zasele's tasks.
 task_fallback_npc:
+# Setting for taskmaster - Where tools go for repair (unless task_no_repair or task_self_repair): rangu
+# (Rangu, Crossing Engineering Society), town (Crossing's town repairer in base-town.yaml, Catrox; hometown,
+# its earlier name, is taken as town) or
+# task_type (Crossing's repairer, in base-crafting.yaml, of the discipline taskmaster gives each
+# taskmaster: tailoring for Zasele, remedies for Nezhiri, blacksmithing for Poltu, shaping for Bradyn,
+# his metal tasks too, artificing for Dorhum). Always Crossing's, where every task is bought and crafted,
+# whatever task_hometown says. With no such repairer in the data it says so and uses Rangu. Each tool
+# left is noted (UserVars.taskmaster_repairs, with its name in hand). Once a task is accepted, the noted
+# tools its work uses are picked up by their tickets, waiting up to 10 minutes at each repairer for them
+# to be ready (Poltu's and Bradyn's metal tasks share the forging tools); another noted tool at a
+# repairer it goes to is picked up if it is ready then, or by the end of a wait there for the work's own
+# tools; and when a TAP before the ask finds a Rangu ticket, every Rangu ticket no note accounts for (an
+# older taskmaster's, or one whose note was lost) is handed in too, waited for the same way. A task stops
+# before its work while a tool it uses is still at repair (a noted one, or an un-noted Rangu ticket still
+# carried whose item names it, or one the repairer would not take), and stays open for the next run; a
+# note no ticket can be handed in for (tickets for two different items fit it, its one ticket could as
+# well be another clerk's, or the repairer would not take it) stops every run the same way, until you
+# hand the right ticket in yourself and run ;taskmaster pickup; with mark_crafted_goods that includes the
+# stamp for Zasele's (yarn, cloth and leather), Poltu's, Bradyn's lumber and metal, and Dorhum's tasks,
+# whose crafting scripts stop without it. Any other tool still out waits for a later task or ;taskmaster
+# pickup, and is not sent for repair again meanwhile (a tool still noted is taken to be at repair). A
+# tool collected by hand keeps its note, so it is not sent for repair until ;taskmaster pickup (or a
+# task's pickup at that repairer) forgets the note: run ;taskmaster pickup after handing tickets in
+# yourself. Another taskmaster's note counts for a task by its setting name, or by a name of two words or
+# more: a one-word name such as "rod" is not taken for another toolset's "stirring rod" or "imbuement
+# rod", and Dorhum's rod with none in enchanting_tools (enchant's fallback "rod") is matched as
+# "imbuement rod". Two settings that give different tools the very same name ("rod" in both forging_tools
+# and enchanting_tools) are still taken for each other. When tickets for two different items fit one
+# note, none is handed in and it says so. In marathon, the tools left at the run's repairer are picked up
+# right after each restock, while the run is still in Crossing, every one waited for (as taskmaster always
+# has), so an accept on Andreshlew does not walk back to Crossing for them. With task_type,
+# Zasele's, Nezhiri's and Poltu's tools go to society clerks, who are all called clerk: their tickets
+# stay carried until a task, ;taskmaster pickup or task_get_tools_on_completion collects them, and
+# ;workorders in another discipline picks such a ticket up with its own and stops collecting at one its
+# clerk does not take; a ticket whose item is noted at two clerks is not handed in (it says so), and work
+# that uses that tool stops until you hand it in yourself at the right clerk and run ;taskmaster pickup.
+# With town, crossing-repair (which training-manager runs after hunts) and ;repair hand in every
+# Catrox ticket, taskmaster's included: crossing-repair puts such a tool in your default stow container,
+# not your crafting bag or toolbelt, and taskmaster's next pickup forgets its note (no ticket carried).
+# Run ;taskmaster pickup before those scripts run, or use rangu or task_type with them.
+task_repair_by: rangu
 
 # Setting for taskmaster - Scripts to run to completion before asking for each task, with any
 # arguments separated by spaces (e.g. 'buff crafting'). Empty runs nothing.
