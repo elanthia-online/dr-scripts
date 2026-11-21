@@ -502,7 +502,7 @@ RSpec.describe Remedy do
      "Siksrajan applewood-handled stamp: #{toolstrap} -> hand", "Siksrajan applewood-handled stamp: hand -> #{toolstrap}"]
   end
 
-  # The argument list workorders.lic:818 builds for a base-recipes.yaml
+  # The argument list workorders' remedy_items builds for a base-recipes.yaml
   # recipe with no herb2. The catalyst is the one the logged run used.
   #
   # @param recipe_name [String]
@@ -582,7 +582,7 @@ RSpec.describe Remedy do
   end
 
   describe 'success runs replayed from the logs (the contract)' do
-    context 'C01: a general elixir in the heavy cauldron, called as workorders.lic:818 calls it (26:5896-6801)' do
+    context 'C01: a general elixir in the heavy cauldron, called as workorders remedy_items calls it (26:5896-6801)' do
       subject(:outcome) { run_remedy(workorders_call('a general elixir', 6, 'belradi', 'bowl', 'elixir', catalyst: 'pewter ingot')) }
 
       let(:inventory) { logged_tools.merge(logged_supplies, 'crushed belradi' => toolbag) }
@@ -1087,7 +1087,7 @@ RSpec.describe Remedy do
       end
     end
 
-    describe 'buying a missing liquid or catalyst in the hometown (Crossing, base-crafting.yaml:1388-1416)' do
+    describe 'buying a missing liquid or catalyst in the hometown (Crossing, base-crafting.yaml remedies: Crossing)' do
       let(:settings) { logged_settings.merge(mark_crafted_goods: false, alchemy_room: 8859) }
 
       # @return [Array<Array>] the bank and travel calls, in order
@@ -1316,7 +1316,7 @@ RSpec.describe Remedy do
         herb2: herb2.downcase, catalyst: catalyst, container: recipe['container'], noun: recipe['noun'] }
     end
 
-    it 'parses the workorders.lic:818/820 and craft.lic:680 call of every chaptered base-recipes remedy into the 8-argument form' do
+    it 'parses the workorders remedy_items and craft.lic brew call of every chaptered base-recipes remedy into the 8-argument form' do
       mismatches = chaptered.filter_map do |recipe|
         herb2 = recipe['herb2'] || 'na'
         args = ['remedies', recipe['chapter'], recipe['name'], recipe['herb1'], herb2, 'coal nugget', recipe['container'], recipe['noun']]
@@ -2035,7 +2035,7 @@ RSpec.describe Remedy do
       let(:orders) { { 1 => 'water' } }
 
       # layer 13 (restock in the crafting town)
-      it 'H09: buys in force_crafting_town (Crossing stock-room 8862, base-crafting.yaml:1401), not in the Shard hometown' do
+      it 'H09: buys in force_crafting_town (Crossing stock-room 8862, base-crafting.yaml remedies: Crossing), not in the Shard hometown' do
         settings.merge!(hometown: 'Shard', force_crafting_town: 'Crossing')
         script_short_unguent
         expect(run_remedy(short_unguent)).to eq(:exited)
@@ -2077,7 +2077,7 @@ RSpec.describe Remedy do
 
     describe 'sharp corners (C13)' do
       # left open by layer 14 (H10): gathering "flower" as given would take
-      # whichever flower comes first in the bag (workorders.lic:726-727), the
+      # whichever flower comes first in the bag (workorders' count_combine_rem), the
       # wrong herb for a red-flower recipe; see Remedy#substitute_flower
       it 'CURRENT (H10): swaps herb1 "flower" for dried flower' do
         inventory['dried flower'] = toolbag
@@ -3174,7 +3174,7 @@ RSpec.describe Remedy do
       let(:settings) { logged_settings.merge(mark_crafted_goods: false, alchemy_room: nil) }
 
       it 'walks back to the room remedy was started in, read before the walk to the shop' do
-        # Room ids from base-crafting.yaml:1392-1397 (Crossing npc-rooms): the
+        # Room ids from base-crafting.yaml remedies: Crossing npc-rooms: the
         # character starts in 8863; Room.current would answer the shop room
         # 8862 if it were read again after the order.
         allow(Room).to receive(:current).and_return(instance_double(Map, id: 8863), instance_double(Map, id: 8862))
@@ -5551,7 +5551,7 @@ RSpec.describe 'Remedy order, tools and inventory' do
   end
 
   describe 'Remedy::Order.from_args' do
-    it 'reads every field of the workorders.lic:818 call for some head unguent (base-recipes.yaml:8520)' do
+    it 'reads every field of the workorders remedy_items call for some head unguent (base-recipes.yaml:8520)' do
       order = Remedy::Order.from_args(parsed_call(['remedies', 3, 'some head unguent', 'nemoih', 'na', 'pewter ingot', 'mortar', 'unguent']))
       expect(order.to_h).to eq(mode: :book, book_type: 'remedies', chapter: '3', recipe_name: 'some head unguent', herb1: 'nemoih',
                                herb2: 'na', catalyst: 'pewter ingot', container_request: 'mortar', noun: 'unguent', herb_quantity: nil, stocked: false)
@@ -5704,7 +5704,7 @@ RSpec.describe 'Remedy order, tools and inventory' do
       expect(order.second_herb).to be_nil
     end
 
-    it 'reads the na of the workorders.lic:820 call for some head unguent as none' do
+    it 'reads the na of the workorders remedy_items call for some head unguent as none' do
       order = Remedy::Order.from_args(parsed_call(['remedies', 3, 'some head unguent', 'nemoih', 'na', 'pewter ingot', 'mortar', 'unguent']))
       expect(order.second_herb).to be_nil
     end
@@ -9025,7 +9025,7 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
         expect(calls).to be_empty
       end
 
-      it 'buys the coal nugget for the catalyst "nugget" too, at the Riverhaven catalyst-room (8785, base-crafting.yaml:1450)' do
+      it 'buys the coal nugget for the catalyst "nugget" too, at the Riverhaven catalyst-room (8785, base-crafting.yaml remedies: Riverhaven)' do
         allow(DRCI).to receive(:exists?) { |item, *| item != 'nugget' }
         supplies.buy_missing(water: plain_water, alcohol: plain_alcohol, catalyst: 'nugget')
         expect(calls).to eq([[:bank, '5 silver', 'Riverhaven'], [:order, 8785, 2], [:stow, 'coal nugget', toolbag, toolstrap], [:walk, 4321]])

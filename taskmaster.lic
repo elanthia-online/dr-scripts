@@ -37,7 +37,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.19.12'
+  VERSION = '2026.11.21.14'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -5734,26 +5734,168 @@ class TaskMaster
   end
 
   # Leaves each tool with Rangu for repair and keeps the tickets; a tool he
-  # won't take goes back where it came from.
+  # won't take, or that needs no repair, goes back where it came from. The
+  # replies are the repair_replies of data/base-crafting.yaml, which
+  # workorders reads too: a quote (or its bare prompt) is confirmed with a
+  # second give, which takes the coin and hands over the ticket; any other
+  # answer to that give (short of coin, say) puts the tool away. A Rangu
+  # ticket in a hand is put away (put_away_tickets) before each tool is got
+  # and after the last: a bare GIVE hands over the right hand, and a ticket
+  # that came after bput gave up on a confirming give sits there.
   #
   # @param toolslist [Array<String>] tool names
   # @param belt [Hash, nil] toolbelt settings the tools live on
   # @return [void]
   def tool_drop(toolslist, belt = nil) # accepts array of tools for repair
-    return if @self_repair
+    return if @self_repair || !repair_replies_known?
 
     DRCT.walk_to(19209)
     @belt = belt
     toolslist.each do |tool_name|
+      # A ticket that came after bput gave up on the last confirming give
+      # shows in a hand by now (the stow since has been answered): put away
+      # by its id before the next bare give, which hands over the right hand.
+      put_away_tickets('Rangu')
       DRCC.get_crafting_item(tool_name, @bag, @bag_items, belt, true)
-      case DRC.bput("give Rangu", "I don't repair those here", 'What is it', "There isn't a scratch on that", 'Just give it to me again', 'I will not', "I can't fix those.  They only have so many uses and then you must buy another.")
-      when /give/
-        DRC.bput("give Rangu", 'repair ticket')
-        DRC.bput('stow ticket', 'You put')
-      else
-        DRCC.stow_crafting_item(tool_name, @bag, belt)
+      reply = DRC.bput("give Rangu", *repair_replies['offered'])
+      if repair_offered?(reply)
+        confirmed = DRC.bput("give Rangu", repair_replies['ticket'], repair_replies['need_coin'])
+        if confirmed.match?(/#{repair_replies['ticket']}/i)
+          DRC.bput('stow ticket', 'You put')
+          next
+        end
+        # With no answer the give may still have gone through: a ticket
+        # that comes late is put away before the next tool, or after the
+        # last.
+        DRC.message("No repair ticket for the #{tool_name} (#{confirmed.empty? ? 'no answer' : confirmed}); putting it away.")
       end
+      DRCC.stow_crafting_item(tool_name, @bag, belt)
     end
+    put_away_tickets('Rangu')
+  end
+
+  # Puts away, by id, each of the repairer's tickets in a hand (as main's
+  # STOW TICKET after every confirming give did), so that the next bare
+  # GIVE, which hands over the right hand, hands over the tool and not the
+  # ticket. Says so of one that will not go.
+  #
+  # @param name [String] the repairer
+  # @return [void]
+  def put_away_tickets(name)
+    held_objects.select { |obj| repairer_ticket?(obj, name) }.each do |obj|
+      DRC.message("Could not put away the #{obj.name} in hand; a pickup may not get its tickets.") unless DRCI.put_away_item?("##{obj.id}")
+    end
+  end
+
+  # @param obj [Object] a hand's GameObj
+  # @param name [String] the repairer
+  # @return [Boolean] whether it is one of the repairer's tickets
+  def repairer_ticket?(obj, name)
+    !obj.id.nil? && obj.noun.to_s == 'ticket' && obj.name.to_s.match?(/\b#{Regexp.escape(name)}\b/i)
+  end
+
+  # Whether a repairer's answer to the first give asks for a second one (a
+  # quote, or its bare prompt; a quote pattern changed in data/custom may
+  # match the cost alone) rather than turning the tool away.
+  #
+  # @param reply [String] the answer to the first give
+  # @return [Boolean]
+  def repair_offered?(reply)
+    [repair_replies['quote'], repair_replies['prompt']].any? { |pattern| reply.match?(/#{pattern}/i) } &&
+      repair_replies['declined'].none? { |declined| reply.match?(/#{declined}/i) }
+  end
+
+  # What repairers answer when handed a tool (data/base-crafting.yaml
+  # repair_replies, shared with workorders), each of REPAIR_REPLY_KEYS
+  # present and usable: see complete_repair_replies.
+  #
+  # @return [Hash{String => String, Array<String>}, nil] nil when even the
+  #   shipped data has not every one
+  def repair_replies
+    return @repair_replies if @repair_replies_checked
+
+    @repair_replies_checked = true
+    @repair_replies = complete_repair_replies(@repair_replies || get_data('crafting')['repair_replies'])
+  end
+
+  # The repair_replies keys repair uses, and those of them that are lists of
+  # patterns (each other one is a single pattern). workorders.lic has the
+  # same pair; spec/base_crafting_repair_replies_spec.rb checks both against
+  # the shipped data.
+  REPAIR_REPLY_KEYS = %w[quote prompt offered declined ticket need_coin ready not_ready ticket_handed ticket_not_taken].freeze
+  REPAIR_REPLY_LISTS = %w[offered declined ticket_handed ticket_not_taken].freeze
+
+  # Whether repair has every reply it needs (repair_replies is not nil).
+  #
+  # @return [Boolean]
+  def repair_replies_known?
+    !repair_replies.nil?
+  end
+
+  # The repair replies get_data found, with each one missing or unusable
+  # taken from the shipped data/base-crafting.yaml. A copy in data/custom
+  # replaces the shipped file whole (lich-5 get_data), so one from before
+  # repair_replies was added has none, and a hand-edited one may hold a list
+  # where a pattern belongs. Says once which keys came from the shipped file;
+  # when that file lacks some too, says so and gives nil, and no tool is left
+  # or collected rather than waiting on replies that cannot match.
+  #
+  # @param found [Object] get_data('crafting')['repair_replies']
+  # @return [Hash{String => String, Array<String>}, nil]
+  def complete_repair_replies(found)
+    found = {} unless found.is_a?(Hash)
+    stale = REPAIR_REPLY_KEYS.reject { |key| repair_reply_usable?(key, found[key]) }
+    return found if stale.empty?
+
+    shipped = shipped_repair_replies
+    unusable = stale.reject { |key| repair_reply_usable?(key, shipped[key]) }
+    if unusable.empty?
+      DRC.message("data/custom/base-crafting.yaml has no usable repair_replies #{stale.join(', ')} (a copy from before they were added?); using the shipped data/base-crafting.yaml's. Update that copy.")
+      return found.merge(shipped.slice(*stale))
+    end
+
+    DRC.message("base-crafting.yaml has no usable repair_replies #{stale.join(', ')}, and the shipped data/base-crafting.yaml has none for #{unusable.join(', ')}; tools are not left for repair or collected. Update dr-scripts.")
+    nil
+  end
+
+  # The repair_replies of the shipped data/base-crafting.yaml, read past any
+  # copy in data/custom; empty when the file cannot be read. Read the way
+  # lich-5's get_data reads it (YAML.unsafe_load_file), so a tag, Symbol or
+  # Date added to the file later does not hide every reply.
+  #
+  # @return [Hash]
+  def shipped_repair_replies
+    data = YAML.unsafe_load_file(File.join(SCRIPT_DIR, 'data', 'base-crafting.yaml'))
+    replies = data['repair_replies'] if data.is_a?(Hash)
+    replies.is_a?(Hash) ? replies : {}
+  rescue SystemCallError, Psych::Exception
+    {}
+  end
+
+  # Whether a repair_replies value is of the kind its key needs: a non-empty
+  # list of patterns for REPAIR_REPLY_LISTS, else one pattern.
+  #
+  # @param key [String]
+  # @param value [Object]
+  # @return [Boolean]
+  def repair_reply_usable?(key, value)
+    return repair_pattern?(value) unless REPAIR_REPLY_LISTS.include?(key)
+
+    value.is_a?(Array) && !value.empty? && value.all? { |pattern| repair_pattern?(pattern) }
+  end
+
+  # Whether a value is a pattern DRC.bput can take: a non-empty String that
+  # makes a valid regular expression.
+  #
+  # @param value [Object]
+  # @return [Boolean]
+  def repair_pattern?(value)
+    return false unless value.is_a?(String) && !value.empty?
+
+    Regexp.new(value)
+    true
+  rescue RegexpError
+    false
   end
 
   # Collects every tool Rangu holds a ticket for, waiting until each is
@@ -5763,9 +5905,11 @@ class TaskMaster
   #   the belt search skip it.
   # @return [void]
   def tool_pickup # picks up all your tools from repair shop
+    return unless repair_replies_known?
+
     DRCT.walk_to(19209)
     while DRCI.get_item?("rangu ticket")
-      pause 30 until DRC.bput('look at my ticket', 'should be ready by now', 'Looking at the') == 'should be ready by now'
+      pause 30 until DRC.bput('look at my ticket', repair_replies['ready'], repair_replies['not_ready']).match?(/#{repair_replies['ready']}/i)
       DRC.bput("give Rangu", 'You hand')
       pause 0.01 until (tool = [DRC.right_hand, DRC.left_hand].compact.first) # waits for tool to hit your hand
       belts = [@settings.forging_belt, @settings.engineering_belt, @settings.outfitting_belt, @settings.alchemy_belt, @settings.enchanting_belt]

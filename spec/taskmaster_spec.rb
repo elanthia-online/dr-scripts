@@ -28,6 +28,12 @@ RSpec.describe TaskMaster do
     $taskmaster_boost_unavailable = nil
   end
 
+  # The repair replies of data/base-crafting.yaml, read once: what a
+  # repairer answers when handed a tool (shared with workorders).
+  def real_repair_replies
+    @real_repair_replies ||= YAML.load_file(File.expand_path('../data/base-crafting.yaml', __dir__), aliases: true)['repair_replies']
+  end
+
   # A bare instance: initialize runs the whole script, so each example builds
   # one with allocate and injects only the state the method under test reads.
   # settings: becomes @settings; every other keyword sets the ivar of that
@@ -35,10 +41,26 @@ RSpec.describe TaskMaster do
   # would read a braceless settings hash as ivar keywords.
   def build(settings: {}, **ivars)
     tm = described_class.allocate
-    { settings: OpenStruct.new(settings), bag: 'duffel bag', bag_items: [], npc: 'zasele', rooms: [16_145], stackmap: stackmap }
+    { settings: OpenStruct.new(settings), bag: 'duffel bag', bag_items: [], npc: 'zasele', rooms: [16_145], stackmap: stackmap,
+      repair_replies: real_repair_replies }
       .merge(ivars)
       .each { |name, value| tm.instance_variable_set(:"@#{name}", value) }
     tm
+  end
+
+  # What DRC.bput hands back for a game line: the text of the first matcher
+  # (a String is matched as /string/i) that matches it, in the order given,
+  # or '' when none does (lich-5 common.rb, bput).
+  #
+  # @param line [String]
+  # @param matchers [Array<String, Regexp>]
+  # @return [String]
+  def bput_match(line, matchers)
+    matchers.flatten.each do |matcher|
+      found = line.to_s.match(matcher.is_a?(Regexp) ? matcher : /#{matcher}/i)
+      return found[0] if found
+    end
+    ''
   end
 
   # Game replies keyed by the start of the command that produces them. A reply
@@ -12190,6 +12212,386 @@ RSpec.describe TaskMaster do
           expect(ReplayGame.log('6100:10261').text).to match(/hands you a/)
         end
       end
+    end
+  end
+
+  describe 'leaving tools for repair (#tool_drop)' do
+    # Rangu's answers to the mortar (Hollow Eve 2026, log 6100:9659 and 9661).
+    let(:rangu_quote) { "Rangu looks over the mortar and says, \"That will cost 240 Kronars to repair.  Just give it to me again if you want, and I'll have it ready in 1 roisaen.\"" }
+    let(:rangu_ticket) { "You hand Rangu 240 Kronars and he gives you back a repair ticket.  Rangu says, \"I should be having that done for you in about 1 roisaen.  Don't lose this ticket!  You must have it to reclaim your mortar.\"" }
+    # Catrox's answer to a tool with no wear (Byd, 2026-11-18 23:03:03).
+    let(:no_scratch) { "Catrox shrugs and says, \"There isn't a scratch on that, and I'm not one to rob you.\"" }
+    let(:sent) { [] }
+
+    def drop(*replies, tools: ['mortar'], data: real_repair_replies)
+      tm = build(repair_replies: data)
+      queue = replies.dup
+      allow(DRCT).to receive(:walk_to)
+      allow(DRCC).to receive(:get_crafting_item)
+      allow(DRCC).to receive(:stow_crafting_item)
+      allow(DRC).to receive(:bput) do |command, *matchers|
+        sent << command
+        command == 'stow ticket' ? 'You put' : bput_match(queue.shift, matchers)
+      end
+      tm.tool_drop(tools, 'alchemy belt')
+      tm
+    end
+
+    it 'confirms a quote with a second give and keeps the ticket' do
+      drop(rangu_quote, rangu_ticket)
+
+      expect(sent).to eq(['give Rangu', 'give Rangu', 'stow ticket'])
+      expect(DRCC).not_to have_received(:stow_crafting_item)
+    end
+
+    it "confirms Fang Cove's wording of the prompt (\"If you agree, give it to me again\")" do
+      drop('Osmandikar says, "If you agree, give it to me again."', rangu_ticket)
+
+      expect(sent).to eq(['give Rangu', 'give Rangu', 'stow ticket'])
+    end
+
+    it 'confirms a quote pattern from data/custom that matches the cost alone, and still puts a refused tool away' do
+      cost_only = real_repair_replies.merge('quote' => 'cost [\d,]+ \w+ to repair', 'offered' => ['cost [\d,]+ \w+ to repair', "There isn't a scratch on that", 'give it to me again'])
+      drop('Rangu says, "That will cost 240 Kronars to repair."', rangu_ticket, "Rangu says, \"There isn't a scratch on that, and I'm not one to rob you.\"", tools: %w[mortar pestle], data: cost_only)
+
+      expect(sent).to eq(['give Rangu', 'give Rangu', 'stow ticket', 'give Rangu'])
+      expect(DRCC).to have_received(:stow_crafting_item).with('pestle', 'duffel bag', 'alchemy belt').once
+    end
+
+    it 'gives each tool its own quote and ticket' do
+      drop(rangu_quote, rangu_ticket, rangu_quote, rangu_ticket, tools: %w[mortar pestle])
+
+      expect(sent).to eq(['give Rangu', 'give Rangu', 'stow ticket', 'give Rangu', 'give Rangu', 'stow ticket'])
+    end
+
+    it 'puts a tool with no wear away without a second give' do
+      drop(no_scratch)
+
+      expect(sent).to eq(['give Rangu'])
+      expect(DRCC).to have_received(:stow_crafting_item).with('mortar', 'duffel bag', 'alchemy belt')
+    end
+
+    it 'puts the tool away, with no second give, when Rangu is not there to take it' do
+      drop(missed_give)
+
+      expect(sent).to eq(['give Rangu'])
+      expect(DRCC).to have_received(:stow_crafting_item).with('mortar', 'duffel bag', 'alchemy belt')
+    end
+
+    ["I can't fix those.  They only have so many uses and then you must buy another.", 'I will not repair that.', "I don't repair those here."].each do |reply|
+      it "puts the tool away on \"#{reply[0, 30]}...\"" do
+        drop(reply)
+
+        expect(sent).to eq(['give Rangu'])
+        expect(DRCC).to have_received(:stow_crafting_item).with('mortar', 'duffel bag', 'alchemy belt')
+      end
+    end
+
+    it 'says so and puts the tool away when the second give brings no ticket (short of coin)' do
+      drop(rangu_quote, 'Rangu says, "You will need more coin if I am to be repairing that!"')
+
+      expect(sent).to eq(['give Rangu', 'give Rangu'])
+      expect(DRC).to have_received(:message).with('No repair ticket for the mortar (more coin); putting it away.')
+      expect(DRCC).to have_received(:stow_crafting_item).with('mortar', 'duffel bag', 'alchemy belt')
+    end
+
+    # The shipped data/base-crafting.yaml, as lich-5's SCRIPT_DIR finds it:
+    # its read is stubbed, so no example depends on the file system there.
+    let(:shipped_path) { '/lich/scripts/data/base-crafting.yaml' }
+
+    # The shipped file holds these replies, or (file:) is read as that
+    # whole, or (raises:) its read raises that.
+    def ship(replies = real_repair_replies, raises: nil, file: { 'repair_replies' => replies })
+      stub_const('SCRIPT_DIR', '/lich/scripts')
+      allow(YAML).to receive(:unsafe_load_file).and_call_original
+      read = allow(YAML).to receive(:unsafe_load_file).with(shipped_path)
+      raises ? read.and_raise(raises) : read.and_return(file)
+    end
+
+    it 'takes every reply from the shipped base-crafting.yaml, and says so once, when the data (a stale data/custom copy) has none' do
+      ship
+      tm = build(repair_replies: nil)
+      allow(tm).to receive(:get_data).with('crafting').and_return({ 'stock' => {} })
+      queue = [rangu_quote, rangu_ticket]
+      allow(DRCT).to receive(:walk_to)
+      allow(DRCC).to receive(:get_crafting_item)
+      allow(DRCC).to receive(:stow_crafting_item)
+      allow(DRC).to receive(:bput) do |command, *matchers|
+        sent << command
+        command == 'stow ticket' ? 'You put' : bput_match(queue.shift, matchers)
+      end
+      allow(DRCI).to receive(:get_item?).with('rangu ticket').and_return(false)
+
+      tm.tool_drop(['mortar'], nil)
+      tm.tool_pickup
+
+      expect(sent).to eq(['give Rangu', 'give Rangu', 'stow ticket'])
+      expect(DRC).to have_received(:message).with("data/custom/base-crafting.yaml has no usable repair_replies quote, prompt, offered, declined, ticket, need_coin, ready, not_ready, ticket_handed, ticket_not_taken (a copy from before they were added?); using the shipped data/base-crafting.yaml's. Update that copy.").once
+      expect(YAML).to have_received(:unsafe_load_file).with(shipped_path).once
+    end
+
+    # Unstubbed: the real shipped file, and a copy of it with a line that only
+    # a permissive load reads (lich-5's get_data reads it so), as the file may
+    # later gain. A safe load raises on the Date and hides every reply.
+    { 'the shipped file' => '', 'the shipped file with a Date in it' => "added_on: 2026-11-21\n" }.each do |label, extra|
+      it "reads every repair reply from #{label}, unstubbed" do
+        root = Dir.mktmpdir
+        FileUtils.mkdir_p(File.join(root, 'data'))
+        File.write(File.join(root, 'data', 'base-crafting.yaml'), File.read(File.expand_path('../data/base-crafting.yaml', __dir__)) + extra)
+        stub_const('SCRIPT_DIR', root)
+        tm = build(repair_replies: nil)
+        allow(tm).to receive(:get_data).with('crafting').and_return({ 'stock' => {} })
+
+        expect(tm.repair_replies).to eq(real_repair_replies)
+        expect(tm.repair_replies_known?).to be(true)
+      end
+    end
+
+    # A hand-edited copy whose repair_replies is a list, a pattern or a
+    # number has no usable key: every reply comes from the shipped file,
+    # rather than a TypeError (or NoMethodError) at the first lookup.
+    [['quote', 'prompt'], 'quote', 5].each do |copy|
+      it "takes every reply from the shipped base-crafting.yaml, and says so once, when the data's repair_replies is not a mapping (#{copy.inspect})" do
+        ship
+        tm = build(repair_replies: copy)
+
+        expect(tm.repair_replies).to eq(real_repair_replies)
+        expect(tm.repair_replies_known?).to be(true)
+        expect(DRC).to have_received(:message).with("data/custom/base-crafting.yaml has no usable repair_replies quote, prompt, offered, declined, ticket, need_coin, ready, not_ready, ticket_handed, ticket_not_taken (a copy from before they were added?); using the shipped data/base-crafting.yaml's. Update that copy.").once
+      end
+    end
+
+    it 'takes from the shipped file only the keys the copy lacks, keeping its own' do
+      ship
+      copy = real_repair_replies.except('prompt', 'ticket_handed', 'ticket_not_taken').merge('quote' => 'cost [\d,]+ \w+ to repair')
+      tm = build(repair_replies: copy)
+
+      expect(tm.repair_replies).to eq(copy.merge(real_repair_replies.slice('prompt', 'ticket_handed', 'ticket_not_taken')))
+      expect(tm.repair_replies['quote']).to eq('cost [\d,]+ \w+ to repair')
+      expect(DRC).to have_received(:message).with(/no usable repair_replies prompt, ticket_handed, ticket_not_taken \(/).once
+    end
+
+    it "confirms Fang Cove's prompt through the shipped prompt when the copy lacks it" do
+      ship
+      drop('Osmandikar says, "If you agree, give it to me again."', rangu_ticket, data: real_repair_replies.except('prompt'))
+
+      expect(sent).to eq(['give Rangu', 'give Rangu', 'stow ticket'])
+    end
+
+    it 'takes the shipped value for a key of the wrong kind (declined one string, ticket a list, a broken pattern), rather than crashing' do
+      ship
+      copy = real_repair_replies.merge('declined' => 'scratch', 'ticket' => ['repair ticket'], 'need_coin' => 'more coin (')
+
+      expect { drop(rangu_quote, rangu_ticket, no_scratch, tools: %w[mortar pestle], data: copy) }.not_to raise_error
+
+      expect(sent).to eq(['give Rangu', 'give Rangu', 'stow ticket', 'give Rangu'])
+      expect(DRCC).to have_received(:stow_crafting_item).with('pestle', 'duffel bag', 'alchemy belt').once
+      expect(DRC).to have_received(:message).with(/no usable repair_replies declined, ticket, need_coin \(/).once
+    end
+
+    it 'takes the shipped value for an empty list or an empty pattern (offered none, ready blank), and still waits on a ticket not ready' do
+      # An empty offered would give with no pattern to answer it (bput waits
+      # out its 15 s); an empty ready matches every look, so a ticket not
+      # ready would be handed in at once.
+      ship
+      copy = real_repair_replies.merge('offered' => [], 'ready' => '')
+      tm = drop(rangu_quote, rangu_ticket, data: copy)
+
+      expect(sent).to eq(['give Rangu', 'give Rangu', 'stow ticket'])
+      expect(tm.repair_replies.values_at('offered', 'ready')).to eq(real_repair_replies.values_at('offered', 'ready'))
+      expect(DRC).to have_received(:message).with(/no usable repair_replies offered, ready \(/).once
+
+      looks = ['Looking at the Rangu ticket you see it is for a mortar.  You recall that your mortar should be ready any moment now.',
+               'Looking at the Rangu ticket you see it is for a mortar.  You recall that your mortar should be ready by now.']
+      tickets = [true, false]
+      tm.instance_variable_set(:@settings, OpenStruct.new(%i[forging_belt engineering_belt outfitting_belt alchemy_belt enchanting_belt].to_h { |belt| [belt, { 'items' => [] }] }))
+      allow(DRCI).to receive(:get_item?).with('rangu ticket') { tickets.shift }
+      allow(tm).to receive(:pause) { |seconds| $right_hand = 'stone mortar' if seconds < 1 }
+      allow(DRC).to receive(:bput) do |command, *matchers|
+        line = command == 'look at my ticket' ? (looks.shift || raise('looked again after ready')) : 'You hand Rangu your ticket and are handed back a mortar.'
+        bput_match(line, matchers)
+      end
+
+      tm.tool_pickup
+
+      expect(tm).to have_received(:pause).with(30).once
+    end
+
+    every_key = /none for quote, prompt, offered, .*ticket_not_taken; tools are not left for repair or collected\. Update dr-scripts\./
+    [['the shipped file cannot be read', { raises: Errno::ENOENT }, every_key],
+     ['the shipped file cannot be parsed', { raises: Psych::SyntaxError.new('base-crafting.yaml', 3, 1, 10, 'did not find expected key', 'while parsing a block mapping') }, every_key],
+     ['the shipped file has no repair_replies block', { file: { 'stock' => {} } }, every_key],
+     ['the shipped file is not a mapping', { file: [1, 2] }, every_key],
+     ['the shipped file has declined as one string too', { file: :declined_string }, /none for declined; tools are not left/]].each do |title, shipped, warning|
+      it "says so once and leaves nothing for repair, or collects nothing, when #{title}" do
+        if shipped[:raises] then ship(raises: shipped[:raises])
+        elsif shipped[:file] == :declined_string then ship(real_repair_replies.merge('declined' => 'scratch'))
+        else ship(file: shipped[:file])
+        end
+        tm = build(repair_replies: nil)
+        allow(tm).to receive(:get_data).with('crafting').and_return({ 'stock' => {} })
+        allow(DRCT).to receive(:walk_to)
+        allow(DRC).to receive(:bput)
+
+        tm.tool_drop(['mortar'], nil)
+        tm.tool_pickup
+
+        expect(DRCT).not_to have_received(:walk_to)
+        expect(DRC).not_to have_received(:bput)
+        expect(DRC).to have_received(:message).with(warning).once
+      end
+    end
+
+    # A town repairer's no-wear reply and wrong-material refusal, as
+    # crossing-repair.lic:218 matches them: each is answered by a data
+    # pattern (bput hands it back at once, not '' after its 15 s), and the
+    # tool is put away with no second give.
+    ["Osmandikar says, \"Lucky for you!  That isn't damaged!\"", 'Osmandikar says, "I don\'t work on those here."'].each do |line|
+      it "puts the tool away at once on \"#{line[19, 30]}...\"" do
+        returned = []
+        tm = build
+        allow(DRCT).to receive(:walk_to)
+        allow(DRCC).to receive(:get_crafting_item)
+        allow(DRCC).to receive(:stow_crafting_item)
+        allow(DRC).to receive(:bput) do |command, *matchers|
+          sent << command
+          bput_match(line, matchers).tap { |reply| returned << reply }
+        end
+
+        tm.tool_drop(['mortar'], 'alchemy belt')
+
+        expect(sent).to eq(['give Rangu'])
+        expect(returned).to eq([line[/(Lucky for you!  That isn't damaged!|I don't work on those here)/]])
+        expect(DRCC).to have_received(:stow_crafting_item).with('mortar', 'duffel bag', 'alchemy belt')
+      end
+    end
+
+    # The hands as the game keeps them: a GET puts the tool in a free hand,
+    # the right one first, and GIVE RANGU hands over the right hand. A
+    # confirming give marked :late goes through (Rangu takes the tool) but
+    # is answered only after bput's 15 s (''), and its ticket shows in the
+    # right hand once the next command, the stow, is answered. A ticket
+    # given is answered by nothing the first give knows.
+    it 'puts away a ticket that comes after an unanswered confirming give, so the next give hands over the next tool, and none is left in hand' do
+      tm = build
+      $hand_ids = {}
+      ids = 0
+      hold = lambda do |hand, name|
+        hand == :right ? ($right_hand = name) : ($left_hand = name)
+        $hand_ids[name] = (ids += 1).to_s if name
+      end
+      replies = { 'mortar' => [rangu_quote, :late], 'pestle' => [rangu_quote, :late] }
+      given = []
+      late = false
+      allow(DRCT).to receive(:walk_to)
+      allow(DRCC).to receive(:get_crafting_item) do |name, *|
+        sent << "get #{name}"
+        hold.call($right_hand ? :left : :right, name) unless $right_hand && $left_hand
+        true
+      end
+      allow(DRCC).to receive(:stow_crafting_item) do |name, *|
+        sent << "stow #{name}"
+        hold.call(:right, 'Rangu ticket') if late
+        late = false
+        hold.call(:left, nil) if $left_hand == name
+        hold.call(:right, nil) if $right_hand == name
+      end
+      allow(DRCI).to receive(:put_away_item?) do |ref|
+        sent << "put away #{ref}"
+        hold.call(:right, nil) if ref == "##{$hand_ids[$right_hand]}"
+        hold.call(:left, nil) if ref == "##{$hand_ids[$left_hand]}"
+        true
+      end
+      allow(DRC).to receive(:bput) do |command, *matchers|
+        sent << command
+        next '' unless command == 'give Rangu'
+
+        given << $right_hand
+        reply = replies.fetch($right_hand, ["Rangu glances at the ticket and says, \"That isn't ready yet.\""]).shift
+        if reply == :late
+          hold.call(:right, nil)
+          late = true
+          reply = ''
+        end
+        bput_match(reply, matchers)
+      end
+
+      tm.tool_drop(%w[mortar pestle], 'alchemy belt')
+
+      expect(given).to eq(%w[mortar mortar pestle pestle])
+      expect(sent).to eq(['get mortar', 'give Rangu', 'give Rangu', 'stow mortar', 'put away #2',
+                          'get pestle', 'give Rangu', 'give Rangu', 'stow pestle', 'put away #4'])
+      expect(DRC).to have_received(:message).with('No repair ticket for the mortar (no answer); putting it away.').once
+      expect([$right_hand, $left_hand]).to eq([nil, nil])
+    end
+
+    # Only Rangu's own tickets are put away, by id: a held item of his name
+    # that is no ticket, another repairer's ticket, and an item with no id
+    # stay in hand.
+    [[{ right: "Rangu's ledger", left: 'clerk ticket' }, []],
+     [{ right: 'Rangu ticket', left: 'steel tongs' }, ['#1']],
+     [{ right: 'steel tongs', left: 'Rangu ticket' }, ['#2']]].each do |hands, put|
+      it "puts away only a Rangu ticket held (#{hands.values.join(', ')})" do
+        tm = build
+        $right_hand, $left_hand = hands.values_at(:right, :left)
+        $hand_ids = { $right_hand => '1', $left_hand => '2' }
+        allow(DRCI).to receive(:put_away_item?).and_return(true)
+
+        tm.put_away_tickets('Rangu')
+
+        put.each { |ref| expect(DRCI).to have_received(:put_away_item?).with(ref).once }
+        expect(DRCI).to have_received(:put_away_item?).exactly(put.size).times
+      end
+    end
+
+    it 'puts away no Rangu ticket GameObj shows without an id, and says so of one that will not go' do
+      tm = build
+      $right_hand = 'Rangu ticket'
+      $left_hand = 'Rangu ticket'
+      $hand_ids = {}
+      $hand_item_ids = { right: ['Rangu ticket', nil], left: ['Rangu ticket', '7'] }
+      allow(DRCI).to receive(:put_away_item?).and_return(false)
+
+      tm.put_away_tickets('Rangu')
+
+      expect(DRCI).to have_received(:put_away_item?).with('#7').once
+      expect(DRCI).to have_received(:put_away_item?).once
+      expect(DRC).to have_received(:message).with('Could not put away the Rangu ticket in hand; a pickup may not get its tickets.').once
+    end
+
+    it 'puts the tool away when the first give gets no answer' do
+      drop('')
+
+      expect(sent).to eq(['give Rangu'])
+      expect(DRCC).to have_received(:stow_crafting_item).with('mortar', 'duffel bag', 'alchemy belt')
+    end
+  end
+
+  describe 'collecting tools left with Rangu (#tool_pickup)' do
+    it 'waits until the ticket look says the tool is ready, 30 s at a time, then hands it in' do
+      # Every belt setting given: in Lich an unset one is nil, which its NilClass patch lets the search skip.
+      tm = build(settings: %i[forging_belt engineering_belt outfitting_belt alchemy_belt enchanting_belt].to_h { |belt| [belt, { 'items' => [] }] })
+      looks = ['Looking at the Rangu ticket you see it is for a polished belzune stone mortar.',
+               'Looking at the Rangu ticket you see it is for a polished belzune stone mortar.  You recall that your mortar should be ready by now.']
+      tickets = [true, false]
+      allow(DRCT).to receive(:walk_to)
+      allow(DRCI).to receive(:get_item?).with('rangu ticket') { tickets.shift }
+      allow(tm).to receive(:pause) { |seconds| $right_hand = 'stone mortar' if seconds < 1 }
+      allow(DRCC).to receive(:stow_crafting_item)
+      allow(DRC).to receive(:bput) do |command, *matchers|
+        if command == 'look at my ticket'
+          bput_match(looks.shift || raise('looked at the ticket again after it was ready'), matchers)
+        else
+          bput_match('You hand Rangu your ticket and are handed back a mortar.', matchers)
+        end
+      end
+
+      tm.tool_pickup
+
+      expect(tm).to have_received(:pause).with(30).once
+      expect(DRC).to have_received(:bput).with('look at my ticket', any_args).twice
+      # Both looks are answered by a pattern, so neither waits out bput's timeout.
+      expect(DRC).to have_received(:bput).with('look at my ticket', 'should be ready by now', 'Looking at the').twice
     end
   end
 end

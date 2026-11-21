@@ -77,7 +77,7 @@
 #   ;remedy instructions georin "coal nugget" mortar glop 25
 #
 # == Callers
-# workorders.lic:846/848, craft.lic:694 and create_remedies.lic:54 run the
+# workorders' remedy_items, craft.lic:694 and create_remedies.lic:54 run the
 # book form with a base-recipes.yaml recipe; create_remedies runs the
 # instructions form instead for a recipe marked `instructions: true`
 # (CreateRemedies#remedy_args). taskmaster.lic runs the instructions form
@@ -89,7 +89,7 @@
 # the mark's roundtime) and the script ends. The product in hand is the
 # success signal. workorders, craft and create_remedies check
 # DRCI.in_hands?(noun) after remedy and stop when it is missing
-# (workorders.lic:854, craft.lic:697, create_remedies.lic:57). taskmaster
+# (workorders' remedy_items, craft.lic:697, create_remedies.lic:57). taskmaster
 # checks the hands for the remedy (Taskmaster#held_remedy_ids); finding
 # none, it looks in a vessel left in hand and carries an unfinished remedy
 # on once with the continue form, or takes a finished one out
@@ -711,7 +711,7 @@ class Remedy
 
   class Order
     # The herb2 values that say the recipe has no second herb, as parse_args
-    # lowercases them: na (workorders.lic:836, craft.lic:637,
+    # lowercases them: na (workorders' remedy_items, craft.lic:637,
     # create_remedies.lic:86), none (the herb2 help text) and "not used"
     # (the file header's example).
     NO_SECOND_HERB = ['na', 'none', 'not used'].freeze
@@ -1884,7 +1884,7 @@ class Remedy
     COAL = ['coal nugget', 'nugget'].freeze
 
     # What each supply is ordered as: the base-crafting.yaml remedies keys
-    # (base-crafting.yaml:1388-1416, Crossing) of the room it is ordered in
+    # (base-crafting.yaml remedies: Crossing) of the room it is ordered in
     # and of its menu number, and the name it is stowed and looked for by.
     ORDERS = {
       'water'   => { room: 'stock-room', number: 'stock-number', item: 'water' }.freeze,
@@ -3300,7 +3300,7 @@ class Remedy
   # default), so the {Finisher} can mark once more.
   #
   # The repair is DRCC.repair_own_tools with the character's own wire brush
-  # and oil, as workorders.lic:385-389 runs it for workorders_repair_own_tools:
+  # and oil, as workorders' repair_items runs it for workorders_repair_own_tools:
   # coins on hand first (DRCM.ensure_copper_on_hand, {COPPER}), a walk back
   # to the room, then the repair with the crafting town's base-crafting.yaml
   # blacksmithing data. The helper buys oil or a wire brush at that town's
@@ -3320,7 +3320,7 @@ class Remedy
   # @api private
   class StampRepair
     # The coins, in copper, made sure of on hand before the repair, as
-    # workorders.lic:387 does before the same helper.
+    # workorders' repair_items does before the same helper.
     COPPER = 1500
 
     # @param settings [OpenStruct] the character's settings; reads
@@ -4144,7 +4144,7 @@ class Remedy
   # @note herb1 flower is a part of both names, so it takes the red flower's
   #   dried flower, even for a blue-flower recipe (H10, left open).
   #   Gathering it as given would take whichever flower comes first in the
-  #   container (workorders.lic:726-727), the wrong herb for a red-flower
+  #   container (workorders' count_combine_rem), the wrong herb for a red-flower
   #   recipe when a crushed flower comes first, and remedy cannot tell
   #   which flower the recipe needs.
   def substitute_flower
