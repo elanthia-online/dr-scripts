@@ -39,7 +39,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.21.17'
+  VERSION = '2026.11.21.18'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -6818,7 +6818,8 @@ class TaskMaster
   # nothing is given. A ticket of the repairer's in a hand is put away
   # (put_away_tickets) before each tool is got and after the last: a bare
   # GIVE hands over the right hand, and a ticket that came after bput gave
-  # up on a confirming give sits there.
+  # up on a confirming give sits there. While one will not be put away, no
+  # more tools are got or given that visit (it says so); they stay due.
   #
   # @param toolslist [Array<String>] tool names
   # @param belt [Hash, nil] toolbelt settings the tools live on
@@ -6833,11 +6834,16 @@ class TaskMaster
       return
     end
     @belt = belt
-    toolslist.each do |tool_name|
+    toolslist.each_with_index do |tool_name, index|
       # A ticket that came after bput gave up on the last confirming give
       # shows in a hand by now (the stow since has been answered): put away
       # by its id before the next bare give, which hands over the right hand.
-      put_away_tickets(name)
+      # One that will not go would be what that give hands over (the tool
+      # landing in the other hand), so no more tools are left this visit.
+      unless put_away_tickets(name)
+        DRC.message("A #{name} ticket is still in your hands (it would not be put away); not leaving #{toolslist.drop(index).join(', ')} for repair this time, so the next give does not hand it over.")
+        break
+      end
       DRCC.get_crafting_item(tool_name, @bag, @bag_items, belt, true)
       item = held_object&.name
       # The repairer's own declined answer is tried first on each line, so
@@ -7387,11 +7393,15 @@ class TaskMaster
   # nothing new in hand. Says so of one that will not go.
   #
   # @param name [String] the repairer
-  # @return [void]
+  # @return [Boolean] whether every one of them was put away (true with
+  #   none in hand)
   def put_away_tickets(name)
-    held_objects.select { |obj| repairer_ticket?(obj, name) }.each do |obj|
-      DRC.message("Could not put away the #{obj.name} in hand; a pickup may not get its tickets.") unless DRCI.put_away_item?("##{obj.id}")
-    end
+    held_objects.select { |obj| repairer_ticket?(obj, name) }.map do |obj|
+      next true if DRCI.put_away_item?("##{obj.id}")
+
+      DRC.message("Could not put away the #{obj.name} in hand; a pickup may not get its tickets.")
+      false
+    end.all?
   end
 
   # @param obj [Object] a hand's GameObj
