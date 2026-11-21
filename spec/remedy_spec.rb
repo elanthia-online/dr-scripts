@@ -196,9 +196,9 @@ RSpec.describe Remedy do
   end
 
   # Scripts a stack of 25 found in the toolbag: the count (25:33679, analog:
-  # the reply to `count clubm in smoke bask`, 25:33677), the combine with one
-  # stack in hand (25:104590, analog: the reply to `combine`, 25:104589) and
-  # the put, after which the game holds the herb.
+  # the reply to `count clubm in smoke bask`, 25:33677) and the put, after
+  # which the game holds the herb. No combine: the one stack's count
+  # already reaches the 25 a remedy takes (layer 05 of the Nezhiri stack).
   #
   # @param herb [String] herb1 as remedy is given it
   # @param vessel [String] the alchemy_tools entry
@@ -206,7 +206,6 @@ RSpec.describe Remedy do
   # @return [void]
   def script_one_stack(herb, vessel:, put_lines:)
     game.script("count my #{herb}", log('25:33679'))
-    game.script("combine my #{herb}", log('25:104590'))
     game.script(herb_put_command(herb, vessel), *put_lines, after: ->(_game) { commons.release(herb) })
   end
 
@@ -398,7 +397,6 @@ RSpec.describe Remedy do
   def general_elixir_crafting
     mix = 'mix my heavy cauldron with my mixing stick'
     ['count my belradi',                              # 25:33679 (analog)
-     'combine my belradi',                            # 25:104590 (analog)
      herb_put_command('belradi', 'heavy cauldron'),   # 26:5898
      mix,                                             # alcohol cue 26:5918 after Roundtime 26:5915
      'put alcohol in my heavy cauldron',              # 26:5995
@@ -456,7 +454,6 @@ RSpec.describe Remedy do
   def head_unguent_crafting
     crush = 'crush my unguent with my rounded pestle'
     ['count my nemoih',                               # 25:33679 (analog)
-     'combine my nemoih',                             # 25:104590 (analog)
      herb_put_command('nemoih', 'large mortar'),      # 26:10749
      'crush my nemoih with my rounded pestle',        # water cue 26:10769
      'put water in my large mortar',                  # 26:10830
@@ -505,7 +502,7 @@ RSpec.describe Remedy do
      "Siksrajan applewood-handled stamp: #{toolstrap} -> hand", "Siksrajan applewood-handled stamp: hand -> #{toolstrap}"]
   end
 
-  # The argument list workorders.lic:818 builds for a base-recipes.yaml
+  # The argument list workorders' remedy_items builds for a base-recipes.yaml
   # recipe with no herb2. The catalyst is the one the logged run used.
   #
   # @param recipe_name [String]
@@ -585,7 +582,7 @@ RSpec.describe Remedy do
   end
 
   describe 'success runs replayed from the logs (the contract)' do
-    context 'C01: a general elixir in the heavy cauldron, called as workorders.lic:818 calls it (26:5896-6801)' do
+    context 'C01: a general elixir in the heavy cauldron, called as workorders remedy_items calls it (26:5896-6801)' do
       subject(:outcome) { run_remedy(workorders_call('a general elixir', 6, 'belradi', 'bowl', 'elixir', catalyst: 'pewter ingot')) }
 
       let(:inventory) { logged_tools.merge(logged_supplies, 'crushed belradi' => toolbag) }
@@ -662,7 +659,6 @@ RSpec.describe Remedy do
       let(:crush) { 'crush my unguent with my rounded pestle' }
       let(:crafting_commands) do
         ['count my sufil',                                # 25:33679 (analog)
-         'combine my sufil',                              # 25:104590 (analog)
          herb_put_command('sufil', 'large mortar'),       # 26:11829
          'crush my sufil with my rounded pestle',         # water cue 26:11849
          'put water in my large mortar',                  # 26:11905
@@ -728,7 +724,6 @@ RSpec.describe Remedy do
       let(:crush) { 'crush my salve with my rounded pestle' }
       let(:crafting_commands) do
         ['count my marram',                               # 25:33679 (analog)
-         'combine my marram',                             # 25:104590 (analog)
          herb_put_command('marram', 'large mortar'),      # 25:94435
          'crush my marram with my rounded pestle',        # water cue 25:94459
          'put water in my large mortar',                  # 25:94500
@@ -865,12 +860,12 @@ RSpec.describe Remedy do
     let(:short_run_tail) { ['crush my nemoih with my rounded pestle', 'get my unguent from my large mortar', 'count my unguent'] } # 26:11333, 26:11389, layer 17's count
 
     describe 'gathering the herb (each of these keeps its command sequence)' do
-      it 'takes a stack of 25 from herb_container and counts, combines and puts it' do
+      it 'takes a stack of 25 from herb_container, counts it and puts it in, with no combine (layer 05)' do
         settings[:herb_container] = 'smokewood basket'
         inventory['dried nemoih'] = 'smokewood basket'
         script_short_unguent
         expect(run_remedy(short_unguent)).to eq(:exited)
-        expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', herb_put_command('nemoih', 'large mortar'), *short_run_tail])
+        expect(game.sent).to eq(['count my nemoih', herb_put_command('nemoih', 'large mortar'), *short_run_tail])
         expect(commons.moves).to include('dried nemoih: smokewood basket -> hand', 'dried nemoih: hand -> game')
         # The routing (herb_container, the herb as its only item, the belt);
         # skip_exit, the fifth argument, changes no success path.
@@ -912,13 +907,12 @@ RSpec.describe Remedy do
       # no tilt of a vessel appears in either log, so the tilts get silence.
       it 'tilts the vessel twice and puts the herb again when the game says it is not empty' do
         game.script('count my nemoih', log('25:33679'))
-        game.script('combine my nemoih', log('25:104590'))
         game.script(herb_put_command('nemoih', 'large mortar'), code('Your large mortar already has something in it.', from: 'R:247 /already has something/'))
         game.script(herb_put_command('nemoih', 'large mortar'), log('26:10749'), after: ->(_game) { commons.release('nemoih') })
         game.script('crush my nemoih with my rounded pestle', log('26:11333'))
         script_product('get my unguent from my large mortar', log('26:11389'), 'nemoih unguent')
         expect(run_remedy(short_unguent)).to eq(:exited)
-        expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', herb_put_command('nemoih', 'large mortar'),
+        expect(game.sent).to eq(['count my nemoih', herb_put_command('nemoih', 'large mortar'),
                                  'tilt my large mortar', 'tilt my large mortar', herb_put_command('nemoih', 'large mortar'),
                                  *short_run_tail])
       end
@@ -928,9 +922,8 @@ RSpec.describe Remedy do
           inventory.delete('dried nemoih')
           inventory[used] = toolbag
           game.script("count my #{used}", log('25:33679'))
-          game.script("combine my #{used}", log('25:104590'))
           run_remedy(typed(%(remedies 2 "some blister cream" "#{asked}" nemoih "pewter ingot" mortar cream)))
-          expect(game.sent.first(3)).to eq(["count my #{used}", "combine my #{used}", herb_put_command(used, 'large mortar')])
+          expect(game.sent.first(3)).to eq(["count my #{used}", herb_put_command(used, 'large mortar')])
         end
       end
 
@@ -956,10 +949,13 @@ RSpec.describe Remedy do
         # What remedy asks the helpers for, from the herb's first get to its
         # put (remedy.lic:212, :218-226): the herb, then the vessel put away
         # and lowered again around the second get. Item and container only.
+        # The put took the whole stack, so no leftover stow follows it
+        # (layer 05 of the Nezhiri stack).
         shuffle = %w[DRCC.get_crafting_item DRCC.stow_crafting_item DRCI.put_away_item? DRCI.get_item? DRCI.lower_item?]
         gathering = commons.calls.select { |name, *| shuffle.include?(name) }
                            .drop_while { |name, item, *| !(name == 'DRCC.get_crafting_item' && item == 'nemoih') }
-                           .take_while { |name, item, *| !(name == 'DRCC.stow_crafting_item' && item == 'nemoih') }
+                           .first(8)
+        expect(commons.calls.select { |name, item, *| name == 'DRCC.stow_crafting_item' && item == 'nemoih' }).to be_empty
         expect(gathering.map { |name, item, container| [name, item, container] }).to eq(
           [['DRCC.get_crafting_item', 'nemoih', toolbag],
            ['DRCI.put_away_item?', 'nemoih', 'large mortar'],
@@ -980,20 +976,26 @@ RSpec.describe Remedy do
       # hold" is in neither log; the one "You vigorously rub" line answers the
       # catalyst put (26:11117, analog). Model assumption: after "can only
       # hold" the stack is still in hand; after the rub the vessel has it.
+      # Only what is still in hand is put away: after the rub no hand holds
+      # the herb, so no stow is sent (layer 05 of the Nezhiri stack).
       {
         'can only hold'      => [-> { ReplayGame.code('Your large mortar can only hold so much.', from: 'R:247 /can only hold/') }, false],
         'You vigorously rub' => [-> { ReplayGame.log('26:11117') }, true]
       }.each do |reply, (line, taken)|
-        it "takes \"#{reply}\" as a put, puts the rest of the stack away and crafts on" do
+        it "takes \"#{reply}\" as a put, puts #{taken ? 'nothing' : 'the rest of the stack'} away and crafts on" do
           game.script('count my nemoih', log('25:33679'))
-          game.script('combine my nemoih', log('25:104590'))
           game.script(herb_put_command('nemoih', 'large mortar'), line.call, after: ->(_game) { commons.release('nemoih') if taken })
           game.script('crush my nemoih with my rounded pestle', log('26:11333'))
           script_product('get my unguent from my large mortar', log('26:11389'), 'nemoih unguent')
           expect(run_remedy(short_unguent)).to eq(:exited)
-          expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', herb_put_command('nemoih', 'large mortar'), *short_run_tail])
+          expect(game.sent).to eq(['count my nemoih', herb_put_command('nemoih', 'large mortar'), *short_run_tail])
           expect(game.diagnostics).to be_empty
-          expect(commons.calls).to include(['DRCC.stow_crafting_item', 'nemoih', toolbag, settings[:alchemy_belt]])
+          leftover_stow = ['DRCC.stow_crafting_item', 'nemoih', toolbag, settings[:alchemy_belt]]
+          if taken
+            expect(commons.calls).not_to include(leftover_stow)
+          else
+            expect(commons.calls).to include(leftover_stow)
+          end
           expect(commons.location_of('dried nemoih')).to eq(taken ? nil : toolbag)
           expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
           expect(tool_locations).to eq(expected_tool_locations)
@@ -1070,7 +1072,7 @@ RSpec.describe Remedy do
         game.script('put my jadice in my large mortar', log('25:10825'))
         game.script('crush my unguent with my rounded pestle', log('26:11333'))
         expect(run_remedy(short_unguent(herb2: 'jadice'))).to eq(:exited)
-        expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', herb_put_command('nemoih', 'large mortar'),
+        expect(game.sent).to eq(['count my nemoih', herb_put_command('nemoih', 'large mortar'),
                                  'crush my nemoih with my rounded pestle', 'put my jadice in my large mortar',
                                  'crush my unguent with my rounded pestle', 'get my unguent from my large mortar', 'count my unguent'])
         herb2_calls = commons.calls.select { |name, item, *| name.start_with?('DRCC.') && item.to_s.end_with?('jadice') }
@@ -1085,7 +1087,7 @@ RSpec.describe Remedy do
       end
     end
 
-    describe 'buying a missing liquid or catalyst in the hometown (Crossing, base-crafting.yaml:1388-1416)' do
+    describe 'buying a missing liquid or catalyst in the hometown (Crossing, base-crafting.yaml remedies: Crossing)' do
       let(:settings) { logged_settings.merge(mark_crafted_goods: false, alchemy_room: 8859) }
 
       # @return [Array<Array>] the bank and travel calls, in order
@@ -1100,7 +1102,7 @@ RSpec.describe Remedy do
         expect(run_remedy(short_unguent)).to eq(:exited)
         expect(purchase_calls).to eq([['DRCM.get_money_from_bank', '5 silver'], ['DRCT.order_item', 8862, 1], ['DRCT.walk_to', 8859]])
         expect(commons.moves.first(2)).to eq(['water: shop -> hand', "water: hand -> #{toolbag}"])
-        expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', herb_put_command('nemoih', 'large mortar'), *short_run_tail])
+        expect(game.sent).to eq(['count my nemoih', herb_put_command('nemoih', 'large mortar'), *short_run_tail])
       end
 
       it 'buys alcohol (stock-room 8862, number 2)' do
@@ -1205,7 +1207,7 @@ RSpec.describe Remedy do
         expect(commons.calls.count(['DRC.wait_for_script_to_complete', 'buff', ['remedy']])).to eq(1)
         expect(names.index('DRC.wait_for_script_to_complete')).to be < names.index('DRCA.crafting_magic_routine')
         expect(names.index('DRC.wait_for_script_to_complete')).to be < names.index('DRCC.find_recipe2')
-        expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', herb_put_command('nemoih', 'large mortar'), *short_run_tail])
+        expect(game.sent).to eq(['count my nemoih', herb_put_command('nemoih', 'large mortar'), *short_run_tail])
       end
 
       it 'runs ;buff remedy once in the continue form, before the analysis' do
@@ -1314,7 +1316,7 @@ RSpec.describe Remedy do
         herb2: herb2.downcase, catalyst: catalyst, container: recipe['container'], noun: recipe['noun'] }
     end
 
-    it 'parses the workorders.lic:818/820 and craft.lic:680 call of every chaptered base-recipes remedy into the 8-argument form' do
+    it 'parses the workorders remedy_items and craft.lic brew call of every chaptered base-recipes remedy into the 8-argument form' do
       mismatches = chaptered.filter_map do |recipe|
         herb2 = recipe['herb2'] || 'na'
         args = ['remedies', recipe['chapter'], recipe['name'], recipe['herb1'], herb2, 'coal nugget', recipe['container'], recipe['noun']]
@@ -1381,7 +1383,7 @@ RSpec.describe Remedy do
   describe 'reading the game, not other players' do
     let(:settings) { logged_settings.merge(mark_crafted_goods: false) }
     let(:inventory) { logged_tools.merge(logged_supplies, 'dried nemoih' => toolbag, 'dried jadice' => toolbag) }
-    let(:gathered) { ['count my nemoih', 'combine my nemoih', herb_put_command('nemoih', 'large mortar')] }
+    let(:gathered) { ['count my nemoih', herb_put_command('nemoih', 'large mortar')] }
 
     # A game line as another player's ESP, speech or whisper shows it: the
     # text follows a double quote, which NO_QUOTE (remedy.lic:9-14) refuses.
@@ -1564,7 +1566,7 @@ RSpec.describe Remedy do
           it "keeps crafting when another player says #{phrase.inspect} (form #{form + 1} of 3)" do
             script_short_unguent(first_crush: [spoofs(phrase)[form], log('25:10825')])
             run_remedy(short_unguent)
-            expect(game.sent.drop(3)).to eq(['crush my nemoih with my rounded pestle', 'crush my unguent with my rounded pestle',
+            expect(game.sent.drop(2)).to eq(['crush my nemoih with my rounded pestle', 'crush my unguent with my rounded pestle',
                                              'get my unguent from my large mortar', 'count my unguent'])
           end
         end
@@ -1574,7 +1576,7 @@ RSpec.describe Remedy do
         it "finishes on the final-touches line (26:11333) after another player says Roundtime: (form #{form + 1} of 3)" do
           script_short_unguent(first_crush: [spoofs('Roundtime: 3 sec.')[form], log('26:11333')])
           run_remedy(short_unguent)
-          expect(game.sent.drop(3)).to eq(['crush my nemoih with my rounded pestle', 'get my unguent from my large mortar', 'count my unguent'])
+          expect(game.sent.drop(2)).to eq(['crush my nemoih with my rounded pestle', 'get my unguent from my large mortar', 'count my unguent'])
         end
       end
 
@@ -1584,7 +1586,7 @@ RSpec.describe Remedy do
       it 'keeps crafting on a bracketed Roundtime: line' do
         script_short_unguent(first_crush: [code('[Roundtime: 3 sec]', from: 'spec/remedy_spec.rb:297 at 03f11b54')])
         run_remedy(short_unguent)
-        expect(game.sent.drop(3)).to eq(['crush my nemoih with my rounded pestle', 'crush my unguent with my rounded pestle',
+        expect(game.sent.drop(2)).to eq(['crush my nemoih with my rounded pestle', 'crush my unguent with my rounded pestle',
                                          'get my unguent from my large mortar', 'count my unguent'])
       end
     end
@@ -1635,7 +1637,7 @@ RSpec.describe Remedy do
         script_short_unguent
         expect(run_remedy(short_unguent) { allow(DRC).to receive(:beep) }).to eq(:exited)
         expect(DRC).to have_received(:beep).once
-        expect(game.sent.drop(3)).to eq([first_crush])
+        expect(game.sent.drop(2)).to eq([first_crush])
         expect(game.diagnostics).to be_empty
         expect(game.trace.select { |event| event.kind == :stall }).to be_empty
         expect(remedy_messages).to eq(["Remedy: the game wants a more suitable type of herb than nemoih: it refused #{first_crush.inspect}. Stopping."])
@@ -1647,7 +1649,7 @@ RSpec.describe Remedy do
         script_short_unguent(first_crush: [])
         expect(run_remedy(short_unguent) { allow(DRC).to receive(:beep) }).to eq(:exited)
         expect(DRC).to have_received(:beep).once
-        expect(game.sent.drop(3)).to eq([first_crush] * 4)
+        expect(game.sent.drop(2)).to eq([first_crush] * 4)
         expect(game.diagnostics).to eq(["DRC: No match was found after 15 seconds for command '#{first_crush}' (0 lines seen)"] * 4)
         expect(remedy_messages).to eq(["Remedy: the game did not answer #{first_crush.inspect} 4 times in a row. Stopping."])
         expect(commons.location_of('diamondique large mortar')).to eq('left').or eq('right')
@@ -1662,7 +1664,7 @@ RSpec.describe Remedy do
           script_short_unguent(first_crush: [log('25:10825')])
           game.override('crush my unguent with my rounded pestle', log('25:10825'), times: nil)
           expect(run_remedy(short_unguent)).to eq(:exited)
-          expect(game.sent.drop(3)).to eq([first_crush] + (['crush my unguent with my rounded pestle'] * 99))
+          expect(game.sent.drop(2)).to eq([first_crush] + (['crush my unguent with my rounded pestle'] * 99))
           expect(game.diagnostics).to be_empty
           expect(remedy_messages).to eq(['Remedy: the unguent is not done after 100 crafting commands. Stopping.'])
           expect(commons.location_of('diamondique large mortar')).to eq('left').or eq('right')
@@ -1678,7 +1680,7 @@ RSpec.describe Remedy do
         game.override('get my unguent from my large mortar', log('26:39162')) # analog: the not-found reply to a get
         script_short_unguent
         expect(run_remedy(short_unguent)).to eq(:exited)
-        expect(game.sent.drop(3)).to eq([first_crush])
+        expect(game.sent.drop(2)).to eq([first_crush])
         expect(commons.location_of('unguent')).to be_nil
         expect(commons.location_of('diamondique large mortar')).to eq('left').or eq('right')
         expect(remedy_messages).to eq(["Remedy: the unguent needs more pieces of nemoih to begin: the game refused #{first_crush.inspect}. Stopping."])
@@ -1999,10 +2001,9 @@ RSpec.describe Remedy do
       # layer 11 (the leftover stow is checked)
       it 'D12: stops before the pestle get when the herb left after the put stays in hand, the mortar picked up beside it' do
         game.script('count my nemoih', log('25:33679'))
-        game.script('combine my nemoih', log('25:104590'))
         game.script(herb_put_command('nemoih', 'large mortar'), log('26:10749'))
         expect(run_remedy(short_unguent) { keep_the_leftover_in_hand }).to eq(:exited)
-        expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', herb_put_command('nemoih', 'large mortar')])
+        expect(game.sent).to eq(['count my nemoih', herb_put_command('nemoih', 'large mortar')])
         expect(remedy_messages).to eq(['Remedy: could not put away the nemoih left in hand after the put, and crafting needs that hand. Stopping.'])
         expect(DRCC).to have_received(:stow_crafting_item).with('nemoih', anything, anything).once
         expect(commons.calls).not_to include(include('rounded pestle'))
@@ -2015,12 +2016,11 @@ RSpec.describe Remedy do
         settings[:herb_container] = 'smokewood basket'
         inventory['dried nemoih'] = 'smokewood basket'
         game.script('count my nemoih', log('25:33679'))
-        game.script('combine my nemoih', log('25:104590'))
         game.script(herb_put_command('nemoih', 'large mortar'), log('26:10749'))
         game.script(first_crush, log('26:11333'))
         script_product('get my unguent from my large mortar', log('26:11389'), 'nemoih unguent')
         expect(run_remedy(short_unguent) { keep_the_leftover_in_hand('smokewood basket') }).to eq(:exited)
-        expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', herb_put_command('nemoih', 'large mortar'),
+        expect(game.sent).to eq(['count my nemoih', herb_put_command('nemoih', 'large mortar'),
                                  first_crush, 'get my unguent from my large mortar', 'count my unguent'])
         expect(DRCC).to have_received(:stow_crafting_item).with('nemoih', 'smokewood basket', settings[:alchemy_belt]).once.ordered
         expect(DRCC).to have_received(:stow_crafting_item).with('nemoih', toolbag, settings[:alchemy_belt]).once.ordered
@@ -2035,7 +2035,7 @@ RSpec.describe Remedy do
       let(:orders) { { 1 => 'water' } }
 
       # layer 13 (restock in the crafting town)
-      it 'H09: buys in force_crafting_town (Crossing stock-room 8862, base-crafting.yaml:1401), not in the Shard hometown' do
+      it 'H09: buys in force_crafting_town (Crossing stock-room 8862, base-crafting.yaml remedies: Crossing), not in the Shard hometown' do
         settings.merge!(hometown: 'Shard', force_crafting_town: 'Crossing')
         script_short_unguent
         expect(run_remedy(short_unguent)).to eq(:exited)
@@ -2077,7 +2077,7 @@ RSpec.describe Remedy do
 
     describe 'sharp corners (C13)' do
       # left open by layer 14 (H10): gathering "flower" as given would take
-      # whichever flower comes first in the bag (workorders.lic:726-727), the
+      # whichever flower comes first in the bag (workorders' count_combine_rem), the
       # wrong herb for a red-flower recipe; see Remedy#substitute_flower
       it 'CURRENT (H10): swaps herb1 "flower" for dried flower' do
         inventory['dried flower'] = toolbag
@@ -2145,7 +2145,7 @@ RSpec.describe Remedy do
         it 'H32: puts the herb in by the id of the stack in hand: "put #41782305 in my large mortar"' do
           script_short_unguent
           run_remedy(short_unguent)
-          expect(game.sent[2]).to eq('put #41782305 in my large mortar')
+          expect(game.sent[1]).to eq('put #41782305 in my large mortar')
         end
       end
 
@@ -2154,7 +2154,7 @@ RSpec.describe Remedy do
       it 'H32: with no id on the herb stack in hand, puts the herb in as before: "put nemoih in my large mortar"' do
         script_short_unguent
         run_remedy(short_unguent)
-        expect(game.sent[2]).to eq('put nemoih in my large mortar')
+        expect(game.sent[1]).to eq('put nemoih in my large mortar')
       end
 
       # layer 12: the stirrer and the vessel are put away by name
@@ -2356,7 +2356,7 @@ RSpec.describe Remedy do
   describe 'refusals and faded instructions (layer 08)' do
     let(:settings) { logged_settings.merge(mark_crafted_goods: false) }
     let(:inventory) { logged_tools.merge(logged_supplies, 'dried nemoih' => toolbag) }
-    let(:gathered) { ['count my nemoih', 'combine my nemoih', herb_put_command('nemoih', 'large mortar')] }
+    let(:gathered) { ['count my nemoih', herb_put_command('nemoih', 'large mortar')] }
     let(:first_crush) { 'crush my nemoih with my rounded pestle' }
     let(:next_crush) { 'crush my unguent with my rounded pestle' }
     let(:faded_message) { 'Remedy: the instructions for some head unguent faded from memory before crafting began; run remedy again to study them. Stopping.' }
@@ -2415,7 +2415,7 @@ RSpec.describe Remedy do
       it 'crafts on to the end when the fade arrives after the first crush drew Roundtime (25:10825)' do
         script_short_unguent(first_crush: [log('25:10825'), log('25:37919')])
         expect(run_remedy(short_unguent)).to eq(:exited)
-        expect(game.sent.drop(3)).to eq([first_crush, next_crush, 'get my unguent from my large mortar', 'count my unguent'])
+        expect(game.sent.drop(2)).to eq([first_crush, next_crush, 'get my unguent from my large mortar', 'count my unguent'])
         expect(remedy_messages).to eq([yield_line('nemoih unguent')])
       end
 
@@ -2451,7 +2451,7 @@ RSpec.describe Remedy do
       it 'crafts on when another player says "You need a more suitable type of herb" (25:50933) before the Roundtime' do
         script_short_unguent(first_crush: [spoken(log('25:50933')), log('25:10825')])
         expect(run_remedy(short_unguent)).to eq(:exited)
-        expect(game.sent.drop(3)).to eq([first_crush, next_crush, 'get my unguent from my large mortar', 'count my unguent'])
+        expect(game.sent.drop(2)).to eq([first_crush, next_crush, 'get my unguent from my large mortar', 'count my unguent'])
         expect(remedy_messages).to eq([yield_line('nemoih unguent')])
       end
 
@@ -2475,7 +2475,7 @@ RSpec.describe Remedy do
         # analog: the whole reply to `push my curative with my turtle-shaped sieve` (26:39148)
         game.override('push my unguent with my sieve', log('26:39150'), log('26:39152'))
         expect(run_remedy(short_unguent)).to eq(:exited)
-        expect(game.sent.drop(3)).to eq([first_crush, 'push my unguent with my sieve', 'put my pewter ingot in my large mortar',
+        expect(game.sent.drop(2)).to eq([first_crush, 'push my unguent with my sieve', 'put my pewter ingot in my large mortar',
                                          next_crush, 'get my unguent from my large mortar', 'count my unguent'])
         expect(game.diagnostics).to be_empty
         expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
@@ -2485,7 +2485,7 @@ RSpec.describe Remedy do
         script_short_unguent(first_crush: sieve_cue_crush)
         game.override('push my unguent with my sieve', log('26:24873')) # the reply to `push my tonic with my sieve` (26:24872)
         expect(run_remedy(short_unguent)).to eq(:exited)
-        expect(game.sent.drop(3)).to eq([first_crush, 'push my unguent with my sieve', next_crush, 'get my unguent from my large mortar', 'count my unguent'])
+        expect(game.sent.drop(2)).to eq([first_crush, 'push my unguent with my sieve', next_crush, 'get my unguent from my large mortar', 'count my unguent'])
         expect(game.diagnostics).to be_empty
         expect(tool_locations).to eq(logged_tools)
       end
@@ -2494,7 +2494,7 @@ RSpec.describe Remedy do
         script_short_unguent(first_crush: sieve_cue_crush)
         game.override('push my unguent with my sieve', spoken(log('26:24873')), log('26:10935'))
         expect(run_remedy(short_unguent)).to eq(:exited)
-        expect(game.sent.drop(3)).to eq([first_crush, 'push my unguent with my sieve', next_crush, 'get my unguent from my large mortar', 'count my unguent'])
+        expect(game.sent.drop(2)).to eq([first_crush, 'push my unguent with my sieve', next_crush, 'get my unguent from my large mortar', 'count my unguent'])
         expect(game.diagnostics).to be_empty
       end
     end
@@ -2503,7 +2503,7 @@ RSpec.describe Remedy do
   describe 'guarded gets and a missing second herb (layer 09)' do
     let(:settings) { logged_settings.merge(mark_crafted_goods: false) }
     let(:inventory) { logged_tools.merge(logged_supplies, 'dried nemoih' => toolbag) }
-    let(:gathered) { ['count my nemoih', 'combine my nemoih', herb_put_command('nemoih', 'large mortar')] }
+    let(:gathered) { ['count my nemoih', herb_put_command('nemoih', 'large mortar')] }
     # code-derived (R:51 /You need another prepared herb/): no "prepared herb"
     # line is in either log (both logged characters made one-herb recipes).
     let(:herb_cue) { code('You need another prepared herb to continue crafting some unfinished nemoih unguent.', from: 'R:51 /You need another prepared herb/') }
@@ -2691,7 +2691,6 @@ RSpec.describe Remedy do
     [3, 16, 30].each do |late|
       it "crafts on with the commands of today when the first herb get is answered #{late} s late (25:33679, 25:104590)" do
         game.script('count my nemoih', log('25:33679'))
-        game.script('combine my nemoih', log('25:104590'))
         script_put_and_craft
         outcome = run_remedy(short_unguent) do
           arrives = nil
@@ -2710,7 +2709,7 @@ RSpec.describe Remedy do
           end
         end
         expect(outcome).to eq(:exited)
-        expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', herb_put, *short_run_tail])
+        expect(game.sent).to eq(['count my nemoih', herb_put, *short_run_tail])
         expect(remedy_messages).to eq([yield_line('nemoih unguent')])
         expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
       end
@@ -3110,7 +3109,7 @@ RSpec.describe Remedy do
         expect(run_remedy(short_unguent)).to eq(:exited)
         expect(purchase_calls).to eq([['DRCM.get_money_from_bank', '5 silver'], ['DRCT.order_item', stock_room, 1], ['DRCT.walk_to', 8859]])
         expect_banked_in(shop_town)
-        expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', herb_put_command('nemoih', 'large mortar'),
+        expect(game.sent).to eq(['count my nemoih', herb_put_command('nemoih', 'large mortar'),
                                  'crush my nemoih with my rounded pestle', 'get my unguent from my large mortar', 'count my unguent'])
         expect(commons.location_of('water')).to eq(toolbag)
         expect(commons.location_of('nemoih unguent')).to eq('left').or eq('right')
@@ -3175,7 +3174,7 @@ RSpec.describe Remedy do
       let(:settings) { logged_settings.merge(mark_crafted_goods: false, alchemy_room: nil) }
 
       it 'walks back to the room remedy was started in, read before the walk to the shop' do
-        # Room ids from base-crafting.yaml:1392-1397 (Crossing npc-rooms): the
+        # Room ids from base-crafting.yaml remedies: Crossing npc-rooms: the
         # character starts in 8863; Room.current would answer the shop room
         # 8862 if it were read again after the order.
         allow(Room).to receive(:current).and_return(instance_double(Map, id: 8863), instance_double(Map, id: 8862))
@@ -3336,10 +3335,9 @@ RSpec.describe Remedy do
         inventory.delete('dried flower')
         inventory['dried flower'] = toolbag
         game.script('count my dried flower', log('25:33679')) # analog, as above
-        game.script('combine my dried flower', log('25:104590')) # analog: the reply to `combine`, 25:104589
         run_remedy(typed('remedies 2 "some blister cream" flower nemoih "pewter ingot" mortar cream'))
         expect(inventory.keys.index('crushed flower')).to be < inventory.keys.index('dried flower')
-        expect(game.sent.first(2)).to eq(['count my dried flower', 'combine my dried flower'])
+        expect(game.sent.first(2)).to eq(['count my dried flower', herb_put_command('dried flower', 'large mortar')])
         expect(commons.moves).to include("dried flower: #{toolbag} -> hand")
         expect(commons.moves.grep(/crushed flower/)).to be_empty
       end
@@ -3536,25 +3534,25 @@ RSpec.describe Remedy do
 
       it 'puts the herb in by its id, and by its id again after tilting a vessel that was not empty' do
         game.script('count my nemoih', log('25:33679')) # analog: the reply to `count clubm in smoke bask`, 25:33677
-        game.script('combine my nemoih', log('25:104590')) # analog: the reply to `combine`, 25:104589
         game.script('put #41782305 in my large mortar', code('Your large mortar already has something in it.', from: 'R:247 /already has something/'))
         game.script('put #41782305 in my large mortar', log('26:10749'), after: ->(_game) { commons.release('nemoih') })
         run_remedy(short_unguent)
-        expect(game.sent.first(6)).to eq(['count my nemoih', 'combine my nemoih', 'put #41782305 in my large mortar',
+        expect(game.sent.first(5)).to eq(['count my nemoih', 'put #41782305 in my large mortar',
                                           'tilt my large mortar', 'tilt my large mortar', 'put #41782305 in my large mortar'])
       end
 
       # "What were you referring to?" (26:39194) is the game's answer to
       # `put my pewter ingot in my heavy cauldron` (26:39192) with no ingot
       # in hand. Here it stands for the game refusing an id it no longer
-      # knows, a stale id (code-derived: no log sends the id form).
+      # knows, a stale id (code-derived: the id form is logged, Mithandres
+      # 2026-11-18 13:16:05, but no log shows a stale id refused in a put).
       describe 'when the game refuses the id' do
         it 'puts the herb in by name once, the old command, and crafts to the end as the old put would' do
           script_short_unguent
           game.override('put #41782305 in my large mortar', log('26:39194'))
           game.script('put nemoih in my large mortar', log('26:10749'), after: ->(_game) { commons.release('nemoih') })
           expect(run_remedy(short_unguent)).to eq(:exited)
-          expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'put #41782305 in my large mortar',
+          expect(game.sent).to eq(['count my nemoih', 'put #41782305 in my large mortar',
                                    'put nemoih in my large mortar',
                                    'crush my nemoih with my rounded pestle', 'get my unguent from my large mortar', 'count my unguent']) # 26:11333, 26:11389, layer 17's count
           expect(remedy_messages).to eq([yield_line('nemoih unguent')])
@@ -3564,12 +3562,11 @@ RSpec.describe Remedy do
 
         it 'puts the herb in by name once after the tilt when the id is refused there' do
           game.script('count my nemoih', log('25:33679')) # analog: the reply to `count clubm in smoke bask`, 25:33677
-          game.script('combine my nemoih', log('25:104590')) # analog: the reply to `combine`, 25:104589
           game.script('put #41782305 in my large mortar', code('Your large mortar already has something in it.', from: 'R:247 /already has something/'))
           game.script('put #41782305 in my large mortar', log('26:39194'))
           game.script('put nemoih in my large mortar', log('26:10749'), after: ->(_game) { commons.release('nemoih') })
           run_remedy(short_unguent)
-          expect(game.sent.first(7)).to eq(['count my nemoih', 'combine my nemoih', 'put #41782305 in my large mortar',
+          expect(game.sent.first(6)).to eq(['count my nemoih', 'put #41782305 in my large mortar',
                                             'tilt my large mortar', 'tilt my large mortar', 'put #41782305 in my large mortar',
                                             'put nemoih in my large mortar'])
           expect(commons.moves).to include('dried nemoih: hand -> game')
@@ -3577,7 +3574,6 @@ RSpec.describe Remedy do
 
         it 'sends the name put only once, though the game refuses it too, and stops as the old put alone would' do
           game.script('count my nemoih', log('25:33679')) # analog, as above
-          game.script('combine my nemoih', log('25:104590')) # analog, as above
           game.script('put #41782305 in my large mortar', log('26:39194'))
           game.script('put nemoih in my large mortar', log('26:39194'))
           expect(run_remedy(short_unguent)).to eq(:exited)
@@ -3591,7 +3587,6 @@ RSpec.describe Remedy do
       # (H32). Nothing is resent, as with the old put alone.
       it 'does not resend the put by name when the id put goes unanswered' do
         game.script('count my nemoih', log('25:33679')) # analog, as above
-        game.script('combine my nemoih', log('25:104590')) # analog, as above
         game.script('put #41782305 in my large mortar')
         run_remedy(short_unguent)
         expect(game.sent.grep(/\Aput /)).to eq(['put #41782305 in my large mortar'])
@@ -3601,7 +3596,6 @@ RSpec.describe Remedy do
         inventory['dried flower'] = toolbag
         item_ids['dried flower'] = '52210117'
         game.script('count my dried flower', log('25:33679')) # analog, as above
-        game.script('combine my dried flower', log('25:104590')) # analog, as above
         run_remedy(called_with(['remedies', 2, 'some blister cream', 'red flower', 'nemoih', 'pewter ingot', 'mortar', 'cream']))
         expect(game.sent).to include('put #52210117 in my large mortar')
         expect(game.sent.grep(/\Aput (my )?dried flower/)).to be_empty
@@ -3610,7 +3604,6 @@ RSpec.describe Remedy do
       it 'puts a swapped herb1 with no id in by its prepared name, as before: "put dried flower in my large mortar"' do
         inventory['dried flower'] = toolbag
         game.script('count my dried flower', log('25:33679')) # analog, as above
-        game.script('combine my dried flower', log('25:104590')) # analog, as above
         run_remedy(called_with(['remedies', 2, 'some blister cream', 'red flower', 'nemoih', 'pewter ingot', 'mortar', 'cream']))
         expect(game.sent).to include('put dried flower in my large mortar')
         expect(game.sent.grep(/\Aput #/)).to be_empty
@@ -3636,7 +3629,7 @@ RSpec.describe Remedy do
 
         it 'puts the belradi in by its id, where the log run sent `put my belradi in my heavy cauldron` (26:5897)' do
           outcome
-          expect(game.sent[2]).to eq('put #41782307 in my heavy cauldron')
+          expect(game.sent[1]).to eq('put #41782307 in my heavy cauldron')
         end
       end
 
@@ -3655,7 +3648,7 @@ RSpec.describe Remedy do
 
         it 'puts the nemoih in by its id, where the log run sent `put my nemoih in my large mortar` (26:10748)' do
           outcome
-          expect(game.sent[2]).to eq('put #41782305 in my large mortar')
+          expect(game.sent[1]).to eq('put #41782305 in my large mortar')
         end
       end
     end
@@ -3980,10 +3973,9 @@ RSpec.describe Remedy do
 
     it 'crafts with the commands of a run without it when one stack of 75 (25:8678) meets a herb quantity of 75' do
       game.script('count my nemoih', log('25:8678'))
-      game.script('combine my nemoih', log('25:104590'))
       script_put_and_craft
       expect(run_with_quantity('75')).to eq(:exited)
-      expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', *crafted_tail])
+      expect(game.sent).to eq(['count my nemoih', *crafted_tail])
       expect(remedy_messages).to eq([yield_line('nemoih unguent')])
     end
 
@@ -4041,7 +4033,6 @@ RSpec.describe Remedy do
     # (25:94435-94849).
     let(:salve_crafting) do
       ['count my marram',                               # 25:33679 (analog)
-       'combine my marram',                             # 25:104590 (analog)
        herb_put_command('marram', 'large mortar'),      # 25:94435
        'crush my marram with my rounded pestle',        # water cue 25:94459
        'put water in my large mortar',                  # 25:94500
@@ -4227,7 +4218,7 @@ RSpec.describe Remedy do
       script_salve_study
       script_salve_crafting(put_lines: [log('25:94435'), log('25:37919')])
       expect(run_remedy(salve_line)).to eq(:exited)
-      expect(game.sent).to eq([study, study, 'count my marram', 'combine my marram', herb_put_command('marram', 'large mortar')])
+      expect(game.sent).to eq([study, study, 'count my marram', herb_put_command('marram', 'large mortar')])
       expect(remedy_messages).to eq(['Remedy: 7 uses left on the salve instructions.',
                                      'Remedy: the salve instructions faded from memory before crafting began; run remedy again to study them. Stopping.'])
       expect(commons.location_of('diamondique large mortar')).to eq('left').or eq('right')
@@ -4241,7 +4232,7 @@ RSpec.describe Remedy do
       script_salve_crafting(put_lines: [log('25:94435'),
                                         code('You need another prepared herb to continue crafting some unfinished marram salve.', from: 'R:51 /You need another prepared herb/')])
       expect(run_remedy(salve_line)).to eq(:exited)
-      expect(game.sent).to eq([study, study, 'count my marram', 'combine my marram', herb_put_command('marram', 'large mortar')])
+      expect(game.sent).to eq([study, study, 'count my marram', herb_put_command('marram', 'large mortar')])
       expect(remedy_messages).to eq(['Remedy: 7 uses left on the salve instructions.',
                                      'Remedy: the game asks for a second herb, and the instructions form takes none. Stopping.'])
       expect(commons.calls.select { |_name, item, *| item == 'na' }).to be_empty
@@ -4306,7 +4297,7 @@ RSpec.describe Remedy do
       it 'has no book, chapter or recipe name, and reads herb2 as na' do
         expect(order_from('instructions marram "pewter ingot" mortar salve').to_h)
           .to eq(mode: :instructions, book_type: nil, chapter: nil, recipe_name: nil, herb1: 'marram', herb2: 'na',
-                 catalyst: 'pewter ingot', container_request: 'mortar', noun: 'salve', herb_quantity: nil)
+                 catalyst: 'pewter ingot', container_request: 'mortar', noun: 'salve', herb_quantity: nil, stocked: false)
       end
 
       it 'names the instructions "<noun> instructions" and needs no second herb' do
@@ -4320,6 +4311,28 @@ RSpec.describe Remedy do
 
       it 'carries on in the continue form, with herb2 na' do
         expect(order_from('instructions marram "pewter ingot" mortar salve').continue_command).to eq(';remedy continue na "pewter ingot" mortar salve')
+      end
+
+      # Layer 06 of the Nezhiri stack.
+      it 'is stocked only when the word is given, with or without a herb quantity' do
+        stocked = order_from('instructions georin "coal nugget" mortar glop 25 stocked')
+        alone = order_from('instructions georin "coal nugget" mortar glop stocked')
+        plain = order_from('instructions georin "coal nugget" mortar glop 25')
+        expect([stocked.stocked?, stocked.herb_quantity]).to eq([true, 25])
+        expect([alone.stocked?, alone.herb_quantity]).to eq([true, nil])
+        expect([plain.stocked?, plain.herb_quantity]).to eq([false, 25])
+      end
+
+      it 'never makes a book or continue order stocked, nor an order built without the word' do
+        book = order_from('remedies 3 "some head unguent" nemoih na "coal nugget" mortar unguent 25')
+        continuing = order_from('continue na "coal nugget" mortar glop')
+        built = Remedy::Order.new(mode: :instructions, book_type: nil, chapter: nil, recipe_name: nil, herb1: 'georin', herb2: 'na',
+                                  catalyst: 'coal nugget', container_request: 'mortar', noun: 'glop')
+        expect([book.stocked?, continuing.stocked?, built.stocked?]).to eq([false, false, false])
+      end
+
+      it 'prints a continue line without the word: the run that carries it on checks the supplies again' do
+        expect(order_from('instructions georin "coal nugget" mortar glop 25 stocked').continue_command).to eq(';remedy continue na "coal nugget" mortar glop')
       end
 
       it 'leaves the book and continue forms without instructions, their missing second herb worded by the herb2 typed' do
@@ -4386,13 +4399,39 @@ RSpec.describe Remedy do
         expect(parse('instructions marram "pewter ingot" mortar salve 50').herb_quantity).to eq('50')
       end
 
+      # Layer 06 of the Nezhiri stack: the optional word stocked, after or
+      # before the herb quantity, or alone.
+      {
+        'instructions georin "coal nugget" mortar glop 25 stocked' => ['25', 'stocked'],
+        'instructions georin "coal nugget" mortar glop stocked 25' => ['25', 'stocked'],
+        'instructions georin "coal nugget" mortar glop Stocked'    => [nil, 'stocked'],
+        'instructions georin "coal nugget" mortar glop 25'         => ['25', nil]
+      }.each do |line, (quantity, stocked)|
+        it "reads the herb quantity #{quantity.inspect} and stocked #{stocked.inspect} from ;remedy #{line}" do
+          parsed = parse(line)
+          expect([parsed.herb_quantity, parsed.stocked]).to eq([quantity, stocked])
+          expect([parsed.herb1, parsed.catalyst, parsed.container, parsed.noun]).to eq(['georin', 'coal nugget', 'mortar', 'glop'])
+        end
+      end
+
+      it 'takes a herb1 named stocked as the herb, not as the word: the required arguments are matched first' do
+        parsed = parse('instructions stocked "coal nugget" mortar glop')
+        expect([parsed.herb1, parsed.stocked]).to eq(['stocked', nil])
+      end
+
       [
         'instruction marram "pewter ingot" mortar salve',               # not the whole word
         'instructionsx marram "pewter ingot" mortar salve',             # more than the word
         '"salve instructions" marram "pewter ingot" mortar salve',      # the item's name, not the word
         'instructions marram na "pewter ingot" mortar salve',           # a herb2, as in the book form
         'instructions marram "pewter ingot" mortar',                    # no noun
-        'instructions marram "pewter ingot" mortar salve 50x'           # a quantity that is no number
+        'instructions marram "pewter ingot" mortar salve 50x',          # a quantity that is no number
+        'instructions marram "pewter ingot" mortar salve stockedx',     # more than the word stocked
+        'instructions marram "pewter ingot" mortar salve stock',        # less than the word
+        'instructions marram "pewter ingot" mortar salve 25 stocked 5', # a second quantity
+        'remedies 3 "some head unguent" nemoih na "coal nugget" mortar unguent stocked',    # the book form takes no stocked
+        'remedies 3 "some head unguent" nemoih na "coal nugget" mortar unguent 25 stocked', # nor after its quantity
+        'continue na "coal nugget" mortar glop stocked' # nor does the continue form
       ].each do |line|
         it "matches no form for ;remedy #{line}" do
           expect(parse(line)).to be_nil
@@ -4402,9 +4441,12 @@ RSpec.describe Remedy do
 
       it 'is matched by no list the book or continue form matches, so no list matches two forms' do
         lists = [%w[remedies 3 x nemoih na pewter mortar unguent], %w[continue na pewter mortar unguent], %w[instructions marram pewter mortar salve],
-                 %w[instructions marram pewter mortar salve 50], %w[continue marram pewter mortar salve 50]]
+                 %w[instructions marram pewter mortar salve 50], %w[continue marram pewter mortar salve 50],
+                 %w[instructions marram pewter mortar salve 50 stocked], %w[instructions marram pewter mortar salve stocked 50],
+                 %w[instructions marram pewter mortar salve stocked], %w[continue na pewter mortar unguent stocked],
+                 %w[remedies 3 x nemoih na pewter mortar unguent stocked]]
         counts = lists.map { |list| Remedy::ARG_DEFINITIONS.count { |form| ArgParserModel.check_match(form, list.dup, false) } }
-        expect(counts).to eq([1, 1, 1, 1, 0])
+        expect(counts).to eq([1, 1, 1, 1, 0, 1, 1, 1, 0, 0])
       end
     end
   end
@@ -4492,7 +4534,9 @@ RSpec.describe Remedy do
       let(:continue_line) { 'Remedy: the unfinished glop is in the rustic mortar; to carry on with it, run ;remedy continue na "coal nugget" mortar glop' }
 
       # Scripts the craft: the studies (6106:654, 6106:659), the herb
-      # (6106:682-690) and the first crush, whose reply is Roundtime and
+      # (6106:682-690; not the combine 6106:685, which remedy no longer
+      # sends after a count of 25, layer 05 of the Nezhiri stack) and the
+      # first crush, whose reply is Roundtime and
       # then the brine cue (6106:706-708). Every later crush gets the cue
       # alone (6106:734, the reply to the crush 6106:731 sent while the
       # brine was owed). The brine put, aliased to the player's `put my
@@ -4506,7 +4550,7 @@ RSpec.describe Remedy do
       #   first crush's reply
       # @return [void]
       def script_glop(first_crush: nil)
-        [654, 659, 682, 685].each { |line| script_step(glop, line) }
+        [654, 659, 682].each { |line| script_step(glop, line) }
         script_step(glop, 688, after: ->(_game) { commons.release('georin') })
         script_step(glop, 703, lines: first_crush)
         game.fallback(crush, *glop.step(731).lines)
@@ -4520,9 +4564,11 @@ RSpec.describe Remedy do
       it 'adds the brine when the game asks, crafts on to the final touches (6106:1042) and makes 6 uses, as the logged craft did (6106:1076)' do
         script_glop
         expect(run_remedy(glop_line)).to eq(:exited)
-        expected = logged_sends(glop, own, without: [731]).insert(6, brine_put)
+        expected = logged_sends(glop, own, without: [685, 731]).insert(5, brine_put)
         expect(game.sent).to eq(expected), game.report
-        expect(game.sent[5, 3]).to eq(['crush my georin with my rustic pestle', brine_put, crush])
+        expect(game.sent[4, 3]).to eq(['crush my georin with my rustic pestle', brine_put, crush])
+        expect(game.sent).not_to include('combine my georin')
+        expect(commons.calls.select { |name, item, *| name == 'DRCC.stow_crafting_item' && item == 'georin' }).to be_empty
         expect(remedy_messages).to eq(['Remedy: 12 uses left on the glop instructions.', 'Remedy: made 6 uses of gill glop.']) # 6106:669, 6106:1076
         expect(game.diagnostics).to be_empty
         expect(game.flag_sets.select { |flag, _cite| flag == 'remedy-brine' }).to eq([%w[remedy-brine 6106:708]])
@@ -4577,11 +4623,103 @@ RSpec.describe Remedy do
         spoken = code(%(<preset id='speech'>Mallory says</preset>, "#{log('6106:708').text}"), from: '6106:708 as player speech (Remedy::NO_QUOTE)')
         script_glop(first_crush: [*glop.step(703).lines.first(2), spoken])
         expect(run_remedy(glop_line)).to eq(:exited)
-        expect(game.sent[5, 3]).to eq(['crush my georin with my rustic pestle', crush, brine_put])
+        expect(game.sent[4, 3]).to eq(['crush my georin with my rustic pestle', crush, brine_put])
         expect(game.flag_sets.select { |flag, _cite| flag == 'remedy-brine' }).to eq([%w[remedy-brine 6106:734]])
         expect(remedy_messages.last).to eq('Remedy: made 6 uses of gill glop.')
         expect(game.diagnostics).to be_empty
         expect(game.clock).to eq(0.2)
+      end
+
+      # Layer 06 of the Nezhiri stack: taskmaster runs this form with the
+      # word stocked, having checked the water, the alcohol and the coal
+      # nugget seconds before, so remedy no longer looks for them itself
+      # (one TAP each, every run, in all 40 cycles sampled on 2026-11-18;
+      # DRCI.exists? sends the TAP, at API level here). Without the word
+      # remedy looks, and buys, as it always has.
+      context 'with and without the word stocked (layer 06 of the Nezhiri stack)' do
+        let(:settings) { super().merge(alchemy_room: 8859) }
+        let(:stocked_line) { typed('instructions georin "coal nugget" mortar glop 25 stocked') }
+        let(:expected_sends) { logged_sends(glop, own, without: [685, 731]).insert(5, brine_put) }
+
+        # @return [Array<String>] the supplies DRCI.exists? was asked about
+        def supply_checks
+          commons.calls.filter_map { |name, item, *| item if name == 'DRCI.exists?' && ['water', 'alcohol', 'coal nugget'].include?(item) }
+        end
+
+        # @return [Array<Array>] the bank and travel calls, in order
+        def purchase_calls
+          commons.calls.select { |name, *| name.start_with?('DRCM.', 'DRCT.') }
+        end
+
+        it 'looks for the water, the alcohol and the coal nugget at the start without the word, as it always has' do
+          script_glop
+          expect(run_remedy(glop_line)).to eq(:exited)
+          expect(supply_checks).to eq(['water', 'alcohol', 'coal nugget'])
+          expect(game.sent).to eq(expected_sends), game.report
+        end
+
+        it 'looks for none of them with the word, and crafts exactly as without it, to 6 uses' do
+          script_glop
+          expect(run_remedy(stocked_line)).to eq(:exited)
+          expect(supply_checks).to be_empty
+          expect(purchase_calls).to be_empty
+          expect(game.sent).to eq(expected_sends), game.report
+          expect(remedy_messages).to eq(['Remedy: 12 uses left on the glop instructions.', 'Remedy: made 6 uses of gill glop.'])
+          expect(game.diagnostics).to be_empty
+          expect(nezhiri_tools.keys.to_h { |tool| [tool, commons.location_of(tool)] }).to eq(nezhiri_tools)
+        end
+
+        context 'with no water and no alcohol on hand (the recipe uses neither)' do
+          let(:inventory) { super().except('water', 'grain alcohol') }
+          let(:orders) { { 1 => 'water', 2 => 'alcohol' } }
+
+          it 'buys both at the start without the word, as it always has' do
+            script_glop
+            expect(run_remedy(glop_line)).to eq(:exited)
+            expect(purchase_calls).to eq([['DRCM.get_money_from_bank', '5 silver'], ['DRCT.order_item', 8862, 1], ['DRCT.walk_to', 8859],
+                                          ['DRCM.get_money_from_bank', '5 silver'], ['DRCT.order_item', 8862, 2], ['DRCT.walk_to', 8859]])
+          end
+
+          it 'buys neither with the word, and crafts to 6 uses all the same' do
+            script_glop
+            expect(run_remedy(stocked_line)).to eq(:exited)
+            expect(purchase_calls).to be_empty
+            expect(game.sent).to eq(expected_sends), game.report
+            expect(remedy_messages.last).to eq('Remedy: made 6 uses of gill glop.')
+          end
+        end
+
+        context 'with no coal nugget on hand' do
+          let(:inventory) { super().except('massive coal nugget') }
+          let(:orders) { { [8775, 2] => 'coal nugget' } }
+          let(:coal_purchase) { [['DRCM.get_money_from_bank', '5 silver'], ['DRCT.order_item', 8775, 2], ['DRCT.walk_to', 8859]] }
+
+          it 'buys one at the start without the word, before anything is sent, as it always has' do
+            script_glop
+            expect(run_remedy(glop_line)).to eq(:exited)
+            expect(purchase_calls).to eq(coal_purchase)
+            expect(commons.moves.first(2)).to eq(['coal nugget: shop -> hand', "coal nugget: hand -> #{haversack}"])
+            expect(remedy_messages).not_to include('Remedy: no coal nugget on hand for the catalyst; buying one.')
+          end
+
+          # remedy's shop town is force_crafting_town or hometown, which may
+          # be far from the room it crafts in, so a stocked craft buys
+          # nothing mid-craft: it stops with the mortar in hand, as remedy
+          # always has, and taskmaster buys the nugget in Crossing and runs
+          # the continue form (Taskmaster#remedy_left_in_vessel).
+          it 'buys nothing with the word: when the game asks for the catalyst it stops, the mortar in hand, and prints the continue line' do
+            script_glop
+            outcome = run_remedy(stocked_line) { allow(DRC).to receive(:beep) }
+            expect(outcome).to eq(:exited)
+            expect(purchase_calls).to be_empty
+            expect(commons.moves.grep(/shop -> hand/)).to be_empty
+            expect(game.sent).not_to include('put my coal nugget in my rustic mortar')
+            expect(remedy_messages.last).to eq('Remedy: could not get coal nugget. Stopping.')
+            exit_hooks.each(&:call)
+            expect(remedy_messages.last).to eq(continue_line)
+            expect(commons.location_of('rustic mortar')).to eq('left').or eq('right')
+          end
+        end
       end
     end
 
@@ -4599,7 +4737,8 @@ RSpec.describe Remedy do
       let(:own) { /\A(?:study my draught|count my junliar|combine my junliar|put #\d+ in my mixing bowl|mix my mixing bowl|smell my draught|turn my mixing bowl|push my draught|put my coal nugget in my mixing bowl|get my draught from|count my draught)/ }
 
       # Scripts the craft as #script_glop does: the studies (6102:170,
-      # 6102:175), the herb (6102:198-205), the first mix (Roundtime, then
+      # 6102:175), the herb (6102:198-205, without the combine 6102:201),
+      # the first mix (Roundtime, then
       # the brine cue, 6102:219-221); every later mix gets the cue alone
       # (6102:229) until the brine put, aliased to the player's `put brine
       # in my bowl` (6102:249 -> 6102:250), scripts the rest from 6102:255.
@@ -4609,7 +4748,7 @@ RSpec.describe Remedy do
       #
       # @return [void]
       def script_draught
-        [170, 175, 198, 201].each { |line| script_step(draught, line) }
+        [170, 175, 198].each { |line| script_step(draught, line) }
         script_step(draught, 204, after: ->(_game) { commons.release('junliar') })
         script_step(draught, 217)
         game.fallback(mix, *draught.step(227).lines)
@@ -4624,7 +4763,7 @@ RSpec.describe Remedy do
       it 'adds the brine when the game asks, crafts on to the final touches (6102:426) and makes 6 uses, as the logged craft did (6102:458)' do
         script_draught
         expect(run_remedy(draught_line)).to eq(:exited)
-        expected = logged_sends(draught, own, without: [227]).insert(6, brine_put, mix)
+        expected = logged_sends(draught, own, without: [201, 227]).insert(5, brine_put, mix)
         expect(game.sent).to eq(expected), game.report
         expect(remedy_messages).to eq(['Remedy: 14 uses left on the draught instructions.', 'Remedy: made 6 uses of deep-sea draught.']) # 6102:185, 6102:458
         expect(game.diagnostics).to be_empty
@@ -4708,14 +4847,14 @@ RSpec.describe Remedy do
       let(:refused_line) { typed('instructions junliar "coal nugget" mortar draught 25') } # 6105:501
       let(:crush) { 'crush my junliar with my rustic pestle' }
 
-      # Scripts the studies (6105:541, 6105:547), the herb (6105:575-585)
-      # and the first crush, refused (6105:603 -> 6105:605). The player
+      # Scripts the studies (6105:541, 6105:547), the herb (6105:575-585,
+      # without the combine 6105:579) and the first crush, refused (6105:603 -> 6105:605). The player
       # paused remedy at once (6105:606), so no resend is logged; a resend
       # gets the same refusal (an analog).
       #
       # @return [void]
       def script_refused
-        [541, 547, 575, 579].each { |line| script_step(refused, line) }
+        [541, 547, 575].each { |line| script_step(refused, line) }
         script_step(refused, 583, after: ->(_game) { commons.release('junliar') })
         script_step(refused, 603)
         game.fallback(crush, *refused.step(603).lines)
@@ -4725,7 +4864,7 @@ RSpec.describe Remedy do
         script_refused
         outcome = run_remedy(refused_line) { allow(DRC).to receive(:beep) }
         expect(outcome).to eq(:exited)
-        expect(game.sent).to eq(logged_sends(refused, /\A(?:study my|count my|combine my|put #|crush my)/))
+        expect(game.sent).to eq(logged_sends(refused, /\A(?:study my|count my|combine my|put #|crush my)/, without: [579]))
         expect(game.sent.count(crush)).to eq(1)
         # 0.2 s is create_item's pause after the first stows; no bput waited.
         expect([game.clock, game.diagnostics]).to eq([0.2, []])
@@ -4744,7 +4883,7 @@ RSpec.describe Remedy do
       # players' lines take.
       it "does not stop for another player saying the refusal: that crush counts as unanswered, and the game's own refusal on the resend stops it" do
         spoken = code(%(<preset id='speech'>Mallory says</preset>, "#{log('6105:605').text}"), from: '6105:605 as player speech')
-        [541, 547, 575, 579].each { |line| script_step(refused, line) }
+        [541, 547, 575].each { |line| script_step(refused, line) }
         script_step(refused, 583, after: ->(_game) { commons.release('junliar') })
         game.script(crush, spoken)
         game.fallback(crush, *refused.step(603).lines)
@@ -5244,10 +5383,10 @@ RSpec.describe 'Remedy patterns, Flags and entry' do
   end
 
   describe 'Remedy::ARG_DEFINITIONS' do
-    it 'offers the book form, with the optional herb quantity last (layer 19), the continue form and the instructions form (layer 20), in that order' do
+    it 'offers the book form, with the optional herb quantity last (layer 19), the continue form and the instructions form (layer 20, stocked last: layer 06 of the Nezhiri stack), in that order' do
       expect(Remedy::ARG_DEFINITIONS.map { |form| form.map { |definition| definition[:name] } })
         .to eq([%w[book_type chapter recipe_name herb1 herb2 catalyst container noun herb_quantity], %w[continue herb2 catalyst container noun],
-                %w[instructions herb1 catalyst container noun herb_quantity]])
+                %w[instructions herb1 catalyst container noun herb_quantity stocked]])
     end
 
     it 'gives both forms the same herb2, catalyst, container and noun definitions' do
@@ -5258,10 +5397,12 @@ RSpec.describe 'Remedy patterns, Flags and entry' do
     # Layer 19: the herb quantity is the one optional definition, so every
     # argument list that matched a form before still matches it with the
     # same fields (the C14 contract). Layer 20's instructions form takes it
-    # too, as the book form does.
-    it 'makes only the herb quantity optional, in the book form (layer 19) and the instructions form (layer 20)' do
+    # too, as the book form does, and layer 06 of the Nezhiri stack gives
+    # that form alone the optional word stocked; the continue form, the
+    # recovery run of taskmaster, keeps none.
+    it 'makes the herb quantity optional in the book form (layer 19) and the instructions form (layer 20), and stocked in the instructions form only' do
       optional = Remedy::ARG_DEFINITIONS.map { |form| form.select { |definition| definition[:optional] }.map { |definition| definition[:name] } }
-      expect(optional).to eq([['herb_quantity'], [], ['herb_quantity']])
+      expect(optional).to eq([['herb_quantity'], [], %w[herb_quantity stocked]])
     end
 
     # Layer 14 (H11): every ASCII character, one at the
@@ -5410,10 +5551,10 @@ RSpec.describe 'Remedy order, tools and inventory' do
   end
 
   describe 'Remedy::Order.from_args' do
-    it 'reads every field of the workorders.lic:818 call for some head unguent (base-recipes.yaml:8520)' do
+    it 'reads every field of the workorders remedy_items call for some head unguent (base-recipes.yaml:8520)' do
       order = Remedy::Order.from_args(parsed_call(['remedies', 3, 'some head unguent', 'nemoih', 'na', 'pewter ingot', 'mortar', 'unguent']))
       expect(order.to_h).to eq(mode: :book, book_type: 'remedies', chapter: '3', recipe_name: 'some head unguent', herb1: 'nemoih',
-                               herb2: 'na', catalyst: 'pewter ingot', container_request: 'mortar', noun: 'unguent', herb_quantity: nil)
+                               herb2: 'na', catalyst: 'pewter ingot', container_request: 'mortar', noun: 'unguent', herb_quantity: nil, stocked: false)
       expect(order).not_to be_continue
     end
 
@@ -5442,7 +5583,7 @@ RSpec.describe 'Remedy order, tools and inventory' do
       order = Remedy::Order.from_args(parsed_typed('continue none "pewter ingot" mortar unguent'))
       expect(order).to be_continue
       expect(order.to_h).to eq(mode: :continue, book_type: nil, chapter: nil, recipe_name: nil, herb1: nil,
-                               herb2: 'none', catalyst: 'pewter ingot', container_request: 'mortar', noun: 'unguent', herb_quantity: nil)
+                               herb2: 'none', catalyst: 'pewter ingot', container_request: 'mortar', noun: 'unguent', herb_quantity: nil, stocked: false)
       expect(order.herbs).to eq([nil, 'none'])
     end
 
@@ -5563,7 +5704,7 @@ RSpec.describe 'Remedy order, tools and inventory' do
       expect(order.second_herb).to be_nil
     end
 
-    it 'reads the na of the workorders.lic:820 call for some head unguent as none' do
+    it 'reads the na of the workorders remedy_items call for some head unguent as none' do
       order = Remedy::Order.from_args(parsed_call(['remedies', 3, 'some head unguent', 'nemoih', 'na', 'pewter ingot', 'mortar', 'unguent']))
       expect(order.second_herb).to be_nil
     end
@@ -5771,11 +5912,30 @@ RSpec.describe 'Remedy order, tools and inventory' do
 
       describe 'the leftover stow after the vessel put (layer 11)' do
         it 'puts the herb in the herb_container and answers true at once when the hand is then free of it' do
-          allow(DRCI).to receive(:in_hands?).with('nemoih').and_return(false)
+          stowed = false
+          allow(DRCC).to receive(:stow_crafting_item) { stowed = true }
+          allow(DRCI).to receive(:in_hands?).with('nemoih') { !stowed }
           expect(inventory.stow_leftover('nemoih')).to be(true)
           expect(DRCC).to have_received(:stow_crafting_item).once
           expect(DRCC).to have_received(:stow_crafting_item).with('nemoih', 'smokewood basket', toolstrap)
           expect(game.clock).to eq(0)
+        end
+
+        # Layer 05 of the Nezhiri stack: after all 95 vessel puts of the
+        # 2026-11-18 Nezhiri sessions the stow answered "What were you
+        # referring to?" (deep-sea-draught-02-Kythkani 13:45:44): the put had
+        # taken the whole stack. The hands are read once, so no time passes.
+        it 'sends no stow and answers true at once when no hand holds the herb, as after a put that took the whole stack' do
+          allow(DRCI).to receive(:in_hands?).with('nemoih').and_return(false)
+          expect(inventory.stow_leftover('nemoih')).to be(true)
+          expect(DRCC).not_to have_received(:stow_crafting_item)
+          expect(game.clock).to eq(0)
+        end
+
+        it 'sends no stow for a herb of several words when no hand shows its last word' do
+          allow(DRCI).to receive(:in_hands?).with('flower').and_return(false)
+          expect(inventory.with_herbs(['dried flower', 'na']).stow_leftover('dried flower')).to be(true)
+          expect(DRCC).not_to have_received(:stow_crafting_item)
         end
 
         # The late reply is code-derived, as for a get (LATE_GET_LOOKS): no
@@ -5823,9 +5983,11 @@ RSpec.describe 'Remedy order, tools and inventory' do
         end
 
         it 'reads the hand by the last word of a herb of several words, the noun the put matched' do
-          allow(DRCI).to receive(:in_hands?).with('flower').and_return(false)
+          stowed = false
+          allow(DRCC).to receive(:stow_crafting_item) { stowed = true }
+          allow(DRCI).to receive(:in_hands?).with('flower') { !stowed }
           expect(inventory.with_herbs(['dried flower', 'na']).stow_leftover('dried flower')).to be(true)
-          expect(DRCC).to have_received(:stow_crafting_item).with('dried flower', 'smokewood basket', toolstrap)
+          expect(DRCC).to have_received(:stow_crafting_item).once.with('dried flower', 'smokewood basket', toolstrap)
         end
       end
     end
@@ -6046,6 +6208,70 @@ RSpec.describe 'Remedy order, tools and inventory' do
         $hand_ids = { 'dried nemoih' => '41782305' }
         inventory.held_id('nemoih')
         expect(game.sent).to be_empty
+      end
+    end
+
+    # Layer 05 of the Nezhiri stack. DRCC remembers the id of the herb its
+    # get brought, and remedy's own vessel put never told it the stack was
+    # gone, so the next craft sent `get #<id>` for a stack in the last
+    # vessel (deep-sea-draught-01-Mithandres: `put #57039206 in my bowl` at
+    # 13:16:05, `get #57039206` refused at 13:17:36).
+    describe 'forget_id, the herb id the vessel took (layer 05 of the Nezhiri stack)' do
+      let(:memo) { DRCC::CRAFTING_ITEM_IDS }
+
+      before { allow(memo).to receive(:forget) }
+
+      it 'forgets the id in the shared DRCC memo when neither hand shows it, and sends nothing' do
+        $left_hand = 'rounded pestle'
+        $hand_ids = { 'rounded pestle' => '41782399' }
+        expect(inventory.forget_id('57039206')).to be(true)
+        expect(memo).to have_received(:forget).once.with('57039206')
+        expect(game.sent).to be_empty
+      end
+
+      # A put that took part of the stack ("can only hold"), or a hand tag
+      # the game has not yet updated: the stack in hand still has that id.
+      it 'keeps the id while a hand still shows it, whichever hand' do
+        $right_hand = 'dried nemoih'
+        $hand_ids = { 'dried nemoih' => '57039206' }
+        expect(inventory.forget_id('57039206')).to be(false)
+        $right_hand = nil
+        $left_hand = 'dried nemoih'
+        expect(inventory.forget_id('57039206')).to be(false)
+        expect(memo).not_to have_received(:forget)
+      end
+
+      it 'forgets the id when the hands show other ids, or none, or GameObj has no hand object yet' do
+        $right_hand = 'dried nemoih'
+        $hand_ids = { 'dried nemoih' => '57039999' }
+        expect(inventory.forget_id('57039206')).to be(true)
+        allow(GameObj).to receive_messages(left_hand: nil, right_hand: nil)
+        expect(inventory.forget_id('57039207')).to be(true)
+        expect(memo).to have_received(:forget).with('57039206').ordered
+        expect(memo).to have_received(:forget).with('57039207').ordered
+      end
+
+      it 'does nothing, and does not raise, on a lich-5 without the memo' do
+        hide_const('Harness::DRCC::CRAFTING_ITEM_IDS')
+        expect(defined?(Harness::DRCC::CRAFTING_ITEM_IDS)).to be_nil
+        expect(inventory.forget_id('57039206')).to be(false)
+      end
+
+      # With no id remembered, DRCC's next get may send its own Inventory
+      # refresh and wait up to 2 s (lich-5 common-crafting.rb:1046-1047):
+      # longer than the refused `get #<id>` the forget saves.
+      it 'keeps the id while the Inventory feed has answered but holds no snapshot' do
+        allow(Lich::Common::Inventory).to receive_messages(feed_available?: true, current: nil)
+        expect(inventory.forget_id('57039206')).to be(false)
+        expect(memo).not_to have_received(:forget)
+      end
+
+      it 'forgets the id when the feed holds a snapshot, or has never answered' do
+        allow(Lich::Common::Inventory).to receive_messages(feed_available?: true, current: double('snapshot'))
+        expect(inventory.forget_id('57039206')).to be(true)
+        allow(Lich::Common::Inventory).to receive_messages(feed_available?: false, current: nil)
+        expect(inventory.forget_id('57039207')).to be(true)
+        expect(memo).to have_received(:forget).twice
       end
     end
 
@@ -7091,15 +7317,17 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
       commons.calls.select { |call| call.first == 'DRCC.stow_crafting_item' }.map { |call| call[1, 2] }
     end
 
+    # Layer 05 of the Nezhiri stack: neither the combine nor the stow of
+    # the herb left after the put is sent. One stack of 25 already meets
+    # the target, and the put leaves no herb in hand.
     it 'gathers a stack of 25 from the herb_container (25:33679), puts it in the lowered mortar and picks the mortar up' do
       game.script('count my nemoih', log('25:33679'))
-      game.script('combine my nemoih', log('25:104590'))
       script_put
       expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
-      expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', put])
+      expect(game.sent).to eq(['count my nemoih', put])
       expect(commons.moves).to eq(['large mortar: grass toolstrap -> hand', 'large mortar: hand -> ground',
                                    "dried nemoih: #{basket} -> hand", 'dried nemoih: hand -> game', 'large mortar: ground -> hand'])
-      expect(stows).to eq([['nemoih', basket]])
+      expect(stows).to be_empty
       expect(messages).to be_empty
     end
 
@@ -7360,13 +7588,12 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
       let(:ids) { { 'dried nemoih' => '41782305' } }
       let(:commons) { ReplayCommons.new(game: game, inventory: { 'large mortar' => 'grass toolstrap', 'dried nemoih' => basket }, ids: ids) }
 
-      # Scripts a stack of 25 from the bag (25:33679) and the combine with
-      # one stack in hand (25:104590).
+      # Scripts a stack of 25 from the bag (25:33679); its count reaches the
+      # target, so no combine is sent.
       #
       # @return [void]
       def script_stack
         game.script('count my nemoih', log('25:33679'))
-        game.script('combine my nemoih', log('25:104590'))
       end
 
       # Scripts the put by +command+, answered as 26:10749; the game takes
@@ -7382,7 +7609,7 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
         script_stack
         script_put_as('put #41782305 in my large mortar')
         expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
-        expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'put #41782305 in my large mortar'])
+        expect(game.sent).to eq(['count my nemoih', 'put #41782305 in my large mortar'])
         expect(commons.moves).to include('dried nemoih: hand -> game')
       end
 
@@ -7407,13 +7634,14 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
       end
 
       # 26:39194, "What were you referring to?", stands for the game
-      # refusing a stale id (code-derived: no log sends the id form).
+      # refusing a stale id (code-derived: the id form is logged, Mithandres
+      # 2026-11-18 13:16:05, but no log shows a stale id refused in a put).
       it 'puts the stack in by name once, the old command, when the game refuses the id (26:39194)' do
         script_stack
         game.script('put #41782305 in my large mortar', log('26:39194'))
         script_put_as(put)
         expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
-        expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'put #41782305 in my large mortar', 'put nemoih in my large mortar'])
+        expect(game.sent).to eq(['count my nemoih', 'put #41782305 in my large mortar', 'put nemoih in my large mortar'])
         expect(commons.moves).to include('dried nemoih: hand -> game')
       end
 
@@ -7447,6 +7675,202 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
         script_put_as(put)
         expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
         expect(game.sent.last).to eq('put nemoih in my large mortar')
+      end
+    end
+
+    # Layer 05 of the Nezhiri stack. Every craft of the 2026-11-18 Nezhiri
+    # sessions gathered one stack of 25 and sent three commands that did
+    # nothing (deep-sea-draught-02-Kythkani 13:45:42-44): `combine my
+    # junliar` ("You must be holding both substances"), the leftover stow
+    # after the whole stack went in ("What were you referring to?"), and,
+    # on the next craft, `get #<id>` of the stack the last vessel took.
+    describe 'the commands a stack that meets the target sent in vain (layer 05 of the Nezhiri stack)' do
+      let(:ids) { {} }
+      let(:commons) { ReplayCommons.new(game: game, inventory: { 'large mortar' => 'grass toolstrap', 'dried nemoih' => basket }, ids: ids) }
+      let(:can_only_hold) { code('Your large mortar can only hold so much.', from: 'R:247 /can only hold/') }
+      let(:memo) { DRCC::CRAFTING_ITEM_IDS }
+
+      before { allow(memo).to receive(:forget) }
+
+      describe 'the combine after the first get' do
+        it 'is not sent when the one stack counts 25, the target' do
+          game.script('count my nemoih', log('25:33679'))
+          script_put
+          expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+          expect(game.sent).to eq(['count my nemoih', put])
+          expect(messages).to be_empty
+        end
+
+        it 'is not sent when the one stack holds more than the target (30 of 25), and the whole stack goes in' do
+          game.script('count my nemoih', merged_count(30))
+          script_put
+          expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+          expect(game.sent).to eq(['count my nemoih', put])
+          expect(commons.moves).to include('dried nemoih: hand -> game')
+        end
+
+        it 'is not sent when the one stack meets a herb quantity of its own size (40 of 40)' do
+          game.script('count my nemoih', merged_count(40))
+          script_put
+          expect { Remedy::HerbGatherer.new(inventory, minimum: 40).gather('nemoih', 'large mortar') }.not_to raise_error
+          expect(game.sent).to eq(['count my nemoih', put])
+        end
+
+        it 'is still sent, and the next stack got, when the first stack counts short of the target (21, 25:12538)' do
+          commons.inventory << ReplayCommons::Item.new('dried nemoih', basket)
+          game.script('count my nemoih', log('25:12538'))
+          game.script('combine my nemoih', log('25:104590'))
+          game.script('count my nemoih', log('25:104726'))
+          game.script('combine my nemoih', log('25:11425'), after: ->(_game) { commons.release('nemoih') })
+          game.script('count my nemoih', log('25:33679'))
+          script_put
+          expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+          expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'count my nemoih', 'combine my nemoih', 'count my nemoih', put])
+        end
+
+        # The bags hold no second stack, so the later get finds the herb in
+        # neither and its combine finds one stack (join_unrouted): remedy
+        # stops short before the put, as before this layer.
+        it 'is still sent when a stack of 25 falls short of a herb quantity of 40' do
+          game.script('count my nemoih', log('25:33679'))
+          game.script('combine my nemoih', log('25:104590'))
+          game.script('combine my nemoih', log('25:104590'))
+          expect { Remedy::HerbGatherer.new(inventory, minimum: 40).gather('nemoih', 'large mortar') }.to raise_error(SystemExit)
+          expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', 'combine my nemoih'])
+          expect(game.sent).not_to include(put)
+        end
+
+        # A stray stack of the herb left in the other hand (an interrupted
+        # run): the combine joins the two, as remedy always did.
+        it 'is still sent when the other hand already holds a stack of the herb, and the merged stack goes in' do
+          commons.inventory << ReplayCommons::Item.new('dried nemoih', basket)
+          commons.hold('dried nemoih', hand: :left)
+          game.script('count my nemoih', log('25:33679'))
+          game.script('combine my nemoih', log('25:11425'), after: ->(_game) { commons.release('nemoih') })
+          script_put
+          expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+          expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', put])
+          expect(stows).to be_empty
+        end
+
+        # The same stray stack, with the hand tag for the stack just got not
+        # yet in when the hands are looked at after its COUNT: the look
+        # before the get, which saw the stray, still sends the combine.
+        it 'is still sent when the other hand held a stack before the get, even if the new stack shows in hand late' do
+          commons.inventory << ReplayCommons::Item.new('dried nemoih', basket)
+          commons.hold('dried nemoih', hand: :left)
+          allow(inventory).to receive(:got_second?).and_return(false)
+          game.script('count my nemoih', log('25:33679'))
+          game.script('combine my nemoih', log('25:11425'), after: ->(_game) { commons.release('nemoih') })
+          script_put
+          expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+          expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', put])
+        end
+
+        it 'is still sent when the count holds no number' do
+          game.script('count my nemoih')
+          game.script('combine my nemoih', log('25:104590'))
+          game.fallback('count my nemoih', log('25:33679'))
+          game.fallback('combine my nemoih', log('25:104590'))
+          script_put
+          expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+          expect(game.sent.first(2)).to eq(['count my nemoih', 'combine my nemoih'])
+        end
+      end
+
+      describe 'the stow of the herb left after the put' do
+        it 'is not sent when the put took the whole stack' do
+          game.script('count my nemoih', log('25:33679'))
+          script_put
+          expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+          expect(stows).to be_empty
+          expect(commons.location_of('large mortar')).to eq('right').or eq('left')
+        end
+
+        it 'is still sent, to the herb_container, when the vessel took only part of a stack of more than the target ("can only hold")' do
+          game.script('count my nemoih', merged_count(40))
+          game.script(put, can_only_hold)
+          expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+          expect(game.sent).to eq(['count my nemoih', put])
+          expect(stows).to eq([['nemoih', basket]])
+          expect(commons.location_of('dried nemoih')).to eq(basket)
+        end
+
+        # Two stacks after too large a combine with neither at 75: the put
+        # takes one and the other is still in hand.
+        it 'is still sent when a second stack is still in hand after the put' do
+          commons.inventory << ReplayCommons::Item.new('dried nemoih', basket)
+          game.script('count my nemoih', log('25:12538'))
+          game.script('combine my nemoih', log('25:104590'))
+          game.script('count my nemoih', log('25:8678'))
+          game.script('combine my nemoih', log('25:30006'))
+          game.script('count my first nemoih', log('25:12538'))
+          game.script('count my second nemoih', log('25:104726'))
+          script_put
+          expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+          expect(game.sent.last).to eq(put)
+          expect(stows).to eq([['nemoih', basket]])
+          expect(commons.location_of('dried nemoih')).to eq(basket)
+        end
+      end
+
+      describe 'the id of the stack the put took' do
+        let(:ids) { { 'dried nemoih' => '57039206' } }
+        let(:id_put) { 'put #57039206 in my large mortar' }
+
+        it 'is forgotten in the DRCC memo once the id put answers "You put" and no hand shows the id' do
+          game.script('count my nemoih', log('25:33679'))
+          game.script(id_put, log('26:10749'), after: ->(_game) { commons.release('nemoih') })
+          expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+          expect(game.sent).to eq(['count my nemoih', id_put])
+          expect(memo).to have_received(:forget).once.with('57039206')
+        end
+
+        it 'is kept when the vessel took only part of the stack ("can only hold"), and the rest is put away' do
+          game.script('count my nemoih', merged_count(40))
+          game.script(id_put, can_only_hold)
+          expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+          expect(memo).not_to have_received(:forget)
+          expect(stows).to eq([['nemoih', basket]])
+        end
+
+        # A hand tag the game has not yet updated: the hands still show the
+        # stack with its id, so the id is kept and the stow is sent, as
+        # before this layer.
+        it 'is kept, and the stow sent as before, when the put answers "You put" but the hand still shows the id' do
+          game.script('count my nemoih', log('25:33679'))
+          game.script(id_put, log('26:10749'))
+          expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+          expect(memo).not_to have_received(:forget)
+          expect(stows).to eq([['nemoih', basket]])
+        end
+
+        it 'is kept when the game refuses the id (26:39194) and the put by name takes the stack' do
+          game.script('count my nemoih', log('25:33679'))
+          game.script(id_put, log('26:39194'))
+          script_put
+          expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+          expect(game.sent).to eq(['count my nemoih', id_put, put])
+          expect(memo).not_to have_received(:forget)
+        end
+
+        it 'is forgotten after the id put that follows the tilt, not after the one the full vessel refused' do
+          game.script('count my nemoih', log('25:33679'))
+          game.script(id_put, code('Your large mortar already has something in it.', from: 'R:247 /already has something/'))
+          game.script(id_put, log('26:10749'), after: ->(_game) { commons.release('nemoih') })
+          expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+          expect(game.sent).to eq(['count my nemoih', id_put, 'tilt my large mortar', 'tilt my large mortar', id_put])
+          expect(memo).to have_received(:forget).once.with('57039206')
+        end
+
+        it 'gathers and puts the stack in as before on a lich-5 without the memo' do
+          hide_const('Harness::DRCC::CRAFTING_ITEM_IDS')
+          game.script('count my nemoih', log('25:33679'))
+          game.script(id_put, log('26:10749'), after: ->(_game) { commons.release('nemoih') })
+          expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
+          expect(game.sent).to eq(['count my nemoih', id_put])
+          expect(commons.location_of('large mortar')).to eq('right').or eq('left')
+        end
       end
     end
 
@@ -7544,7 +7968,7 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
         game.script('combine my nemoih', log('25:104590'))
         script_put
         expect { gatherer_for(75).gather('nemoih', 'large mortar') }.not_to raise_error
-        expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', put])
+        expect(game.sent).to eq(['count my nemoih', put])
         expect(messages).to be_empty
       end
 
@@ -7553,7 +7977,7 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
         game.script('combine my nemoih', log('25:104590'))
         script_put
         expect { gatherer_for(1).gather('nemoih', 'large mortar') }.not_to raise_error
-        expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', put])
+        expect(game.sent).to eq(['count my nemoih', put])
       end
 
       # The stop when gathering ended with no count to go by.
@@ -7999,7 +8423,6 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
 
       before do
         game.script('count my nemoih', log('25:33679'))
-        game.script('combine my nemoih', log('25:104590'))
         game.script(put, log('26:10749'))
       end
 
@@ -8069,10 +8492,9 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
         it "gathers from the herb_container with the commands of today when the first get is answered #{late} s late (25:33679)" do
           answer_the_first_herb_get_late(late)
           game.script('count my nemoih', log('25:33679'))
-          game.script('combine my nemoih', log('25:104590'))
           script_put
           expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
-          expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', put])
+          expect(game.sent).to eq(['count my nemoih', put])
           expect(game.clock).to be >= late
           expect(messages).to be_empty
           expect(commons.location_of('large mortar')).to eq('right').or eq('left')
@@ -8128,7 +8550,6 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
 
         before do
           game.script('count my nemoih', log('25:33679'))
-          game.script('combine my nemoih', log('25:104590'))
           game.script(put, log('26:10749'))
         end
 
@@ -8137,7 +8558,7 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
             answer_the_leftover_stow_late(late)
             expect { gatherer.gather('nemoih', 'large mortar') }.not_to raise_error
             expect(DRCC).to have_received(:stow_crafting_item).with('nemoih', anything, anything).once
-            expect(game.sent).to eq(['count my nemoih', 'combine my nemoih', put])
+            expect(game.sent).to eq(['count my nemoih', put])
             expect(messages).to be_empty
             expect(commons.location_of('large mortar')).to eq('right').or eq('left')
           end
@@ -8156,7 +8577,6 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
         # crafting container is not tried while the looks last.
         it 'sends no stow to the crafting container when the herb_container stow of the herb left after the put is answered 30 s late' do
           game.script('count my nemoih', log('25:33679'))
-          game.script('combine my nemoih', log('25:104590'))
           game.script(put, log('26:10749'))
           leaves = nil
           allow(DRCC).to receive(:stow_crafting_item) do |name, bag, belt|
@@ -8605,7 +9025,7 @@ RSpec.describe 'Remedy craft loop, liquids, herbs and finishing' do
         expect(calls).to be_empty
       end
 
-      it 'buys the coal nugget for the catalyst "nugget" too, at the Riverhaven catalyst-room (8785, base-crafting.yaml:1450)' do
+      it 'buys the coal nugget for the catalyst "nugget" too, at the Riverhaven catalyst-room (8785, base-crafting.yaml remedies: Riverhaven)' do
         allow(DRCI).to receive(:exists?) { |item, *| item != 'nugget' }
         supplies.buy_missing(water: plain_water, alcohol: plain_alcohol, catalyst: 'nugget')
         expect(calls).to eq([[:bank, '5 silver', 'Riverhaven'], [:order, 8785, 2], [:stow, 'coal nugget', toolbag, toolstrap], [:walk, 4321]])

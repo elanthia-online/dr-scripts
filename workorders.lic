@@ -5,7 +5,7 @@
 =end
 
 class WorkOrders
-  VERSION = '1.0.2'.freeze
+  VERSION = '1.0.3'.freeze
 
   # Pattern constants for game responses
   GIVE_LOGBOOK_SUCCESS_PATTERNS = [
@@ -26,17 +26,6 @@ class WorkOrders
 
   NPC_NOT_FOUND_PATTERN = "^What is it you're trying to give".freeze
 
-  # The clerk's repair quote, e.g. "That will cost 4,447 Kronars to repair.
-  # Just give it to me again..." -- captured (cost included) so we can read the
-  # price and top up from the bank if we are short before confirming. This only
-  # matches when the cost and prompt share one game line (the observed format);
-  # the bare 'Just give it to me again' below is kept as a fallback so a split
-  # line still matches the prompt (repair proceeds, just without auto-funding).
-  REPAIR_QUOTE_PATTERN = /cost [\d,]+ \w+ to repair.*give it to me again/i
-
-  # Clerk's response when we lack the coin to pay for a repair.
-  REPAIR_NEED_COIN_PATTERN = 'more coin'
-
   # Extra forge attempts beyond asked quantity to cover quality rejects / failed crafts
   FORGE_ATTEMPT_BUFFER = 5
 
@@ -44,17 +33,21 @@ class WorkOrders
   # shop (bingots-room), not its stock shop. smith.lic has the same constant.
   BULK_INGOT_VOLUME = 50
 
-  REPAIR_GIVE_PATTERNS = [
-    "I don't repair those here",
-    'What is it',
-    "There isn't a scratch on that",
-    REPAIR_QUOTE_PATTERN,
-    'Just give it to me again',
-    'I will not',
-    "I can't fix those.  They only have so many uses and then you must buy another."
-  ].freeze
+  # How many times, and how many seconds apart, a repair ticket not ready yet
+  # is looked at again before it is put away and collection stops: 21 looks
+  # with 20 waits of 30 s between them, ten minutes of waiting, longer than
+  # any repair seen. A look that gets no answer also waits out DRC.bput's
+  # 15 s first.
+  TICKET_WAIT_POLLS = 20
+  TICKET_WAIT_SECONDS = 30
 
-  REPAIR_NO_NEED_PATTERNS = [/scratch/, /I will not/, /They only have so many uses/].freeze
+  # The most repair tickets one run hands in; the next one found is put away.
+  TICKET_LIMIT = 20
+
+  # How many times, 0.1 s apart, the hands are looked at for the ticket a GET
+  # brought: the hand update may trail the GET's reply, and lich-5's
+  # get_item? waits for it (up to 1 s) only when no ticket was held before.
+  TICKET_IN_HAND_POLLS = 10
 
   BUNDLE_SUCCESS_PATTERNS = [
     '^You notate the',
@@ -376,6 +369,21 @@ class WorkOrders
     DRCC.stow_crafting_item(name, @bag, @belt)
   end
 
+  # Gets the tools repaired after a work order, skipping those named in
+  # workorders_no_repair_tools: with the character's own materials
+  # (workorders_repair_own_tools), or by leaving each at the repairer,
+  # answering its reply through the data repair_replies (a declined tool is
+  # put away; a quote or its prompt is confirmed; any other answer is put
+  # away with a message; a tool that cannot be got says so and is skipped,
+  # and one that cannot be got into the right hand, which a bare GIVE hands
+  # over, says so and is put away: see tool_to_right_hand?), then
+  # collecting the tickets carried. Nothing is left for repair when
+  # repair_replies is unusable (see repair_replies_known?).
+  #
+  # @param info [Hash] the discipline's base-crafting.yaml data
+  #   (repair-room, repair-npc)
+  # @param tools [Array<String>] the tool names
+  # @return [void]
   def repair_items(info, tools)
     skip = Array(@settings.workorders_no_repair_tools)
     tools = tools.reject { |t| skip.any? { |s| t.include?(s) } } unless skip.empty?
@@ -389,28 +397,369 @@ class WorkOrders
       return
     end
 
+    return unless repair_replies_known?
+
     DRCT.walk_to info['repair-room']
 
     tools.each do |tool_name|
-      get_tool(tool_name)
-      result = DRC.bput("give #{info['repair-npc']}", *REPAIR_GIVE_PATTERNS)
-      if REPAIR_NO_NEED_PATTERNS.any? { |pat| pat.match?(result) }
+      held = held_objects.map(&:id)
+      # get_crafting_item (skip_exit) has said why; a bare give would hand
+      # over nothing, or what the right hand holds.
+      next Lich::Messaging.msg('bold', "WorkOrders: Could not get the #{tool_name} to leave for repair; skipping it.") unless get_tool(tool_name)
+      next unless tool_to_right_hand?(tool_name, held)
+
+      result = DRC.bput("give #{info['repair-npc']}", *repair_replies['offered'])
+      if repair_replies['declined'].any? { |declined| result.match?(/#{declined}/i) }
         stow_tool(tool_name)
-      elsif result.include?('give')
+      elsif repair_offered?(result)
         confirm_repair(info, tool_name, repair_cost_copper(result))
       else
+        Lich::Messaging.msg('bold', "WorkOrders: #{info['repair-npc']} did not take the #{tool_name} for repair (#{result.empty? ? 'no answer' : result}); putting it away.")
         stow_tool(tool_name)
       end
     end
 
-    while DRCI.get_item?("#{info['repair-npc']} ticket")
-      pause 30 until DRC.bput('look at my ticket', 'should be ready by now', 'Looking at the') == 'should be ready by now'
-      DRC.bput("give #{info['repair-npc']}", 'You hand')
+    collect_tickets(info['repair-npc'])
+    Lich::Messaging.msg('plain', 'WorkOrders: Tool repair at NPC completed')
+  end
+
+  # Puts the tool just got in the right hand, by its id, for the bare GIVE,
+  # which hands over the right hand. Something held already (repair run by
+  # hand, or by restock-shop or trade, with an item held; a tool whose
+  # second give got no answer; a ticket that came late) sends the GET to
+  # the left hand, and the give would hand over what the right hand holds:
+  # the repairer quoted, and was paid for, that instead, and the tool was
+  # never offered. The tool is the object new in a hand (see got_tool). One
+  # that cannot be found in a hand or moved to the right says so and is
+  # put away, not left.
+  #
+  # @param tool_name [String] the tool, as get_tool got it
+  # @param held [Array<String, nil>] the ids in hand before the GET
+  # @return [Boolean] whether the tool is in the right hand
+  def tool_to_right_hand?(tool_name, held)
+    tool = got_tool(tool_name, held)
+    return true if tool && to_right_hand?(tool)
+
+    Lich::Messaging.msg('bold', "WorkOrders: Could not get the #{tool_name} into your right hand to leave for repair (a bare give hands over the right hand); putting it away.")
+    stow_tool(tool_name)
+    false
+  end
+
+  # The tool get_tool put in hand: the object new in a hand (by id), the
+  # one whose GameObj noun is the tool's (DRC.get_noun) first; with none
+  # new (it was held already: the GET answers "You are already holding
+  # that."), the one held object whose noun is the tool's. A ticket is never
+  # the tool: one that comes into a hand late (a second give bput gave up
+  # on that still went through) would else be handed to the repairer.
+  #
+  # @param tool_name [String] the tool, as get_tool got it
+  # @param held [Array<String, nil>] the ids in hand before the GET
+  # @return [Object, nil] its GameObj; nil when none, or more than one
+  #   held one, fits
+  def got_tool(tool_name, held)
+    noun = DRC.get_noun(tool_name).to_s.downcase
+    candidates = held_objects.select { |obj| obj.id && obj.noun.to_s.downcase != 'ticket' }
+    fresh = candidates.reject { |obj| held.include?(obj.id) }
+    return fresh.find { |obj| obj.noun.to_s.downcase == noun } || fresh.first unless fresh.empty?
+
+    same = candidates.select { |obj| obj.noun.to_s.downcase == noun }
+    same.first if same.size == 1
+  end
+
+  # Moves a held object to the right hand, by its id: SWAP moves it from
+  # the left.
+  #
+  # @param obj [Object] its GameObj
+  # @return [Boolean] whether it is in the right hand
+  def to_right_hand?(obj)
+    DRC.bput('swap', /^You move/, /^You have nothing/) if GameObj.left_hand&.id == obj.id
+    GameObj.right_hand&.id == obj.id
+  end
+
+  # Hands in each <npc> ticket carried once its look says the tool is ready,
+  # and stows what comes back. GET MY <NPC> TICKET brings any ticket of that
+  # name: society repairers all go by "clerk", so it also brings one another
+  # society's clerk holds a tool for (say, one left from a workorders run in
+  # another discipline, or by hand). A ticket the repairer does not take is
+  # put away and collection stops, rather than being handed over again
+  # forever. So is one whose look still says not ready, or never got an
+  # answer, after TICKET_WAIT_POLLS waits (see ticket_wait), and one more
+  # after TICKET_LIMIT were handed in. Each says so.
+  #
+  # A bare GIVE hands over the right hand, and the hands may hold something
+  # already (repair run by hand, or by restock-shop or trade, with an item
+  # held; a tool a second give got no answer for; the ticket confirm_repair
+  # could not put away). A <npc> ticket already held is handed in first,
+  # with no GET: while it is held, the GET answers "You are already
+  # holding that." and brings no other. Otherwise the GET needs a free hand,
+  # so with both full the right hand is put away first, and the ticket got
+  # is the <npc> ticket new in a hand (see ticket_got). Either way the
+  # ticket goes to the right hand by its id (see ticket_to_right_hand)
+  # before it is looked at and handed in. After each hand-in both hands are put away
+  # (stow_tool), the tool handed back and anything that was held with it.
+  #
+  # @param npc [String] the repairer (repair-npc)
+  # @return [void]
+  def collect_tickets(npc)
+    handed = 0
+    loop do
+      ticket = held_ticket(npc)
+      unless ticket
+        return unless hand_free_for_ticket?(npc)
+        return unless (ticket = ticket_got(npc))
+      end
+      return stop_collecting(npc, "Handed in #{TICKET_LIMIT} #{npc} tickets already", 'Hand in the rest yourself.') if handed >= TICKET_LIMIT
+
+      unready = ticket_to_right_hand(npc, ticket) || ticket_unready(npc)
+      return stop_collecting(npc, unready, 'Hand it, and any more you carry, in yourself.') if unready
+
+      reply = DRC.bput("give #{npc}", *repair_replies['ticket_handed'], *repair_replies['ticket_not_taken'])
+      return ticket_not_taken(npc, reply) unless repair_replies['ticket_handed'].any? { |taken| reply.match?(/#{taken}/i) }
+
+      handed += 1
       pause 1
       stow_tool(DRC.right_hand) if DRC.right_hand
       stow_tool(DRC.left_hand) if DRC.left_hand
     end
-    Lich::Messaging.msg('plain', 'WorkOrders: Tool repair at NPC completed')
+  end
+
+  # Whether a hand is free for the next ticket's GET: with both full, the
+  # right hand is put away first. Says so when it would not go.
+  #
+  # @param npc [String] the repairer (repair-npc)
+  # @return [Boolean]
+  def hand_free_for_ticket?(npc)
+    return true unless DRC.right_hand && DRC.left_hand
+
+    stow_tool(DRC.right_hand)
+    return true unless DRC.right_hand && DRC.left_hand
+
+    Lich::Messaging.msg('bold', "WorkOrders: Both hands are full and the #{DRC.right_hand} would not go away; collecting no more #{npc} tickets this run. Hand in yourself any #{npc} tickets you carry.")
+    false
+  end
+
+  # @return [Array<Object>] the GameObj of each hand holding something
+  def held_objects
+    [GameObj.right_hand, GameObj.left_hand].compact.reject { |obj| obj.name.to_s == 'Empty' }
+  end
+
+  # A <npc> ticket in a hand, the right one first (see npc_ticket?).
+  #
+  # @param npc [String] the repairer (repair-npc)
+  # @return [Object, nil] its GameObj
+  def held_ticket(npc)
+    held_objects.find { |obj| npc_ticket?(obj, npc) }
+  end
+
+  # Whether a hand's object is a <npc> ticket: it has an id, its noun is
+  # ticket and its name has the repairer's name as a word, as GET MY <NPC>
+  # TICKET takes one (taskmaster's repairer_ticket? matches the same).
+  #
+  # @param obj [Object] a hand's GameObj
+  # @param npc [String] the repairer (repair-npc)
+  # @return [Boolean]
+  def npc_ticket?(obj, npc)
+    !obj.id.nil? && obj.noun.to_s == 'ticket' && obj.name.to_s.match?(/\b#{Regexp.escape(npc)}\b/i)
+  end
+
+  # GETs a <npc> ticket and gives the <npc> ticket new in a hand (by id;
+  # see npc_ticket?), looked for TICKET_IN_HAND_POLLS times 0.1 s apart.
+  # lich-5's get_item? looks only for the noun, so a ticket of another name
+  # held makes it true whatever the GET did, and at once: with no new <npc>
+  # ticket in a hand, the GET brought nothing (no <npc> ticket left), as
+  # when get_item? is false. Anything else new in a hand (the tool of the
+  # last hand-in, shown late) is not taken for the ticket.
+  #
+  # @param npc [String] the repairer (repair-npc)
+  # @return [Object, nil] the ticket's GameObj; nil when none was got
+  def ticket_got(npc)
+    held = held_objects.map(&:id)
+    return unless DRCI.get_item?("#{npc} ticket")
+
+    TICKET_IN_HAND_POLLS.times do
+      found = held_objects.find { |obj| !held.include?(obj.id) && npc_ticket?(obj, npc) }
+      return found if found
+
+      pause 0.1
+    end
+    nil
+  end
+
+  # Moves the ticket to the right hand, by its id (see to_right_hand?).
+  #
+  # @param npc [String] the repairer (repair-npc)
+  # @param ticket [Object] the ticket's GameObj
+  # @return [String, nil] why it could not be, or nil once it is there
+  def ticket_to_right_hand(npc, ticket)
+    return if to_right_hand?(ticket)
+
+    "Could not move the #{npc} ticket to your right hand"
+  end
+
+  # Waits on the ticket in hand (ticket_wait) and says why it is not to be
+  # handed in, if it is not.
+  #
+  # @param npc [String] the repairer (repair-npc)
+  # @return [String, nil] why it is not ready, or nil when it is
+  def ticket_unready(npc)
+    waits = "#{TICKET_WAIT_POLLS} waits of #{TICKET_WAIT_SECONDS} s"
+    case ticket_wait
+    when :not_ready then "The #{npc} ticket is still not ready after #{waits}"
+    when :unanswered then "The #{npc} ticket's look got no answer in #{TICKET_WAIT_POLLS + 1} looks with #{waits} between"
+    end
+  end
+
+  # Looks at the ticket until it says the tool is ready, looking again every
+  # TICKET_WAIT_SECONDS up to TICKET_WAIT_POLLS times (so up to
+  # TICKET_WAIT_POLLS + 1 looks).
+  #
+  # @return [Symbol] :ready; :not_ready when it never said ready and some
+  #   look said not ready; :unanswered when no look got an answer (each of
+  #   those waited out DRC.bput's 15 s too)
+  def ticket_wait
+    answered = false
+    polls = 0
+    loop do
+      look = DRC.bput('look at my ticket', repair_replies['ready'], repair_replies['not_ready'])
+      return :ready if look.match?(/#{repair_replies['ready']}/i)
+
+      answered ||= !look.empty?
+      return answered ? :not_ready : :unanswered if polls >= TICKET_WAIT_POLLS
+
+      polls += 1
+      pause TICKET_WAIT_SECONDS
+    end
+  end
+
+  # Stops collection at a ticket the repairer did not take. Only society
+  # repairers share a name ("clerk"), so only a clerk's ticket may be
+  # another repairer's; a named repairer's (Rangu's) is told to be handed in
+  # by hand.
+  #
+  # @param npc [String] the repairer (repair-npc)
+  # @param reply [String] what DRC.bput handed back for the give
+  # @return [void]
+  def ticket_not_taken(npc, reply)
+    why = "#{npc} did not take the #{npc} ticket (#{reply.empty? ? 'no answer' : reply})"
+    return stop_collecting(npc, why, "Hand it, and any more #{npc} tickets you carry, in yourself.") unless npc.casecmp?('clerk')
+
+    stop_collecting(npc, "#{why}: another repairer's, perhaps, such as another society's clerk",
+                    'Take it to the repairer who holds that tool, and hand in yourself any more clerk tickets you carry; until then later runs likely stop at it too.')
+  end
+
+  # Puts the ticket in hand away and says why no more are collected, and
+  # what the player should do with the tickets left.
+  #
+  # @param npc [String] the repairer (repair-npc)
+  # @param why [String] what stopped collection
+  # @param advice [String] what to do with the ticket put away and the rest
+  # @return [void]
+  def stop_collecting(npc, why, advice)
+    stowed = DRCI.put_away_item?("#{npc} ticket")
+    Lich::Messaging.msg('bold', "WorkOrders: #{why}. #{stowed ? 'Put it away' : 'Could not put it away'}; collecting no more tickets this run. #{advice}")
+  end
+
+  # Whether the answer to the first give asks for a second one: the quote or
+  # its bare prompt (a quote pattern changed in data/custom may match the
+  # cost alone). A refusal is checked before this.
+  #
+  # @param reply [String] what DRC.bput handed back
+  # @return [Boolean]
+  def repair_offered?(reply)
+    [repair_replies['quote'], repair_replies['prompt']].any? { |pattern| reply.match?(/#{pattern}/i) }
+  end
+
+  # What repairers answer when handed a tool (data/base-crafting.yaml
+  # repair_replies, shared with taskmaster), each of REPAIR_REPLY_KEYS
+  # present and usable: see complete_repair_replies.
+  #
+  # @return [Hash{String => String, Array<String>}, nil] nil when even the
+  #   shipped data has not every one
+  def repair_replies
+    return @repair_replies if @repair_replies_checked
+
+    @repair_replies_checked = true
+    @repair_replies = complete_repair_replies(get_data('crafting')['repair_replies'])
+  end
+
+  # The repair_replies keys repair uses, and those of them that are lists of
+  # patterns (each other one is a single pattern). taskmaster.lic has the
+  # same pair; spec/base_crafting_repair_replies_spec.rb checks both against
+  # the shipped data.
+  REPAIR_REPLY_KEYS = %w[quote prompt offered declined ticket need_coin ready not_ready ticket_handed ticket_not_taken].freeze
+  REPAIR_REPLY_LISTS = %w[offered declined ticket_handed ticket_not_taken].freeze
+
+  # Whether repair has every reply it needs (repair_replies is not nil).
+  #
+  # @return [Boolean]
+  def repair_replies_known?
+    !repair_replies.nil?
+  end
+
+  # The repair replies get_data found, with each one missing or unusable
+  # taken from the shipped data/base-crafting.yaml. A copy in data/custom
+  # replaces the shipped file whole (lich-5 get_data), so one from before
+  # repair_replies was added has none, and a hand-edited one may hold a list
+  # where a pattern belongs. Says once which keys came from the shipped file;
+  # when that file lacks some too, says so and gives nil, and repair is
+  # skipped rather than waiting on replies that cannot match.
+  #
+  # @param found [Object] get_data('crafting')['repair_replies']
+  # @return [Hash{String => String, Array<String>}, nil]
+  def complete_repair_replies(found)
+    found = {} unless found.is_a?(Hash)
+    stale = REPAIR_REPLY_KEYS.reject { |key| repair_reply_usable?(key, found[key]) }
+    return found if stale.empty?
+
+    shipped = shipped_repair_replies
+    unusable = stale.reject { |key| repair_reply_usable?(key, shipped[key]) }
+    if unusable.empty?
+      Lich::Messaging.msg('bold', "WorkOrders: data/custom/base-crafting.yaml has no usable repair_replies #{stale.join(', ')} (a copy from before they were added?); using the shipped data/base-crafting.yaml's. Update that copy.")
+      return found.merge(shipped.slice(*stale))
+    end
+
+    Lich::Messaging.msg('bold', "WorkOrders: base-crafting.yaml has no usable repair_replies #{stale.join(', ')}, and the shipped data/base-crafting.yaml has none for #{unusable.join(', ')}; tools are not left for repair or collected. Update dr-scripts.")
+    nil
+  end
+
+  # The repair_replies of the shipped data/base-crafting.yaml, read past any
+  # copy in data/custom; empty when the file cannot be read. Read the way
+  # lich-5's get_data reads it (YAML.unsafe_load_file), so a tag, Symbol or
+  # Date added to the file later does not hide every reply.
+  #
+  # @return [Hash]
+  def shipped_repair_replies
+    data = YAML.unsafe_load_file(File.join(SCRIPT_DIR, 'data', 'base-crafting.yaml'))
+    replies = data['repair_replies'] if data.is_a?(Hash)
+    replies.is_a?(Hash) ? replies : {}
+  rescue SystemCallError, Psych::Exception
+    {}
+  end
+
+  # Whether a repair_replies value is of the kind its key needs: a non-empty
+  # list of patterns for REPAIR_REPLY_LISTS, else one pattern.
+  #
+  # @param key [String]
+  # @param value [Object]
+  # @return [Boolean]
+  def repair_reply_usable?(key, value)
+    return repair_pattern?(value) unless REPAIR_REPLY_LISTS.include?(key)
+
+    value.is_a?(Array) && !value.empty? && value.all? { |pattern| repair_pattern?(pattern) }
+  end
+
+  # Whether a value is a pattern DRC.bput can take: a non-empty String that
+  # makes a valid regular expression.
+  #
+  # @param value [Object]
+  # @return [Boolean]
+  def repair_pattern?(value)
+    return false unless value.is_a?(String) && !value.empty?
+
+    Regexp.new(value)
+    true
+  rescue RegexpError
+    false
   end
 
   # Parse the copper cost out of the clerk's repair quote. Repair prices are
@@ -422,7 +771,9 @@ class WorkOrders
   end
 
   # Hand the item over to finalize a repair. If the clerk says we need more
-  # coin, withdraw 10x the quoted cost from the bank, walk back, and retry.
+  # coin, withdraw 10x the quoted cost from the bank, walk back, and retry;
+  # a withdrawal that fails walks back too and skips the tool, so the rest
+  # are offered, and the tickets collected, at the repairer, not at the bank.
   # Walking away and re-offering the tool restarts the clerk's two-give
   # handshake, so after a bank run the next give is a fresh quote rather than
   # the ticket; treat that quote as a normal step (refresh the cost and give
@@ -430,14 +781,14 @@ class WorkOrders
   def confirm_repair(info, tool_name, cost)
     attempts = 0
     loop do
-      result = DRC.bput("give #{info['repair-npc']}", 'repair ticket', REPAIR_NEED_COIN_PATTERN, REPAIR_QUOTE_PATTERN, 'Just give it to me again')
+      result = DRC.bput("give #{info['repair-npc']}", repair_replies['ticket'], repair_replies['need_coin'], repair_replies['quote'], repair_replies['prompt'])
       case result
-      when /repair ticket/
+      when /#{repair_replies['ticket']}/i
         break
-      when REPAIR_QUOTE_PATTERN, /Just give it to me again/
+      when /#{repair_replies['quote']}/i, /#{repair_replies['prompt']}/i
         new_cost = repair_cost_copper(result)
         cost = new_cost if new_cost
-      when /#{REPAIR_NEED_COIN_PATTERN}/
+      when /#{repair_replies['need_coin']}/i
         attempts += 1
         if cost.nil? || attempts > 3
           Lich::Messaging.msg('bold', "WorkOrders: Unable to fund repair of #{tool_name}; skipping.")
@@ -448,10 +799,19 @@ class WorkOrders
         stow_tool(tool_name)
         unless DRCM.ensure_copper_on_hand(cost * 10, @settings, @hometown)
           Lich::Messaging.msg('bold', "WorkOrders: Bank withdrawal failed; skipping #{tool_name} repair.")
+          # The bank run leaves us at the bank, failed or not: the rest of the
+          # tools are offered, and the tickets collected, at the repairer.
+          DRCT.walk_to(info['repair-room'])
           return
         end
         DRCT.walk_to(info['repair-room'])
-        get_tool(tool_name)
+        # Got again as repair_items gets it: checked, and into the right
+        # hand by its id, as a bare GIVE hands over the right hand.
+        held = held_objects.map(&:id)
+        unless get_tool(tool_name) && tool_to_right_hand?(tool_name, held)
+          Lich::Messaging.msg('bold', "WorkOrders: Could not get the #{tool_name} back after the bank run; skipping its repair.")
+          return
+        end
       else
         Lich::Messaging.msg('bold', "WorkOrders: Unexpected response finalizing #{tool_name} repair; skipping.")
         return

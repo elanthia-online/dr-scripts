@@ -44,6 +44,24 @@
 # their last use and the game tossed them. No book is opened.
 #   ;remedy instructions marram "pewter ingot" mortar salve
 #
+# The instructions form takes one more optional argument, the word
+# stocked, before or after the herb quantity. It tells remedy the caller
+# has just checked the water, the alcohol and the coal nugget are on hand
+# (taskmaster.lic's Nezhiri crafts do, and none of her recipes uses water
+# or alcohol), so remedy skips its own check of loose water, alcohol and
+# coal at the start (a TAP each, see Buying supplies), and buys none of
+# them; a water_container or alcohol_container is still got and counted,
+# and when it holds none remedy tries to refill it (rubs it, then puts in
+# liquid from the crafting container), going on with the plain liquid if
+# that finds none, as on every run. Should the game then ask for a
+# catalyst that cannot be got, remedy stops with the vessel in hand, as it
+# always has, and prints the ;remedy continue line. taskmaster then checks
+# your hands for the remedy; finding none, it looks in the held vessel,
+# buys the nugget where it shops and carries an unfinished remedy on with
+# the continue form. Without stocked remedy checks and buys at the start,
+# as it always has.
+#   ;remedy instructions georin "coal nugget" mortar glop 25 stocked
+#
 # == Brewer's brine
 # Some instructions (Nezhiri's Hollow Eve 2026 recipes) list a splash of
 # brewer's brine, and the game asks for it while crafting ("You need another
@@ -59,14 +77,23 @@
 #   ;remedy instructions georin "coal nugget" mortar glop 25
 #
 # == Callers
-# workorders.lic:846/848, craft.lic:694 and create_remedies.lic:54 run the
+# workorders' remedy_items, craft.lic:694 and create_remedies.lic:54 run the
 # book form with a base-recipes.yaml recipe; create_remedies runs the
 # instructions form instead for a recipe marked `instructions: true`
-# (CreateRemedies#remedy_args). Lich gives no exit status: the
-# finished remedy is left in hand, the tools and the vessel are put away,
-# the product is counted (`count my <noun>`, after the mark's roundtime) and
-# the script ends. The product in hand is the success signal; each caller
-# checks DRCI.in_hands?(noun) after remedy and stops when it is missing.
+# (CreateRemedies#remedy_args). taskmaster.lic runs the instructions form
+# for Nezhiri's remedies (Taskmaster#remedy_args), after it has bought what
+# the crafts need, with stocked when this remedy.lic takes the word, and
+# the continue form, without it, to carry an unfinished one on. Lich gives
+# no exit status: the finished remedy is left in hand, the tools and the
+# vessel are put away, the product is counted (`count my <noun>`, after
+# the mark's roundtime) and the script ends. The product in hand is the
+# success signal. workorders, craft and create_remedies check
+# DRCI.in_hands?(noun) after remedy and stop when it is missing
+# (workorders' remedy_items, craft.lic:697, create_remedies.lic:57). taskmaster
+# checks the hands for the remedy (Taskmaster#held_remedy_ids); finding
+# none, it looks in a vessel left in hand and carries an unfinished remedy
+# on once with the continue form, or takes a finished one out
+# (Taskmaster#remedy_left_in_vessel), and stops only when that fails.
 # remedy prints a bold "Remedy:" line and exits with no product when the
 # game refuses the herb ("You need a more suitable type of herb", or more
 # pieces of it), when the studied instructions fade before crafting begins,
@@ -118,15 +145,22 @@
 # hometown; hometown's shop when base-crafting.yaml has none for the
 # crafting town), with coins from that town's bank, then walks to
 # alchemy_room, or back to the room it was started in when alchemy_room is
-# not set. remedy never buys brewer's brine.
+# not set. remedy never buys brewer's brine. It looks for loose water,
+# alcohol and coal at the start of every run, whether or not the recipe
+# uses them, unless the instructions form says stocked: then it looks for
+# none of them and buys nothing, and a catalyst that cannot be got stops
+# it with the vessel in hand. A water_container or alcohol_container is
+# got and counted at the start of every run, stocked or not; when it holds
+# none remedy tries to refill it, goes on with the plain liquid if that
+# finds none, and puts the vessel away.
 
 # Crafts one alchemy remedy from a recipe book or from crafting
 # instructions, or resumes one in progress.
 #
 # {Remedy.new} only takes the settings and the parsed arguments; {#run} does
 # the work: it registers the before_dying cleanup and the Flags, finds the
-# liquids, buys what is missing, then crafts until the game reports the
-# remedy done.
+# liquids, buys what is missing (unless the order is stocked), then crafts
+# until the game reports the remedy done.
 class Remedy
   # The game's own lines can start with XML tags or follow other text; other
   # players' speech, whispers and ESP always put a double quote before their
@@ -247,8 +281,12 @@ class Remedy
     # put your nemoih in your large mortar." (26:10749, the reply to
     # 26:10748 `put my nemoih in my large mortar`).
     #
-    # @note code-derived: the reply to the id form is taken to be the same
-    #   "You put your <herb> in your <vessel>."; no log sends the id form.
+    # @note The id form gets the same reply: `put #57039206 in my bowl` ->
+    #   "You put your junliar in your purpleheart bowl."
+    #   (deep-sea-draught-01-Mithandres, 2026-11-18 13:16:05;
+    #   2026-11-18_12-40-15.xml:34029 and :34070). Code-derived: the game
+    #   refusing a stale id in the put, which no log shows (a stale id in a
+    #   get is refused with "What were you referring to?", :35289-35290).
     #   The id form also listens for {NOT_FOUND}, and on it the put is sent
     #   again by name ({HerbGatherer#put_herb}); the name form listens for
     #   these replies alone, as it always has.
@@ -521,6 +559,21 @@ class Remedy
     description: 'Fewest pieces of herb1 to put in, 1 to 75; remedy stops before the put with fewer. Without it, 25, crafting with what is found.'
   }.freeze
 
+  # The instructions form's optional word stocked ({Order#stocked?}): the
+  # caller has just checked the water, the alcohol and the coal nugget are
+  # on hand, so remedy does not look for them at the start (see the file
+  # header). Like {HERB_QUANTITY_ARG} it is matched against the arguments
+  # left once the required ones are taken, so it may come before or after
+  # the herb quantity. The pattern is the whole word, anchored, so a herb
+  # quantity (digits only) never matches it nor it the herb quantity, and
+  # an argument list without it matches as before. The book and continue
+  # forms do not take it: their callers rely on remedy's own check, and
+  # taskmaster's continue run keeps it as the guard of its recovery.
+  STOCKED_ARG = {
+    name: 'stocked', regex: /\Astocked\z/i, optional: true,
+    description: 'The caller has checked water, alcohol and the coal nugget are on hand: skip the check of loose ones at the start and buy none of them (a water_container or alcohol_container is still got and counted, and remedy tries to refill it when empty). A catalyst that cannot be got stops remedy with the vessel in hand, for the caller to carry on (taskmaster checks your hands for the remedy, then looks in the held vessel and runs the continue form).'
+  }.freeze
+
   # The recipe names the book form accepts: letters, whitespace, hyphens and
   # the six characters ASCII sits between Z and a ([ \ ] ^ _ and the
   # backtick), as remedy always has (/^[A-z\s\-]+$/i, spelled out here).
@@ -559,7 +612,7 @@ class Remedy
   ].freeze
 
   # The instructions form: `;remedy instructions <herb1> <catalyst>
-  # <container> <noun> [herb quantity]`, for a remedy made from loose
+  # <container> <noun> [herb quantity] [stocked]`, for a remedy made from loose
   # crafting instructions, "<noun> instructions" ({Order#instructions_name}),
   # instead of a recipe book. It takes no herb2: every instructions remedy
   # of the logs uses one herb (clubmoss liniment 25:10795, marram salve
@@ -579,7 +632,8 @@ class Remedy
     CATALYST_ARG,
     CONTAINER_ARG,
     NOUN_ARG,
-    HERB_QUANTITY_ARG
+    HERB_QUANTITY_ARG,
+    STOCKED_ARG
   ].freeze
 
   # The forms parse_args matches the arguments against.
@@ -642,6 +696,9 @@ class Remedy
   #   @return [Integer, nil] the fewest pieces of herb1 to put in the vessel
   #     ({HERB_QUANTITY_ARG}), 1 to 75; nil when not given, and always in
   #     the continue form, which gathers no herb
+  # @!attribute [r] stocked
+  #   @return [Boolean] whether the caller said stocked ({STOCKED_ARG}):
+  #     true only in the instructions form, when given
   #
   # Defined as a constant and reopened below without a superclass: Lich
   # evals the whole script again on every run in the same session and keeps
@@ -650,21 +707,23 @@ class Remedy
   # for class Order" before sending anything.
   #
   # @api private
-  Order = Data.define(:mode, :book_type, :chapter, :recipe_name, :herb1, :herb2, :catalyst, :container_request, :noun, :herb_quantity)
+  Order = Data.define(:mode, :book_type, :chapter, :recipe_name, :herb1, :herb2, :catalyst, :container_request, :noun, :herb_quantity, :stocked)
 
   class Order
     # The herb2 values that say the recipe has no second herb, as parse_args
-    # lowercases them: na (workorders.lic:836, craft.lic:637,
+    # lowercases them: na (workorders' remedy_items, craft.lic:637,
     # create_remedies.lic:86), none (the herb2 help text) and "not used"
     # (the file header's example).
     NO_SECOND_HERB = ['na', 'none', 'not used'].freeze
 
-    # Builds an Order. herb_quantity may be left out, as in every request
-    # made before it existed: nil, gather the usual {HerbGatherer::HANDFUL}.
+    # Builds an Order. herb_quantity and stocked may be left out, as in
+    # every request made before they existed: nil, gather the usual
+    # {HerbGatherer::HANDFUL}; false, check the supplies at the start.
     #
     # @param herb_quantity [Integer, nil] see {#herb_quantity}
+    # @param stocked [Boolean] see {#stocked}
     # @param members [Hash{Symbol => Object}] every other attribute
-    def initialize(herb_quantity: nil, **members)
+    def initialize(herb_quantity: nil, stocked: false, **members)
       super
     end
 
@@ -677,8 +736,8 @@ class Remedy
 
     # Reads the request from parse_args' result, in any form of
     # {ARG_DEFINITIONS}. Only the continue form sets `continue`, only the
-    # instructions form `instructions`, and only the book and instructions
-    # forms a herb quantity. Stops before anything is sent when the
+    # instructions form `instructions` and `stocked`, and only the book and
+    # instructions forms a herb quantity. Stops before anything is sent when the
     # recipe name is no valid Regexp ({.recipe_name_error}) or the herb
     # quantity is one no stack can hold ({.herb_quantity_error}).
     #
@@ -701,7 +760,8 @@ class Remedy
           catalyst: args.catalyst,
           container_request: args.container,
           noun: args.noun,
-          herb_quantity: args.herb_quantity&.to_i)
+          herb_quantity: args.herb_quantity&.to_i,
+          stocked: !args.stocked.nil?)
     end
 
     # Which form of {ARG_DEFINITIONS} parse_args matched.
@@ -766,6 +826,15 @@ class Remedy
     # @return [Boolean]
     def instructions?
       mode == :instructions
+    end
+
+    # Whether the caller has checked the water, the alcohol and the coal
+    # nugget are on hand ({STOCKED_ARG}), so remedy does not look for them
+    # at the start, nor buy them ({Remedy#run}).
+    #
+    # @return [Boolean]
+    def stocked?
+      stocked
     end
 
     # The crafting instructions an instructions-form order studies, as
@@ -1217,6 +1286,41 @@ class Remedy
       (hand == :left ? GameObj.left_hand : GameObj.right_hand)&.id
     end
 
+    # Tells DRCC that an item remedy put into the vessel by its id is gone,
+    # so the next get of an item of that name does not ask for it by that
+    # id (DRCC::CRAFTING_ITEM_IDS.forget, lich-5 common-crafting.rb:165).
+    #
+    # DRCC remembers the id of the herb stack its get brought
+    # (remember_got_crafting_item, common-crafting.rb:798 and :1151-1155),
+    # and its next get of that herb asks for it by that id first
+    # (crafting_get_by_known_id, :1090-1100). remedy's put into the vessel
+    # is its own DRC.bput, so DRCC never learned the stack was gone, and
+    # every craft after the first sent a `get #<id>` that the game answered
+    # "What were you referring to?" before the get by name
+    # (deep-sea-draught-01-Mithandres: `put #57039206 in my bowl` at
+    # 13:16:05, then `get #57039206` sent at 13:17:36 and refused; 67 of the 70 draught,
+    # glop and landsickness crafts of the 2026-11-18 Nezhiri sessions).
+    #
+    # Nothing is forgotten while a hand still shows the id (a put that took
+    # part of the stack, or a hand tag not yet updated: the get by id then
+    # finds it, or misses and goes by name as before), on a lich-5 without
+    # the memo, or while the Inventory feed answers but holds no snapshot:
+    # with no id remembered, DRCC's next get may send its own feed refresh
+    # and wait up to 2 s for it (crafting_feed_ids, :1039-1047), longer
+    # than the refused get it would save. A forgotten id is also counted
+    # dead, so an older feed snapshot cannot offer it again.
+    #
+    # @param id [String] the item's game id ({#held_id}), without "#"
+    # @return [Boolean] whether the id was forgotten
+    def forget_id(id)
+      return false if hand_ids.include?(id.to_s)
+      return false unless defined?(DRCC::CRAFTING_ITEM_IDS)
+      return false if feed_refresh_possible?
+
+      DRCC::CRAFTING_ITEM_IDS.forget(id.to_s)
+      true
+    end
+
     # What the hand holding an item shows, the hand found by the last word
     # of the item's name as {#stow_held} finds it (left hand first): the
     # full name, e.g. "nemoih unguent" for the noun "unguent".
@@ -1311,7 +1415,12 @@ class Remedy
 
     # Puts away the herb left in hand after the vessel put: in
     # herb_container, then, when the hand still holds it, in the crafting
-    # container.
+    # container. Nothing is sent when no hand holds the herb ({#held?},
+    # read once): the put took the whole stack, and the stow could only
+    # answer "What were you referring to?", as it did after all 95 vessel
+    # puts of the 2026-11-18 Nezhiri sessions
+    # (deep-sea-draught-02-Kythkani 13:45:44). A hand tag not yet updated
+    # still shows the herb, so the stow is then sent as before.
     #
     # The hand is read because lich-5 counts "That stack of herbs is too
     # large to add more to." (26:32077), the reply of a container whose
@@ -1324,6 +1433,8 @@ class Remedy
     # @param herb [String] herb1
     # @return [Boolean] whether the hands are free of the herb afterwards
     def stow_leftover(herb)
+      return true unless held?(herb)
+
       stow_herb(herb)
       return true if released?(herb, looks: STOP_LOOKS)
       return false unless @herb_container
@@ -1473,6 +1584,30 @@ class Remedy
     def in_both_hands?(name)
       noun = noun_of(name)
       DRCI.in_left_hand?(noun) && DRCI.in_right_hand?(noun)
+    end
+
+    # The game ids the hands show now ({#held_id}'s GameObj hands).
+    #
+    # @return [Array<String>] each hand's id, empty hands and hands with no
+    #   id left out
+    def hand_ids
+      [GameObj.left_hand, GameObj.right_hand].filter_map { |hand| hand&.id&.to_s }
+    end
+
+    # Whether DRCC's next get of an item it has no id for may send its own
+    # Inventory refresh ({#forget_id}): the feed has answered
+    # (Lich::Common::Inventory.feed_available?) but no snapshot is held
+    # (.current is nil), lich-5 common-crafting.rb:1046-1047. On a Lich
+    # whose Inventory has neither method there is no such refresh.
+    #
+    # @return [Boolean]
+    def feed_refresh_possible?
+      return false unless defined?(Lich::Common::Inventory)
+
+      feed = Lich::Common::Inventory
+      return false unless feed.respond_to?(:feed_available?) && feed.respond_to?(:current)
+
+      feed.feed_available? && feed.current.nil?
     end
 
     # @param hand [Symbol] :left or :right
@@ -1737,6 +1872,9 @@ class Remedy
   # set, back to the room remedy was started in (before layer 13 it called
   # DRCT.walk_to(nil), which stays in the shop: H29).
   #
+  # A stocked order ({Order#stocked?}) skips the check at the start
+  # ({#buy_missing}) and buys nothing.
+  #
   # @api private
   class Supplies
     # The coins withdrawn before each purchase, as remedy always has.
@@ -1746,7 +1884,7 @@ class Remedy
     COAL = ['coal nugget', 'nugget'].freeze
 
     # What each supply is ordered as: the base-crafting.yaml remedies keys
-    # (base-crafting.yaml:1388-1416, Crossing) of the room it is ordered in
+    # (base-crafting.yaml remedies: Crossing) of the room it is ordered in
     # and of its menu number, and the name it is stowed and looked for by.
     ORDERS = {
       'water'   => { room: 'stock-room', number: 'stock-number', item: 'water' }.freeze,
@@ -1796,6 +1934,8 @@ class Remedy
     # @note Water and alcohol are bought whenever they are plain and missing,
     #   whether or not the recipe uses them, as before (H20, a
     #   follow-up): remedy is not told the recipe's liquid.
+    #   A stocked order ({Order#stocked?}) does not call it: its caller
+    #   has checked all three.
     def buy_missing(water:, alcohol:, catalyst:)
       buy('water') if water.plain? && !DRCI.exists?(water.source)
       buy('alcohol') if alcohol.plain? && !DRCI.exists?(alcohol.source)
@@ -1845,12 +1985,13 @@ class Remedy
     end
   end
 
-  # Gathers herb1 into the lowered vessel: gets stacks and combines them
-  # until the counts reach the target, puts the stack in, puts away what is
-  # left and picks the vessel up again. The target is the herb quantity the
+  # Gathers herb1 into the lowered vessel: gets stacks, combining them only
+  # while the counts fall short of the target, puts the stack in, puts away
+  # whatever is left and picks the vessel up again. The target is the herb quantity the
   # book form was given ({Order#herb_quantity}), else {HANDFUL}.
   #
-  # A gathering sends the commands remedy has always sent for it:
+  # Apart from the three commands listed below that could do nothing, a
+  # gathering sends the commands remedy has always sent for it:
   # every count read after a get from herb_container or
   # the crafting container is added to the count so far, and after a
   # combine too large ("That stack of herbs is too large to add more to.",
@@ -1883,6 +2024,18 @@ class Remedy
   # The stack put back beside a full one still goes to the plain stow remedy
   # has always sent, with or without herb_container (CURRENT H27): that
   # gathering works today, so A5 keeps its commands.
+  #
+  # Three commands that could do nothing are not sent, each decided by the
+  # hands, which sends nothing:
+  # - the combine after the first get, when its count already reaches the
+  #   target and one hand holds the herb ({#first_stack_enough?});
+  # - the stow of the herb left after the put, when no hand holds it
+  #   ({Inventory#stow_leftover});
+  # - the next craft's get by the id of the stack the put took: the id is
+  #   forgotten in DRCC's memo once the put leaves no hand showing it
+  #   ({#put_herb}, {Inventory#forget_id}).
+  # A first stack short of the target, or beside a second stack, is still
+  # combined, and what the vessel did not take is still put away.
   #
   # Short of a handful with no herb quantity, remedy says so and crafts with
   # what it holds, as it always has; the game decides ("requires more
@@ -2017,6 +2170,7 @@ class Remedy
     #   DRCC.get_crafting_item stops the script
     def collect(herb, vessel)
       counted = summed = nil
+      stray = @inventory.held?(herb)
       @target.times do |fetch|
         routed = @inventory.get(herb) != Inventory::UNROUTED
         empty_handed(herb, vessel) if fetch.zero? && !@inventory.got?(herb, looks: Inventory::STOP_LOOKS)
@@ -2024,6 +2178,8 @@ class Remedy
         return gather_outside_bags(herb, vessel, fetch + 1) unless routed
 
         count = count_held(herb)
+        return count if first_stack_enough?(herb, fetch, count, stray: stray)
+
         reply = combine(herb)
         return one_stack_count(count, counted) if fetch.positive? && reply == HOLDING_BOTH
         return held_after_unmerged(herb, reply) if unsettled?(reply, later: fetch.positive?)
@@ -2324,6 +2480,35 @@ class Remedy
       DRC.bput("combine my #{herb}", *Patterns::COMBINE_REPLIES)
     end
 
+    # Whether the first stack got from a bag ends the gathering before its
+    # combine: no hand held the herb before that get (+stray+), its count
+    # reached the target, and only one hand holds the herb, looked at once
+    # ({Inventory#got_second?} with no looks; it sends nothing). The look
+    # before the get settles a stray stack whatever the timing: the second
+    # hand's tag for the stack just got may come in after its COUNT, and
+    # one look then would see only the stray.
+    #
+    # With one stack in hand the combine can only answer "You must be
+    # holding both substances to combine them." (25:18266), and after that
+    # reply on the first get the round ended on this same count, with or
+    # without a herb quantity ({#unsettled?} is false for it,
+    # {#add_from_bag} gives the sum, which is this count). So the combine
+    # did nothing: every one of the 95 crafts of the 2026-11-18 Nezhiri
+    # sessions sent it with a stack of 25 and got that reply
+    # (deep-sea-draught-02-Kythkani 13:45:43-44). With a stray stack of the
+    # herb in the other hand, or a count short of the target or holding no
+    # number, the combine is sent as before.
+    #
+    # @param herb [String] herb1
+    # @param fetch [Integer] the gets made before this one
+    # @param count [Integer, nil] this get's count
+    # @param stray [Boolean] whether a hand held the herb before the first
+    #   get ({Inventory#held?}, read before it)
+    # @return [Boolean]
+    def first_stack_enough?(herb, fetch, count, stray: false)
+      fetch.zero? && !stray && enough?(count) && !@inventory.got_second?(herb, looks: 0)
+    end
+
     # @param counted [Integer, nil] the pieces counted
     # @return [Boolean] whether they reach the target (the herb quantity,
     #   else {HANDFUL})
@@ -2429,14 +2614,23 @@ class Remedy
     # @return [String] the text bput returned for the last put sent
     # @note The id is GameObj's at the moment of the put. A hand tag the
     #   game has not yet sent for the last combine would leave a stale id;
-    #   no log carries hand tags (Genie client logs), so this is code-derived, as
-    #   is the refusal of a stale id: no log sends the id form.
-    #   "What were you referring to?" is the game's answer to a put of an
-    #   item it cannot find (26:39192 -> 26:39194).
+    #   no log carries hand tags (Genie client logs), so this is code-derived.
+    #   The id form itself is logged and answered as the name form is
+    #   ({Patterns::HERB_PUT_REPLIES}); a stale id refused in the put is
+    #   not, so that answer is code-derived too. "What were you referring
+    #   to?" is the game's answer to a put of an item it cannot find
+    #   (26:39192 -> 26:39194) and to a get of a stale id
+    #   (deep-sea-draught-01-Mithandres 13:17:36, {Inventory#forget_id}).
+    #
+    # After an id put the game answered "You put", the id is forgotten
+    # ({Inventory#forget_id}, which keeps it while a hand still shows it),
+    # so the next craft's get of the herb does not ask for the stack now in
+    # the vessel by its id.
     def put_herb(herb, vessel, replies)
       id = @inventory.held_id(herb)
       if id
         reply = DRC.bput("put ##{id} in my #{vessel}", *replies, *Patterns::NOT_FOUND)
+        @inventory.forget_id(id) if reply == 'You put'
         return reply unless reply.start_with?(Patterns::NOT_FOUND_REPLY)
       end
       DRC.bput("put #{herb} in my #{vessel}", *replies)
@@ -2571,7 +2765,11 @@ class Remedy
     # ingot alongside the mortar ..." (25:11081).
     #
     # @return [void]
-    # @raise [SystemExit] when the catalyst cannot be got or put in
+    # @raise [SystemExit] when the catalyst cannot be got or put in. For a
+    #   stocked order too: remedy buys nothing mid-craft, where its shop
+    #   town (force_crafting_town or hometown) may be far from the room it
+    #   crafts in, and the caller carries the remedy on (taskmaster buys
+    #   the nugget in Crossing, then runs the continue form).
     def add_catalyst
       with_item(@order.catalyst, 'remedy-catalyst') { put_ingredient(@order.catalyst) }
     end
@@ -3102,7 +3300,7 @@ class Remedy
   # default), so the {Finisher} can mark once more.
   #
   # The repair is DRCC.repair_own_tools with the character's own wire brush
-  # and oil, as workorders.lic:385-389 runs it for workorders_repair_own_tools:
+  # and oil, as workorders' repair_items runs it for workorders_repair_own_tools:
   # coins on hand first (DRCM.ensure_copper_on_hand, {COPPER}), a walk back
   # to the room, then the repair with the crafting town's base-crafting.yaml
   # blacksmithing data. The helper buys oil or a wire brush at that town's
@@ -3122,7 +3320,7 @@ class Remedy
   # @api private
   class StampRepair
     # The coins, in copper, made sure of on hand before the repair, as
-    # workorders.lic:387 does before the same helper.
+    # workorders' repair_items does before the same helper.
     COPPER = 1500
 
     # @param settings [OpenStruct] the character's settings; reads
@@ -3845,7 +4043,8 @@ class Remedy
     @water = Liquid.find('water', @settings.water_container, @inventory)
     @alcohol = Liquid.find('alcohol', @settings.alcohol_container, @inventory)
     @brine = Liquid.plain('brine')
-    supplies.buy_missing(water: @water, alcohol: @alcohol, catalyst: @order.catalyst)
+    # A stocked order's caller has just checked all three (Order#stocked?).
+    supplies.buy_missing(water: @water, alcohol: @alcohol, catalyst: @order.catalyst) unless @order.stocked?
     DRC.wait_for_script_to_complete('buff', ['remedy']) if buff_set?
 
     if @order.continue?
@@ -3945,7 +4144,7 @@ class Remedy
   # @note herb1 flower is a part of both names, so it takes the red flower's
   #   dried flower, even for a blue-flower recipe (H10, left open).
   #   Gathering it as given would take whichever flower comes first in the
-  #   container (workorders.lic:726-727), the wrong herb for a red-flower
+  #   container (workorders' count_combine_rem), the wrong herb for a red-flower
   #   recipe when a crushed flower comes first, and remedy cannot tell
   #   which flower the recipe needs.
   def substitute_flower
