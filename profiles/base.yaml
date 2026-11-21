@@ -3111,9 +3111,33 @@ task_shell_room: 793
 task_cancel_foreign_tasks: false
 # Setting for taskmaster - A second taskmaster (zasele, nezhiri, poltu, bradyn or dorhum) to work a
 # task for when the one asked says you have done the most tasks it allows today ("You have reached the
-# maximum number of TASKs you may complete for <taskmaster> today."). Each run asks the first one
-# again, so its tasks resume once its limit resets; a task left open for the fallback is finished, not
-# cancelled. Unset: the run stops at the limit. Ignored by marathon, which works only Zasele's tasks.
+# maximum number of TASKs you may complete for <taskmaster> today."; only the game's line naming the
+# one asked counts, not a player saying it or a line naming another). Each run asks the first one
+# again (in a cycle run the next taskmaster is picked at random as usual), so its tasks resume once its
+# limit resets; a task left open for the fallback is finished, not cancelled. With task_repair_every
+# entries for both (the first one's more than 0; the default entry does not count, and a run says so at
+# its start), it is also worked, one task, right after the first one's tools are left for repair (unless
+# any of its own is still at repair, matched as its own pickup matches them and with mark_crafted_goods
+# the stamp its task marks with included, however long ago it was left, since its task could wait for it, or
+# stop with the task open on one a pickup could not get back, and the task is not known before the ask;
+# a ready one is collected by the next task whose pickup goes to its repairer, task_get_tools_on_completion
+# or ;taskmaster pickup; or unless it has given its limit since the daily rollover), so the run does
+# not wait at the repairer; the run after asks the first one again (in a cycle run the next pick is
+# random as usual, and the next task that uses the first one's tools collects them). Poltu and
+# Bradyn share the forging tools, so a Poltu run never detours to Bradyn, and a Bradyn run detours to
+# Poltu only after a task that left no forging tool (and, with mark_crafted_goods, no stamp:
+# Zasele's, Poltu's, Bradyn's and Dorhum's tasks all mark with it, so a stamp at repair, whichever
+# toolset sent it, holds back a detour to any of them). With task_get_tools_on_completion each run
+# collects its tools at its end, so only repeat and cycle runs detour, and a run right after one whose tools
+# were still out when it ended: one that only finished a task already open (it ends before the pickup), or
+# one whose end-of-run pickup could not reach the repairer or found a tool not ready. Only tools whose
+# ticket the game handed over count: a tool whose confirming give went unanswered may still be carried,
+# and starts no detour. A fallback that has given its limit since
+# the daily rollover is not asked again until the next one: neither for a detour nor when the first one
+# gives its limit (the run then stops, saying the fallback gave its limit earlier this game day). The
+# game resets the limit some seconds after the rollover, so a limit given in the first 5 minutes after
+# it counts as the old day's and does not hold for the new day.
+# Unset: the run stops at the limit, and waits for tools at repair. Ignored by marathon, which works only Zasele's tasks.
 task_fallback_npc:
 # Setting for taskmaster - Where tools go for repair (unless task_no_repair or task_self_repair): rangu
 # (Rangu, Crossing Engineering Society), town (Crossing's town repairer in base-town.yaml, Catrox; hometown,
@@ -3172,7 +3196,9 @@ task_repair_by: rangu
 # skipped and stays due; at 0 every tool goes to your own repair unchecked and none is noted, as
 # before the setting. A run that repairs tools says when a taskmaster it may work (the one named and
 # task_fallback_npc; in cycle, the three it picks from and task_fallback_npc) has no entry of its
-# own, and names a key that is not a taskmaster (a misspelling).
+# own, names a key that is not a taskmaster (a misspelling), and says which taskmaster's tools going
+# for repair bring no detour to task_fallback_npc for want of an entry (the default entry does not
+# count for the detour).
 task_repair_every:
   default: 0
 

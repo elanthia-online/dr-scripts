@@ -4,7 +4,7 @@
   task_no_repair: true/false # skip repairing tools entirely
   task_self_repair: true/false # use own brush and oil for repairs
   task_get_tools_on_completion: true/false # If you want taskmaster to pickup any remaining tools in the repair shop. Useful if you're using clerk-tools after each task
-  task_repair_every: { default: 0 } # seconds between repairs of each tool, by taskmaster ({ nezhiri: 10800, zasele: 43200 }), written as plain digits with no leading 0 (YAML reads an unquoted 0600 as octal, 384, 0x10 as hex, 16, and 3:00:00 as base 60, 10800, before taskmaster sees them, as it reads any other plain YAML number; a value that is not a plain YAML number, quoted or not, is read as base-10 digits (an unquoted 0800, not valid octal, is 800); one that is not whole seconds, 0 or more, such as 3h, 10800.9 or -5, is named and ignored); a taskmaster with no entry uses default, and with no default 0, which repairs after every task (as before). Each tool's last repair is kept per character (UserVars.taskmaster_repaired_at; ;e UserVars.taskmaster_repaired_at = nil forgets them all). A kept ticket, or the repairer's own no-wear or past-repair answer (its line, by its name: the same words in someone else's speech heard first are named and do not count), starts the tool's clock (a confirming give that got no answer but went through starts it once a pickup brings the tool back by its ticket, as of when the tool was left); a refusal, or no answer and no ticket, does not, so the tool goes again after the next task. Applies to task_self_repair too: with an interval above 0 only the due tools carried (the inventory feed or hands, else a TAP) are repaired and noted, except one on Lich's immune list (repaired with Proper Forging Tool Care in the last two hours or so), which is skipped and stays due; at 0 every tool goes to your own repair with no TAP and none is noted, as before the setting. A run that repairs says which taskmaster it may work (the one named and task_fallback_npc; in cycle, the three it picks from and task_fallback_npc) has no entry, and names a key that is not a taskmaster (a misspelling)
+  task_repair_every: { default: 0 } # seconds between repairs of each tool, by taskmaster ({ nezhiri: 10800, zasele: 43200 }), written as plain digits with no leading 0 (YAML reads an unquoted 0600 as octal, 384, 0x10 as hex, 16, and 3:00:00 as base 60, 10800, before taskmaster sees them, as it reads any other plain YAML number; a value that is not a plain YAML number, quoted or not, is read as base-10 digits (an unquoted 0800, not valid octal, is 800); one that is not whole seconds, 0 or more, such as 3h, 10800.9 or -5, is named and ignored); a taskmaster with no entry uses default, and with no default 0, which repairs after every task (as before). Each tool's last repair is kept per character (UserVars.taskmaster_repaired_at; ;e UserVars.taskmaster_repaired_at = nil forgets them all). A kept ticket, or the repairer's own no-wear or past-repair answer (its line, by its name: the same words in someone else's speech heard first are named and do not count), starts the tool's clock (a confirming give that got no answer but went through starts it once a pickup brings the tool back by its ticket, as of when the tool was left); a refusal, or no answer and no ticket, does not, so the tool goes again after the next task. Applies to task_self_repair too: with an interval above 0 only the due tools carried (the inventory feed or hands, else a TAP) are repaired and noted, except one on Lich's immune list (repaired with Proper Forging Tool Care in the last two hours or so), which is skipped and stays due; at 0 every tool goes to your own repair with no TAP and none is noted, as before the setting. A run that repairs says which taskmaster it may work (the one named and task_fallback_npc; in cycle, the three it picks from and task_fallback_npc) has no entry, and names a key that is not a taskmaster (a misspelling), and, with task_fallback_npc, which taskmaster's tools going for repair bring no detour to the fallback for want of an entry (the default entry does not count for the detour)
   task_repair_by: rangu # where tools go for repair: rangu (the default: Rangu, Crossing Engineering Society), town (Crossing's town repairer in base-town.yaml, Catrox; hometown, its earlier name, is taken as town) or task_type (Crossing's repairer, in base-crafting.yaml, of the discipline taskmaster gives each taskmaster: tailoring for Zasele, remedies for Nezhiri, blacksmithing for Poltu, shaping for Bradyn (his metal tasks too), artificing for Dorhum). Always Crossing's, where every task is bought and crafted, whatever task_hometown says; with no such repairer in the data it says so and uses Rangu. Each tool left is noted (UserVars.taskmaster_repairs, with its name in hand). Once a task is accepted, the noted tools its work uses are picked up by their tickets, waiting up to 10 minutes at each repairer for them to be ready (Poltu's and Bradyn's metal tasks share the forging tools); another noted tool at a repairer it goes to is picked up if it is ready then, or by the end of a wait there for the work's own tools; and when a TAP before the ask finds a Rangu ticket, every Rangu ticket no note accounts for (an older taskmaster's, or one whose note was lost) is handed in too, waited for the same way. A task stops before its work while a tool it uses is still at repair (a noted one, or an un-noted Rangu ticket still carried whose item names it, or one the repairer would not take), and stays open for the next run; a note no ticket can be handed in for (tickets for two different items fit it, its one ticket could as well be another clerk's, or the repairer would not take it) stops every run the same way, until you hand the right ticket in yourself and run ;taskmaster pickup; with mark_crafted_goods that includes the stamp for Zasele's (yarn, cloth and leather), Poltu's, Bradyn's lumber and metal, and Dorhum's tasks, whose crafting scripts stop without it. Any other tool still out waits for a later task or ;taskmaster pickup, and is not sent for repair again meanwhile (a tool still noted is taken to be at repair). A tool collected by hand keeps its note, so it is not sent for repair until ;taskmaster pickup (or a task's pickup at that repairer) forgets the note: run ;taskmaster pickup after handing tickets in yourself. Another taskmaster's note counts for a task by its setting name, or by a name of two words or more: a one-word name such as "rod" is not taken for another toolset's "stirring rod" or "imbuement rod", and Dorhum's rod with none in enchanting_tools (enchant's fallback "rod") is matched as "imbuement rod". Two settings that give different tools the very same name ("rod" in both forging_tools and enchanting_tools) are still taken for each other. A ticket is matched to a note by the tool's name in hand, which a ticket may follow with more words ("large purpleheart bowl edged with ivory"); when tickets for two different items fit one note, none is handed in and it says so. In marathon, the tools left at the run's repairer are picked up right after each restock, while the run is still in Crossing, every one waited for (as taskmaster always has), so an accept on Andreshlew does not walk back to Crossing for them. With task_type, Zasele's, Nezhiri's and Poltu's tools go to society clerks, who are all called clerk: their tickets stay carried until a task, ;taskmaster pickup or task_get_tools_on_completion collects them, and ;workorders in another discipline picks such a ticket up with its own and stops collecting at one its clerk does not take; a ticket whose item is noted at two clerks is not handed in (it says so), and work that uses that tool stops until you hand it in yourself at the right clerk and run ;taskmaster pickup. With town, crossing-repair (which training-manager runs after hunts) and ;repair hand in every Catrox ticket, taskmaster's included: crossing-repair puts such a tool in your default stow container, not your crafting bag or toolbelt, and taskmaster's next pickup forgets its note (no ticket carried). Run ;taskmaster pickup before those scripts run, or use rangu or task_type with them
   task_use_boost: true/false # use boost to eliminate task cooldowns, useful if you have a few and you're doing a lot of tasks
   task_cooldown_poll: 15 # seconds between asks while the taskmaster makes you wait (minimum 3)
@@ -23,7 +23,7 @@
   task_rock_room: 793 # room where Dorhum's spongestone and splashstone tasks forage rocks (none can be had on Andreshlew)
   task_shell_room: 793 # room where Dorhum's glow shell tasks forage shells
   task_cancel_foreign_tasks: true/false # a run never works another taskmaster's task; with this it cancels one it finds open, waits out the 10-minute cooldown a cancel brings, then goes back to its own taskmaster. Off: it stops, saying whose task it is and how to finish or cancel it. A cycle run finishes an open task of Poltu, Bradyn or Zasele (the taskmasters it picks from) as its own, whichever it picked
-  task_fallback_npc: zasele # when the taskmaster asked says you have done the most tasks it allows today, work this taskmaster's task instead; the next run asks the first one again. Unset: the run stops there. Ignored by marathon (Zasele only)
+  task_fallback_npc: zasele # when the taskmaster asked says you have done the most tasks it allows today (the game's line naming it; a player saying those words, or a line naming another taskmaster, does not count), work this taskmaster's task instead; the next run asks the first one again (in a cycle run the next taskmaster is picked at random as usual). With task_repair_every entries for both (the first one's more than 0; the default entry does not count, and a run says so at its start), it is also worked, one task, right after the first one's tools are left for repair (unless any of its own is still at repair (matched as its own pickup matches them, the stamp its task marks with under mark_crafted_goods included), however long ago it was left, since its task could wait for it, or stop with the task open on one a pickup could not get back, and the task is not known before the ask; a ready one is collected by the next task whose pickup goes to its repairer, task_get_tools_on_completion or ;taskmaster pickup; or it has given its limit since the daily rollover; Poltu and Bradyn share the forging tools, so a Poltu run never detours to Bradyn, and a Bradyn run detours to Poltu only after a task that left no forging tool (and, with mark_crafted_goods, no stamp: Zasele's, Poltu's, Bradyn's and Dorhum's tasks all mark with it, so a stamp at repair, whichever toolset sent it, holds back a detour to any of them)), so the run does not wait at the repairer; the run after asks the first one again (in a cycle run the next pick is random as usual, and the next task that uses the first one's tools collects them; with task_get_tools_on_completion each run collects its tools at its end, so only repeat and cycle runs detour, and a run right after one whose tools were still out when it ended: one that only finished a task already open, which ends before that pickup, or one whose end-of-run pickup could not reach the repairer or found a tool not ready; only tools whose ticket the game handed over count, as a tool whose confirming give went unanswered may still be carried). A fallback that has given its limit since the rollover is not asked again until the next one: neither for a detour nor when the first one gives its limit (the run then stops, saying the fallback gave its limit earlier this game day). The game resets the limit some seconds after the rollover, so a limit given in the first 5 minutes after it counts as the old day's and does not hold for the new day. Unset: the run stops at the limit, and waits for tools at repair. Ignored by marathon (Zasele only)
   task_cancel_when_instructions_short: true/false # default true. When the task's one replacement set is spent and the instructions carried still have too few uses, cancel the task (losing the items made for it), wait out the 10-minute cooldown and take a new one. False: stop on every run with "Already asked ..." for a person to look at
   alchemy_tools: [bowl, mixing stick, mortar, pestle, sieve] # Nezhiri's tasks use the mortar and pestle or the bowl and mixing stick (whichever her remedy needs) and the sieve; the two used and the sieve go for repair (task_repair_by, task_repair_every) after each task (task_no_repair / task_self_repair as usual)
   alchemy_belt: # the toolbelt the alchemy tools are tied to, if any
@@ -39,7 +39,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.21.16'
+  VERSION = '2026.11.21.17'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -190,9 +190,9 @@ class TaskMaster
     @marathon = args.marathon
     unless args.find || args.tools || args.reset_output || args.loot_history || args.pickup
       # A cycle run has no npc argument (lich-5's parse_args takes cycle only
-      # without one), so usable_fallback_npc there is task_fallback_npc
-      # whenever it names a taskmaster.
-      warn_repair_intervals((args.cycle ? %w[poltu bradyn zasele] : [@marathon ? 'zasele' : @npc]) + [usable_fallback_npc])
+      # without one), so the fallback (usable_fallback_npc) there is
+      # task_fallback_npc whenever it names a taskmaster.
+      warn_repair_intervals(args.cycle ? %w[poltu bradyn zasele] : [@marathon ? 'zasele' : @npc])
     end
     if args.find
       find_npc(@rooms, @npc)
@@ -289,6 +289,7 @@ class TaskMaster
     loop do
       @dispose, @remainder = [false, false]
       prepare_for_task
+      detour_while_tools_repair(cycle: args.cycle ? true : false)
       look_for_rangu_ticket
       # nil: a task already open was finished and handed in by get_task.
       task = get_task(exit_after_resume: !looping)
@@ -316,10 +317,237 @@ class TaskMaster
   #
   # @return [void]
   def back_to_primary_npc
+    @repair_detour = false
     return unless @primary_npc
 
     @npc = @primary_npc
     @primary_npc = nil
+  end
+
+  # Seconds after which a tool left for repair is surely ready to collect
+  # (repairs have taken 1 to 3 roisaen).
+  REPAIR_READY_SECONDS = 600
+
+  # Each time the tools of the taskmaster asked are left for repair, the next
+  # run works one of task_fallback_npc's tasks instead of waiting at the
+  # repairer; in a single or repeat run, the run after that asks the first
+  # taskmaster again and collects its tools then, ready by now. In a cycle
+  # run the next taskmaster is picked at random as usual (run_tasks), so the
+  # first one's tools are collected by the next task that uses them (or by
+  # task_get_tools_on_completion, or ;taskmaster pickup). Only for tools left less than
+  # REPAIR_READY_SECONDS ago: older ones are ready, so there is nothing to
+  # wait out and the run asks as usual. Once per leaving: the notes it
+  # detoured for are marked ('detoured'), so it never works the fallback
+  # twice for the same tools. Only when task_repair_every has an entry for
+  # both taskmasters and the first one's is more than 0 (so a fallback set
+  # only for the daily limit is left alone, and so is one given 0 just to
+  # quiet the start-of-run warning: with tools going after every task, a
+  # detour would alternate the two), and not while any of the fallback's
+  # own tools (repairs_out_for: matched as its own pickup matches them, the
+  # stamp its task marks with included) is still at repair, however long
+  # ago it was left: its task may need it, and would then wait for one left less
+  # than REPAIR_READY_SECONDS ago, or stop with the task open on one an
+  # earlier pickup could not get back (two tickets fit its note, the
+  # repairer refused the ticket, the wait ran out). Where the failure
+  # lasts (two tickets fit, a refused ticket), every run after would finish
+  # that open task as the fallback's and stop on it again; one the wait
+  # ran out on is normally collected by the next run's pickup (resume_task),
+  # so that task stops once.
+  # A note does not say whether a pickup has failed on it, so any note
+  # counts. Any of its tools counts, not only those its next task uses,
+  # since that task is not known before the ask. A ready one is collected
+  # by the next task whose pickup goes to its repairer (one of the first
+  # one's too: ready, not waited for), by task_get_tools_on_completion or
+  # by ;taskmaster pickup; until then the run asks the first one, as with
+  # no detour (with task_type the fallback's repairer is usually not the
+  # first one's, so this can last until the fallback is next worked, at
+  # the first one's daily limit). Poltu and Bradyn share the forging
+  # tools, so a forging tool either left holds back a detour to the other
+  # (the fallback's task would wait for it, or stop with the task open): a
+  # Poltu run never detours to Bradyn, and a Bradyn run detours to Poltu
+  # only after a task that left no forging tool (and, with
+  # mark_crafted_goods, no stamp: Zasele's, Poltu's, Bradyn's and Dorhum's
+  # tasks all mark with it, so a stamp at repair, whichever toolset sent
+  # it, holds back a detour to any of them). The notes marked are those
+  # the detour was for, a shared tool another taskmaster left
+  # included, so the next run does not detour again for it. Not while the
+  # fallback's daily limit holds (fallback_capped?), and not in a run
+  # already switched (the fallback for the day, or the detour itself): the
+  # one asked is then the fallback, and usable_fallback_npc gives none.
+  # Never with task_self_repair, which leaves nothing at a repairer. With no
+  # detour the run asks as usual, and the pickup after the accept collects
+  # the tools.
+  #
+  # @param cycle [Boolean] a cycle run, whose next task goes to a taskmaster
+  #   picked at random as usual (run_tasks), not back to the first one: the
+  #   message says so, and the next task that uses the first one's tools
+  #   collects them
+  # @return [void]
+  def detour_while_tools_repair(cycle: false)
+    return if @self_repair
+
+    other = usable_fallback_npc
+    return unless other && !fallback_capped?(other) && repair_every_setting.key?(other) && repair_every_setting.fetch(@npc, 0).positive?
+
+    # Only notes whose ticket the game handed over ('ticketed' not false; a
+    # note from before the key counts as ticketed): one whose confirming
+    # give went unanswered may be for a tool still in the bag.
+    fresh = repairs_out_for(@npc).reject { |record| record['detoured'] || record['ticketed'] == false }.select { |record| just_left?(record) }
+    return if fresh.empty?
+    return unless repairs_out_for(other).empty?
+
+    mark_detoured(fresh)
+    after = cycle ? "cycle then picks a taskmaster as usual, and the next task that uses #{@npc.capitalize}'s tools collects them" : "the next run asks #{@npc.capitalize} again"
+    DRC.message("#{@npc.capitalize}'s tools are at repair; working one of #{other.capitalize}'s tasks meanwhile (#{after}).")
+    @primary_npc = @npc
+    @npc = other
+    @repair_detour = true
+  end
+
+  # The noted tools (repairs_out) a taskmaster's tasks use: those it left,
+  # and those its tool settings name (detour_tool_names), matched as that
+  # taskmaster's own pickup matches them (tools_left_for with it as the
+  # worker: by setting name or name in hand, and another taskmaster's note
+  # by its very setting name or a name of two words or more, so a one-word
+  # "rod" is not another toolset's imbuement rod). Poltu's and Bradyn's
+  # metal tasks share the forging tools, so a hammer either left counts for
+  # both.
+  #
+  # @param npc [String]
+  # @return [Array<Hash{String => Object}>]
+  def repairs_out_for(npc)
+    names = detour_tool_names(npc)
+    repairs_out.select { |record| record['npc'] == npc || tools_left_for(names, [record], npc).any? }
+  end
+
+  # Every tool name a taskmaster's tasks send for repair, from the settings
+  # (whatever the task: task_tools gives one task's), and the stamp its
+  # tasks mark with (marking_tools, with mark_crafted_goods: Zasele's,
+  # Poltu's, Bradyn's and Dorhum's, by every name a tool setting gives it),
+  # which their pickup waits for and stops on whatever toolset sent it.
+  #
+  # @param npc [String]
+  # @return [Array<String>]
+  def detour_tool_names(npc)
+    names = case npc
+            when 'zasele' then Array(@settings.outfitting_tools) + [knitting_needles_name]
+            when 'nezhiri' then Array(@settings.alchemy_tools)
+            when 'poltu' then Array(@settings.forging_tools)
+            when 'bradyn' then Array(@settings.forging_tools) + Array(@settings.shaping_tools || @settings.engineering_tools)
+            when 'dorhum' then dorhum_repair_tools
+            else []
+            end
+    names | marking_tools(npc)
+  end
+
+  # Whether a noted tool was left less than REPAIR_READY_SECONDS ago (and not
+  # later than now: a clock set back counts as long ago).
+  #
+  # @param record [Hash{String => Object}]
+  # @return [Boolean]
+  def just_left?(record)
+    (Time.now.to_i - record['left_at'].to_i).between?(0, REPAIR_READY_SECONDS - 1)
+  end
+
+  # Whether the taskmaster has said, since the game's day last turned
+  # (game_day_turned_since?, midnight US Central), that it has given all the
+  # tasks it allows today. Kept per character across runs in
+  # UserVars.taskmaster_capped, so single-task runs (t2) do not walk to it
+  # again each time. The task limit resets at that rollover: Nezhiri's
+  # last limit lines came at 18:58-19:00 NZDT and her next tasks were
+  # handed in from 19:05 (2026-11-18 and 11-19, 06:00 UTC). The game
+  # applies it some seconds late, so a limit given in the first
+  # RESET_GRACE_SECONDS after the turn counts as the old day's (see
+  # game_day_turned_since?). A note later than now (written while the
+  # clock was fast) counts as none, as in just_left?.
+  #
+  # @param npc [String]
+  # @return [Boolean]
+  def fallback_capped?(npc)
+    capped = UserVars.taskmaster_capped
+    noted = capped.is_a?(Hash) ? capped[npc] : nil
+    noted.is_a?(Integer) && noted <= Time.now.to_i && !game_day_turned_since?(noted)
+  end
+
+  # Seconds after the game's day turns in which a daily limit given is
+  # still the old day's (game_day_turned_since?). The game resets the limit
+  # some seconds after midnight US Central as the Lich clock sees it:
+  # Gnarta got Nezhiri's limit at 19:00:07 NZDT on 2026-11-19 (06:00:07
+  # UTC), and the first offers of hers in the fleet's logs that night came
+  # at 19:00:41 (Mailicyian) and 19:00:47 (Lukedo). No one reaches a daily
+  # limit in the first minutes of a new day, so a limit then is the old
+  # day's. A Lich clock more than this fast still notes the old day's
+  # limit as the new day's.
+  RESET_GRACE_SECONDS = 300
+
+  # Whether the game's day has turned since +noted+: midnight US Central,
+  # 06:00 UTC in standard time and 05:00 UTC in daylight time (the second
+  # Sunday in March to the first Sunday in November, the US rule since
+  # 2007; the clocks change at 02:00, after that day's midnight). A
+  # taskmaster's daily limit resets then. A note made up to
+  # RESET_GRACE_SECONDS after a turn counts as made before it (the game's
+  # reset comes late), so a limit given then does not hold at all (that
+  # turn has already passed); the worst case is asking that
+  # taskmaster again, each time it would be asked, in the seconds before
+  # the game resets, and being told the limit again. Unlike
+  # boost_rollover_since?, which keeps both hours and minutes after them
+  # for login rewards that come late, this is the one turn, so a capped
+  # taskmaster is not asked again an hour early.
+  #
+  # @param noted [Integer] epoch seconds
+  # @return [Boolean]
+  def game_day_turned_since?(noted)
+    date = Time.at(noted).utc
+    date = Time.utc(date.year, date.month, date.day)
+    turn = [date - 86_400, date, date + 86_400].map { |day| day.to_i + ((central_daylight?(day) ? 5 : 6) * 3600) }.find { |at| at > noted - RESET_GRACE_SECONDS }
+    turn <= Time.now.to_i
+  end
+
+  # Whether midnight US Central on +day+ falls in daylight time.
+  #
+  # @param day [Time] 00:00 UTC of the date
+  # @return [Boolean]
+  def central_daylight?(day)
+    march = Time.utc(day.year, 3, 1)
+    starts = march + ((((7 - march.wday) % 7) + 7) * 86_400)
+    november = Time.utc(day.year, 11, 1)
+    ends = november + (((7 - november.wday) % 7) * 86_400)
+    day > starts && day <= ends
+  end
+
+  # Notes, with the time, that the taskmaster has given its daily limit.
+  #
+  # @param npc [String]
+  # @return [void]
+  def note_capped(npc)
+    capped = UserVars.taskmaster_capped.is_a?(Hash) ? UserVars.taskmaster_capped : {}
+    UserVars.taskmaster_capped = capped.merge(npc => Time.now.to_i)
+    save_user_vars
+  end
+
+  # Marks a note as one whose ticket the game handed over (tool_drop), so
+  # it can start a detour.
+  #
+  # @param record [Hash{String => Object}] the note as tool_drop saved it
+  # @return [void]
+  def confirm_note(record)
+    left = repairs_out
+    index = left.index(record)
+    return unless index
+
+    left[index] = record.merge('ticketed' => true)
+    UserVars.taskmaster_repairs = left
+    save_user_vars
+  end
+
+  # Marks the noted tools as detoured for (detour_while_tools_repair):
+  # +records+ only, every other note as it was.
+  #
+  # @param records [Array<Hash{String => Object}>]
+  # @return [void]
+  def mark_detoured(records)
+    UserVars.taskmaster_repairs = repairs_out.map { |record| records.include?(record) ? record.merge('detoured' => true) : record }
+    save_user_vars
   end
 
   # Zasele tasks until the wrap-up call, restocking (and repairing) only when
@@ -4107,9 +4335,12 @@ class TaskMaster
   # taskmaster's task: its items, tools and hand-in are theirs, and a
   # character set up for one craft may not be for another. So it says whose
   # task it is and how to clear it, and stops; a task for task_fallback_npc
-  # is the exception, finished as this run's own, and so, in a cycle run,
-  # is a task of any taskmaster cycle picks from (one a cycle run stopped on
-  # before its work, say: the next pick is random). With
+  # is the exception, finished as this run's own; so, on a detour
+  # (detour_while_tools_repair), is a task of the first taskmaster's,
+  # finished instead of the fallback's; and so, in a cycle run, is a task
+  # of any taskmaster cycle picks from (one a cycle run stopped on before
+  # its work, say: the next pick is random, so a fallback or detour this
+  # run made is undone). With
   # task_cancel_foreign_tasks it cancels that task instead, waits out the
   # cooldown a cancel brings, and goes back to asking its own taskmaster.
   #
@@ -4122,13 +4353,27 @@ class TaskMaster
     giver = @task_giver
     return if giver.nil? || giver == @npc
 
+    if @repair_detour && giver == @primary_npc
+      # Asked the fallback while the first one's tools were at repair, and
+      # a task of the first one's is open: finish that one instead.
+      DRC.message("You are on a task for #{giver.capitalize}; finishing it instead of working one of #{@npc.capitalize}'s.")
+      @npc = giver
+      @primary_npc = nil
+      @repair_detour = false
+      return
+    end
+
     if @cycle && CYCLE_NPCS.include?(giver)
       # The next task is picked at random again, so no going back after it:
-      # a fallback this run made (found asking task_fallback_npc) is undone,
-      # so nothing later in this task's loop takes the first taskmaster for
-      # the one to go back to.
+      # a fallback this run made (found asking task_fallback_npc), or a
+      # detour, is undone, so nothing later in this task's loop takes the
+      # first taskmaster for the one to go back to. Should this task be
+      # cancelled (short instructions) and its taskmaster give its daily
+      # limit, fall_back_for_the_day then falls back as usual, not to the
+      # first one's tools at repair.
       DRC.message("You are on a task for #{giver.capitalize}, one of the taskmasters cycle works; finishing it.")
       @primary_npc = nil
+      @repair_detour = false
       @npc = giver
       return
     end
@@ -4162,10 +4407,26 @@ class TaskMaster
   TASK_UNRELIABLE = /You are unreliable/
   # A taskmaster's daily limit, the bracketed line after its speech: "[You
   # have reached the maximum number of TASKs you may complete for Nezhiri
-  # today.  Please try again tomorrow.]" (a player's report, 2026-11-18;
-  # Nezhiri first says she is "still working on packaging" what she was
-  # given). Asking again the same day gets the same answer.
-  TASK_DAILY_MAX = /You have reached the maximum number of TASKs you may complete for/
+  # today.  Please try again tomorrow.]" (a player's report, 2026-11-18,
+  # Nezhiri first saying she is "still working on packaging" what she was
+  # given; and the logs: Mahtra, 2026-11-19 18:36:49, and 57 more lines
+  # across the fleet that day, each a line of its own starting with "[").
+  # Asking again the same day gets the same answer. Taken only with no
+  # quote before the words, like HASTE_OTHER: someone in the room saying
+  # them ('Mags says, "[You have reached ...]"') quotes them, and the note
+  # it brings (note_capped) would hold until the rollover. Not anchored on
+  # the bracket, so the limit is still taken should the game ever send the
+  # line without it or with unquoted text (a prompt, say) joined in front;
+  # a missed limit would be an unknown reply, and three stop the run
+  # instead of falling back. Text with a quote joined in front is not
+  # taken, the taskmaster's own speech included ('Nezhiri says, "I am
+  # still working on packaging ..."  [You have reached ...]'): that is
+  # rejected like a player saying the words. This is deliberate: matching
+  # the bracketed text wherever it falls would take a player's '[You have
+  # reached ...' again, and no such joined line has been seen (every
+  # logged one is a line of its own). The taskmaster it names (name) must
+  # be the one asked (daily_limit_for_asked?).
+  TASK_DAILY_MAX = /^[^"]*You have reached the maximum number of TASKs you may complete for (?<name>[^".\]]+?) today/
   # Unknown replies in a row to ASK FOR TASK before get_task stops.
   MAX_UNKNOWN_TASK_REPLIES = 3
 
@@ -4551,12 +4812,37 @@ class TaskMaster
   # taskmaster for this task and get_task asks it next; run_tasks switches
   # back after the task, and every new run asks the first taskmaster again,
   # so its tasks resume once the limit resets. Without a fallback, or when
-  # the fallback has hit its limit too, the run stops.
+  # the fallback has hit its limit too (in this run, or noted earlier this
+  # game day: fallback_capped?, and the stop then says so), the run stops.
+  # On a detour (detour_while_tools_repair) the one asked is the fallback:
+  # its limit is noted and get_task asks the first one again, whose pickup
+  # waits for the tools. Either way what Nezhiri's wait found (@stock_survey) is dropped,
+  # since the next ask is another taskmaster's.
   #
   # @return [void]
   # @raise [SystemExit] when there is no taskmaster left to ask today
   def fall_back_for_the_day
+    if @repair_detour
+      # Worked only while the first one's tools were at repair: go back to
+      # it, and its pickup waits for them.
+      DRC.message("#{@npc.capitalize} has given you all the tasks allowed today; asking #{@primary_npc.capitalize} again, whose tools are at repair.")
+      note_capped(@npc)
+      @npc = @primary_npc
+      @primary_npc = nil
+      @repair_detour = false
+      # What the fallback's wait found (Nezhiri's) is not for the first one's task.
+      @stock_survey = nil
+      return
+    end
+
+    note_capped(@npc)
     fallback = usable_fallback_npc
+    # One that has given its limit since the rollover is not asked again;
+    # the stop names it, since one is set and could otherwise be asked.
+    if fallback && fallback_capped?(fallback)
+      DRC.message("#{@npc.capitalize} has given you all the tasks allowed today, and so did #{fallback.capitalize} (task_fallback_npc) earlier this game day (the limit resets at midnight US Central). Stopping.")
+      exit
+    end
     unless fallback
       DRC.message("#{@npc.capitalize} has given you all the tasks allowed today. #{@fallback_npc.empty? ? 'Set task_fallback_npc to work another taskmaster\'s tasks meanwhile.' : 'No other taskmaster to ask.'} Stopping.")
       exit
@@ -4567,6 +4853,14 @@ class TaskMaster
     @npc = fallback
     # What Nezhiri's wait found is not for another taskmaster's task.
     @stock_survey = nil
+  end
+
+  # Whether a daily-limit line (TASK_DAILY_MAX) names the taskmaster asked.
+  #
+  # @param reply [String] what DRC.bput returned for the ask
+  # @return [Boolean]
+  def daily_limit_for_asked?(reply)
+    reply[TASK_DAILY_MAX, :name].to_s.downcase.split.include?(@npc)
   end
 
   # task_fallback_npc when it names a taskmaster this script does that is not
@@ -4589,7 +4883,9 @@ class TaskMaster
   # (resume_task), which ends the script unless exit_after_resume is false,
   # when this returns nil so the caller's loop goes on to its end-of-task
   # checks and asks again. Another taskmaster's task that had to be
-  # cancelled sends this round to ask its own taskmaster again.
+  # cancelled sends this round to ask its own taskmaster again. A daily
+  # limit (TASK_DAILY_MAX) falls back (fall_back_for_the_day) only when it
+  # names the taskmaster asked; one naming another counts as no answer.
   # The first "you must wait" boosts (BOOST TASK) when the run has the task
   # boost armed; without one, or with no credits for it, Nezhiri's first
   # one is spent on her supplies (nezhiri_wait_chores) and the others, like
@@ -4615,6 +4911,8 @@ class TaskMaster
     while true
       find_npc(@rooms, @npc)
       reply = DRC.bput("ask #{@npc} for task", /if you agree to (his|her) terms/, /You may accept by typing ACCEPT TASK/, /utterly ignoring you/, /you must wait before I can give you a task/, /You are already on a task/, /give you a chance a little later/, TASK_UNRELIABLE, TASK_DAILY_MAX, /^To whom are you speaking/)
+      # Another taskmaster's limit is no answer from this one: counted as none.
+      reply = '' if reply.match?(TASK_DAILY_MAX) && !daily_limit_for_asked?(reply)
       unknown_replies = 0 unless reply.empty?
       case reply
       when /if you agree to (his|her) terms/, /To whom are you speaking/
@@ -6068,24 +6366,42 @@ class TaskMaster
     note_repaired(record['tool'], Time.at(left))
   end
 
-  # Says, at the start of a run that repairs tools (not task_no_repair), for
-  # each taskmaster the run may work (the one named and task_fallback_npc;
-  # in cycle, the three it picks from and task_fallback_npc), once each,
-  # that task_repair_every has no entry for, how often its tools go for
-  # repair instead (the default entry, else after every task). It also
-  # names a key that is neither default nor a taskmaster (a misspelling?).
+  # Says, at the start of a run that repairs tools (not task_no_repair), first
+  # any key that is neither default nor a taskmaster (a misspelling?), then,
+  # for each taskmaster the run may work (the one named and the fallback;
+  # in cycle, the three it picks from and the fallback), once each, that
+  # task_repair_every has no entry for, how often its tools go for repair
+  # instead (the default entry, else after every task). Then, unless
+  # task_self_repair is set, names the first taskmasters whose tools going
+  # for repair bring no detour to the fallback (detour_while_tools_repair)
+  # for want of an entry: each first one without an entry, or all of them
+  # when the fallback has none. The default entry does not stand in for
+  # either. A first one given 0 never detours either, but is named only
+  # when the fallback has no entry (0 is how this line is quieted).
   #
-  # @param npcs [Array<String>]
+  # @param firsts [Array<String, nil>] the taskmasters the run asks first
+  # @param fallback [String, nil] usable_fallback_npc
   # @return [void]
-  def warn_repair_intervals(npcs = [@npc, usable_fallback_npc])
+  def warn_repair_intervals(firsts = [@npc], fallback = usable_fallback_npc)
     return if @no_repair
 
     intervals = repair_every_setting
     unknown = intervals.keys - ['default'] - TASKMASTERS
     DRC.message("task_repair_every names #{unknown.join(', ')}, which #{unknown.size == 1 ? 'is' : 'are'} not a taskmaster (#{TASKMASTERS.join(', ')}); a misspelling?") unless unknown.empty?
-    npcs.compact.uniq.reject { |npc| intervals.key?(npc) }.each do |npc|
+    missing = (firsts + [fallback]).compact.uniq.reject { |npc| intervals.key?(npc) }
+    missing.each do |npc|
       DRC.message("task_repair_every has no entry for #{npc}; its tools go for repair #{interval_words(repair_interval(npc))}#{intervals.key?('default') ? ' (the default entry)' : ''}.")
     end
+    return if @self_repair || fallback.nil?
+
+    off = firsts.compact.uniq - [fallback]
+    off = off.select { |npc| missing.include?(npc) } unless missing.include?(fallback)
+    return if off.empty?
+
+    names = off.map { |npc| "#{npc.capitalize}'s" }
+    names = names.size == 1 ? names.first : "#{names[0..-2].join(', ')} or #{names.last}"
+    entries = off.size == 1 ? "both (and #{off.first.capitalize}'s is more than 0)" : "#{fallback.capitalize} and each of them (theirs more than 0)"
+    DRC.message("No #{fallback.capitalize} task is worked while #{names} tools are at repair until task_repair_every has entries for #{entries}.")
   end
 
   # @param seconds [Integer]
@@ -6537,10 +6853,14 @@ class TaskMaster
         # ticket is stowed) leaves a note that leads the next pickup to the
         # ticket, at any repairer. Had the give not gone through, the next
         # whole look finds no ticket for it and forgets it.
-        record = { 'npc' => @npc, 'repairer' => name, 'room' => repairer['id'], 'tool' => tool_name, 'item' => item, 'left_at' => Time.now.to_i }
+        # 'ticketed' false until the game's ticket line comes: a note whose
+        # confirming give went unanswered may be for a tool still carried,
+        # so it starts no detour (detour_while_tools_repair).
+        record = { 'npc' => @npc, 'repairer' => name, 'room' => repairer['id'], 'tool' => tool_name, 'item' => item, 'left_at' => Time.now.to_i, 'ticketed' => false }
         note_repair(record)
         confirmed = DRC.bput("give #{name}", ticket_handed_over, repair_replies['need_coin'])
         if confirmed.match?(ticket_handed_over)
+          confirm_note(record)
           note_repaired(tool_name)
           DRC.bput('stow ticket', 'You put')
           next
