@@ -183,6 +183,78 @@ RSpec.describe SanowretCrystal do
   end
 
   # ===========================================================================
+  # Moving into a no-use room before the crystal is used
+  # ===========================================================================
+  # check_crystal checks the room before it taps, but getting a stowed crystal takes
+  # round trips, and the character can walk on meanwhile (go2 under another script).
+  # Checking only before the tap let it exhale in the Crossing bank teller room
+  # (1900), which is in base.yaml.
+  describe 'when the character moves into a no-use room before the crystal is used' do
+    let(:stowed) do
+      crystal.tap { |c| c.instance_variable_set(:@worn_crystal, false) }
+    end
+
+    before do
+      allow(DRC).to receive(:message)
+      allow(DRC).to receive(:bput).with('tap my sanowret crystal', any_args)
+                                  .and_return('You tap a sanowret crystal inside your leather backpack.')
+      # The character arrives somewhere else while the get is in flight.
+      allow(DRC).to receive(:bput).with('get my sanowret crystal', any_args) do
+        @arrival.call
+        'You get'
+      end
+      allow(DRC).to receive(:bput).with('stow my sanowret crystal', any_args).and_return('You put')
+      allow(DRC).to receive(:bput).with(/\A(?:exhale|gaze) /, any_args).and_return('fade again.')
+      in_room('[[Crossing, Market]]', id: 10)
+    end
+
+    it 'does not exhale in a room listed by id' do
+      @arrival = -> { in_room('[[Provincial Bank, Teller]]', id: 1900) }
+
+      stowed.check_crystal
+
+      expect(DRC).not_to have_received(:bput).with(/\A(?:exhale|gaze) /, any_args)
+      expect(DRC).to have_received(:bput).with('stow my sanowret crystal', any_args)
+      expect(DRC).not_to have_received(:message).with(/Could not use crystal/)
+    end
+
+    it 'does not exhale in a room matching a !ruby/regexp entry' do
+      @arrival = -> { in_room('[[Asemath Academy, Library]]', id: 20) }
+
+      stowed.check_crystal
+
+      expect(DRC).not_to have_received(:bput).with(/\A(?:exhale|gaze) /, any_args)
+    end
+
+    it 'does not exhale once a sanowret_no_use_scripts script has started' do
+      stowed.instance_variable_set(:@no_use_scripts, ['go2'])
+      allow(Script).to receive(:running?).with('go2').and_return(false)
+      @arrival = -> { allow(Script).to receive(:running?).with('go2').and_return(true) }
+
+      stowed.check_crystal
+
+      expect(DRC).not_to have_received(:bput).with(/\A(?:exhale|gaze) /, any_args)
+    end
+
+    it 'does not gaze into a worn crystal in a no-use room' do
+      in_room('[[Provincial Bank, Teller]]', id: 1900)
+
+      crystal.use_crystal
+
+      expect(DRC).not_to have_received(:bput).with(/\A(?:exhale|gaze) /, any_args)
+    end
+
+    it 'still exhales when the new room is not a no-use room' do
+      @arrival = -> { in_room('[[Crossing, Square]]', id: 11) }
+
+      stowed.check_crystal
+
+      expect(DRC).to have_received(:bput).with('exhale my sanowret crystal', any_args).once
+      expect(DRC).to have_received(:bput).with('stow my sanowret crystal', any_args)
+    end
+  end
+
+  # ===========================================================================
   # A room where the crystal can't be tapped at all ("Not here, ...")
   # ===========================================================================
   describe 'when the tap is refused in this room' do

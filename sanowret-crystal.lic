@@ -37,6 +37,10 @@ class SanowretCrystal
   end
 
   def use_crystal
+    # Asked again here, not only in check_crystal: getting a stowed crystal can wait for
+    # a free hand, and the character may walk into a no-use room (a bank, say) meanwhile.
+    return if skip_use?
+
     if DRSkill.getxp('Arcana') <= 30 && @force_exhale
       response = DRC.bput("exhale my #{@adjective} crystal", 'you come away from the experience with a further understanding of Arcana as the scintillating lights fade again.', 'However, nothing much else happens, as you lack the concentration to focus.', 'This is not a good place for that.', 'Doing that would give away your hiding place.', 'That would be difficult to do while you attempt to keep the trail in sight.', 'However, you realize that you\'re already gleaning knowledge from it.')
     elsif DRSkill.getxp('Arcana') <= 10 && @worn_crystal
@@ -58,10 +62,7 @@ class SanowretCrystal
   def check_crystal
     return if DRStats.concentration < 100
     return if DRSkill.getxp('Arcana') >= 25
-    return if hiding? || invisible?
-    return if @no_use_scripts.any? { |name| Script.running?(name) }
-    return if @refused_room_titles.include?(DRRoom.title)
-    return if @no_use_rooms.any? { |name| /#{name}/ =~ DRRoom.title || name.to_s == Room.current&.id.to_s }
+    return if skip_use?
 
     if @worn_crystal
       use_crystal
@@ -86,6 +87,16 @@ class SanowretCrystal
         exit
       end
     end
+  end
+
+  # True when the crystal mustn't be used right now: the character is hidden, a
+  # sanowret_no_use_scripts script is running, or this room is one to skip.
+  def skip_use?
+    return true if hiding? || invisible?
+    return true if @no_use_scripts.any? { |name| Script.running?(name) }
+    return true if @refused_room_titles.include?(DRRoom.title)
+
+    @no_use_rooms.any? { |name| /#{name}/ =~ DRRoom.title || name.to_s == Room.current&.id.to_s }
   end
 
   # The crystal can't be tapped in this room. A single run returns at once: its caller
