@@ -13098,6 +13098,48 @@ RSpec.describe TaskMaster do
       expect([$right_hand, $left_hand]).to eq([nil, nil])
     end
 
+    # A ticket that will not be put away stays in the right hand: the next
+    # tool's GET would land in the left, and the bare GIVE would hand the
+    # repairer the ticket. No more tools are left that visit.
+    it 'leaves no more tools, and gives nothing more, while a ticket in hand will not be put away' do
+      tm = build
+      $hand_ids = {}
+      ids = 0
+      hold = lambda do |hand, name|
+        hand == :right ? ($right_hand = name) : ($left_hand = name)
+        $hand_ids[name] = (ids += 1).to_s if name
+      end
+      replies = { 'mortar' => [rangu_quote, rangu_ticket] }
+      given = []
+      allow(DRCT).to receive(:walk_to).and_return(true)
+      allow(DRCC).to receive(:get_crafting_item) do |name, *|
+        sent << "get #{name}"
+        hold.call($right_hand ? :left : :right, name) unless $right_hand && $left_hand
+        true
+      end
+      allow(DRCC).to receive(:stow_crafting_item) { |name, *| sent << "stow #{name}" }
+      allow(DRCI).to receive(:put_away_item?) do |ref|
+        sent << "put away #{ref}"
+        false
+      end
+      allow(DRC).to receive(:bput) do |command, *matchers|
+        sent << command
+        next '' if command == 'stow ticket'
+        next '' unless command == 'give Rangu'
+
+        given << $right_hand
+        reply = replies.fetch($right_hand, ["Rangu glances at the ticket and says, \"That isn't ready yet.\""]).shift
+        hold.call(:right, 'Rangu ticket') if reply == rangu_ticket
+        bput_match(reply, matchers)
+      end
+
+      tm.tool_drop(%w[mortar pestle], 'alchemy belt')
+
+      expect(given).to eq(%w[mortar mortar])
+      expect(sent).not_to include('get pestle')
+      expect(DRC).to have_received(:message).with('A Rangu ticket is still in your hands (it would not be put away); not leaving pestle for repair this time, so the next give does not hand it over.').once
+    end
+
     # Only Rangu's own tickets are put away, by id: a held item of his name
     # that is no ticket, another repairer's ticket, and an item with no id
     # stay in hand.
@@ -13110,7 +13152,7 @@ RSpec.describe TaskMaster do
         $hand_ids = { $right_hand => '1', $left_hand => '2' }
         allow(DRCI).to receive(:put_away_item?).and_return(true)
 
-        tm.put_away_tickets('Rangu')
+        expect(tm.put_away_tickets('Rangu')).to be(true)
 
         put.each { |ref| expect(DRCI).to have_received(:put_away_item?).with(ref).once }
         expect(DRCI).to have_received(:put_away_item?).exactly(put.size).times
@@ -13125,7 +13167,7 @@ RSpec.describe TaskMaster do
       $hand_item_ids = { right: ['Rangu ticket', nil], left: ['Rangu ticket', '7'] }
       allow(DRCI).to receive(:put_away_item?).and_return(false)
 
-      tm.put_away_tickets('Rangu')
+      expect(tm.put_away_tickets('Rangu')).to be(false)
 
       expect(DRCI).to have_received(:put_away_item?).with('#7').once
       expect(DRCI).to have_received(:put_away_item?).once
