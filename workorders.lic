@@ -5,7 +5,7 @@
 =end
 
 class WorkOrders
-  VERSION = '1.0.2'.freeze
+  VERSION = '1.0.3'.freeze
 
   # Pattern constants for game responses
   GIVE_LOGBOOK_SUCCESS_PATTERNS = [
@@ -445,21 +445,24 @@ class WorkOrders
     false
   end
 
-  # The tool get_tool put in hand: the object new in a hand (by id); with
-  # none new (it was held already: the GET answers "You are already holding
-  # that."), the one held object whose GameObj noun is the tool's
-  # (DRC.get_noun).
+  # The tool get_tool put in hand: the object new in a hand (by id), the
+  # one whose GameObj noun is the tool's (DRC.get_noun) first; with none
+  # new (it was held already: the GET answers "You are already holding
+  # that."), the one held object whose noun is the tool's. A ticket is never
+  # the tool: one that comes into a hand late (a second give bput gave up
+  # on that still went through) would else be handed to the repairer.
   #
   # @param tool_name [String] the tool, as get_tool got it
   # @param held [Array<String, nil>] the ids in hand before the GET
   # @return [Object, nil] its GameObj; nil when none, or more than one
   #   held one, fits
   def got_tool(tool_name, held)
-    fresh = held_objects.find { |obj| obj.id && !held.include?(obj.id) }
-    return fresh if fresh
-
     noun = DRC.get_noun(tool_name).to_s.downcase
-    same = held_objects.select { |obj| obj.id && obj.noun.to_s.downcase == noun }
+    candidates = held_objects.select { |obj| obj.id && obj.noun.to_s.downcase != 'ticket' }
+    fresh = candidates.reject { |obj| held.include?(obj.id) }
+    return fresh.find { |obj| obj.noun.to_s.downcase == noun } || fresh.first unless fresh.empty?
+
+    same = candidates.select { |obj| obj.noun.to_s.downcase == noun }
     same.first if same.size == 1
   end
 
@@ -802,7 +805,13 @@ class WorkOrders
           return
         end
         DRCT.walk_to(info['repair-room'])
-        get_tool(tool_name)
+        # Got again as repair_items gets it: checked, and into the right
+        # hand by its id, as a bare GIVE hands over the right hand.
+        held = held_objects.map(&:id)
+        unless get_tool(tool_name) && tool_to_right_hand?(tool_name, held)
+          Lich::Messaging.msg('bold', "WorkOrders: Could not get the #{tool_name} back after the bank run; skipping its repair.")
+          return
+        end
       else
         Lich::Messaging.msg('bold', "WorkOrders: Unexpected response finalizing #{tool_name} repair; skipping.")
         return

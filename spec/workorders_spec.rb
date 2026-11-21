@@ -201,7 +201,7 @@ RSpec.describe WorkOrders do
 
     it 'defines VERSION as frozen string' do
       expect(described_class::VERSION).to be_frozen
-      expect(described_class::VERSION).to eq('1.0.2')
+      expect(described_class::VERSION).to eq('1.0.3')
     end
   end
 
@@ -1167,6 +1167,32 @@ RSpec.describe WorkOrders do
   # ===========================================================================
   # #repair_items - tool repair workflow
   # ===========================================================================
+  # A second give bput gave up on may still go through, and its ticket then
+  # comes into a hand late, during the next tool's GET. The ticket is never
+  # the tool got: a bare GIVE of it would hand the repairer the ticket.
+  describe '#got_tool' do
+    let(:ticket) { OpenStruct.new(id: '7', noun: 'ticket', name: 'Rangu ticket') }
+    let(:hammer) { OpenStruct.new(id: '8', noun: 'hammer', name: 'diagonal-peen hammer') }
+
+    it 'takes the tool, not a ticket that came into a hand with it' do
+      allow(workorders).to receive(:held_objects).and_return([ticket, hammer])
+
+      expect(workorders.send(:got_tool, 'hammer', [])).to eq(hammer)
+    end
+
+    it 'takes the tool already held, not a ticket new in a hand' do
+      allow(workorders).to receive(:held_objects).and_return([ticket, hammer])
+
+      expect(workorders.send(:got_tool, 'hammer', ['8'])).to eq(hammer)
+    end
+
+    it 'takes nothing when only a ticket is new and no held object is the tool' do
+      allow(workorders).to receive(:held_objects).and_return([ticket])
+
+      expect(workorders.send(:got_tool, 'hammer', [])).to be_nil
+    end
+  end
+
   describe '#repair_items' do
     let(:info) do
       {
@@ -1885,6 +1911,37 @@ RSpec.describe WorkOrders do
       expect([$right_hand, $left_hand, world[:tickets]]).to eq([nil, nil, 0])
     end
 
+    # After a bank run the tool is got again: a GET that fails gives nothing
+    # more for it (a bare GIVE would hand over whatever the right hand held).
+    it 'skips the tool, saying so, with no further give, when the GET after a bank top-up fails' do
+      world = repair_world(npc: 'Rangu', room: 200, look: rangu_ready, answers: { 'hammer' => [quote, need_coin, quote, handed] })
+      gets = 0
+      allow(workorders).to receive(:get_tool).with('hammer') do
+        next false if (gets += 1) > 1
+
+        $right_hand = 'hammer'
+        $hand_ids['hammer'] = '99'
+        true
+      end
+
+      workorders.send(:repair_items, info, ['hammer'])
+
+      # The quote and the short-of-coin answer, then nothing more.
+      gives = world[:log].filter_map { |_room, command, line| line if command == 'give Rangu' }
+      expect(gives).to eq([quote, need_coin])
+      expect(Lich::Messaging).to have_received(:msg).with('bold', 'WorkOrders: Could not get the hammer back after the bank run; skipping its repair.').once
+    end
+
+    it 'gets the tool again into the right hand after a bank top-up and confirms its repair' do
+      world = repair_world(npc: 'Rangu', room: 200, look: rangu_ready, answers: { 'hammer' => [quote, need_coin, quote, handed] })
+
+      workorders.send(:repair_items, info, ['hammer'])
+
+      gives = world[:log].filter_map { |room, command, line| [room, line] if command == 'give Rangu' }
+      expect(gives).to eq([[200, quote], [200, need_coin], [200, quote], [200, handed], [200, 'You hand Rangu your ticket and are handed back a hammer.']])
+      expect(Lich::Messaging).not_to have_received(:msg).with('bold', anything)
+    end
+
     # confirm_repair's put-away of the new ticket failed: it is still in the
     # right hand when collection begins, and is handed in, not stopped at.
     it 'hands in the repair ticket confirm_repair could not put away, with no GET for it' do
@@ -2174,7 +2231,8 @@ RSpec.describe WorkOrders do
         end
 
         expect(DRCM).to receive(:ensure_copper_on_hand).with(1900, anything, anything).and_return(true)
-        expect(workorders).to receive(:get_tool).with('cauldron')
+        expect(workorders).to receive(:get_tool).with('cauldron').and_return(true)
+        expect(workorders).to receive(:tool_to_right_hand?).with('cauldron', anything).and_return(true)
         expect(DRCI).to receive(:put_away_item?).with('ticket').and_return(true)
 
         workorders.send(:confirm_repair, info, 'cauldron', 190)
