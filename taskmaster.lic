@@ -1,11 +1,11 @@
 =begin
   YAML SETTINGS(all optional but the first)
   task_loot_bag: bagname
-  task_no_repair: true/false # skip repairing tools entirely
+  task_no_repair: true/false # skip repairing tools entirely (a tool a Nezhiri or Dorhum task needs that is not on you is still looked for among the repair tickets carried; see task_repair_by)
   task_self_repair: true/false # use own brush and oil for repairs
   task_get_tools_on_completion: true/false # If you want taskmaster to pickup any remaining tools in the repair shop. Useful if you're using clerk-tools after each task
   task_repair_every: { default: 0 } # seconds between repairs of each tool, by taskmaster ({ nezhiri: 10800, zasele: 43200 }), written as plain digits with no leading 0 (YAML reads an unquoted 0600 as octal, 384, 0x10 as hex, 16, and 3:00:00 as base 60, 10800, before taskmaster sees them, as it reads any other plain YAML number; a value that is not a plain YAML number, quoted or not, is read as base-10 digits (an unquoted 0800, not valid octal, is 800); one that is not whole seconds, 0 or more, such as 3h, 10800.9 or -5, is named and ignored); a taskmaster with no entry uses default, and with no default 0, which repairs after every task (as before). Each tool's last repair is kept per character (UserVars.taskmaster_repaired_at; ;e UserVars.taskmaster_repaired_at = nil forgets them all). A kept ticket, or the repairer's own no-wear or past-repair answer (its line, by its name: the same words in someone else's speech heard first are named and do not count), starts the tool's clock (a confirming give that got no answer but went through starts it once a pickup brings the tool back by its ticket, as of when the tool was left); a refusal, or no answer and no ticket, does not, so the tool goes again after the next task. Applies to task_self_repair too: with an interval above 0 only the due tools carried (the inventory feed or hands, else a TAP) are repaired and noted, except one on Lich's immune list (repaired with Proper Forging Tool Care in the last two hours or so), which is skipped and stays due; at 0 every tool goes to your own repair with no TAP and none is noted, as before the setting. A run that repairs says which taskmaster it may work (the one named and task_fallback_npc; in cycle, the three it picks from and task_fallback_npc) has no entry, and names a key that is not a taskmaster (a misspelling), and, with task_fallback_npc, which taskmaster's tools going for repair bring no detour to the fallback for want of an entry (the default entry does not count for the detour)
-  task_repair_by: rangu # where tools go for repair: rangu (the default: Rangu, Crossing Engineering Society), town (Crossing's town repairer in base-town.yaml, Catrox; hometown, its earlier name, is taken as town) or task_type (Crossing's repairer, in base-crafting.yaml, of the discipline taskmaster gives each taskmaster: tailoring for Zasele, remedies for Nezhiri, blacksmithing for Poltu, shaping for Bradyn (his metal tasks too), artificing for Dorhum). Always Crossing's, where every task is bought and crafted, whatever task_hometown says; with no such repairer in the data it says so and uses Rangu. Each tool left is noted (UserVars.taskmaster_repairs, with its name in hand). Once a task is accepted, the noted tools its work uses are picked up by their tickets, waiting up to 10 minutes at each repairer for them to be ready (Poltu's and Bradyn's metal tasks share the forging tools); another noted tool at a repairer it goes to is picked up if it is ready then, or by the end of a wait there for the work's own tools; and when a TAP before the ask finds a Rangu ticket, every Rangu ticket no note accounts for (an older taskmaster's, or one whose note was lost) is handed in too, waited for the same way. A task stops before its work while a tool it uses is still at repair (a noted one, or an un-noted Rangu ticket still carried whose item names it, or one the repairer would not take), and stays open for the next run; a note no ticket can be handed in for (tickets for two different items fit it, its one ticket could as well be another clerk's, or the repairer would not take it) stops every run the same way, until you hand the right ticket in yourself and run ;taskmaster pickup; with mark_crafted_goods that includes the stamp for Zasele's (yarn, cloth and leather), Poltu's, Bradyn's lumber and metal, and Dorhum's tasks, whose crafting scripts stop without it. Any other tool still out waits for a later task or ;taskmaster pickup, and is not sent for repair again meanwhile (a tool still noted is taken to be at repair). A tool collected by hand keeps its note, so it is not sent for repair until ;taskmaster pickup (or a task's pickup at that repairer) forgets the note: run ;taskmaster pickup after handing tickets in yourself. Another taskmaster's note counts for a task by its setting name, or by a name of two words or more: a one-word name such as "rod" is not taken for another toolset's "stirring rod" or "imbuement rod", and Dorhum's rod with none in enchanting_tools (enchant's fallback "rod") is matched as "imbuement rod". Two settings that give different tools the very same name ("rod" in both forging_tools and enchanting_tools) are still taken for each other. A ticket is matched to a note by the tool's name in hand, which a ticket may follow with more words ("large purpleheart bowl edged with ivory"); when tickets for two different items fit one note, none is handed in and it says so. In marathon, the tools left at the run's repairer are picked up right after each restock, while the run is still in Crossing, every one waited for (as taskmaster always has), so an accept on Andreshlew does not walk back to Crossing for them. With task_type, Zasele's, Nezhiri's and Poltu's tools go to society clerks, who are all called clerk: their tickets stay carried until a task, ;taskmaster pickup or task_get_tools_on_completion collects them, and ;workorders in another discipline picks such a ticket up with its own and stops collecting at one its clerk does not take; a ticket whose item is noted at two clerks is not handed in (it says so), and work that uses that tool stops until you hand it in yourself at the right clerk and run ;taskmaster pickup. With town, crossing-repair (which training-manager runs after hunts) and ;repair hand in every Catrox ticket, taskmaster's included: crossing-repair puts such a tool in your default stow container, not your crafting bag or toolbelt, and taskmaster's next pickup forgets its note (no ticket carried). Run ;taskmaster pickup before those scripts run, or use rangu or task_type with them
+  task_repair_by: rangu # where tools go for repair: rangu (the default: Rangu, Crossing Engineering Society), town (Crossing's town repairer in base-town.yaml, Catrox; hometown, its earlier name, is taken as town) or task_type (Crossing's repairer, in base-crafting.yaml, of the discipline taskmaster gives each taskmaster: tailoring for Zasele, remedies for Nezhiri, blacksmithing for Poltu, shaping for Bradyn (his metal tasks too), artificing for Dorhum). Always Crossing's, where every task is bought and crafted, whatever task_hometown says; with no such repairer in the data it says so and uses Rangu. Each tool left is noted (UserVars.taskmaster_repairs, with its name in hand). Once a task is accepted, the noted tools its work uses are picked up by their tickets, waiting up to 10 minutes at each repairer for them to be ready (Poltu's and Bradyn's metal tasks share the forging tools); another noted tool at a repairer it goes to is picked up if it is ready then, or by the end of a wait there for the work's own tools; and when a TAP before the ask finds a Rangu ticket, every Rangu ticket no note accounts for (an older taskmaster's, or one whose note was lost) is handed in too, waited for the same way. A task stops before its work while a tool it uses is still at repair (a noted one, or an un-noted Rangu ticket still carried whose item names it, or one the repairer would not take), and stays open for the next run; a note no ticket can be handed in for (tickets for two different items fit it, its one ticket could as well be another clerk's, or the repairer would not take it) stops every run the same way, until you hand the right ticket in yourself and run ;taskmaster pickup; with mark_crafted_goods that includes the stamp for Zasele's (yarn, cloth and leather), Poltu's, Bradyn's lumber and metal, and Dorhum's tasks, whose crafting scripts stop without it. Any other tool still out waits for a later task or ;taskmaster pickup, and is not sent for repair again meanwhile (a tool still noted is taken to be at repair). A tool collected by hand keeps its note, so it is not sent for repair until ;taskmaster pickup (or a task's pickup at that repairer) forgets the note: run ;taskmaster pickup after handing tickets in yourself. Another taskmaster's note counts for a task by its setting name, or by a name of two words or more: a one-word name such as "rod" is not taken for another toolset's "stirring rod" or "imbuement rod", and Dorhum's rod with none in enchanting_tools (enchant's fallback "rod") is matched as "imbuement rod". Two settings that give different tools the very same name ("rod" in both forging_tools and enchanting_tools) are still taken for each other. A ticket is matched to a note by the tool's name in hand, which a ticket may follow with more words ("large purpleheart bowl edged with ivory"); when tickets for two different items fit one note, none is handed in and it says so. In marathon, the tools left at the run's repairer are picked up right after each restock, while the run is still in Crossing, every one waited for (as taskmaster always has), so an accept on Andreshlew does not walk back to Crossing for them. With task_type, Zasele's, Nezhiri's and Poltu's tools go to society clerks, who are all called clerk: their tickets stay carried until a task, ;taskmaster pickup or task_get_tools_on_completion collects them, and ;workorders in another discipline picks such a ticket up with its own and stops collecting at one its clerk does not take; a ticket whose item is noted at two clerks is not handed in (it says so), and work that uses that tool stops until you hand it in yourself at the right clerk and run ;taskmaster pickup. With town, crossing-repair (which training-manager runs after hunts) and ;repair hand in every Catrox ticket, taskmaster's included: crossing-repair puts such a tool in your default stow container, not your crafting bag or toolbelt, and taskmaster's next pickup forgets its note (no ticket carried). Run ;taskmaster pickup before those scripts run, or use rangu or task_type with them. Before a Nezhiri or Dorhum task's work, a tool it needs that is not on you is looked for among the repair tickets carried, whatever task_repair_by, task_no_repair or task_self_repair say: Rangu's, Catrox's (crossing-repair leaves gear there), and with task_repair_by task_type your discipline's clerk's. A ticket whose item is that tool, a note's or one another script left, is handed in at its repairer and waited for as any pickup waits (a TAP for each repairer's tickets and a look at them come first, so no walk is made without one), and the tool put where taskmaster keeps it; only then is the society clerk asked (;clerk-tools <discipline> get). Tickets for two different items that could be the tool are named and none is handed in, and a stop for a tool still missing names any ticket for it still carried, to hand in yourself
   task_use_boost: true/false # use boost to eliminate task cooldowns, useful if you have a few and you're doing a lot of tasks
   task_cooldown_poll: 15 # seconds between asks while the taskmaster makes you wait (minimum 3)
   task_boosts: [task, haste] # boosts to use. task: BOOST TASK when a task is on cooldown (same as task_use_boost). haste: keep BOOST HASTE (1 hour, roundtimes -1 second) running between tasks. Once the game says you have no credits for one, it is not asked for again until the game's daily rollover (midnight US Central, when login rewards can add boosts in the middle of a login) or your next login; to ask again sooner, ;e $taskmaster_boost_unavailable = nil
@@ -39,7 +39,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.21.18'
+  VERSION = '2026.11.23.1'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -2079,14 +2079,19 @@ class TaskMaster
   end
 
   # Makes sure the tools are on you before money is spent on a task: any
-  # missing are asked of the society clerk (;clerk-tools <discipline> get),
-  # and any still missing stop the run with their names, rather than buying
+  # missing are first looked for among the repair tickets carried
+  # (collect_missing_by_ticket: a tool another script left for repair, such
+  # as crossing-repair's at Catrox, keeps no note of taskmaster's), then
+  # asked of the society clerk (;clerk-tools <discipline> get), and any
+  # still missing stop the run with their names, rather than buying
   # supplies and spending an instructions use on an item that cannot be made.
   # The tools left for repair that the task uses were collected after the accept,
   # and the task stopped before its work if one it uses is still there
   # (stop_if_tools_at_repair).
   # A tool the crafting bag's INVENTORY lists (listed) needs no TAP; after
-  # the clerk, every tool still missing is looked for afresh.
+  # the tickets and after the clerk, every tool still missing is looked for
+  # afresh. The stop names any ticket carried for a missing tool that could
+  # not be handed in (not ready, refused, or one of two for different items).
   #
   # @param tools [Array<String>] tool names as in the settings
   # @param discipline [String] clerk-tools toolset, e.g. 'enchanting'
@@ -2098,14 +2103,93 @@ class TaskMaster
     missing = missing_tools(tools, listed)
     return if missing.empty?
 
+    put_hands_away
+    missing, carried = collect_missing_by_ticket(missing)
+    return if missing.empty?
+
     DRC.message("Missing #{missing.join(', ')}; asking the #{discipline} clerk.")
     put_hands_away
     DRC.wait_for_script_to_complete('clerk-tools', [discipline, 'get'])
     missing = missing_tools(missing)
     return if missing.empty?
 
-    DRC.message("Can't find #{missing.join(', ')}: not on you, and the #{discipline} clerk didn't have it. Stopping before buying anything.")
+    said = "Can't find #{missing.join(', ')}: not on you, and the #{discipline} clerk didn't have it."
+    left = carried.reject { |_, item| missing.none? { |tool| ticket_names_tool?(item, tool) } }
+    unless left.empty?
+      tickets = left.map { |name, item| "a #{name} ticket for #{item}" }.join(', ')
+      said += " You carry #{tickets}: hand #{left.size == 1 ? 'it' : 'them'} in yourself."
+    end
+    DRC.message("#{said} Stopping before buying anything.")
     exit
+  end
+
+  # Looks for the missing tools among the repair tickets carried, at each
+  # repairer taskmaster knows (ticket_repairers) that a TAP finds a ticket
+  # of (or that holds a note of one of them), and hands in, at that
+  # repairer, each ticket whose item is one of them (ticket_names_tool?),
+  # by collect_tools: a noted tool's ticket by its note, and a ticket no
+  # note accounts for only when it is the one ticket of that repairer's for
+  # a missing tool's item, read whole (collect_tools' +unnoted_for+). The
+  # tickets are looked at (LOOK reads a stowed ticket anywhere) before any
+  # walk, and only a ticket for a missing tool brings one, waited for, as
+  # any pickup waits, up to TICKET_WAIT_POLLS polls 30 s apart. With
+  # nothing handed over the tools are not tapped again; with something, the
+  # tools it brought back are named. Nothing is looked for when the repair
+  # replies are not known (repair_replies_known?). The hands are put away
+  # first (ensure_tools), so a ticket can be got.
+  #
+  # @param missing [Array<String>] the tools missing, by setting name
+  # @return [Array(Array<String>, Array<Array(String, String)>)] the tools
+  #   still missing, and the tickets for them still carried afterwards
+  #   (repairer, item)
+  def collect_missing_by_ticket(missing)
+    return [missing, []] unless repair_replies_known?
+
+    @tickets_handed_in = false
+    carried = []
+    ticket_repairers.each do |room, name|
+      here = repairs_out.select { |record| [record['room'], record['repairer']] == [room, name] }
+      noted = tools_left_for(missing, here)
+      # One TAP before any look: a look that goes unanswered (lag) is
+      # looked at again for up to TICKET_WAIT_POLLS polls, which no run
+      # carrying none of the repairer's tickets should sit through.
+      next if noted.empty? && !DRCI.exists?("#{name} ticket")
+
+      carried.concat(collect_tools(room, name, noted, unnoted_for: missing).map { |ticket| [name, ticket[:item]] })
+    end
+    return [missing, carried] unless @tickets_handed_in
+
+    still = missing_tools(missing)
+    back = missing - still
+    DRC.message("Got #{back.join(', ')} back by #{back.size == 1 ? 'its' : 'their'} repair ticket.") unless back.empty?
+    [still, carried]
+  end
+
+  # The repairers whose tickets a missing tool is looked for among, each
+  # once, by room and name: Rangu, Crossing's town repairer (Catrox, where
+  # crossing-repair leaves the gear it repairs), and, when taskmaster sends
+  # tools for repair (not task_no_repair or task_self_repair), its own
+  # repairer (repairer_for: a society clerk with task_repair_by task_type).
+  #
+  # @return [Array<Array(Integer, String)>]
+  def ticket_repairers
+    known = [RANGU, town_repairer]
+    known << repairer_for unless @no_repair || @self_repair
+    known.compact.map { |repairer| [repairer['id'], repairer['name']] }.uniq
+  end
+
+  # Whether a ticket's item is the tool of that setting name: every word of
+  # the name starting a word of the item (names_tool?, which keeps the
+  # knitting and sewing needles apart), and the item's noun (lich-5's
+  # DRC.get_noun) the name's last word, so a "mortar" is not a "mortar
+  # brush".
+  #
+  # @param item [String] what the ticket is for
+  # @param tool [String] the tool's setting name
+  # @return [Boolean]
+  def ticket_names_tool?(item, tool)
+    long = item.to_s.sub(/\A(?:an?|some|the)\s+/i, '')
+    names_tool?(long, tool) && DRC.get_noun(long).to_s.casecmp?(tool.to_s.split.last.to_s)
   end
 
   # A tool counts as carried when it is in hand, when the crafting bag's
@@ -6507,7 +6591,7 @@ class TaskMaster
   #
   # @return [Hash{String => Object}, nil]
   def town_repairer
-    data = get_data('town')[REPAIR_TOWN]
+    data = get_data('town')&.[](REPAIR_TOWN)
     entry = data && (data['metal_repair'] || data['leather_repair'])
     entry && entry['id'] && entry['name'] ? { 'id' => entry['id'], 'name' => entry['name'] } : nil
   end
@@ -7108,10 +7192,18 @@ class TaskMaster
   #   there, handed in only when ready
   # @param unnoted [Boolean] also hand in, and wait for, the repairer's
   #   tickets no note accounts for (Rangu's only)
+  # @param unnoted_for [Array<String>] tools missing at a task, by setting
+  #   name (ensure_tools): also hand in, and wait for, a ticket no note
+  #   accounts for whose item is one of them (ticket_names_tool?), only from
+  #   a whole read, and only when every such ticket is for the same item;
+  #   tickets for two different items fitting one tool are named, and none
+  #   is handed in for it; one ticket each (a second for the same item
+  #   stays carried). Sets @tickets_handed_in when a ticket goes in.
   # @return [Array<Hash{Symbol => Object}>] with +unnoted+, the repairer's
   #   tickets no note accounts for still carried afterwards, as last read
-  #   (not ready, refused, or never reached); else none
-  def collect_tools(room, name, records, ready_only: [], unnoted: false)
+  #   (not ready, refused, or never reached); with +unnoted_for+, those of
+  #   them for one of its tools no ticket brought back; else none
+  def collect_tools(room, name, records, ready_only: [], unnoted: false, unnoted_for: [])
     return [] unless repair_replies_known?
 
     put_away_tickets(name)
@@ -7124,6 +7216,10 @@ class TaskMaster
     walked = false
     polls = 0
     told = []
+    told_tools = []
+    sweep = unnoted || !unnoted_for.empty?
+    # The missing tools no ticket has brought back yet: one ticket each.
+    wanted_for = unnoted_for.dup
     # Every read after the first: the refusal backstop counts the most
     # tickets any read saw, and a fresh read is one a look that finds none
     # (while a TAP still finds one) can be trusted against.
@@ -7165,7 +7261,13 @@ class TaskMaster
       end
       live = claims.select { |_, ticket| ticket.is_a?(Hash) }
       own = live.select { |record, _| waited.include?(record) }.map(&:last)
-      loose = unnoted ? unaccounted_tickets(tickets, claims, whole: whole).reject { |ticket| ticket[:refused] } : []
+      loose = if unnoted
+                unaccounted_tickets(tickets, claims, whole: whole).reject { |ticket| ticket[:refused] }
+              elsif unnoted_for.empty?
+                []
+              else
+                missing_tool_tickets(name, unaccounted_tickets(tickets, claims, whole: whole), wanted_for, whole, told_tools)
+              end
       # The work's own tickets first (the waited notes come first in notes,
       # so in live), then the ready_only ones, then those no note accounts
       # for: a visit a full hand or an unseen tool cuts short has handed in
@@ -7181,7 +7283,7 @@ class TaskMaster
             next
           end
           unseen = whole ? [] : waited.select { |record| claims.assoc(record)&.last.nil? }
-          break if unseen.empty? && !(unnoted && cut == :unanswered)
+          break if unseen.empty? && !(sweep && cut == :unanswered)
 
           if cut == :unanswered
             # A look went unanswered (lag): look again after a poll's wait,
@@ -7201,7 +7303,7 @@ class TaskMaster
         end
         polls += 1
         if polls > TICKET_WAIT_POLLS
-          DRC.message(not_finished(name, waiting, loose))
+          DRC.message(not_finished(name, waiting, loose, swept: unnoted))
           break
         end
         break unless (walked ||= reach_repairer(room, name))
@@ -7237,6 +7339,8 @@ class TaskMaster
         next
       end
       drop_ticket(tickets, ready)
+      @tickets_handed_in = true
+      wanted_for.reject! { |tool| ticket_names_tool?(ready[:item], tool) }
       fresh = false
       next unless record
 
@@ -7258,7 +7362,40 @@ class TaskMaster
     # Kept for want of the player's hand, not of time: every run would read
     # the same tickets again (stop_if_tools_at_repair says so).
     (@tools_held_back ||= []).concat(claims.select { |_, claim| claim.is_a?(Symbol) }.map(&:first))
-    unnoted ? unaccounted_tickets(tickets, claims, whole: whole) : []
+    return unaccounted_tickets(tickets, claims, whole: whole) if unnoted
+    return [] if wanted_for.empty?
+
+    unaccounted_tickets(tickets, claims, whole: whole).select { |ticket| wanted_for.any? { |tool| ticket_names_tool?(ticket[:item], tool) } }
+  end
+
+  # The tickets no note accounts for (+loose+) that collect_tools hands in
+  # for tools missing at a task: for each tool, the tickets whose item is
+  # it (ticket_names_tool?), from a whole read only (a ticket not seen
+  # could be for it as well), and only when they are all for one item. For
+  # a tool two different items fit, none is handed in, and it is said once
+  # (+told+). A ticket the repairer refused is not tried again.
+  #
+  # @param name [String] the repairer
+  # @param loose [Array<Hash{Symbol => Object}>] the tickets no note
+  #   accounts for (unaccounted_tickets)
+  # @param tools [Array<String>] the missing tools, by setting name
+  # @param whole [Boolean] whether every ticket carried was read
+  # @param told [Array<String>] the tools already said to be unclear
+  # @return [Array<Hash{Symbol => Object}>]
+  def missing_tool_tickets(name, loose, tools, whole, told)
+    return [] unless whole
+
+    tools.flat_map do |tool|
+      fits = loose.select { |ticket| ticket_names_tool?(ticket[:item], tool) }
+      if fits.map { |ticket| ticket[:item].downcase }.uniq.size > 1
+        unless told.include?(tool)
+          DRC.message("More than one #{name} ticket carried could be for the #{tool} (#{fits.map { |ticket| ticket[:item] }.uniq.join(', ')}); handing in none for it. Hand the right one in yourself.")
+          told << tool
+        end
+        next []
+      end
+      fits.reject { |ticket| ticket[:refused] }
+    end.uniq { |ticket| ticket[:ordinal] }
   end
 
   # What collect_tools says of notes whose one ticket could as well be a
@@ -7364,11 +7501,15 @@ class TaskMaster
   # @param waiting [Array<Hash{Symbol => Object}>] the tickets waited for
   # @param loose [Array<Hash{Symbol => Object}>] those of them no note
   #   accounts for
+  # @param swept [Boolean] whether those are the Rangu tickets a pickup
+  #   sweeps (collect_tools' +unnoted+), which a later pickup hands in;
+  #   a ticket handed in for a missing tool (+unnoted_for+) is not
   # @return [String]
-  def not_finished(name, waiting, loose)
+  def not_finished(name, waiting, loose, swept: true)
     said = "#{name} has not finished #{waiting.map { |ticket| ticket[:item] }.join(', ')}; leaving #{waiting.size == 1 ? 'it' : 'them'} for a later pickup."
     unnoted = waiting & loose
     return said if unnoted.empty?
+    return "#{name} has not finished #{waiting.map { |ticket| ticket[:item] }.join(', ')}; leaving #{waiting.size == 1 ? 'it' : 'them'} there." unless swept
 
     "#{said} No note was kept for #{unnoted.map { |ticket| ticket[:item] }.join(', ')} (an older taskmaster's, or a note lost); a later task or ;taskmaster pickup hands #{unnoted.size == 1 ? 'it' : 'them'} in."
   end
