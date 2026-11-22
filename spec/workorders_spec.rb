@@ -2326,6 +2326,48 @@ RSpec.describe WorkOrders do
   end
 
   # ===========================================================================
+  # #enchanting_items - the small spheres a fount order needs
+  # ===========================================================================
+  # Founts are made from small spheres. With the part listed as plain
+  # "sphere", any other sphere in the crafting bag (here a keepsake) was
+  # counted as a part, so the order bought one sphere too few and enchant
+  # stopped on the last fount ("Could not get a small sphere").
+  describe '#enchanting_items fount parts' do
+    let(:recipe) do
+      YAML.load_file(File.expand_path('../data/base-recipes.yaml', __dir__), aliases: true)['crafting_recipes']
+          .find { |r| r['name'] == 'common material greater fount' }
+    end
+    let(:recipe_parts) { YAML.unsafe_load_file(File.expand_path('../data/base-crafting.yaml', __dir__))['recipe_parts'] }
+    let(:info) { { 'tool-room' => 19_036, 'fount' => 1, 'stock-room' => 14_753, 'logbook' => 'enchanting' } }
+    # RUMMAGE /C sphere, with one small sphere left over and the keepsake
+    let(:rummage) do
+      'You rummage through a stormy grey rucksack looking for something similar to "sphere" and see ' \
+        'a pine small sphere and a fragile blown-glass sphere cradled within a twisted rencate frame.'
+    end
+
+    before do
+      workorders.instance_variable_set(:@bag, 'rucksack')
+      workorders.instance_variable_set(:@hometown, 'Crossing')
+      workorders.instance_variable_set(:@recipe_parts, recipe_parts)
+      # As lich-5's DRCI.count_items_in_container counts: ' <item>' then a non-word character.
+      allow(DRCI).to receive(:count_items_in_container) { |item, _bag| rummage.scan(/ #{item}\W/).size }
+      allow(workorders).to receive(:stow_tool)
+      allow(workorders).to receive(:bundle_item)
+      allow(DRC).to receive(:bput).and_return('This work order appears to be complete.')
+    end
+
+    it 'lists the part by the noun enchant gets' do
+      expect(recipe['noun']).to eq('small sphere')
+      expect(recipe['part']).to eq(['small sphere'])
+    end
+
+    it 'counts only the small sphere and buys the other four' do
+      expect(DRCT).to receive(:buy_item).with(recipe_parts['sphere']['Crossing']['part-room'], 'sphere').exactly(4).times
+      workorders.send(:enchanting_items, info, nil, recipe, 5)
+    end
+  end
+
+  # ===========================================================================
   # #gather_process_herb - messaging update
   # ===========================================================================
   describe '#gather_process_herb' do

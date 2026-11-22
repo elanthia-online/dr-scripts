@@ -10030,7 +10030,7 @@ crafting_recipes:
     enchant_stock4:
     item:
     part:
-      - sphere
+      - small sphere
   - name: common material lesser fount
     noun: small sphere
     type: artificing
@@ -10046,7 +10046,7 @@ crafting_recipes:
     enchant_stock4:
     item:
     part:
-      - sphere
+      - small sphere
   - name: uncommon material minor fount
     noun: small sphere
     type: artificing
@@ -10062,7 +10062,7 @@ crafting_recipes:
     enchant_stock4:
     item:
     part:
-      - sphere
+      - small sphere
   - name: common material greater fount
     noun: small sphere
     type: artificing
@@ -10078,7 +10078,7 @@ crafting_recipes:
     enchant_stock4:
     item:
     part:
-      - sphere
+      - small sphere
   - name: common material major fount
     noun: small sphere
     type: artificing
@@ -10094,7 +10094,7 @@ crafting_recipes:
     enchant_stock4:
     item:
     part:
-      - sphere
+      - small sphere
   - name: rare material minor fount
     noun: small sphere
     type: artificing
@@ -10110,7 +10110,7 @@ crafting_recipes:
     enchant_stock4: 6
     item:
     part:
-      - sphere
+      - small sphere
   - name: uncommon material lesser fount
     noun: small sphere
     type: artificing
@@ -10126,7 +10126,7 @@ crafting_recipes:
     enchant_stock4:
     item:
     part:
-      - sphere
+      - small sphere
   - name: ultra rare material minor fount
     noun: small sphere
     type: artificing
@@ -10142,7 +10142,7 @@ crafting_recipes:
     enchant_stock4: 6
     item:
     part:
-      - sphere
+      - small sphere
   - name: uncommon material greater fount
     noun: small sphere
     type: artificing
@@ -10158,7 +10158,7 @@ crafting_recipes:
     enchant_stock4:
     item:
     part:
-      - sphere
+      - small sphere
   - name: rare material lesser fount
     noun: small sphere
     type: artificing
@@ -10174,7 +10174,7 @@ crafting_recipes:
     enchant_stock4: 10
     item:
     part:
-      - sphere
+      - small sphere
   - name: uncommon material major fount
     noun: small sphere
     type: artificing
@@ -10190,7 +10190,7 @@ crafting_recipes:
     enchant_stock4:
     item:
     part:
-      - sphere
+      - small sphere
   - name: ultra rare material lesser fount
     noun: small sphere
     type: artificing
@@ -10206,7 +10206,7 @@ crafting_recipes:
     enchant_stock4: 10
     item:
     part:
-      - sphere
+      - small sphere
   - name: rare material greater fount
     noun: small sphere
     type: artificing
@@ -10222,7 +10222,7 @@ crafting_recipes:
     enchant_stock4: 9
     item:
     part:
-      - sphere
+      - small sphere
   - name: ultra rare material greater fount
     noun: small sphere
     type: artificing
@@ -10238,7 +10238,7 @@ crafting_recipes:
     enchant_stock4: 9
     item:
     part:
-      - sphere
+      - small sphere
   - name: rare material major fount
     noun: small sphere
     type: artificing
@@ -10254,7 +10254,7 @@ crafting_recipes:
     enchant_stock4: 8
     item:
     part:
-      - sphere
+      - small sphere
   - name: ultra rare material major fount
     noun: small sphere
     type: artificing
@@ -10270,7 +10270,7 @@ crafting_recipes:
     enchant_stock4: 11
     item:
     part:
-      - sphere
+      - small sphere
   # Artificing Chapter 5 recipes
   - name: an unfocused burin
     noun: burin
