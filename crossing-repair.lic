@@ -3,6 +3,22 @@
 =end
 
 class CrossingRepair
+  # Flag that catches where an item was got from: "You get a polished belzune
+  # stone mortar from inside your duffel bag." (Kythkani, 2026-11-23). Link
+  # tags are allowed around the container, for a Lich that does not strip them.
+  GOT_FROM_FLAG = 'crossing-repair-got-from'.freeze
+  GOT_FROM = %r{\bYou get .+ from inside your (?:<a[^>]*>)?(?<container>[^.<>]+?)(?:</a>)?\.}
+
+  # Ordinals for looking at each ticket of one repairer ("look at my second Catrox ticket").
+  TICKET_ORDINALS = %w[first second third fourth fifth sixth seventh eighth ninth tenth].freeze
+
+  # LOOK AT a ticket: "Looking at the Catrox ticket you see it is for a loimic
+  # slender awl.  You recall that your awl should be ready any moment now."
+  # Whole line, since DRC.bput returns only what matched.
+  TICKET_LOOK = /^Looking at the .*/
+  TICKET_ITEM = /it is for (?:an? |some |the )?(?<item>.+?)\.(?:\s\s|\s*\z)/
+  NO_TICKET = [/^I could not find/, /^What were you referring to/].freeze
+
   def initialize
     arg_definitions = [
       [
@@ -85,6 +101,11 @@ class CrossingRepair
 
   # Handler method to do our repairs.
   def repair_handler(town, settings)
+    # Where each item was got from (its noun => container), so one the gear
+    # container will not take back can go back there (put_back).
+    @origins = {}
+    Flags.add(GOT_FROM_FLAG, GOT_FROM)
+
     # Something we couldn't put away earlier (e.g. after a stopped run) would fill the other
     # hand as soon as the first item comes back, so stop before banking or walking anywhere.
     stop_repair("Could not put away #{held_items} before repairing.") unless hands_empty?
@@ -92,14 +113,17 @@ class CrossingRepair
     # Calls the repair prep and validation method. Makes sure we're ready and able to repair.
     # Grabs a hash of the items to repair at leather and metal, respectively.
     repair_info = repair_prep(town, settings)
+    @repairers = repair_info.keys
 
     # Run through each item with respective metal or leather repairer, turning in items for repair.
-    # Stop as soon as something can't be put away: carrying on fills the other hand,
-    # and with no free hand the tickets can never be collected.
+    # Stop handing in as soon as something can't be put away: carrying on fills the other hand.
+    # The tickets already out are collected first, while a hand is still free, so a stopped
+    # run never leaves a repaired item at the repairer with nothing to go back for it.
     repair_info.each do |repairer, items|
       DRC.message("Repairing at #{repairer}") if $debug_mode_crossing_repair
       next if repair_at(repairer['name'], repairer['id'], items)
 
+      collect_tickets(repair_info)
       stop_repair("Could not put away #{held_items}.")
     end
 
@@ -107,16 +131,27 @@ class CrossingRepair
     DRCM.deposit_coins(@keep_copper, settings) unless @skip_bank
 
     # Handle turning in tickets to get repaired items back.
-    repair_info.to_a.reverse.each do |repairer, _items|
-      while tickets_left?(repairer)
-      end
-    end
+    collect_tickets(repair_info)
 
     # Update when last repair completed
     UserVars.repair_timer_snap = Time.now
 
     # don't wear your boots on your head, silly
     fput('sort auto head') if settings.sort_auto_head
+  ensure
+    Flags.delete(GOT_FROM_FLAG)
+  end
+
+  # Hands in every ticket of each repairer, last repairer first, putting each item away.
+  # Stops the run (stop_repair) at the first ticket or item it cannot deal with.
+  #
+  # @param repair_info [Hash{Hash => Array}] repairer => items, from repair_prep
+  # @return [void]
+  def collect_tickets(repair_info)
+    repair_info.to_a.reverse.each do |repairer, _items|
+      while tickets_left?(repairer)
+      end
+    end
   end
 
   # This method is designed to prep for repair by checking if we have a bank specified for the
@@ -210,36 +245,73 @@ class CrossingRepair
       fput('swap') unless DRC.right_hand
       command = "give #{repairer}"
     else
+      Flags.reset(GOT_FROM_FLAG)
       return true unless @equipment_manager.get_item?(item)
 
+      note_origin(item.name)
       command = "give my #{item.short_name} to #{repairer}"
     end
 
     case DRC.bput(command, "There isn't a scratch on that", "I don't work on those here", "I don't repair those here", 'Just give it to me again', "If you agree, give it to me again", "You don't need to specify the object", "I will not repair something that isn't broken", "Please don't lose this ticket!", "You hand.*#{repairer}", "Lucky for you!  That isn't damaged!", 'You will need more coin if I am to be repairing that!', "You can't hand this weapon to another person!")
     when "There isn't a scratch on that", "I will not repair something that isn't broken", "Lucky for you!  That isn't damaged!", 'You will need more coin if I am to be repairing that!', "I don't repair those here", "You can't hand this weapon to another person!"
-      @equipment_manager.empty_hands
+      put_away_item(item.name)
     when "I don't work on those here"
       echo "*** ITEM HAS IMPROPER is_leather FLAG: #{item.short_name} ***"
-      @equipment_manager.empty_hands
+      put_away_item(item.name)
     when "You don't need to specify the object", 'Just give it to me again', 'If you agree, give it to me again'
       repair(repairer, item, true)
     when "Please don't lose this ticket!", "You hand.*#{repairer}"
       DRCI.stow_item?('ticket')
     else
-      @equipment_manager.empty_hands
+      put_away_item(item.name)
     end
+  end
+
+  # Remembers where the item just got came from, when the game said ("from
+  # inside your duffel bag"). An item got from a belt, worn or already in hand
+  # has no such line, and its usual place is the one empty_hands knows.
+  #
+  # @param noun [String] the item's noun, as in the gear settings
+  # @return [void]
+  def note_origin(noun)
+    match = Flags[GOT_FROM_FLAG]
+    @origins[noun] = match[:container].strip if match.is_a?(MatchData)
+  end
+
+  # Puts an item in hand away: where the gear settings keep it (empty_hands),
+  # else back where it was got from. The gear container can be full when the
+  # item lives elsewhere (Kythkani, 2026-11-23: the alchemy tools were kept in
+  # the duffel bag, the gear settings named the traveler's pack, and that pack
+  # was too heavy to take them).
+  #
+  # @param noun [String] the item's noun
+  # @return [Boolean] true when it is put away
+  def put_away_item(noun)
+    @equipment_manager.empty_hands || put_back(noun)
+  end
+
+  # @param noun [String]
+  # @return [Boolean] true when the item went back where it was got from
+  def put_back(noun)
+    container = @origins && @origins[noun]
+    return false unless container
+
+    DRCI.put_away_item?(noun, container)
   end
 
   # True after a ticket was redeemed and the item put away, false once no tickets are left.
   # Anything else (no free hand, no response, ticket not taken) stops the run rather than
   # looping forever or letting the repair timer be reset with tickets still out.
+  # An item already stuck in one hand (a stopped hand-in) does not stop it: the ticket and
+  # the item it brings back use the other hand.
   def tickets_left?(repairer)
     name = repairer['name']
+    held_before = held
     case DRC.bput("get my #{name} ticket", 'What were you referring', 'You get', 'You need a free hand')
     when 'You get'
       DRCT.walk_to(repairer['id'])
       stop_repair("Could not hand in your #{name} ticket (holding #{held_items}).") unless turn_in_ticket(name)
-      stop_repair("Could not put away #{held_items}.") unless @equipment_manager.empty_hands || hands_empty?
+      stop_repair("Could not put away #{held_items}.") unless put_away_returned?(held_before)
       true
     when 'What were you referring'
       false
@@ -251,15 +323,66 @@ class CrossingRepair
   end
 
   # Exits before the repair timer is reset, so the tickets still out are not forgotten.
+  # Names each ticket still carried and what it is for, so whoever sorts it out knows
+  # what is still at the repairer.
   def stop_repair(problem)
     DRC.message("#{problem} Stopping repair.")
+    carried = carried_tickets
+    DRC.message("Still carrying #{carried.join('; ')}.") unless carried.empty?
     DRC.message("Once that is sorted out, run ;#{['crossing-repair', @town_arg, 'force'].compact.join(' ')} to finish repairing and collect any tickets.")
     exit
   end
 
+  # The tickets of this run's repairers still carried, read with LOOK AT, as
+  # "Catrox ticket for polished belzune stone mortar". Empty before the
+  # repairers are known (a stop at the start of the run). Past the last
+  # ordinal it says there may be more rather than seem complete.
+  #
+  # @return [Array<String>]
+  def carried_tickets
+    Array(@repairers).map { |repairer| repairer['name'] }.uniq.flat_map do |name|
+      tickets = []
+      whole = TICKET_ORDINALS.all? do |ordinal|
+        look = DRC.bput("look at my #{ordinal} #{name} ticket", TICKET_LOOK, *NO_TICKET)
+        next false unless look.match?(TICKET_LOOK)
+
+        item = look[TICKET_ITEM, :item]
+        tickets << (item ? "#{name} ticket for #{item}" : "#{name} ticket")
+      end
+      whole ? tickets + ["possibly more #{name} tickets"] : tickets
+    end
+  end
+
+  # After a ticket brought an item back: whether every item now in hand was
+  # already there before the ticket was got, after putting the new ones away
+  # where the gear settings keep them, or else where they were got from.
+  #
+  # @param held_before [Array<Array(String, String)>] held, before the ticket
+  # @return [Boolean]
+  def put_away_returned?(held_before)
+    return true if @equipment_manager.empty_hands || hands_empty?
+
+    new_items(held_before).each { |_name, noun| put_back(noun) if noun }
+    new_items(held_before).empty?
+  end
+
+  # Items in hand now that were not in hand before (by name, one for one).
+  #
+  # @param held_before [Array<Array(String, String)>]
+  # @return [Array<Array(String, String)>] name and noun of each
+  def new_items(held_before)
+    remaining = held_before.map(&:first)
+    held.reject { |name, _noun| (index = remaining.index(name)) && remaining.delete_at(index) }
+  end
+
+  # @return [Array<Array(String, String)>] name and noun of each item in hand
+  def held
+    [[DRC.right_hand, DRC.right_hand_noun], [DRC.left_hand, DRC.left_hand_noun]].select(&:first)
+  end
+
   def held_items
-    held = [DRC.right_hand, DRC.left_hand].compact.join(' and ')
-    held.empty? ? 'an item' : held
+    names = held.map(&:first).join(' and ')
+    names.empty? ? 'an item' : names
   end
 
   def hands_empty?
