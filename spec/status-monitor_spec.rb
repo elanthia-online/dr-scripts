@@ -748,10 +748,43 @@ RSpec.describe StatusMonitor::MessageFilter do
         expect(filter.instance_variable_get(:@room_players)).to eq(%w[Allwyn Bovar])
       end
 
-      it 'splits an unlinked list on the last " and " and strips "whose" descriptions' do
+      it 'splits an unlinked list on ", " and " and ", keeping a description\'s own " and ", and strips "whose" descriptions' do
         filter.clean(+"<component id='room players'>Also here: Bovar who is trailed by a flag with a skull and crossbones, " \
                      'Allwyn whose steps leave glitter, Malva and Druid Urien.</component>')
         expect(filter.instance_variable_get(:@room_players)).to eq(%w[Bovar Allwyn Malva Urien])
+      end
+
+      # Unlinked shapes from the real Saga lists with the links removed. The
+      # last player's description holds " and ", which used to be taken as the
+      # list separator: the player before was lost and a description word
+      # became a name.
+      it 'keeps every unlinked name when the last description holds " and "' do
+        filter.clean(+"<component id='room players'>Also here: Vizier Edric and Monster Aldric who is trailed by a " \
+                     'ghostly flag displaying a dragon skull and crossbones.</component>')
+        expect(filter.instance_variable_get(:@room_players)).to eq(%w[Edric Aldric])
+        expect(filter.clean(+'Edric rummages through his pack for something.')).to be_nil
+      end
+
+      it 'keeps every unlinked name when the last description lists items with " and "' do
+        filter.clean(+"<component id='room players'>Also here: Alice and Bob who is carrying a lantern and a pick.</component>")
+        expect(filter.instance_variable_get(:@room_players)).to eq(%w[Alice Bob])
+      end
+
+      it 'splits an unlinked list before "the body of" and "a stunned"' do
+        filter.clean(+"<component id='room players'>Also here: Chronicler Coogs and the body of Ceravanto (prone), " \
+                     'Fiery Fury Warfare and a stunned Grand Inquisitor Drathyk.</component>')
+        expect(filter.instance_variable_get(:@room_players)).to eq(%w[Coogs Ceravanto Warfare Drathyk])
+      end
+
+      it 'keeps the last named player of an overflowing unlinked list, and no "people"' do
+        filter.clean(+"<component id='room players'>Also here: Monster Gorkus, Dervish Holdigor and some other people.</component>")
+        expect(filter.instance_variable_get(:@room_players)).to eq(%w[Gorkus Holdigor])
+      end
+
+      it 'strips an unlinked description that starts with "is"' do
+        filter.clean(+"<component id='room players'>Also here: Stray Stelling is surrounded by swirling flames " \
+                     'and Archaic Warrior Brachius.</component>')
+        expect(filter.instance_variable_get(:@room_players)).to eq(%w[Stelling Brachius])
       end
     end
 
@@ -1069,6 +1102,43 @@ RSpec.describe StatusMonitor::Monitor do
       expect(fput_commands.any? { |cmd| ["'Hmmm?", "'Yes", "'Ok?"].include?(cmd) }).to be true
     end
 
+    # The game's echo of this character's own speech. Forms from a Saga capture
+    # (the same lines spec/hunting_buddy_spec.rb uses) and the indexed logs.
+    describe 'this character\'s own speech' do
+      before do
+        settings.status_monitor_respond = true
+        settings.quit_on_status_warning = true
+      end
+
+      [
+        'You say, "Is a GameMaster around?"',
+        'You politely say, "Hello, GameMaster."',
+        'You ask, "Did a GameMaster just move me?"',
+        'You exclaim, "A GameMaster!"',
+        'You whisper to Bob, "I think that was a GameMaster."',
+        '  You say, "Is a GameMaster around?"',
+        '>You say, "Is a GameMaster around?"',
+        %(<prompt time="1792040467">&gt;</prompt>You say, "Is a GameMaster around?"),
+        %(<prompt time="1792040467">&gt;</prompt><preset id='speech'>You politely say</preset>, "Hello, GameMaster."),
+        %(<preset id='speech'>You say, "Is a GameMaster around?"</preset>)
+      ].each do |echo|
+        it "is not a check and sends nothing: #{echo}" do
+          expect(build_monitor.process(+echo)).to be false
+          expect(fput_commands).to be_empty
+        end
+      end
+
+      it 'does not hide a check that shares the line after the speech' do
+        expect(build_monitor.process(+'You say, "hi."  SEND[Sarhanna] "Please respond."')).to be true
+        expect(fput_commands).to include('exit')
+      end
+
+      it 'still alerts on the squirrel check, which quotes a child yelling' do
+        expect(build_monitor.process(+squirrel_lines.first)).to be true
+        expect(fput_commands).to include('exit')
+      end
+    end
+
     describe 'the "Gamemasters have been alerted" error notice' do
       notice = 'You sense a ripple in the life energy around you.  Some sort of error has occurred and the Gamemasters have been alerted.'
 
@@ -1208,6 +1278,24 @@ RSpec.describe StatusMonitor::Monitor do
         monitor = build_monitor
         monitor.process(+saga_gm_component)
         expect(monitor.process(+'Also here: GameMaster Avaari.')).to be false
+        expect(fput_commands).to eq(['exit'])
+      end
+
+      # Room updates often send the bare line behind <crtrStatus/> tags (more
+      # than half of the bare "Also here:" lines in the 2026-11-21 logs).
+      # Alone with the GameMaster, so no other player's name filters the line.
+      it 'does not alert again on the bare "Also here:" line behind leading tags' do
+        monitor = build_monitor
+        monitor.process(+saga_gm_component)
+        expect(monitor.process(+'<crtrStatus exist="76029" disengaged="1"/>Also here: GameMaster Avaari.')).to be false
+        expect(monitor.process(+'<crtrStatus exist="76029" disengaged="1"/><crtrStatus exist="76030" disengaged="1" sitting="1"/>' \
+                                'Also here: GameMaster Avaari.')).to be false
+        expect(fput_commands).to eq(['exit'])
+      end
+
+      it 'alerts on an unlinked list whose GameMaster follows a description holding " and "' do
+        expect(build_monitor.process(+"<component id='room players'>Also here: Brenna who is coated in grime and " \
+                                     'surrounded by a swirling cloud of filth and GameMaster Avaari.</component>')).to be true
         expect(fput_commands).to eq(['exit'])
       end
 

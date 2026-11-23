@@ -310,6 +310,20 @@ module StatusMonitor
     # previous player's description is not taken as this one's title) and the
     # link's noun (group 2), which is the player's name as the game spells it.
     LINKED_PLAYER = %r{(?:\A|, | and )((?:(?!, | and )[^<])*)<a\b[^>]*\bnoun="([^"]+)"[^>]*>[^<]*</a>}
+    # The list separator in an unlinked room players list: ", ", or " and "
+    # unless a lower-case word follows, except the "the body of"/"a stunned"/
+    # "a calmed" prefixes. A description's own " and " is followed by a
+    # lower-case word ("coated in grime and surrounded by ..."), so it is not
+    # split.
+    UNLINKED_PLAYER_SEPARATOR = /, | and (?=[^a-z]|the body of |a (?:stunned|calmed) )/
+    # A player's description in an unlinked list ("who is sitting", "whose
+    # form wavers ...", "is surrounded by swirling flames").
+    UNLINKED_PLAYER_DESCRIPTION = / (?:who|whose|is|has|appears|glows) .+/
+    # How the game ends a list too long to name everyone.
+    UNLINKED_PLAYERS_OVERFLOW = ' and some other people'
+    # The bare "Also here:" text that repeats the room players component. Room
+    # updates often send it behind one or more tags (<crtrStatus .../>).
+    BARE_ROOM_PLAYERS = /\A(?:<[^>]+>)*Also here: /
     # Words that open a phrase naming a creature: "a void-black umbral moth",
     # "the moth", "its moth".
     CREATURE_ARTICLE = %q{(?:[Aa]n?|[Tt]he|[Ss]ome|[Yy]our|[Hh]is|[Hh]er|[Ii]ts|[Tt]heir)}
@@ -365,7 +379,7 @@ module StatusMonitor
       return nil if line.empty? || @non_useful_tags.any? { |tag| tag =~ line }
       # The bare "Also here:" text repeats the room players component, which is
       # authoritative once seen; before that it is the only GameMaster signal.
-      return nil if @players_component_seen && line.start_with?('Also here: ')
+      return nil if @players_component_seen && line.match?(BARE_ROOM_PLAYERS)
       return nil if @room_players_pattern&.match?(line)
       return nil if online_player_pattern&.match?(line)
 
@@ -429,9 +443,10 @@ module StatusMonitor
     #
     # The Saga-identity stream links every name, and the links are used when
     # present: a description can contain ", " or " and " ("trailed by a flag
-    # displaying a dragon skull and crossbones"), which no text split can tell
-    # from a list separator. Otherwise the text is split on ", " and the last
-    # " and ", and "who ..."/"whose ..."/"(...)" descriptions are removed.
+    # displaying a dragon skull and crossbones"), which a text split can only
+    # approximate. Otherwise the text is split by UNLINKED_PLAYER_SEPARATOR,
+    # descriptions are removed, and the name is the entry's last capitalised
+    # word (names and titles are capitalised; description tails are not).
     #
     # @param room_players [String] "Also here:" component text
     # @return [Array<Array(String, String)>]
@@ -440,11 +455,10 @@ module StatusMonitor
         return room_players.scan(LINKED_PLAYER).map { |title, noun| ["#{title.gsub(/<[^>]+>/, '').strip} #{noun}".strip, noun] }
       end
 
-      head, separator, last = room_players.gsub(/<[^>]+>/, '').rpartition(' and ')
-      list = separator.empty? ? last : "#{head}, #{last}"
-      list.split(', ').filter_map do |obj|
-        entry = obj.sub(/ (?:who|whose) .+/, '').sub(/ \(.+\)/, '').strip
-        name = entry[/\w+\z/]
+      list = room_players.gsub(/<[^>]+>/, '').delete_suffix(UNLINKED_PLAYERS_OVERFLOW)
+      list.split(UNLINKED_PLAYER_SEPARATOR).filter_map do |obj|
+        entry = obj.sub(UNLINKED_PLAYER_DESCRIPTION, '').sub(/ \(.+\)/, '').strip
+        name = entry[/\b[A-Z][\w'-]*\z/]
         [entry, name] if name
       end
     end
@@ -726,6 +740,15 @@ module StatusMonitor
     GM_NOTICE_PATTERNS = Regexp.union(
       /error has occurred and the Gamemasters have been alerted/i # 'Some sort of error has occurred and the Gamemasters have been alerted.'
     )
+    # The game's echo of this character's own speech, as a whole cleaned line:
+    # 'You say, "..."', 'You politely say, "..."', 'You exclaim, "..."',
+    # 'You whisper to Bob, "..."', possibly behind a prompt ("&gt;") or
+    # indentation. Only this character produces it, and other players' speech
+    # is already dropped by their name, so it is never a check: without this,
+    # saying "GameMaster" matched CHECK_PATTERNS and could send the auto-quit.
+    # The quote may not contain a double quote, so a check that shares the line
+    # after the speech is never covered by it.
+    OWN_SPEECH = /\A(?:&gt;|>)?\s*You (?:\w+ly )?\w+(?: (?:to|at) [^,"]+)?, "[^"]*"\.?\s*\z/
 
     attr_reader :spam_line
 
@@ -788,6 +811,7 @@ module StatusMonitor
         return true
       end
       return false if cleaned.nil?
+      return false if cleaned.match?(OWN_SPEECH)
 
       if cleaned.match?(CHECK_PATTERNS)
         return alert_gm_notice(cleaned.strip) if cleaned.match?(GM_NOTICE_PATTERNS)
