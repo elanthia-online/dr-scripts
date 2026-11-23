@@ -4699,6 +4699,38 @@ RSpec.describe SpellProcess do
       expect(gs).to have_received(:restore_weapon)
     end
 
+    it 'discerns and casts the ritual at the discerned mana when use_auto_mana is set' do
+      data = { 'ritual' => true, 'abbrev' => 'eota', 'mana' => 650, 'use_auto_mana' => true }
+      allow(DRCMM).to receive(:update_astral_data).and_return(data)
+      allow(DRCA).to receive(:check_discern) { |d, _s, _sorcery| d.merge('mana' => 255, 'cambrinth' => nil) }
+      allow(DRCA).to receive(:ritual)
+      instance = build_spell_process
+      allow(instance).to receive(:check_invoke)
+      gs = double('GameState', stow_or_store_weapon: nil, restore_weapon: nil)
+      allow(gs).to receive(:reset_stance=)
+
+      instance.send(:cast_ritual, data, gs)
+
+      expect(DRCA).to have_received(:check_discern).with(data, anything, false)
+      expect(DRCA).to have_received(:ritual).with(hash_including('mana' => 255), anything)
+    end
+
+    it 'keeps the configured mana when use_auto_mana is not set' do
+      data = { 'ritual' => true, 'abbrev' => 'eota', 'mana' => 650 }
+      allow(DRCMM).to receive(:update_astral_data).and_return(data)
+      allow(DRCA).to receive(:check_discern)
+      allow(DRCA).to receive(:ritual)
+      instance = build_spell_process
+      allow(instance).to receive(:check_invoke)
+      gs = double('GameState', stow_or_store_weapon: nil, restore_weapon: nil)
+      allow(gs).to receive(:reset_stance=)
+
+      instance.send(:cast_ritual, data, gs)
+
+      expect(DRCA).not_to have_received(:check_discern)
+      expect(DRCA).to have_received(:ritual).with(hash_including('mana' => 650), anything)
+    end
+
     it 'skips the ritual body but still restores the weapon when astral data is nil' do
       allow(DRCMM).to receive(:update_astral_data).and_return(nil)
       allow(DRCA).to receive(:ritual)
