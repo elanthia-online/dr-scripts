@@ -42,6 +42,8 @@ RSpec.describe SanowretCrystal do
       c.instance_variable_set(:@suggested_no_use_entries, [])
       c.instance_variable_set(:@force_exhale, false)
       c.instance_variable_set(:@worn_crystal, true)
+      c.instance_variable_set(:@stowed_crystal, false)
+      c.instance_variable_set(:@skipped_stowed_taps, 0)
     end
   end
 
@@ -474,6 +476,58 @@ RSpec.describe SanowretCrystal do
       3.times { stowed.check_crystal }
 
       expect(DRC).to have_received(:bput).with('tap my sanowret crystal', any_args).once
+    end
+
+    it 'taps again once every STOWED_RECHECK_PASSES passes while it stays stowed' do
+      (1 + (2 * described_class::STOWED_RECHECK_PASSES)).times { stowed.check_crystal }
+
+      expect(DRC).to have_received(:bput).with('tap my sanowret crystal', any_args).exactly(3).times
+      expect(DRC).not_to have_received(:bput).with('get my sanowret crystal', any_args)
+    end
+
+    it 'keeps to one tap every STOWED_RECHECK_PASSES passes when a recheck tap is refused' do
+      stowed.check_crystal
+      room_ids = (11..).each
+      # Each refused tap lands in a new room, so the refusal starts no wait.
+      allow(DRC).to receive(:bput).with('tap my sanowret crystal', any_args) do
+        in_room('[[Crossing, Market]]', id: room_ids.next)
+        'Not here, '
+      end
+
+      (2 * described_class::STOWED_RECHECK_PASSES).times { stowed.check_crystal }
+
+      expect(DRC).to have_received(:bput).with('tap my sanowret crystal', any_args).exactly(3).times
+    end
+
+    def tap_finds_it_worn
+      allow(DRC).to receive(:bput).with('tap my sanowret crystal', any_args)
+                                  .and_return('You tap a sanowret crystal that you are wearing.')
+    end
+
+    # Found stowed, then worn on a pass with a hand free. A worn crystal needs no hand,
+    # so later full-hand passes must still use it.
+    it 'uses a crystal found worn since on every pass, though both hands are full again' do
+      stowed.check_crystal
+      hands(nil, 'steel sword')
+      tap_finds_it_worn
+      stowed.check_crystal
+      hands('steel shield', 'steel sword')
+
+      3.times { stowed.check_crystal }
+
+      expect(DRC).to have_received(:bput).with(exhale, any_args).exactly(4).times
+    end
+
+    # Worn while both hands stay full: the recheck tap finds it, with no free hand needed.
+    it 'finds a crystal worn since within STOWED_RECHECK_PASSES passes, though both hands stay full' do
+      stowed.check_crystal
+      tap_finds_it_worn
+
+      described_class::STOWED_RECHECK_PASSES.times { stowed.check_crystal }
+
+      expect(DRC).to have_received(:bput).with('tap my sanowret crystal', any_args).twice
+      expect(DRC).to have_received(:bput).with(exhale, any_args).once
+      expect(stowed.instance_variable_get(:@stowed_crystal)).to be(false)
     end
 
     it 'gets, uses and stows the crystal on the first pass after a hand comes free' do
