@@ -39,7 +39,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.23.1'
+  VERSION = '2026.11.25.1'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -1705,7 +1705,7 @@ class TaskMaster
     recipe = dorhum_recipe(item)
     check_loot_bag_clear(recipe[:noun]) unless @loot_bag_checked
     stop_if_tools_at_repair(dorhum_tools(for_notes: true) | marking_tools('dorhum'))
-    ensure_tools(dorhum_tools, 'enchanting')
+    ensure_dorhum_tools
     buy_sigils(sigils, count)
     # Next door to the sigil-scrolls, before the walk to the base items.
     DRCC.fount(artificing_info['tool-room'], 1, artificing_info['fount'], count, @bag, @bag_items, @settings.enchanting_belt)
@@ -2035,6 +2035,18 @@ class TaskMaster
     tools
   end
 
+  # Dorhum's tools by ensure_tools, with the tickets and notes for them
+  # matched by the names notes go by (dorhum_tools for_notes): enchant's
+  # fallback "rod" is looked for among the tickets as IMBUE_ROD, so a
+  # stirring rod's ticket (Poltu's, at Rangu) is not handed in for it, while
+  # TAP and clerk-tools still go by "rod".
+  #
+  # @return [void]
+  # @raise [SystemExit] when a tool cannot be found
+  def ensure_dorhum_tools
+    ensure_tools(dorhum_tools, 'enchanting', match_as: dorhum_tools(for_notes: true))
+  end
+
   # The imbue rod enchant falls back to when enchanting_tools names none
   # ("rod"), by the name notes are matched against: every imbue rod's
   # (base-recipes.yaml's simple, stout and precise imbuement rods). No tool
@@ -2097,14 +2109,18 @@ class TaskMaster
   # @param discipline [String] clerk-tools toolset, e.g. 'enchanting'
   # @param listed [Array<String>, nil] inventory_listing's lines for the
   #   crafting bag, taken since the tools last moved; nil to TAP each
+  # @param match_as [Array<String>, nil] the names, in the order of +tools+,
+  #   that tickets and notes for each are matched by (ensure_dorhum_tools);
+  #   nil to match by +tools+ themselves
   # @return [void]
   # @raise [SystemExit] when a tool cannot be found
-  def ensure_tools(tools, discipline, listed: nil)
+  def ensure_tools(tools, discipline, listed: nil, match_as: nil)
     missing = missing_tools(tools, listed)
     return if missing.empty?
 
+    names = Array(tools).zip(Array(match_as || tools)).to_h
     put_hands_away
-    missing, carried = collect_missing_by_ticket(missing)
+    missing, carried = collect_missing_by_ticket(missing, names)
     return if missing.empty?
 
     DRC.message("Missing #{missing.join(', ')}; asking the #{discipline} clerk.")
@@ -2114,7 +2130,7 @@ class TaskMaster
     return if missing.empty?
 
     said = "Can't find #{missing.join(', ')}: not on you, and the #{discipline} clerk didn't have it."
-    left = carried.reject { |_, item| missing.none? { |tool| ticket_names_tool?(item, tool) } }
+    left = carried.reject { |_, item| missing.none? { |tool| ticket_names_tool?(item, names[tool] || tool) } }
     unless left.empty?
       tickets = left.map { |name, item| "a #{name} ticket for #{item}" }.join(', ')
       said += " You carry #{tickets}: hand #{left.size == 1 ? 'it' : 'them'} in yourself."
@@ -2133,33 +2149,47 @@ class TaskMaster
   # tickets are looked at (LOOK reads a stowed ticket anywhere) before any
   # walk, and only a ticket for a missing tool brings one, waited for, as
   # any pickup waits, up to TICKET_WAIT_POLLS polls 30 s apart. With
-  # nothing handed over the tools are not tapped again; with something, the
-  # tools it brought back are named. Nothing is looked for when the repair
+  # nothing handed over the tools are not tapped again; after a repairer
+  # that handed something over, the tools still missing are tapped, and only
+  # those are looked for at the next repairer (none once every one is back),
+  # so one tool takes one ticket though two repairers hold one for it. The
+  # tools brought back are named. Nothing is looked for when the repair
   # replies are not known (repair_replies_known?). The hands are put away
   # first (ensure_tools), so a ticket can be got.
   #
   # @param missing [Array<String>] the tools missing, by setting name
+  # @param names [Hash{String => String}] the name a tool's tickets and
+  #   notes are matched by, where it is not the setting name (ensure_tools'
+  #   +match_as+)
   # @return [Array(Array<String>, Array<Array(String, String)>)] the tools
   #   still missing, and the tickets for them still carried afterwards
   #   (repairer, item)
-  def collect_missing_by_ticket(missing)
+  def collect_missing_by_ticket(missing, names = {})
     return [missing, []] unless repair_replies_known?
 
-    @tickets_handed_in = false
+    handed = false
+    still = missing
     carried = []
     ticket_repairers.each do |room, name|
+      break if still.empty?
+
+      wanted = still.map { |tool| names[tool] || tool }
       here = repairs_out.select { |record| [record['room'], record['repairer']] == [room, name] }
-      noted = tools_left_for(missing, here)
+      noted = tools_left_for(wanted, here)
       # One TAP before any look: a look that goes unanswered (lag) is
       # looked at again for up to TICKET_WAIT_POLLS polls, which no run
       # carrying none of the repairer's tickets should sit through.
       next if noted.empty? && !DRCI.exists?("#{name} ticket")
 
-      carried.concat(collect_tools(room, name, noted, unnoted_for: missing).map { |ticket| [name, ticket[:item]] })
-    end
-    return [missing, carried] unless @tickets_handed_in
+      @tickets_handed_in = false
+      carried.concat(collect_tools(room, name, noted, unnoted_for: wanted).map { |ticket| [name, ticket[:item]] })
+      next unless @tickets_handed_in
 
-    still = missing_tools(missing)
+      handed = true
+      still = missing_tools(still)
+    end
+    return [missing, carried] unless handed
+
     back = missing - still
     DRC.message("Got #{back.join(', ')} back by #{back.size == 1 ? 'its' : 'their'} repair ticket.") unless back.empty?
     [still, carried]
@@ -2179,8 +2209,9 @@ class TaskMaster
   end
 
   # Whether a ticket's item is the tool of that setting name: every word of
-  # the name starting a word of the item (names_tool?, which keeps the
-  # knitting and sewing needles apart), and the item's noun (lich-5's
+  # the name starting a word of the item (one way, unlike names_tool?: an
+  # item with fewer words is not taken for a longer name; the knitting and
+  # sewing needles kept apart as there), and the item's noun (lich-5's
   # DRC.get_noun) the name's last word, so a "mortar" is not a "mortar
   # brush".
   #
@@ -2189,7 +2220,11 @@ class TaskMaster
   # @return [Boolean]
   def ticket_names_tool?(item, tool)
     long = item.to_s.sub(/\A(?:an?|some|the)\s+/i, '')
-    names_tool?(long, tool) && DRC.get_noun(long).to_s.casecmp?(tool.to_s.split.last.to_s)
+    text = long.downcase
+    words = tool.to_s.downcase.split
+    return false if words.empty? || text.match?(KNITTING_NEEDLES) != words.join(' ').match?(KNITTING_NEEDLES)
+
+    words.all? { |word| text.match?(/\b#{Regexp.escape(word)}/) } && DRC.get_noun(long).to_s.casecmp?(words.last)
   end
 
   # A tool counts as carried when it is in hand, when the crafting bag's

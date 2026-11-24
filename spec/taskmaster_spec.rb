@@ -14435,6 +14435,59 @@ RSpec.describe TaskMaster do
         expect(sent).to include([:stow, 'mortar'])
       end
 
+      # Review of #8147: one missing tool, a ticket for it at two repairers.
+      it 'hands in one ticket for a missing tool, though another repairer holds one for it too' do
+        tm = missing_world({ 'Rangu' => [['rough granite stone mortar', true]], 'Catrox' => [[kythkani_mortar, true]] }, on_you: %w[pestle sieve], no_repair: true)
+
+        expect { tm.ensure_tools(%w[mortar pestle sieve], 'alchemy') }.not_to raise_error
+
+        expect(gives).to eq(1)
+        expect(sent).to include([:stow, 'mortar'])
+        expect(sent).not_to include([:walk, 19_093])
+        expect(sent).not_to include([:tap, 'Catrox ticket'])
+      end
+
+      # Review of #8147: with no wand or rod in enchanting_tools, Dorhum needs the
+      # imbuement rod enchant falls back to ("rod"); a stirring rod is not it.
+      describe "Dorhum's fallback rod (#ensure_dorhum_tools)" do
+        let(:stirring_rod) { { 'npc' => 'poltu', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'rod', 'item' => 'bronze stirring rod', 'left_at' => 1 } }
+
+        def dorhum_world(tickets)
+          missing_world(tickets, on_you: %w[burin loop], settings: { enchanting_tools: %w[burin loop] })
+        end
+
+        it "hands in no stirring rod's ticket no note accounts for, and asks the enchanting clerk" do
+          tm = dorhum_world({ 'Rangu' => [['bronze stirring rod', true]] })
+
+          expect { tm.ensure_dorhum_tools }.to raise_error(SystemExit)
+
+          expect(gives).to eq(0)
+          expect(sent).to include([:script, 'clerk-tools', %w[enchanting get]])
+          expect(DRC).not_to have_received(:message).with(/back by its repair ticket/)
+        end
+
+        it "hands in no ticket of Poltu's noted stirring rod, and keeps the note" do
+          UserVars.taskmaster_repairs = [stirring_rod]
+          tm = dorhum_world({ 'Rangu' => [['bronze stirring rod', true]] })
+
+          expect { tm.ensure_dorhum_tools }.to raise_error(SystemExit)
+
+          expect(gives).to eq(0)
+          expect(UserVars.taskmaster_repairs).to eq([stirring_rod])
+          expect(sent).to include([:script, 'clerk-tools', %w[enchanting get]])
+        end
+
+        it 'hands in an imbuement rod ticket for it, and asks no clerk' do
+          tm = dorhum_world({ 'Rangu' => [['simple imbuement rod', true]] })
+
+          expect { tm.ensure_dorhum_tools }.not_to raise_error
+
+          expect(gives).to eq(1)
+          expect(sent).to include([:stow, 'rod'])
+          expect(sent).not_to include(a_collection_starting_with(:script))
+        end
+      end
+
       describe '#ticket_names_tool?' do
         let(:tm) { build(npc: 'nezhiri') }
 
@@ -14449,6 +14502,12 @@ RSpec.describe TaskMaster do
           expect(tm.ticket_names_tool?('agonite stick', 'mixing stick')).to be(false)
           expect(tm.ticket_names_tool?('slender agonite sewing needles', 'knitting needles')).to be(false)
           expect(tm.ticket_names_tool?('slender agonite knitting needles', 'needles')).to be(false)
+        end
+
+        it 'needs every word of the tool in the item, not the item in the tool' do
+          expect(tm.ticket_names_tool?('rod', 'imbuement rod')).to be(false)
+          expect(tm.ticket_names_tool?('bronze stirring rod', TaskMaster::IMBUE_ROD)).to be(false)
+          expect(tm.ticket_names_tool?('simple imbuement rod', TaskMaster::IMBUE_ROD)).to be(true)
         end
       end
     end
