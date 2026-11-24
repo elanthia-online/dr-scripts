@@ -137,6 +137,49 @@ RSpec.describe SanowretCrystal do
     end
   end
 
+  # The character can move while the exhale or gaze is out. The refusal may then be
+  # about either room, so the room it arrives in must not be ruled out on its strength.
+  describe 'when the character moves before a refusal of the crystal arrives' do
+    before do
+      allow(DRC).to receive(:message)
+      in_room('[[Crossing, Market]]', id: 10)
+    end
+
+    def refuse_after_moving_to(title, id)
+      allow(DRC).to receive(:bput).with(/\A(?:exhale|gaze) /, any_args) do
+        in_room(title, id: id)
+        refusal
+      end
+    end
+
+    it 'neither remembers nor suggests the room it arrived in' do
+      refuse_after_moving_to('[[Crossing, Square]]', 11)
+
+      crystal.use_crystal
+
+      expect(crystal.instance_variable_get(:@refused_room_titles)).to be_empty
+      expect(DRC).not_to have_received(:message)
+    end
+
+    it 'uses the crystal in the arrival room on the next pass' do
+      refuse_after_moving_to('[[Crossing, Square]]', 11)
+      crystal.check_crystal
+      allow(DRC).to receive(:bput).with(/\A(?:exhale|gaze) /, any_args).and_return('fade again.')
+
+      crystal.check_crystal
+
+      expect(DRC).to have_received(:bput).with(/\A(?:exhale|gaze) /, any_args).twice
+    end
+
+    it 'also leaves an unmapped arrival room usable' do
+      refuse_after_moving_to('[[Ruins, Hall]]', nil)
+
+      crystal.use_crystal
+
+      expect(crystal.instance_variable_get(:@refused_room_titles)).to be_empty
+    end
+  end
+
   describe 'when the crystal works' do
     it 'does not remember the room' do
       allow(DRC).to receive(:bput).and_return('A soft light blossoms in the very center of the crystal, and begins to fill your mind with the knowledge of Arcana.')
@@ -187,8 +230,9 @@ RSpec.describe SanowretCrystal do
   # ===========================================================================
   # check_crystal checks the room before it taps, but getting a stowed crystal takes
   # round trips, and the character can walk on meanwhile (go2 under another script).
-  # Checking only before the tap let it exhale in the Crossing bank teller room
-  # (1900), which is in base.yaml.
+  # A check made only before the tap would let the crystal be exhaled in any no-use
+  # room the character reached during those round trips, such as the Crossing bank
+  # teller room (1900, in base.yaml).
   describe 'when the character moves into a no-use room before the crystal is used' do
     let(:stowed) do
       crystal.tap { |c| c.instance_variable_set(:@worn_crystal, false) }
@@ -429,6 +473,34 @@ RSpec.describe SanowretCrystal do
         expect(DRC).to have_received(:message).with(hint).twice
         expect(DRC).to have_received(:message).with(hints_for('room id 10')).once
         expect(DRC).to have_received(:message).with(hints_for('room id 11')).once
+      end
+    end
+
+    # The character can move while the tap is out. The arrival room may take the
+    # crystal, and the move the wait is for has already happened.
+    describe 'after moving while the tap was out' do
+      before do
+        in_room('[[Crossing, Market]]', id: 10)
+        allow(DRC).to receive(:bput) do
+          in_room('[[Crossing, Square]]', id: 11)
+          tap_refusal
+        end
+        on_pause(tapper)
+      end
+
+      it 'neither suggests the arrival room nor waits there' do
+        tapper.check_crystal
+
+        expect(pauses).to be_empty
+        expect(DRC).not_to have_received(:message)
+      end
+
+      it 'says nothing about this room in a single run' do
+        tapper.instance_variable_set(:@run_once, true)
+
+        tapper.check_crystal
+
+        expect(DRC).not_to have_received(:message)
       end
     end
 
