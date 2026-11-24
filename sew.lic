@@ -462,7 +462,20 @@ class Sew
   # the bolts of cloth together." the right hand was empty and the left held
   # #27484597 (2026-11-11 08:52:14). Yarn and leather pieces combine and
   # count in yards the same way as cloth.
-  COMBINE_REPLIES = [/^You combine/, /^You must be holding both.*/, /^Those items cannot be combined.*/].freeze
+  #
+  # A spool of yarn holds at most 400 yards. A COMBINE that would pass that
+  # is refused with SPOOL_FULL, leaving both pieces in hand (workorders,
+  # 2026-11-24: "[workorders]>combine wool yarn with wool yarn" / "The spool
+  # is not large enough to combine both threads.  Perhaps you could break
+  # them apart and combine smaller portions to a maximum of 400 yards of
+  # thread."). Unlisted, it cost a 15 second timeout.
+  SPOOL_FULL = /^The spool is not large enough to combine both threads.*/
+  COMBINE_REPLIES = [/^You combine/, /^You must be holding both.*/, /^Those items cannot be combined.*/, SPOOL_FULL].freeze
+
+  # The tool a crafting command names last: 'knitting needles' in "knit my
+  # yarn with my knitting needles", 'scissors' in "cut my burlap cloth with
+  # my scissors".
+  TOOL_IN_COMMAND = / with my (.+)\z/
 
   # Makes sure the material in hand is enough for one item before the
   # instructions are studied, since every study uses one of their uses.
@@ -504,7 +517,7 @@ class Sew
         break
       end
       stop = add_material_piece(material)
-      break unless stop.first == :added
+      break unless MATERIAL_ADDED.include?(stop.first)
 
       stop = nil
       combined += 1
@@ -589,11 +602,19 @@ class Sew
   # hand, its id in @material_id. Nothing is thrown away: on a refusal both
   # pieces stay in hand for the stop to put back.
   #
+  # Except a full spool (SPOOL_FULL): the two together pass 400 yards, so
+  # the larger is worked on its own. When the piece got is the larger (by
+  # COUNT of each), the short one goes back in the bag by its id and the
+  # one got becomes the material, in the left hand. A short piece is under
+  # one item's yards, so a piece that cannot join it is over 300 yards,
+  # enough for any item.
+  #
   # @param material [String]
-  # @return [Array(Symbol, String)] [:added] or the reason it stopped:
-  #   :no_free_hand, :none_in_bag, :no_new_piece (a GET that said it worked,
-  #   "You are already holding that", with no new piece in hand),
-  #   :combine_refused (with COMBINE's reply), :swap_failed, :lost
+  # @return [Array(Symbol, String)] [:added], [:swapped, reply] (the piece
+  #   got replaced the short one) or the reason it stopped: :no_free_hand,
+  #   :none_in_bag, :no_new_piece (a GET that said it worked, "You are
+  #   already holding that", with no new piece in hand), :combine_refused
+  #   (with COMBINE's reply), :swap_failed, :lost
   def add_material_piece(material)
     return [:no_free_hand] if DRC.right_hand && DRC.left_hand
     return [:none_in_bag] unless DRCC.get_crafting_item(material, @bag, [material], @belt, true)
@@ -605,11 +626,103 @@ class Sew
     added = piece.id.to_s
     reply = DRC.bput("combine #{@material_noun}", *COMBINE_REPLIES)
     held = material_pieces
-    return [:combine_refused, reply] if held.map { |obj| obj.id.to_s }.sort == [short, added].sort
+    return work_larger_piece(short, added, reply) if held.map { |obj| obj.id.to_s }.sort == [short, added].sort
     return [:lost] if held.empty?
 
     # The combined stack (a new id), or the one original piece left.
     keep_material_in_left_hand(held.first.id) ? [:added] : [:swap_failed]
+  end
+
+  # What add_material_piece reports as more material in hand.
+  MATERIAL_ADDED = %i[added swapped].freeze
+
+  # After a refused COMBINE, with both pieces still in hand: on a full
+  # spool, works the piece got (+added+) instead of the short one when it
+  # is the larger, putting the short one back in the bag by its id. Any
+  # other refusal, a COUNT with no yards, or a short piece that is the
+  # larger, stays refused.
+  #
+  # @param short [String] id of the piece being worked
+  # @param added [String] id of the piece got from the bag
+  # @param reply [String] COMBINE's reply
+  # @return [Array(Symbol, String)] [:swapped, reply], [:combine_refused,
+  #   reply] or [:swap_failed]
+  def work_larger_piece(short, added, reply)
+    return [:combine_refused, reply] unless reply.match?(SPOOL_FULL)
+
+    short_yards = piece_yards(short)
+    added_yards = piece_yards(added)
+    return [:combine_refused, reply] unless short_yards && added_yards && added_yards > short_yards
+    return [:combine_refused, reply] unless DRCI.put_away_item?("##{short}", @bag)
+
+    keep_material_in_left_hand(added) ? [:swapped, reply] : [:swap_failed]
+  end
+
+  # The yards COUNT gives for the held piece with this id, or nil.
+  #
+  # @param id [String]
+  # @return [Integer, nil]
+  def piece_yards(id)
+    DRC.bput("count ##{id}", *MATERIAL_COUNT_REPLIES)[MATERIAL_COUNT_YARDS, 1]&.to_i
+  end
+
+  # Answers "You need a larger amount of material to continue crafting."
+  # while the raw material is still in the left hand (the first cut or knit
+  # of a book run, which has no READ of instructions to check the yards
+  # with first): puts the tool in the right hand away in the bag by its id,
+  # adds a piece from the bag (add_material_piece), and gets the tool back
+  # (swap_tool), so #work can send the command again. Several pieces of
+  # material in the bag used to stop the run whenever the one got was too
+  # small for the item; a full spool (SPOOL_FULL) can leave yarn in several
+  # pieces. At most MAX_MATERIAL_PIECES - 1 pieces are added in a run. On a
+  # stop every piece but the one being worked goes back in the bag by its
+  # id and the tool comes back to hand, as before the top-up.
+  #
+  # @param command [String] the crafting command that got the reply
+  # @return [Array(Symbol, String)] a MATERIAL_ADDED result, or the reason
+  #   no more material is in hand: :not_raw (no raw material in the left
+  #   hand: the item is under way), :cap, :tool_stuck (with the tool's
+  #   name), or an add_material_piece stop
+  def top_up_material(command)
+    left = GameObj.left_hand
+    return [:not_raw] unless @material_noun && @material_id && left&.id.to_s == @material_id.to_s && left.noun == @material_noun
+
+    @top_ups = @top_ups.to_i
+    return [:cap] if @top_ups + 1 >= MAX_MATERIAL_PIECES
+
+    tool = command[TOOL_IN_COMMAND, 1]
+    right = GameObj.right_hand
+    return [:tool_stuck, right.name] if tool && right&.id && right.noun != @material_noun && !DRCI.put_away_item?("##{right.id}", @bag)
+
+    stop = add_material_piece(@material_name)
+    if MATERIAL_ADDED.include?(stop.first)
+      @top_ups += 1
+    else
+      material_pieces.each { |obj| DRCI.put_away_item?("##{obj.id}", @bag) unless obj.id.to_s == @material_id.to_s }
+    end
+    swap_tool(tool) if tool
+    stop
+  end
+
+  # What #work says when it stops on "You need a larger amount of material"
+  # with no more added (top_up_material's reason).
+  #
+  # @param stop [Array(Symbol, String)]
+  # @return [String]
+  def not_enough_material_message(stop)
+    reason, detail = stop
+    why = case reason
+          when :not_raw then nil
+          when :cap then "Already added #{MAX_MATERIAL_PIECES - 1} more pieces of #{@material_name}"
+          when :tool_stuck then "Could not put the #{detail} away to free a hand for more #{@material_name}"
+          when :none_in_bag then "There is no more #{@material_name} in your #{@bag} to add"
+          when :no_free_hand then "With both hands full no more #{@material_name} could be got from your #{@bag}"
+          when :no_new_piece then "Getting more #{@material_name} from your #{@bag} said it worked, but no new piece of it is in hand"
+          when :combine_refused then "Could not combine more #{@material_name} into it (#{detail.to_s.empty? ? 'no reply' : detail})"
+          when :swap_failed then "The #{@material_name} could not be moved to your left hand to work it"
+          else "No piece of #{@material_name} is in hand after combining"
+          end
+    ["sew: Not enough material to continue crafting #{@noun}.", why && "#{why}.", 'Exiting.'].compact.join(' ')
   end
 
   # The pieces of the material held: hand objects with an id and the
@@ -927,7 +1040,12 @@ class Sew
 
       case result
       when /You need a larger amount of material to continue crafting/
-        stop_with_hands_put_away("sew: Not enough material to continue crafting #{@noun}. Exiting.")
+        stop = top_up_material(command)
+        stop_with_hands_put_away(not_enough_material_message(stop)) unless MATERIAL_ADDED.include?(stop.first)
+        # More material in hand changes what the same command gets back.
+        last_reply = nil
+        repeats = 0
+        streak = 0
       when /^You must be holding the .* to do that/
         stop_with_hands_put_away("sew: Required tool not in hand. Cannot continue crafting #{@noun}.")
       when NO_DESIGN
