@@ -250,6 +250,10 @@ class InventoryManager
   # skipping it hides why nothing was saved. Unanchored: the line can carry XML.
   VAULT_RENT_DUE = /You can't access your vault at this time\.\s+Rent is due\./
 
+  # The vault is mid-move between branch offices. Same kind of refusal, but it
+  # clears on its own, so the note says to come back later.
+  VAULT_IN_TRANSIT = /Your possessions are being transferred from one branch office to another\./
+
   # The inventory types that hold a vault's contents, personal and family.
   VAULT_TYPES = ['vault', 'Family'].freeze
 
@@ -543,8 +547,11 @@ class InventoryManager
   end
 
   def add_vault_standard
-    check_inventory("vault standard", Regexp.union(/^Vault Inventory:/, VAULT_RENT_DUE), 'vault',
-                    refusals: { VAULT_RENT_DUE => 'Pay yer rent, ya slob!' })
+    check_inventory("vault standard", Regexp.union(/^Vault Inventory:/, VAULT_RENT_DUE, VAULT_IN_TRANSIT), 'vault',
+                    refusals: {
+                      VAULT_RENT_DUE   => 'Pay yer rent, ya slob!',
+                      VAULT_IN_TRANSIT => 'inventory-manager: your vault is being moved between branch offices. Try again later.'
+                    })
   end
 
   def add_vault_family
