@@ -431,7 +431,6 @@ RSpec.describe SanowretCrystal do
         allow(c).to receive(:pause) { raise 'waited for a free hand' }
       end
     end
-    let(:exhale) { /\A(?:exhale|gaze) / }
 
     def hands(left, right)
       allow(DRC).to receive(:left_hand).and_return(left)
@@ -445,7 +444,6 @@ RSpec.describe SanowretCrystal do
                                   .and_return('You tap a sanowret crystal inside your leather backpack.')
       allow(DRC).to receive(:bput).with('get my sanowret crystal', any_args).and_return('You get')
       allow(DRC).to receive(:bput).with('stow my sanowret crystal', any_args).and_return('You put')
-      allow(DRC).to receive(:bput).with(exhale, any_args).and_return('fade again.')
       hands('steel shield', 'steel sword')
       in_room('[[Crossing, Market]]', id: 10)
     end
@@ -454,7 +452,7 @@ RSpec.describe SanowretCrystal do
       stowed.check_crystal
 
       expect(DRC).not_to have_received(:bput).with('get my sanowret crystal', any_args)
-      expect(DRC).not_to have_received(:bput).with(exhale, any_args)
+      expect(uses).to be_empty
       expect(DRC).not_to have_received(:bput).with('stow my sanowret crystal', any_args)
     end
 
@@ -515,7 +513,7 @@ RSpec.describe SanowretCrystal do
 
       3.times { stowed.check_crystal }
 
-      expect(DRC).to have_received(:bput).with(exhale, any_args).exactly(4).times
+      expect(uses.size).to eq(4)
     end
 
     # Worn while both hands stay full: the recheck tap finds it, with no free hand needed.
@@ -526,7 +524,7 @@ RSpec.describe SanowretCrystal do
       described_class::STOWED_RECHECK_PASSES.times { stowed.check_crystal }
 
       expect(DRC).to have_received(:bput).with('tap my sanowret crystal', any_args).twice
-      expect(DRC).to have_received(:bput).with(exhale, any_args).once
+      expect(uses.size).to eq(1)
       expect(stowed.instance_variable_get(:@stowed_crystal)).to be(false)
     end
 
@@ -538,7 +536,7 @@ RSpec.describe SanowretCrystal do
 
       expect(DRC).to have_received(:bput).with('tap my sanowret crystal', any_args).twice
       expect(DRC).to have_received(:bput).with('get my sanowret crystal', any_args).once
-      expect(DRC).to have_received(:bput).with('exhale my sanowret crystal', any_args).once
+      expect(uses).to eq(['exhale my sanowret crystal'])
       expect(DRC).to have_received(:bput).with('stow my sanowret crystal', any_args).once
     end
 
@@ -550,7 +548,7 @@ RSpec.describe SanowretCrystal do
 
       stowed.check_crystal
 
-      expect(DRC).to have_received(:bput).with('exhale my sanowret crystal', any_args).once
+      expect(uses).to eq(['exhale my sanowret crystal'])
     end
 
     it 'ends a single run started with both hands full' do
@@ -576,7 +574,6 @@ RSpec.describe SanowretCrystal do
       allow(DRC).to receive(:bput).with('tap my sanowret crystal', any_args)
                                   .and_return('You tap a sanowret crystal inside your leather backpack.')
       allow(DRC).to receive(:bput).with('stow my sanowret crystal', any_args).and_return('You put')
-      allow(DRC).to receive(:bput).with(/\A(?:exhale|gaze) /, any_args).and_return('fade again.')
       in_room('[[Crossing, Market]]', id: 10)
     end
 
@@ -586,7 +583,7 @@ RSpec.describe SanowretCrystal do
 
         stowed.check_crystal
 
-        expect(DRC).not_to have_received(:bput).with(/\A(?:exhale|gaze) /, any_args)
+        expect(uses).to be_empty
         expect(DRC).not_to have_received(:bput).with('stow my sanowret crystal', any_args)
       end
     end
