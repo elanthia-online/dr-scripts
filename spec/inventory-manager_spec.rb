@@ -224,6 +224,47 @@ RSpec.describe InventoryManager do
       expect(messages).to eq(['Pay yer rent, ya slob!'])
     end
 
+    context 'when the vault is being moved between branch offices' do
+      let(:in_transit) { 'Your possessions are being transferred from one branch office to another.' }
+      let(:transit_note) { 'inventory-manager: your vault is being moved between branch offices. Try again later.' }
+
+      it 'waits for the transfer refusal too, so it is not retried as a timeout' do
+        sent = nil
+        allow(Lich::Util).to receive(:issue_command) do |_command, start_pattern, **|
+          sent = start_pattern
+          [in_transit]
+        end
+
+        expect { manager.add_vault_standard }.to raise_error(SystemExit)
+        expect(Lich::Util).to have_received(:issue_command).once
+        expect(in_transit).to match(sent)
+      end
+
+      it 'exits with a try-again-later note and saves nothing' do
+        allow(manager).to receive(:capture_command).and_return([in_transit])
+
+        expect { manager.add_vault_standard }.to raise_error(SystemExit)
+        expect(messages).to eq([transit_note])
+        expect(manager).not_to have_received(:save_item_data)
+      end
+
+      it 'spots the refusal when the line carries XML' do
+        allow(manager).to receive(:capture_command).and_return(["<pushBold/>#{in_transit}<popBold/>"])
+
+        expect { manager.add_vault_standard }.to raise_error(SystemExit)
+        expect(messages).to eq([transit_note])
+      end
+
+      it 'restarts sorter before exiting' do
+        $running_scripts << 'sorter'
+        allow(manager).to receive(:stop_script) { $running_scripts.delete('sorter') }
+        allow(manager).to receive(:capture_command).and_return([in_transit])
+
+        expect { manager.add_vault_standard }.to raise_error(SystemExit)
+        expect($started_scripts).to eq([['sorter']])
+      end
+    end
+
     it 'restarts sorter before exiting' do
       $running_scripts << 'sorter'
       allow(manager).to receive(:stop_script) { $running_scripts.delete('sorter') }
