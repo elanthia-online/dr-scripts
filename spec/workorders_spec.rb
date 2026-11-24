@@ -1021,8 +1021,26 @@ RSpec.describe WorkOrders do
         workorders.instance_variable_set(:@worn_trashcan, 'bucket')
         workorders.instance_variable_set(:@worn_trashcan_verb, 'tap')
         allow(workorders).to receive(:order_fabric)
+        workorders.instance_variable_set(:@bag, 'duffel bag')
+        steps = []
+        allow(DRCI).to receive(:get_item?) { |item, bag| steps << "get #{item} from #{bag}"; true }
+        allow(DRCI).to receive(:dispose_trash) { |item, *| steps << "dispose #{item}" }
         workorders.send(:knit_items, info, materials_info, recipe, 1)
-        expect(DRCI).to have_received(:dispose_trash).with('wool yarn', 'bucket', 'tap').twice
+        expect(steps).to eq(['get wool yarn from duffel bag', 'dispose wool yarn'] * 2)
+      end
+
+      # Review of #8153 (mrhoribu): dispose_trash's own GET is unscoped, so
+      # each piece is got from the crafting bag first.
+      it 'throws nothing more away once a piece cannot be got from the crafting bag' do
+        recipe = { 'chapter' => 5, 'name' => 'a knitted thing', 'noun' => 'thing', 'volume' => 15 }
+        materials_info['stock-name'] = 'wool'
+        pieces['wool yarn'] = 3
+        workorders.instance_variable_set(:@bag, 'duffel bag')
+        allow(DRCI).to receive(:get_item?).and_return(true, false)
+        allow(workorders).to receive(:order_fabric)
+        workorders.send(:knit_items, info, materials_info, recipe, 1)
+        expect(DRCI).to have_received(:get_item?).with('wool yarn', 'duffel bag').twice
+        expect(DRCI).to have_received(:dispose_trash).once
       end
 
       it 'keeps the leftovers with retain_crafting_materials' do

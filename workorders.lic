@@ -1043,12 +1043,17 @@ class WorkOrders
   end
 
   # Throws away every piece of +material+ in the crafting bag: what is left
-  # of the order's material, which used to be one stack.
+  # of the order's material, which used to be one stack. Each piece is got
+  # from the bag first, so dispose_trash finds it in hand: its own GET is
+  # unscoped and would take the material from whichever container it
+  # reaches first. A GET that fails ends it, throwing nothing else away.
   #
   # @param material [String] e.g. 'burlap cloth', 'wool yarn'
   # @return [void]
   def dispose_stock(material)
     DRCI.count_items_in_container(material, @bag).times do
+      break unless DRCI.get_item?(material, @bag)
+
       DRCI.dispose_trash(material, @worn_trashcan, @worn_trashcan_verb)
     end
   end
