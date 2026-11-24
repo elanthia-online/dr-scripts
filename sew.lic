@@ -434,9 +434,14 @@ class Sew
     exit
   end
 
-  # Most pieces of material ensure_enough_material looks at for one item,
-  # the one in hand included, so the top-up always ends.
-  MAX_MATERIAL_PIECES = 5
+  # Most pieces of material a top-up (ensure_enough_material, or
+  # top_up_material in a book run) looks at for one item, the one in hand
+  # included, so the top-up always ends. Bags hold more scraps of one
+  # material than 5: on 2026-11-25 Jazriel's heavy silk duffel bag held 10
+  # pieces of burlap cloth and 9 of wool yarn (data/inventory.yaml). Six
+  # 15-yard scraps need five added for a 90-yard knitted blanket. 20 is the
+  # count of $ORDINALS, the most pieces workorders counts in the bag.
+  MAX_MATERIAL_PIECES = 20
 
   # The ingredient line of READ INSTRUCTIONS, for the material's noun:
   # "(1) finished fabric cloth (10 yards)" (netting), "(1) refined fabric
