@@ -3341,8 +3341,8 @@ RSpec.describe Sew do
     end
 
     it 'stops after MAX_MATERIAL_PIECES pieces, never studying' do
-      7.times { |n| bag << "2591730#{n}" }
-      7.times { |n| yards["2591730#{n}"] = 0 }
+      (Sew::MAX_MATERIAL_PIECES + 2).times { |n| bag << (25_917_300 + n).to_s }
+      (Sew::MAX_MATERIAL_PIECES + 2).times { |n| yards[(25_917_300 + n).to_s] = 0 }
       expect { sew.send(:read_recipe, 'burlap cloth') }.to raise_error(SystemExit)
       expect(sent.count('combine cloth')).to eq(Sew::MAX_MATERIAL_PIECES - 1)
       expect(sent).not_to include('study my instructions')
@@ -3634,13 +3634,29 @@ RSpec.describe Sew do
       end
 
       it 'adds at most MAX_MATERIAL_PIECES - 1 pieces, then stops, never caught as a reply that changes nothing' do
-        crafting_replies.concat([short_reply] * 10)
-        8.times { |n| bag << "2591731#{n}" }
-        8.times { |n| yards["2591731#{n}"] = 1 }
+        crafting_replies.concat([short_reply] * (Sew::MAX_MATERIAL_PIECES + 2))
+        (Sew::MAX_MATERIAL_PIECES + 2).times { |n| bag << (25_917_310 + n).to_s }
+        (Sew::MAX_MATERIAL_PIECES + 2).times { |n| yards[(25_917_310 + n).to_s] = 1 }
         expect { run('cut my burlap cloth with my scissors') }.to raise_error(SystemExit)
         expect(sent.count('combine cloth')).to eq(Sew::MAX_MATERIAL_PIECES - 1)
         expect(messages).to eq(["sew: Not enough material to continue crafting netting. Already added #{Sew::MAX_MATERIAL_PIECES - 1} more pieces of burlap cloth. Exiting."])
         expect(trashed).to be_empty
+      end
+
+      # Review of #8153 (mrhoribu): six 15-yard scraps and one 90-yard
+      # blanket stopped at 75 yards when only 4 pieces could be added.
+      it 'adds five 15-yard scraps to a 15-yard piece for a 90-yard blanket' do
+        knitting_yarn(15)
+        crafting_replies.concat([short_reply] * 5)
+        5.times do |n|
+          bag << (25_917_320 + n).to_s
+          yards[(25_917_320 + n).to_s] = 15
+        end
+        run('knit my yarn with my knitting needles')
+        expect(sent.count('combine yarn')).to eq(5)
+        expect(yards[held_id(:left)]).to eq(90)
+        expect(sent.last).to eq('knit my yarn with my knitting needles')
+        expect(messages).to be_empty
       end
 
       it 'stops as before, adding nothing, once the item is under way (no raw material in the left hand)' do
