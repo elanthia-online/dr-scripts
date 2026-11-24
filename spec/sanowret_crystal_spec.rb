@@ -592,6 +592,58 @@ RSpec.describe SanowretCrystal do
     end
   end
 
+  # DRC.bput hands back the first match among all the lines that arrive after the
+  # send, other scripts' output and other players' speech included. This answers the
+  # get the same way: each line in turn, each of the script's patterns in turn.
+  describe 'when other game output arrives before the reply to the get' do
+    let(:stowed) do
+      crystal.tap { |c| c.instance_variable_set(:@worn_crystal, false) }
+    end
+
+    def first_match(lines, patterns)
+      lines.each do |line|
+        patterns.each do |pattern|
+          found = line.match(pattern.is_a?(Regexp) ? pattern : /#{pattern}/i)
+          return found[0] if found
+        end
+      end
+      ''
+    end
+
+    def get_answered_by(*lines)
+      allow(DRC).to receive(:bput).with('get my sanowret crystal', any_args) do |_command, *patterns|
+        first_match(lines, patterns)
+      end
+    end
+
+    before do
+      allow(DRC).to receive(:bput).with('tap my sanowret crystal', any_args)
+                                  .and_return('You tap a sanowret crystal inside your leather backpack.')
+      allow(DRC).to receive(:bput).with('stow my sanowret crystal', any_args).and_return('You put')
+      in_room('[[Crossing, Market]]', id: 10)
+    end
+
+    it "does not take another script's pickup for the crystal's" do
+      get_answered_by('You get a battered strongbox from inside your leather backpack.',
+                      'You need a free hand to pick that up.')
+
+      stowed.check_crystal
+
+      expect(uses).to be_empty
+      expect(DRC).not_to have_received(:bput).with('stow my sanowret crystal', any_args)
+    end
+
+    it "does not take a player's quoted refusal for the reply" do
+      get_answered_by('Bob says, "You need a free hand to pick that up."',
+                      'You get an argent sanowret crystal set within a silversteel blade spider from inside your leather backpack.')
+
+      stowed.check_crystal
+
+      expect(uses).to eq(['exhale my sanowret crystal'])
+      expect(DRC).to have_received(:bput).with('stow my sanowret crystal', any_args)
+    end
+  end
+
   # ===========================================================================
   # A room where the crystal can't be tapped at all ("Not here, ...")
   # ===========================================================================

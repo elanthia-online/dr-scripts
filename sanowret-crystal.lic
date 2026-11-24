@@ -177,8 +177,11 @@ class SanowretCrystal
       return
     end
     # Used and stowed only once it is in hand: after a failed get, "stow my crystal"
-    # has nothing to put away.
-    return unless DRC.bput("get my #{@adjective} crystal", 'You get', 'What were you referring to', 'You need a free hand') =~ /\AYou get/i
+    # has nothing to put away. DRC.bput returns the first match in all game output, so
+    # the replies are anchored to the start of a line, and a pickup must name a crystal:
+    # another script's "You get a strongbox" or a player quoting "You need a free hand"
+    # is not this get's reply.
+    return unless DRC.bput("get my #{@adjective} crystal", /^You get .*crystal/i, /^What were you referring to/, /^You need a free hand/) =~ /\AYou get/i
 
     use_crystal
     DRC.bput("stow my #{@adjective} crystal", 'You put', 'Stow what')
