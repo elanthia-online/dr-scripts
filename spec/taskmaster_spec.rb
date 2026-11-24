@@ -11105,7 +11105,9 @@ RSpec.describe TaskMaster do
             allow(DRC).to receive(:wait_for_script_to_complete) { missing.clear }
             taps = []
             allow(DRCI).to receive(:in_hands?).and_return(false)
-            allow(DRCI).to receive(:exists?) { |item| taps << item && !missing.include?(item) }
+            # No repair ticket is carried: a missing tool's TAP for one
+            # (collect_missing_by_ticket) finds none, so no ticket is read.
+            allow(DRCI).to receive(:exists?) { |item| taps << item && !missing.include?(item) && !item.end_with?(' ticket') }
             tm.nezhiri(recipe[:noun], 13, recipe.merge(uses: 13))
             [tm, taps]
           end
@@ -11121,7 +11123,9 @@ RSpec.describe TaskMaster do
           it 'checks them all afresh, and asks the clerk, when the wait found one of them missing' do
             tm, taps = tooled(glop_recipe, survey: { missing_tools: ['sieve'] }, missing: ['sieve'])
 
-            expect(taps).to eq(%w[mortar pestle sieve sieve])
+            # The missing sieve is looked for among the Rangu tickets carried
+            # (one TAP, none carried) before the clerk is asked.
+            expect(taps).to eq(['mortar', 'pestle', 'sieve', 'Rangu ticket', 'sieve'])
             expect(DRC).to have_received(:wait_for_script_to_complete).with('clerk-tools', %w[alchemy get])
             expect(tm).to have_received(:ensure_tools).with(%w[mortar pestle sieve], 'alchemy', listed: nil)
           end
@@ -14258,6 +14262,256 @@ RSpec.describe TaskMaster do
       end
     end
 
+    # A tool a task needs that is not on you, looked for among the repair
+    # tickets carried before the society clerk is asked: Kythkani,
+    # 2026-11-23 03:39-06:08, task_no_repair, had its mortar at Catrox
+    # (crossing-repair left it at 03:23) and the Catrox ticket in the pack,
+    # and every run stopped at "Can't find mortar: not on you, and the
+    # alchemy clerk didn't have it." until the ticket was handed in by hand.
+    describe 'a tool missing at a task, looked for among the tickets carried (#ensure_tools)' do
+      let(:kythkani_mortar) { 'polished belzune stone mortar' }
+
+      # pickup_world, plus: Catrox as Crossing's town repairer; the tools
+      # on you (on_you), and any tool stowed since (by its noun), found by
+      # a TAP; a TAP for "<repairer> ticket" true while that repairer's
+      # tickets list holds one; clerk-tools recorded and bringing nothing.
+      def missing_world(tickets, on_you: [], **opts)
+        tm = pickup_world(tickets, **opts)
+        allow(tm).to receive(:get_data).with('town').and_return('Crossing' => { 'metal_repair' => { 'id' => 19_093, 'name' => 'Catrox' } })
+        allow(tm).to receive(:put_hands_away)
+        allow(DRCI).to receive(:in_hands?).and_return(false)
+        allow(DRCI).to receive(:exists?) do |item|
+          sent << [:tap, item]
+          next tickets.fetch(item.delete_suffix(' ticket'), []).any? if item.end_with?(' ticket')
+
+          on_you.include?(item) || sent.any? { |entry| entry.is_a?(Array) && entry.first == :stow && entry.last.split.last == item.split.last }
+        end
+        allow(DRC).to receive(:wait_for_script_to_complete) { |*args| sent << [:script, *args] }
+        tm
+      end
+
+      it "hands in another script's Catrox ticket for the missing mortar, and asks no clerk (Kythkani, 2026-11-23)" do
+        tm = missing_world({ 'Catrox' => [['steel ring mail', true], [kythkani_mortar, true]] }, on_you: %w[pestle sieve], no_repair: true)
+
+        expect { tm.ensure_tools(%w[mortar pestle sieve], 'alchemy') }.not_to raise_error
+
+        expect(sent).to include([:walk, 19_093], [:get, 'second Catrox ticket'], 'give Catrox', [:stow, 'mortar'])
+        expect(gives).to eq(1)
+        expect(sent).not_to include([:stow, 'mail'])
+        expect(sent).not_to include([:script, 'clerk-tools', %w[alchemy get]])
+        expect(DRC).to have_received(:message).with('Got mortar back by its repair ticket.')
+      end
+
+      it 'looks at no ticket and walks nowhere when a TAP finds none carried, then asks the clerk' do
+        tm = missing_world({}, on_you: %w[pestle sieve], no_repair: true)
+
+        expect { tm.ensure_tools(%w[mortar pestle sieve], 'alchemy') }.to raise_error(SystemExit)
+
+        expect(sent).to include([:tap, 'Rangu ticket'], [:tap, 'Catrox ticket'], [:script, 'clerk-tools', %w[alchemy get]])
+        expect(looks).to eq(0)
+        expect(sent.grep(Array).map(&:first)).not_to include(:walk)
+        expect(DRC).to have_received(:message).with("Can't find mortar: not on you, and the alchemy clerk didn't have it. Stopping before buying anything.")
+      end
+
+      it 'taps nothing for tickets when every tool is on you' do
+        tm = missing_world({ 'Catrox' => [[kythkani_mortar, true]] }, on_you: %w[mortar pestle sieve])
+
+        tm.ensure_tools(%w[mortar pestle sieve], 'alchemy')
+
+        expect(sent).to eq([[:tap, 'mortar'], [:tap, 'pestle'], [:tap, 'sieve']])
+      end
+
+      it 'waits for a ticket not ready yet, as any pickup does' do
+        tm = missing_world({ 'Catrox' => [[kythkani_mortar, false]] }, ready_after: 2, on_you: %w[pestle sieve], no_repair: true)
+
+        tm.ensure_tools(%w[mortar pestle sieve], 'alchemy')
+
+        expect(tm).to have_received(:pause).with(30).twice
+        expect(sent).to include([:stow, 'mortar'])
+      end
+
+      it 'leaves a ticket still not ready after the longest wait, and the stop names it to hand in yourself' do
+        tm = missing_world({ 'Catrox' => [[kythkani_mortar, false]] }, ready_after: 999, on_you: %w[pestle sieve], no_repair: true)
+
+        expect { tm.ensure_tools(%w[mortar pestle sieve], 'alchemy') }.to raise_error(SystemExit)
+
+        expect(tm).to have_received(:pause).with(30).exactly(TaskMaster::TICKET_WAIT_POLLS).times
+        expect(DRC).to have_received(:message).with("Catrox has not finished #{kythkani_mortar}; leaving it there.")
+        expect(DRC).to have_received(:message)
+          .with("Can't find mortar: not on you, and the alchemy clerk didn't have it. You carry a Catrox ticket for #{kythkani_mortar}: hand it in yourself. Stopping before buying anything.")
+      end
+
+      it 'hands in none of two tickets for different items that could be the tool, says so, and names both at the stop' do
+        tm = missing_world({ 'Catrox' => [['rough granite stone mortar', true], [kythkani_mortar, true]] }, on_you: %w[pestle sieve], no_repair: true)
+
+        expect { tm.ensure_tools(%w[mortar pestle sieve], 'alchemy') }.to raise_error(SystemExit)
+
+        expect(gives).to eq(0)
+        expect(sent.grep(Array).map(&:first)).not_to include(:walk)
+        expect(DRC).to have_received(:message)
+          .with("More than one Catrox ticket carried could be for the mortar (rough granite stone mortar, #{kythkani_mortar}); handing in none for it. Hand the right one in yourself.").once
+        expect(DRC).to have_received(:message).with(/\ACan't find mortar: .* You carry a Catrox ticket for rough granite stone mortar, a Catrox ticket for #{kythkani_mortar}: hand them in yourself\./)
+      end
+
+      it "hands in no ticket for another tool, nor one whose noun only follows the tool's name" do
+        tm = missing_world({ 'Catrox' => [['loimic grooved pestle', true], ['stiff mortar brush', true]] }, on_you: %w[pestle sieve], no_repair: true)
+
+        expect { tm.ensure_tools(%w[mortar pestle sieve], 'alchemy') }.to raise_error(SystemExit)
+
+        expect(gives).to eq(0)
+        expect(DRC).to have_received(:message).with("Can't find mortar: not on you, and the alchemy clerk didn't have it. Stopping before buying anything.")
+      end
+
+      it 'hands in no ticket for it from a read that did not reach every ticket (more than the ordinals): one not seen could be for it too' do
+        many = [[kythkani_mortar, true]] + Array.new(TaskMaster::TICKET_ORDINALS.size) { |index| ["steel ring mail #{index}", true] }
+        tm = missing_world({ 'Catrox' => many }, on_you: %w[pestle sieve], no_repair: true)
+
+        expect { tm.ensure_tools(%w[mortar pestle sieve], 'alchemy') }.to raise_error(SystemExit)
+
+        expect(gives).to eq(0)
+        expect(looks).to eq(TaskMaster::TICKET_ORDINALS.size)
+      end
+
+      it 'hands in one ticket of two for the same item, leaving the other carried' do
+        tm = missing_world({ 'Catrox' => [[kythkani_mortar, true], [kythkani_mortar, true]] }, on_you: %w[pestle sieve], no_repair: true)
+
+        tm.ensure_tools(%w[mortar pestle sieve], 'alchemy')
+
+        expect(gives).to eq(1)
+        expect(sent).to include([:stow, 'mortar'])
+      end
+
+      it 'tries a ticket the repairer refuses once, and the stop names it' do
+        tm = missing_world({ 'Catrox' => [[kythkani_mortar, true]] }, refused: 'Catrox shakes his head.', on_you: %w[pestle sieve], no_repair: true)
+
+        expect { tm.ensure_tools(%w[mortar pestle sieve], 'alchemy') }.to raise_error(SystemExit)
+
+        expect(gives).to eq(1)
+        expect(DRC).to have_received(:message).with(/You carry a Catrox ticket for #{kythkani_mortar}: hand it in yourself\./)
+      end
+
+      it "hands in the noted tool's own ticket by its note, forgets the note and starts its clock as of when it was left" do
+        UserVars.taskmaster_repairs = [mortar]
+        tm = missing_world({ 'Catrox' => [[kythkani_mortar, true]] }, on_you: %w[pestle sieve])
+
+        tm.ensure_tools(%w[mortar pestle sieve], 'alchemy')
+
+        expect(sent).to include([:stow, 'mortar'])
+        expect(UserVars.taskmaster_repairs).to eq([])
+        expect(Hash(UserVars.taskmaster_repaired_at)['mortar']).to eq(1)
+      end
+
+      it "looks among the society clerk's tickets with task_repair_by task_type, but not when taskmaster sends nothing for repair" do
+        clerk_data = { 'remedies' => { 'Crossing' => { 'repair-room' => 8860, 'repair-npc' => 'clerk' } } }
+        tm = missing_world({ 'clerk' => [[kythkani_mortar, true]] }, on_you: %w[pestle sieve], settings: { task_repair_by: 'task_type' })
+        allow(tm).to receive(:get_data).with('crafting').and_return(clerk_data)
+
+        tm.ensure_tools(%w[mortar pestle sieve], 'alchemy')
+        expect(sent).to include([:tap, 'clerk ticket'], [:walk, 8860], [:stow, 'mortar'])
+
+        sent.clear
+        tm = missing_world({ 'clerk' => [[kythkani_mortar, true]] }, on_you: %w[pestle sieve], settings: { task_repair_by: 'task_type' }, no_repair: true)
+        allow(tm).to receive(:get_data).with('crafting').and_return(clerk_data)
+        expect { tm.ensure_tools(%w[mortar pestle sieve], 'alchemy') }.to raise_error(SystemExit)
+        expect(sent).not_to include([:tap, 'clerk ticket'])
+      end
+
+      it 'looks for no ticket while the repair replies are not known' do
+        tm = missing_world({ 'Catrox' => [[kythkani_mortar, true]] }, on_you: %w[pestle sieve], no_repair: true)
+        allow(tm).to receive(:repair_replies_known?).and_return(false)
+
+        expect { tm.ensure_tools(%w[mortar pestle sieve], 'alchemy') }.to raise_error(SystemExit)
+
+        expect(sent).not_to include([:tap, 'Catrox ticket'])
+        expect(looks).to eq(0)
+      end
+
+      it 'looks again after a look that goes unanswered, then hands the ticket in' do
+        tm = missing_world({ 'Catrox' => [[kythkani_mortar, true]] }, silent_looks: [1], on_you: %w[pestle sieve], no_repair: true)
+
+        tm.ensure_tools(%w[mortar pestle sieve], 'alchemy')
+
+        expect(tm).to have_received(:pause).with(30).once
+        expect(sent).to include([:stow, 'mortar'])
+      end
+
+      # Review of #8147: one missing tool, a ticket for it at two repairers.
+      it 'hands in one ticket for a missing tool, though another repairer holds one for it too' do
+        tm = missing_world({ 'Rangu' => [['rough granite stone mortar', true]], 'Catrox' => [[kythkani_mortar, true]] }, on_you: %w[pestle sieve], no_repair: true)
+
+        expect { tm.ensure_tools(%w[mortar pestle sieve], 'alchemy') }.not_to raise_error
+
+        expect(gives).to eq(1)
+        expect(sent).to include([:stow, 'mortar'])
+        expect(sent).not_to include([:walk, 19_093])
+        expect(sent).not_to include([:tap, 'Catrox ticket'])
+      end
+
+      # Review of #8147: with no wand or rod in enchanting_tools, Dorhum needs the
+      # imbuement rod enchant falls back to ("rod"); a stirring rod is not it.
+      describe "Dorhum's fallback rod (#ensure_dorhum_tools)" do
+        let(:stirring_rod) { { 'npc' => 'poltu', 'repairer' => 'Rangu', 'room' => 19_209, 'tool' => 'rod', 'item' => 'bronze stirring rod', 'left_at' => 1 } }
+
+        def dorhum_world(tickets)
+          missing_world(tickets, on_you: %w[burin loop], settings: { enchanting_tools: %w[burin loop] })
+        end
+
+        it "hands in no stirring rod's ticket no note accounts for, and asks the enchanting clerk" do
+          tm = dorhum_world({ 'Rangu' => [['bronze stirring rod', true]] })
+
+          expect { tm.ensure_dorhum_tools }.to raise_error(SystemExit)
+
+          expect(gives).to eq(0)
+          expect(sent).to include([:script, 'clerk-tools', %w[enchanting get]])
+          expect(DRC).not_to have_received(:message).with(/back by its repair ticket/)
+        end
+
+        it "hands in no ticket of Poltu's noted stirring rod, and keeps the note" do
+          UserVars.taskmaster_repairs = [stirring_rod]
+          tm = dorhum_world({ 'Rangu' => [['bronze stirring rod', true]] })
+
+          expect { tm.ensure_dorhum_tools }.to raise_error(SystemExit)
+
+          expect(gives).to eq(0)
+          expect(UserVars.taskmaster_repairs).to eq([stirring_rod])
+          expect(sent).to include([:script, 'clerk-tools', %w[enchanting get]])
+        end
+
+        it 'hands in an imbuement rod ticket for it, and asks no clerk' do
+          tm = dorhum_world({ 'Rangu' => [['simple imbuement rod', true]] })
+
+          expect { tm.ensure_dorhum_tools }.not_to raise_error
+
+          expect(gives).to eq(1)
+          expect(sent).to include([:stow, 'rod'])
+          expect(sent).not_to include(a_collection_starting_with(:script))
+        end
+      end
+
+      describe '#ticket_names_tool?' do
+        let(:tm) { build(npc: 'nezhiri') }
+
+        it 'takes an item whose noun is the tool and that holds every word of its name' do
+          expect(tm.ticket_names_tool?(kythkani_mortar, 'mortar')).to be(true)
+          expect(tm.ticket_names_tool?('a grooved agonite mixing stick', 'mixing stick')).to be(true)
+          expect(tm.ticket_names_tool?('large purpleheart bowl edged with ivory', 'bowl')).to be(true)
+        end
+
+        it 'refuses another noun, a missing word, and the sewing needles for the knitting needles' do
+          expect(tm.ticket_names_tool?('stiff mortar brush', 'mortar')).to be(false)
+          expect(tm.ticket_names_tool?('agonite stick', 'mixing stick')).to be(false)
+          expect(tm.ticket_names_tool?('slender agonite sewing needles', 'knitting needles')).to be(false)
+          expect(tm.ticket_names_tool?('slender agonite knitting needles', 'needles')).to be(false)
+        end
+
+        it 'needs every word of the tool in the item, not the item in the tool' do
+          expect(tm.ticket_names_tool?('rod', 'imbuement rod')).to be(false)
+          expect(tm.ticket_names_tool?('bronze stirring rod', TaskMaster::IMBUE_ROD)).to be(false)
+          expect(tm.ticket_names_tool?('simple imbuement rod', TaskMaster::IMBUE_ROD)).to be(true)
+        end
+      end
+    end
+
     describe 'every tool (#tool_pickup: the pickup mode, and task_get_tools_on_completion)' do
       it 'hands in every noted tool at every repairer, and every Rangu ticket, but no clerk ticket no note accounts for' do
         UserVars.taskmaster_repairs = [needles]
@@ -15446,7 +15700,8 @@ RSpec.describe TaskMaster do
           allow(tm).to receive(:ensure_tools).and_raise('past the stop')
           tm.instance_variable_set(:@loot_bag_checked, true)
           expect { tm.dorhum('spongestone', 6, %w[congruence]) }.to raise_error(RuntimeError, 'past the stop')
-          expect(tm).to have_received(:ensure_tools).with(['augment loop', 'burin', 'rod'], 'enchanting')
+          # Its tickets and notes are matched as the imbuement rod (ensure_dorhum_tools).
+          expect(tm).to have_received(:ensure_tools).with(['augment loop', 'burin', 'rod'], 'enchanting', match_as: ['augment loop', 'burin', TaskMaster::IMBUE_ROD])
         end
 
         it "still names another taskmaster's tool by its very setting name, or by names of two words or more" do
