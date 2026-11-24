@@ -9,8 +9,10 @@ class SanowretCrystal
 
   # Gaze and exhale are sent by send_use, not DRC.bput. After some replies DRC.bput sends
   # the command again by itself, without asking skip_use? again, so a go2 started (or a
-  # no-use room entered) meanwhile can't stop it. Remove send_use and these constants
-  # once DRC.bput can run a check before it resends: elanthia-online/dr-scripts#8155.
+  # no-use room entered) meanwhile can't stop it. It also waits out roundtime before its
+  # first send without asking, and wakes, stops a play or unhides to get a resend through.
+  # Keep send_use rather than DRC.bput: it asks skip_use? before every send, caps the
+  # sends, and leaves those states for a later pass.
   #
   # Most sends of one gaze or exhale.
   USE_SENDS = 3
