@@ -14,6 +14,11 @@ load_lic_class('sanowret-crystal.lic', 'SanowretCrystal')
 
 RSpec.describe SanowretCrystal do
   let(:refusal) { 'This is not a good place for that.' }
+  # Replies that match send_use's patterns for an exhale and a gaze.
+  let(:exhale_ok) { 'you come away from the experience with a further understanding of Arcana as the scintillating lights fade again.' }
+  let(:gaze_ok) { 'A soft light blossoms in the very center of the crystal, and begins to fill your mind with the knowledge of Arcana.' }
+  # Every gaze and exhale send_use puts, in order.
+  let(:uses) { [] }
 
   # The base.yaml defaults plus a !ruby/regexp entry, parsed the way Lich loads
   # profiles, so each user-supplied entry type is the real one.
@@ -43,6 +48,22 @@ RSpec.describe SanowretCrystal do
   before do
     DRStats.concentration = 100
     DRSkill._set_xp('Arcana', 0)
+    # A reply that matches nothing ends send_use's read at once instead of after 15 s.
+    stub_const('SanowretCrystal::USE_REPLY_SECONDS', 0.05)
+    answer_uses
+  end
+
+  # send_use puts gaze and exhale itself and reads the reply with get?. Each one is
+  # recorded in uses and answered by the block (given the command), or by a success.
+  def answer_uses(&reply)
+    reply ||= ->(command) { command.start_with?('gaze') ? gaze_ok : exhale_ok }
+    pending = []
+    allow(crystal).to receive(:clear)
+    allow(crystal).to receive(:put) do |command|
+      uses << command
+      pending << reply.call(command)
+    end
+    allow(crystal).to receive(:get?) { pending.shift }
   end
 
   # id: nil puts us in an unmapped room, where Room.current is nil.
@@ -55,7 +76,7 @@ RSpec.describe SanowretCrystal do
   # Rooms that refuse the crystal during the run
   # ===========================================================================
   describe 'after a room refuses the crystal' do
-    before { allow(DRC).to receive(:bput).and_return(refusal) }
+    before { answer_uses { refusal } }
 
     it 'still uses the crystal in a different room' do
       in_room('[[Crossing, Market]]')
@@ -64,7 +85,7 @@ RSpec.describe SanowretCrystal do
       in_room('[[Shard, Bank]]')
       crystal.check_crystal
 
-      expect(DRC).to have_received(:bput).twice
+      expect(uses.size).to eq(2)
     end
 
     it 'skips the refusing room for the rest of the run' do
@@ -72,7 +93,7 @@ RSpec.describe SanowretCrystal do
       crystal.check_crystal
       crystal.check_crystal
 
-      expect(DRC).to have_received(:bput).once
+      expect(uses.size).to eq(1)
     end
 
     it 'does not skip a room whose title only shares characters or a prefix with it' do
@@ -82,7 +103,7 @@ RSpec.describe SanowretCrystal do
       in_room('[[Crossing, Market Plaza]]')
       crystal.check_crystal
 
-      expect(DRC).to have_received(:bput).twice
+      expect(uses.size).to eq(2)
     end
 
     it "leaves the user's sanowret_no_use_rooms untouched" do
@@ -146,7 +167,7 @@ RSpec.describe SanowretCrystal do
     end
 
     def refuse_after_moving_to(title, id)
-      allow(DRC).to receive(:bput).with(/\A(?:exhale|gaze) /, any_args) do
+      answer_uses do
         in_room(title, id: id)
         refusal
       end
@@ -164,11 +185,11 @@ RSpec.describe SanowretCrystal do
     it 'uses the crystal in the arrival room on the next pass' do
       refuse_after_moving_to('[[Crossing, Square]]', 11)
       crystal.check_crystal
-      allow(DRC).to receive(:bput).with(/\A(?:exhale|gaze) /, any_args).and_return('fade again.')
+      answer_uses
 
       crystal.check_crystal
 
-      expect(DRC).to have_received(:bput).with(/\A(?:exhale|gaze) /, any_args).twice
+      expect(uses.size).to eq(2)
     end
 
     it 'also leaves an unmapped arrival room usable' do
@@ -180,9 +201,107 @@ RSpec.describe SanowretCrystal do
     end
   end
 
+  # ===========================================================================
+  # Replies DRC.bput would answer by sending the command again
+  # ===========================================================================
+  # DRC.bput sends again after a roundtime wait (and a few other replies) without
+  # asking skip_use?, so a go2 started during the wait couldn't stop it. send_use
+  # asks before every send.
+  describe 'when a gaze is answered by a reply DRC.bput would send it again after' do
+    let(:wait_reply) { '...wait 3 seconds.' }
+    let(:replies) { [] }
+
+    before do
+      in_room('[[Crossing, Market]]', id: 10)
+      allow(crystal).to receive(:pause)
+      allow(DRC).to receive(:fix_standing)
+      answer_uses { replies.shift.then { |reply| reply.respond_to?(:call) ? reply.call : reply } }
+    end
+
+    it 'does not send again once a sanowret_no_use_scripts script starts during the wait' do
+      crystal.instance_variable_set(:@no_use_scripts, ['go2'])
+      allow(Script).to receive(:running?).with('go2').and_return(false)
+      go2_starts = lambda do
+        allow(Script).to receive(:running?).with('go2').and_return(true)
+        wait_reply
+      end
+      replies.push(go2_starts, gaze_ok)
+
+      crystal.use_crystal
+
+      expect(uses).to eq(['gaze my sanowret crystal'])
+    end
+
+    it 'does not send again once the character has moved into a no-use room during the wait' do
+      walks_into_bank = lambda do
+        in_room('[[Provincial Bank, Teller]]', id: 1900)
+        wait_reply
+      end
+      replies.push(walks_into_bank, gaze_ok)
+
+      crystal.use_crystal
+
+      expect(uses).to eq(['gaze my sanowret crystal'])
+    end
+
+    it 'waits out the roundtime and sends again when nothing has changed' do
+      replies.push(wait_reply, gaze_ok)
+
+      crystal.use_crystal
+
+      expect(uses).to eq(['gaze my sanowret crystal'] * 2)
+      expect(crystal).to have_received(:pause).with(3)
+    end
+
+    it 'pauses a second and sends again after a type-ahead refusal' do
+      replies.push('Sorry, you may only type ahead 1 command.', gaze_ok)
+
+      crystal.use_crystal
+
+      expect(uses).to eq(['gaze my sanowret crystal'] * 2)
+      expect(crystal).to have_received(:pause).with(1)
+    end
+
+    it 'stands and sends again when told to stand' do
+      replies.push('You must be standing to do that.', gaze_ok)
+
+      crystal.use_crystal
+
+      expect(DRC).to have_received(:fix_standing)
+      expect(uses).to eq(['gaze my sanowret crystal'] * 2)
+    end
+
+    it 'leaves the crystal for a later pass when webbed, without sending again' do
+      replies.push("You can't do that while entangled in a web.")
+
+      crystal.use_crystal
+
+      expect(uses).to eq(['gaze my sanowret crystal'])
+    end
+
+    it 'gives up after USE_SENDS sends that each draw a wait' do
+      replies.push(*([wait_reply] * 5))
+
+      crystal.use_crystal
+
+      expect(uses.size).to eq(described_class::USE_SENDS)
+    end
+
+    it 'remembers a room that refuses the send made there after a wait' do
+      walks_on = lambda do
+        in_room('[[Crossing, Square]]', id: 11)
+        wait_reply
+      end
+      replies.push(walks_on, refusal)
+
+      crystal.use_crystal
+
+      expect(crystal.instance_variable_get(:@refused_room_titles)).to eq(['[[Crossing, Square]]'])
+    end
+  end
+
   describe 'when the crystal works' do
     it 'does not remember the room' do
-      allow(DRC).to receive(:bput).and_return('A soft light blossoms in the very center of the crystal, and begins to fill your mind with the knowledge of Arcana.')
       in_room('[[Crossing, Market]]')
       crystal.use_crystal
 
@@ -248,7 +367,6 @@ RSpec.describe SanowretCrystal do
         'You get'
       end
       allow(DRC).to receive(:bput).with('stow my sanowret crystal', any_args).and_return('You put')
-      allow(DRC).to receive(:bput).with(/\A(?:exhale|gaze) /, any_args).and_return('fade again.')
       in_room('[[Crossing, Market]]', id: 10)
     end
 
@@ -257,7 +375,7 @@ RSpec.describe SanowretCrystal do
 
       stowed.check_crystal
 
-      expect(DRC).not_to have_received(:bput).with(/\A(?:exhale|gaze) /, any_args)
+      expect(uses).to be_empty
       expect(DRC).to have_received(:bput).with('stow my sanowret crystal', any_args)
       expect(DRC).not_to have_received(:message).with(/Could not use crystal/)
     end
@@ -267,7 +385,7 @@ RSpec.describe SanowretCrystal do
 
       stowed.check_crystal
 
-      expect(DRC).not_to have_received(:bput).with(/\A(?:exhale|gaze) /, any_args)
+      expect(uses).to be_empty
     end
 
     it 'does not exhale once a sanowret_no_use_scripts script has started' do
@@ -277,7 +395,7 @@ RSpec.describe SanowretCrystal do
 
       stowed.check_crystal
 
-      expect(DRC).not_to have_received(:bput).with(/\A(?:exhale|gaze) /, any_args)
+      expect(uses).to be_empty
     end
 
     it 'does not gaze into a worn crystal in a no-use room' do
@@ -285,7 +403,7 @@ RSpec.describe SanowretCrystal do
 
       crystal.use_crystal
 
-      expect(DRC).not_to have_received(:bput).with(/\A(?:exhale|gaze) /, any_args)
+      expect(uses).to be_empty
     end
 
     it 'still exhales when the new room is not a no-use room' do
@@ -293,7 +411,7 @@ RSpec.describe SanowretCrystal do
 
       stowed.check_crystal
 
-      expect(DRC).to have_received(:bput).with('exhale my sanowret crystal', any_args).once
+      expect(uses).to eq(['exhale my sanowret crystal'])
       expect(DRC).to have_received(:bput).with('stow my sanowret crystal', any_args)
     end
   end

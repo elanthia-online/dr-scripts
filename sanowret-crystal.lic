@@ -7,6 +7,27 @@ class SanowretCrystal
   # crystal can't be tapped. After that the passive loop simply tries again.
   ROOM_CHANGE_WAIT_PAUSES = 300
 
+  # Gaze and exhale are sent by send_use, not DRC.bput. After some replies DRC.bput sends
+  # the command again by itself, without asking skip_use? again, so a go2 started (or a
+  # no-use room entered) meanwhile can't stop it. Remove send_use and these constants
+  # once DRC.bput can run a check before it resends: elanthia-online/dr-scripts#8155.
+  #
+  # Most sends of one gaze or exhale.
+  USE_SENDS = 3
+  # Seconds to wait for the reply to one send, as DRC.bput's default timeout.
+  USE_REPLY_SECONDS = 15
+  # Replies DRC.bput sends again after (lich-5 common.rb), handled here as below.
+  # A roundtime wait: waited out, then sent again if skip_use? still allows it. The
+  # pattern is lich-5's WAIT_RESPONSE_PATTERN, which older Lich versions lack.
+  USE_WAIT_REPLY = /(?:\.\.\. ?wait|\AWait) (?<seconds>[0-9]+) sec(?:onds?)?\.(?:<[^>]+>)*\s*\z/
+  # Type-ahead and a frozen world: a second's pause, then the same.
+  USE_PAUSE_REPLY = /Sorry, you may only type ahead|^For some strange reason you are unable to do that\.  The world somehow seems frozen in place/
+  # Not standing: DRC.fix_standing, then the same.
+  USE_STAND_REPLY = /^You must be standing|^You should stand up first|^You'll need to stand up first|^You can't do that while (?:sitting|kneeling|lying)/
+  # Asleep, performing, hidden, stunned or webbed: left for a later pass. DRC.bput would
+  # wake, stop the play or unhide, which a background crystal shouldn't do.
+  USE_LATER_REPLY = /^You can't do that while you are asleep|^You are a bit too busy performing to do that|^You should stop playing before you do that|would give away your hiding place|^You are still stunned|^You can't do that while entangled in a web/
+
   def initialize
     arg_definitions = [
       [
@@ -41,13 +62,12 @@ class SanowretCrystal
     # a free hand, and the character may walk into a no-use room (a bank, say) meanwhile.
     return if skip_use?
 
-    dispatch_room = room_key
     if DRSkill.getxp('Arcana') <= 30 && @force_exhale
-      response = DRC.bput("exhale my #{@adjective} crystal", 'you come away from the experience with a further understanding of Arcana as the scintillating lights fade again.', 'However, nothing much else happens, as you lack the concentration to focus.', 'This is not a good place for that.', 'Doing that would give away your hiding place.', 'That would be difficult to do while you attempt to keep the trail in sight.', 'However, you realize that you\'re already gleaning knowledge from it.')
+      response, dispatch_room = send_use("exhale my #{@adjective} crystal", 'you come away from the experience with a further understanding of Arcana as the scintillating lights fade again.', 'However, nothing much else happens, as you lack the concentration to focus.', 'This is not a good place for that.', 'Doing that would give away your hiding place.', 'That would be difficult to do while you attempt to keep the trail in sight.', 'However, you realize that you\'re already gleaning knowledge from it.')
     elsif DRSkill.getxp('Arcana') <= 10 && @worn_crystal
-      response = DRC.bput("gaze my #{@adjective} crystal", /A soft light blossoms in the very center of the crystal, and begins to fill your mind with the knowledge of .*\./, 'However, nothing much else happens, as you lack the concentration to focus.', 'This is not a good place for that.', 'However, you realize that you\'re already gleaning knowledge from it.', 'That would be difficult to do while you attempt to keep the trail in sight.')
+      response, dispatch_room = send_use("gaze my #{@adjective} crystal", /A soft light blossoms in the very center of the crystal, and begins to fill your mind with the knowledge of .*\./, 'However, nothing much else happens, as you lack the concentration to focus.', 'This is not a good place for that.', 'However, you realize that you\'re already gleaning knowledge from it.', 'That would be difficult to do while you attempt to keep the trail in sight.')
     elsif DRSkill.getxp('Arcana') <= 25
-      response = DRC.bput("exhale my #{@adjective} crystal", 'you come away from the experience with a further understanding of Arcana as the scintillating lights fade again.', 'However, nothing much else happens, as you lack the concentration to focus.', 'This is not a good place for that.', 'Doing that would give away your hiding place.', 'That would be difficult to do while you attempt to keep the trail in sight.', 'However, you realize that you\'re already gleaning knowledge from it.')
+      response, dispatch_room = send_use("exhale my #{@adjective} crystal", 'you come away from the experience with a further understanding of Arcana as the scintillating lights fade again.', 'However, nothing much else happens, as you lack the concentration to focus.', 'This is not a good place for that.', 'Doing that would give away your hiding place.', 'That would be difficult to do while you attempt to keep the trail in sight.', 'However, you realize that you\'re already gleaning knowledge from it.')
     end
     return unless response =~ /This is not a good place for that\./
     # The character moved while the command was out, so the refusal may belong to either
@@ -62,6 +82,50 @@ class SanowretCrystal
     # Go ahead and remember to ignore this room while the script is running
     # This convenience won't persist between script runs though, go update your yaml
     @refused_room_titles.push(title) unless @refused_room_titles.include?(title)
+  end
+
+  # Sends a gaze or exhale and returns the reply that matched one of matches ('' when
+  # none did) and the room_key when it was sent. Every send, including a send after a
+  # roundtime wait, comes after a fresh skip_use?. Matches are read as DRC.bput reads them.
+  def send_use(command, *matches)
+    patterns = matches.map { |match| match.is_a?(Regexp) ? match : /#{match}/i }
+    USE_SENDS.times do
+      waitrt?
+      return [''] if skip_use?
+
+      sent_room = room_key
+      clear
+      put command
+      kind, reply = read_use_reply(patterns)
+      case kind
+      when :match then return [reply, sent_room]
+      when :wait then pause reply[USE_WAIT_REPLY, :seconds].to_i
+      when :pause then pause 1
+      when :stand then DRC.fix_standing
+      else return ['', sent_room]
+      end
+    end
+    ['']
+  end
+
+  # The first line after a send that matches one of patterns ([:match, matched text]) or
+  # is a reply send_use handles ([:wait | :pause | :stand | :later, line]); nil when
+  # neither comes within USE_REPLY_SECONDS.
+  def read_use_reply(patterns)
+    deadline = Time.now + USE_REPLY_SECONDS
+    while Time.now < deadline
+      line = get?
+      unless line
+        pause 0.1
+        next
+      end
+      patterns.each { |pattern| (found = line.match(pattern)) && (return [:match, found[0]]) }
+      return [:wait, line] if line.match?(USE_WAIT_REPLY)
+      return [:pause, line] if line.match?(USE_PAUSE_REPLY)
+      return [:stand, line] if line.match?(USE_STAND_REPLY)
+      return [:later, line] if line.match?(USE_LATER_REPLY)
+    end
+    nil
   end
 
   def check_crystal
