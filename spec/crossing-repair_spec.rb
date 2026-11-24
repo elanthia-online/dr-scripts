@@ -438,6 +438,33 @@ RSpec.describe CrossingRepair do
       expect(DRCI).not_to have_received(:put_away_item?)
     end
 
+    it 'forgets an earlier container when the next get said nothing' do
+      Flags[CrossingRepair::GOT_FROM_FLAG] = 'You get a steel sword from inside your duffel bag.'.match(CrossingRepair::GOT_FROM)
+      repair.note_origin('sword')
+      Flags[CrossingRepair::GOT_FROM_FLAG] = false
+      repair.note_origin('sword')
+      expect(repair.instance_variable_get(:@origins)).to eq({})
+    end
+
+    # Review of #8146: two gear items share the noun; only the first get named a container.
+    it 'does not put a same-noun item got from a belt into the container the first one came from' do
+      steel = OpenStruct.new(short_name: 'steel.sword', name: 'sword')
+      iron = OpenStruct.new(short_name: 'iron.sword', name: 'sword')
+      gets = ['You get a steel sword from inside your duffel bag.'.match(CrossingRepair::GOT_FROM), false]
+      allow(equipment_manager).to receive(:get_item?) do
+        Flags[CrossingRepair::GOT_FROM_FLAG] = gets.shift
+        true
+      end
+      allow(equipment_manager).to receive(:empty_hands).and_return(false)
+      allow(DRCI).to receive(:put_away_item?).and_return(true)
+      responses['give my steel.sword to Catrox'] = "There isn't a scratch on that"
+      responses['give my iron.sword to Catrox'] = "There isn't a scratch on that"
+
+      expect(repair.repair('Catrox', steel)).to be true
+      expect(repair.repair('Catrox', iron)).to be false
+      expect(DRCI).to have_received(:put_away_item?).with('sword', 'duffel bag').once
+    end
+
     it 'leaves an item the gear container takes where the settings keep it' do
       stick = OpenStruct.new(short_name: 'mixing.stick', name: 'stick')
       repair.instance_variable_set(:@origins, { 'stick' => 'duffel bag' })
@@ -522,6 +549,21 @@ RSpec.describe CrossingRepair do
 
       expect(repair.turn_in_ticket('Granzer')).to be true
       expect(repair).to have_received(:fput).with('swap')
+    end
+
+    # Review of #8146: with an item stuck in the right hand the ticket is got into the
+    # left; a bare GIVE would offer the stuck item instead of the ticket.
+    it 'swaps the ticket to the right hand before giving again when the right hand holds a stuck item' do
+      $right_hand = 'grooved pestle'
+      $left_hand = 'Granzer ticket'
+      responses['give my ticket to Granzer'] = "You don't need to specify the object"
+      allow(DRC).to receive(:bput).with('give Granzer', any_args) do
+        $right_hand == 'Granzer ticket' ? 'You hand' : "There isn't a scratch on that"
+      end
+      allow(repair).to receive(:fput).with('swap') { $right_hand, $left_hand = $left_hand, $right_hand }
+
+      expect(repair.turn_in_ticket('Granzer')).to be true
+      expect(repair).to have_received(:fput).with('swap').once
     end
 
     it 'waits and tries again while the repair is not finished' do

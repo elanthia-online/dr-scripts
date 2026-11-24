@@ -269,13 +269,19 @@ class CrossingRepair
 
   # Remembers where the item just got came from, when the game said ("from
   # inside your duffel bag"). An item got from a belt, worn or already in hand
-  # has no such line, and its usual place is the one empty_hands knows.
+  # has no such line, and its usual place is the one empty_hands knows. Items
+  # are keyed by noun, so a get with no such line forgets what an earlier item
+  # of that noun left: the last get decides.
   #
   # @param noun [String] the item's noun, as in the gear settings
   # @return [void]
   def note_origin(noun)
     match = Flags[GOT_FROM_FLAG]
-    @origins[noun] = match[:container].strip if match.is_a?(MatchData)
+    if match.is_a?(MatchData)
+      @origins[noun] = match[:container].strip
+    else
+      @origins&.delete(noun)
+    end
   end
 
   # Puts an item in hand away: where the gear settings keep it (empty_hands),
@@ -389,9 +395,11 @@ class CrossingRepair
     !DRC.right_hand && !DRC.left_hand
   end
 
+  # A bare GIVE offers the right hand, so the ticket goes there first: it is in the
+  # left hand when an item is stuck in the right one.
   def turn_in_ticket(repairer, failed = false)
     if failed
-      fput('swap') unless DRC.right_hand
+      fput('swap') unless DRC.right_hand_noun == 'ticket'
       command = "give #{repairer}"
     else
       command = "give my ticket to #{repairer}"
