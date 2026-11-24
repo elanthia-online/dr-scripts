@@ -201,7 +201,7 @@ RSpec.describe WorkOrders do
 
     it 'defines VERSION as frozen string' do
       expect(described_class::VERSION).to be_frozen
-      expect(described_class::VERSION).to eq('1.0.3')
+      expect(described_class::VERSION).to eq('1.0.4')
     end
   end
 
@@ -940,34 +940,145 @@ RSpec.describe WorkOrders do
       end
     end
 
+    # Cloth and yarn are counted piece by piece where they lie in the bag,
+    # never got or combined. 2026-11-24, a work order for 4 knitted
+    # blankets: combining every piece of yarn into one stack met a full
+    # spool ("The spool is not large enough to combine both threads.
+    # Perhaps you could break them apart and combine smaller portions to a
+    # maximum of 400 yards of thread."), waited 15 seconds for "You
+    # combine", then found both hands full ("You need a free hand to pick
+    # that up.") and counted only one of the two pieces held.
     describe '#sew_items and #knit_items existing stock' do
       let(:materials_info) { { 'stock-name' => 'burlap', 'stock-number' => 9 } }
       let(:info) { { 'stock-room' => 100 } }
+      let(:pieces) { {} }
 
-      before { allow(workorders).to receive(:stow_tool) }
+      before do
+        allow(workorders).to receive(:stow_tool)
+        allow(DRCI).to receive(:count_items_in_container) { |material, _bag| pieces.fetch(material, 0) }
+      end
+
+      it 'adds up every piece of cloth in the bag, by ordinal, getting and combining none' do
+        recipe = { 'chapter' => 1, 'name' => 'a burlap sack', 'noun' => 'sack', 'volume' => 10 }
+        pieces['burlap cloth'] = 2
+        reply('count first burlap cloth in my', ['You count out 4 yards of material there.'])
+        reply('count second burlap cloth in my', ['You count out 6 yards of material there.'])
+        expect(workorders).to receive(:order_fabric).with(100, 2, 9, 'burlap cloth')
+        workorders.send(:sew_items, info, materials_info, recipe, 3)
+        expect(sent?('get ')).to be false
+        expect(sent?('combine ')).to be false
+      end
 
       it 'reads the real cloth count, not a count another player says' do
         recipe = { 'chapter' => 1, 'name' => 'a burlap sack', 'noun' => 'sack', 'volume' => 10 }
-        reply('get burlap cloth', ['You get some burlap cloth from inside your backpack.'], ['What were you referring to?'])
-        reply('count my burlap cloth', [player_lines('you count out 50 yards').first, 'You count out 10 yards of material there.'])
+        pieces['burlap cloth'] = 1
+        reply('count first burlap cloth', [player_lines('you count out 50 yards').first, 'You count out 10 yards of material there.'])
         expect(workorders).to receive(:order_fabric).with(100, 2, 9, 'burlap cloth')
         workorders.send(:sew_items, info, materials_info, recipe, 3)
       end
 
-      it 'treats "What were you" as no cloth even if another player says "you get" first' do
+      it 'counts no cloth, and sends no COUNT, when the bag holds none' do
         recipe = { 'chapter' => 1, 'name' => 'a burlap sack', 'noun' => 'sack', 'volume' => 10 }
-        reply('get burlap cloth', [player_lines('did you get it?').first, 'What were you referring to?'])
         expect(workorders).to receive(:order_fabric).with(100, 3, 9, 'burlap cloth')
         workorders.send(:sew_items, info, materials_info, recipe, 3)
-        expect(sent?('count my burlap cloth')).to be false
+        expect(sent?('count ')).to be false
       end
 
-      it 'treats "What were you" as no yarn even if another player says "you get" first' do
-        recipe = { 'chapter' => 1, 'name' => 'a knitted napkin', 'noun' => 'napkin', 'volume' => 100 }
-        reply('get yarn', [player_lines('did you get it?').last, 'What were you referring to?'])
+      it 'counts every piece of yarn, a full spool or not, and buys only what is short (4 knitted blankets)' do
+        recipe = { 'chapter' => 5, 'name' => 'a knitted blanket', 'noun' => 'blanket', 'volume' => 90 }
+        pieces['yarn'] = 4
+        %w[first second third fourth].zip([120, 100, 90, 30]).each do |ordinal, yards|
+          reply("count #{ordinal} yarn in my", ["You count out #{yards} yards of material there."])
+        end
+        expect(workorders).to receive(:order_fabric).with(100, 1, 9, 'yarn')
+        workorders.send(:knit_items, info, materials_info, recipe, 4)
+        expect(sent?('get ')).to be false
+        expect(sent?('combine ')).to be false
+      end
+
+      it 'buys nothing when the pieces in the bag cover the order between them' do
+        recipe = { 'chapter' => 5, 'name' => 'a knitted blanket', 'noun' => 'blanket', 'volume' => 90 }
+        pieces['yarn'] = 2
+        reply('count first yarn in my', ['You count out 380 yards of material there.'])
+        reply('count second yarn in my', ['You count out 60 yards of material there.'])
+        expect(workorders).to receive(:order_fabric).with(100, 0, 9, 'yarn')
+        workorders.send(:knit_items, info, materials_info, recipe, 4)
+      end
+
+      it 'counts a piece whose COUNT gives no yards as none, buying too much rather than too little' do
+        recipe = { 'chapter' => 5, 'name' => 'a knitted napkin', 'noun' => 'napkin', 'volume' => 100 }
+        pieces['yarn'] = 2
+        reply('count first yarn in my', [player_lines('You count out 300 yards').last])
+        reply('count second yarn in my', ['You count out 50 yards of material there.'])
         expect(workorders).to receive(:order_fabric).with(100, 1, 9, 'yarn')
         workorders.send(:knit_items, info, materials_info, recipe, 1)
-        expect(sent?('count my yarn')).to be false
+      end
+
+      it 'throws away every piece of the order\'s own yarn left over, by its material' do
+        recipe = { 'chapter' => 5, 'name' => 'a knitted thing', 'noun' => 'thing', 'volume' => 15 }
+        materials_info['stock-name'] = 'wool'
+        pieces['wool yarn'] = 2
+        workorders.instance_variable_set(:@worn_trashcan, 'bucket')
+        workorders.instance_variable_set(:@worn_trashcan_verb, 'tap')
+        allow(workorders).to receive(:order_fabric)
+        workorders.send(:knit_items, info, materials_info, recipe, 1)
+        expect(DRCI).to have_received(:dispose_trash).with('wool yarn', 'bucket', 'tap').twice
+      end
+
+      it 'keeps the leftovers with retain_crafting_materials' do
+        recipe = { 'chapter' => 5, 'name' => 'a knitted thing', 'noun' => 'thing', 'volume' => 15 }
+        pieces['burlap yarn'] = 2
+        workorders.instance_variable_set(:@retain_crafting_materials, true)
+        allow(workorders).to receive(:order_fabric)
+        workorders.send(:knit_items, info, materials_info, recipe, 1)
+        expect(DRCI).not_to have_received(:dispose_trash)
+      end
+    end
+
+    # Bought pieces are combined into the one bought before; a full spool
+    # puts one in the bag and the next is combined into the other.
+    describe '#order_fabric' do
+      let(:hands) { [] }
+
+      before do
+        allow(DRC).to receive(:left_hand) { hands[0] }
+        allow(DRC).to receive(:right_hand) { hands[1] }
+        allow(DRCT).to receive(:order_item) { hands[hands[0] ? 1 : 0] = 'wool yarn' }
+        allow(workorders).to receive(:stow_tool) { |_name| hands[1] ? hands[1] = nil : hands[0] = nil }
+      end
+
+      it 'combines each bought piece into the last, then puts the stack away' do
+        allow(DRC).to receive(:bput) do |command, *patterns|
+          bput_log << [command, patterns]
+          hands[1] = nil
+          'You combine the spools of thread together.'
+        end
+        workorders.send(:order_fabric, 100, 3, 9, 'yarn')
+        expect(bput_log.map(&:first)).to eq(['combine yarn with yarn'] * 2)
+        expect(workorders).to have_received(:stow_tool).once
+        expect(hands.compact).to be_empty
+      end
+
+      it 'knows the full-spool reply (no timeout), puts one piece away and goes on with the other' do
+        spool_full = 'The spool is not large enough to combine both threads.  Perhaps you could break them apart and combine smaller portions to a maximum of 400 yards of thread.'
+        allow(DRC).to receive(:bput) do |command, *patterns|
+          bput_log << [command, patterns]
+          model_bput([spool_full], patterns)
+        end
+        workorders.send(:order_fabric, 100, 3, 9, 'yarn')
+        expect(model_bput([spool_full], patterns_for('combine'))).not_to be_empty
+        expect(workorders).to have_received(:stow_tool).exactly(3).times
+        expect(hands.compact).to be_empty
+      end
+
+      it 'gets nothing out of the bag to combine with' do
+        allow(DRC).to receive(:bput) do |command, *patterns|
+          bput_log << [command, patterns]
+          hands[1] = nil
+          'You combine the spools of thread together.'
+        end
+        workorders.send(:order_fabric, 100, 1, 9, 'yarn')
+        expect(bput_log).to be_empty
       end
     end
   end

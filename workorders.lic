@@ -5,7 +5,7 @@
 =end
 
 class WorkOrders
-  VERSION = '1.0.3'.freeze
+  VERSION = '1.0.4'.freeze
 
   # Pattern constants for game responses
   GIVE_LOGBOOK_SUCCESS_PATTERNS = [
@@ -1008,13 +1008,69 @@ class WorkOrders
     end
   end
 
+  # Replies to COUNT of a piece of cloth or yarn: the yards, or none found.
+  STOCK_COUNT_YARDS = /^You count out (\d+) yards/.freeze
+  STOCK_COUNT_REPLIES = [STOCK_COUNT_YARDS, /^I could not find/, /^What were you/].freeze
+
+  # Replies to COMBINE of two pieces of cloth or yarn. A spool of yarn holds
+  # at most 400 yards; a COMBINE past that is refused and leaves both pieces
+  # in hand (2026-11-24: "[workorders]>combine wool yarn with wool yarn" /
+  # "The spool is not large enough to combine both threads.  Perhaps you
+  # could break them apart and combine smaller portions to a maximum of 400
+  # yards of thread.").
+  FABRIC_COMBINE_REPLIES = [
+    /^You combine/,
+    /^The spool is not large enough to combine both threads/,
+    /^Those items cannot be combined/,
+    /^You must be holding both/
+  ].freeze
+
+  # The yards of +material+ in the crafting bag, every piece counted where
+  # it lies, by ordinal ("count second yarn in my tote"); nothing is got or
+  # combined. Cloth and yarn used to be combined into one stack and only it
+  # counted, which waited out a refusal at a full spool, left both hands
+  # full and counted one piece of the two (2026-11-24). A piece whose COUNT
+  # gives no yards counts as none, so too much is bought rather than too
+  # little.
+  #
+  # @param material [String] e.g. 'burlap cloth', 'yarn'
+  # @return [Integer] yards
+  def stock_yards(material)
+    pieces = DRCI.count_items_in_container(material, @bag)
+    $ORDINALS.first(pieces).sum do |ordinal|
+      DRC.bput("count #{ordinal} #{material} in my #{@bag}", *STOCK_COUNT_REPLIES)[STOCK_COUNT_YARDS, 1].to_i
+    end
+  end
+
+  # Throws away every piece of +material+ in the crafting bag: what is left
+  # of the order's material, which used to be one stack.
+  #
+  # @param material [String] e.g. 'burlap cloth', 'wool yarn'
+  # @return [void]
+  def dispose_stock(material)
+    DRCI.count_items_in_container(material, @bag).times do
+      DRCI.dispose_trash(material, @worn_trashcan, @worn_trashcan_verb)
+    end
+  end
+
+  # Buys +stock_needed+ pieces of cloth or yarn, combining each into the
+  # one bought before it, and puts them in the crafting bag. Pieces already
+  # in the bag are left alone: sew adds one to a short piece when it needs
+  # to. When a full spool refuses a combine, one piece goes in the bag and
+  # the next is combined into the other.
+  #
+  # @param stock_room [Integer]
+  # @param stock_needed [Integer] pieces to buy
+  # @param stock_number [Integer]
+  # @param type [String] 'burlap cloth', 'yarn'
+  # @return [void]
   def order_fabric(stock_room, stock_needed, stock_number, type)
     stock_needed.times do
       DRCT.order_item(stock_room, stock_number)
-      DRC.bput("get my #{type} from my #{@bag}", '^What were', '^You get')
       next unless DRC.left_hand && DRC.right_hand
 
-      DRC.bput("combine #{type} with #{type}", '^You combine')
+      DRC.bput("combine #{type} with #{type}", *FABRIC_COMBINE_REPLIES)
+      stow_tool(type) if DRC.left_hand && DRC.right_hand
     end
     stow_tool(type)
   end
@@ -1022,12 +1078,7 @@ class WorkOrders
   def sew_items(info, materials_info, recipe, quantity)
     DRCM.ensure_copper_on_hand(@cash_on_hand || 5000, @settings, @hometown)
 
-    existing = if DRC.bput("get #{materials_info['stock-name']} cloth from my #{@bag}", '^What were', '^You get') == 'What were'
-                 0
-               else
-                 DRC.bput("combine #{materials_info['stock-name']} cloth with #{materials_info['stock-name']} cloth", '^You combine') while DRC.bput("get #{materials_info['stock-name']} cloth from my #{@bag}", '^What were', '^You get') == 'You get'
-                 DRC.bput("count my #{materials_info['stock-name']} cloth", '^You count out \d+ yards').scan(/\d+/).first.to_i
-               end
+    existing = stock_yards("#{materials_info['stock-name']} cloth")
     stock_needed = ((quantity * recipe['volume'] - existing) / 10.0).ceil
     order_fabric(info['stock-room'], stock_needed, materials_info['stock-number'], "#{materials_info['stock-name']} cloth")
     order_parts(recipe['part'], quantity) if recipe['part']
@@ -1044,7 +1095,7 @@ class WorkOrders
       end
     end
     leftover = (quantity * recipe['volume']) % 10 != 0
-    DRCI.dispose_trash("#{materials_info['stock-name']} cloth", @worn_trashcan, @worn_trashcan_verb) if leftover && !@retain_crafting_materials
+    dispose_stock("#{materials_info['stock-name']} cloth") if leftover && !@retain_crafting_materials
     stow_tool(DRC.left_hand) if @retain_crafting_materials
     stow_tool(DRC.right_hand) if @retain_crafting_materials
   end
@@ -1052,12 +1103,7 @@ class WorkOrders
   def knit_items(info, materials_info, recipe, quantity)
     DRCM.ensure_copper_on_hand(@cash_on_hand || 5000, @settings, @hometown)
 
-    existing = if DRC.bput("get yarn from my #{@bag}", '^What were', '^You get') == 'What were'
-                 0
-               else
-                 DRC.bput("combine #{materials_info['stock-name']} yarn with #{materials_info['stock-name']} yarn", '^You combine') while DRC.bput("get yarn from my #{@bag}", '^What were', '^You get') == 'You get'
-                 DRC.bput('count my yarn', '^You count out \d+ yards').scan(/\d+/).first.to_i
-               end
+    existing = stock_yards('yarn')
     stock_needed = ((quantity * recipe['volume'] - existing) / 100.0).ceil
     order_fabric(info['stock-room'], stock_needed, materials_info['stock-number'], 'yarn')
 
@@ -1073,7 +1119,9 @@ class WorkOrders
       end
     end
     leftover = (quantity * recipe['volume']) % 10 != 0
-    DRCI.dispose_trash("#{info['knit-stock-name']} yarn", @worn_trashcan, @worn_trashcan_verb) if leftover && !@retain_crafting_materials
+    # The order's own yarn: info['knit-stock-name'] left base-crafting.yaml
+    # long ago, which made this " yarn".
+    dispose_stock("#{materials_info['stock-name']} yarn") if leftover && !@retain_crafting_materials
     stow_tool(DRC.left_hand) if @retain_crafting_materials
     stow_tool(DRC.right_hand) if @retain_crafting_materials
   end
