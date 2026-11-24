@@ -15700,7 +15700,8 @@ RSpec.describe TaskMaster do
           allow(tm).to receive(:ensure_tools).and_raise('past the stop')
           tm.instance_variable_set(:@loot_bag_checked, true)
           expect { tm.dorhum('spongestone', 6, %w[congruence]) }.to raise_error(RuntimeError, 'past the stop')
-          expect(tm).to have_received(:ensure_tools).with(['augment loop', 'burin', 'rod'], 'enchanting')
+          # Its tickets and notes are matched as the imbuement rod (ensure_dorhum_tools).
+          expect(tm).to have_received(:ensure_tools).with(['augment loop', 'burin', 'rod'], 'enchanting', match_as: ['augment loop', 'burin', TaskMaster::IMBUE_ROD])
         end
 
         it "still names another taskmaster's tool by its very setting name, or by names of two words or more" do
