@@ -42,6 +42,8 @@ RSpec.describe SanowretCrystal do
       c.instance_variable_set(:@suggested_no_use_entries, [])
       c.instance_variable_set(:@force_exhale, false)
       c.instance_variable_set(:@worn_crystal, true)
+      c.instance_variable_set(:@stowed_crystal, false)
+      c.instance_variable_set(:@skipped_stowed_taps, 0)
     end
   end
 
@@ -408,6 +410,229 @@ RSpec.describe SanowretCrystal do
 
     it 'still exhales when the new room is not a no-use room' do
       @arrival = -> { in_room('[[Crossing, Square]]', id: 11) }
+
+      stowed.check_crystal
+
+      expect(uses).to eq(['exhale my sanowret crystal'])
+      expect(DRC).to have_received(:bput).with('stow my sanowret crystal', any_args)
+    end
+  end
+
+  # ===========================================================================
+  # A stowed crystal and no free hand to get it with
+  # ===========================================================================
+  # It used to pause until a hand came free, without a limit: a single run (which
+  # crossing-training waits on) never ended, and the passive loop stopped with it.
+  describe 'with a stowed crystal and both hands full' do
+    let(:stowed) do
+      crystal.tap do |c|
+        c.instance_variable_set(:@worn_crystal, false)
+        # A wait for a free hand fails the example instead of hanging the suite.
+        allow(c).to receive(:pause) { raise 'waited for a free hand' }
+      end
+    end
+
+    def hands(left, right)
+      allow(DRC).to receive(:left_hand).and_return(left)
+      allow(DRC).to receive(:right_hand).and_return(right)
+    end
+
+    before do
+      allow(DRC).to receive(:message)
+      allow(DRCI).to receive(:in_hands?).and_return(false)
+      allow(DRC).to receive(:bput).with('tap my sanowret crystal', any_args)
+                                  .and_return('You tap a sanowret crystal inside your leather backpack.')
+      allow(DRC).to receive(:bput).with('get my sanowret crystal', any_args).and_return('You get')
+      allow(DRC).to receive(:bput).with('stow my sanowret crystal', any_args).and_return('You put')
+      hands('steel shield', 'steel sword')
+      in_room('[[Crossing, Market]]', id: 10)
+    end
+
+    it 'returns without waiting, getting, using or stowing the crystal' do
+      stowed.check_crystal
+
+      expect(DRC).not_to have_received(:bput).with('get my sanowret crystal', any_args)
+      expect(uses).to be_empty
+      expect(DRC).not_to have_received(:bput).with('stow my sanowret crystal', any_args)
+    end
+
+    it 'says why in a single run' do
+      stowed.instance_variable_set(:@run_once, true)
+
+      stowed.check_crystal
+
+      expect(DRC).to have_received(:message).with('Both hands are full, so the sanowret crystal stays stowed.')
+    end
+
+    it 'stays quiet in the passive loop, which tries again on its next pass' do
+      stowed.check_crystal
+
+      expect(DRC).not_to have_received(:message)
+    end
+
+    it 'does not tap again on later passes while both hands stay full' do
+      3.times { stowed.check_crystal }
+
+      expect(DRC).to have_received(:bput).with('tap my sanowret crystal', any_args).once
+    end
+
+    it 'taps again once every STOWED_RECHECK_PASSES passes while it stays stowed' do
+      (1 + (2 * described_class::STOWED_RECHECK_PASSES)).times { stowed.check_crystal }
+
+      expect(DRC).to have_received(:bput).with('tap my sanowret crystal', any_args).exactly(3).times
+      expect(DRC).not_to have_received(:bput).with('get my sanowret crystal', any_args)
+    end
+
+    it 'keeps to one tap every STOWED_RECHECK_PASSES passes when a recheck tap is refused' do
+      stowed.check_crystal
+      room_ids = (11..).each
+      # Each refused tap lands in a new room, so the refusal starts no wait.
+      allow(DRC).to receive(:bput).with('tap my sanowret crystal', any_args) do
+        in_room('[[Crossing, Market]]', id: room_ids.next)
+        'Not here, '
+      end
+
+      (2 * described_class::STOWED_RECHECK_PASSES).times { stowed.check_crystal }
+
+      expect(DRC).to have_received(:bput).with('tap my sanowret crystal', any_args).exactly(3).times
+    end
+
+    def tap_finds_it_worn
+      allow(DRC).to receive(:bput).with('tap my sanowret crystal', any_args)
+                                  .and_return('You tap a sanowret crystal that you are wearing.')
+    end
+
+    # Found stowed, then worn on a pass with a hand free. A worn crystal needs no hand,
+    # so later full-hand passes must still use it.
+    it 'uses a crystal found worn since on every pass, though both hands are full again' do
+      stowed.check_crystal
+      hands(nil, 'steel sword')
+      tap_finds_it_worn
+      stowed.check_crystal
+      hands('steel shield', 'steel sword')
+
+      3.times { stowed.check_crystal }
+
+      expect(uses.size).to eq(4)
+    end
+
+    # Worn while both hands stay full: the recheck tap finds it, with no free hand needed.
+    it 'finds a crystal worn since within STOWED_RECHECK_PASSES passes, though both hands stay full' do
+      stowed.check_crystal
+      tap_finds_it_worn
+
+      described_class::STOWED_RECHECK_PASSES.times { stowed.check_crystal }
+
+      expect(DRC).to have_received(:bput).with('tap my sanowret crystal', any_args).twice
+      expect(uses.size).to eq(1)
+      expect(stowed.instance_variable_get(:@stowed_crystal)).to be(false)
+    end
+
+    it 'gets, uses and stows the crystal on the first pass after a hand comes free' do
+      stowed.check_crystal
+      hands(nil, 'steel sword')
+
+      stowed.check_crystal
+
+      expect(DRC).to have_received(:bput).with('tap my sanowret crystal', any_args).twice
+      expect(DRC).to have_received(:bput).with('get my sanowret crystal', any_args).once
+      expect(uses).to eq(['exhale my sanowret crystal'])
+      expect(DRC).to have_received(:bput).with('stow my sanowret crystal', any_args).once
+    end
+
+    it 'taps a crystal that is now held, though both hands are full' do
+      stowed.check_crystal
+      allow(DRCI).to receive(:in_hands?).with('sanowret crystal').and_return(true)
+      allow(DRC).to receive(:bput).with('tap my sanowret crystal', any_args)
+                                  .and_return('You tap a sanowret crystal that you are holding.')
+
+      stowed.check_crystal
+
+      expect(uses).to eq(['exhale my sanowret crystal'])
+    end
+
+    it 'ends a single run started with both hands full' do
+      settings = OpenStruct.new(sanowret_adjective: 'sanowret', sanowret_no_use_scripts: [], sanowret_no_use_rooms: [],
+                                sanowret_force_exhale: false, ephemeron: nil)
+      allow_any_instance_of(described_class).to receive(:get_settings).and_return(settings)
+      allow_any_instance_of(described_class).to receive(:parse_args).and_return(OpenStruct.new(run: 'run'))
+      allow_any_instance_of(described_class).to receive(:pause) { raise 'waited for a free hand' }
+      DRSkill._set_rank('Arcana', 100)
+
+      described_class.new
+
+      expect(DRC).to have_received(:message).with('Both hands are full, so the sanowret crystal stays stowed.')
+    end
+  end
+
+  describe 'when the get fails' do
+    let(:stowed) do
+      crystal.tap { |c| c.instance_variable_set(:@worn_crystal, false) }
+    end
+
+    before do
+      allow(DRC).to receive(:bput).with('tap my sanowret crystal', any_args)
+                                  .and_return('You tap a sanowret crystal inside your leather backpack.')
+      allow(DRC).to receive(:bput).with('stow my sanowret crystal', any_args).and_return('You put')
+      in_room('[[Crossing, Market]]', id: 10)
+    end
+
+    ['You need a free hand', 'What were you referring to'].each do |reply|
+      it "neither uses nor stows the crystal after \"#{reply}\"" do
+        allow(DRC).to receive(:bput).with('get my sanowret crystal', any_args).and_return(reply)
+
+        stowed.check_crystal
+
+        expect(uses).to be_empty
+        expect(DRC).not_to have_received(:bput).with('stow my sanowret crystal', any_args)
+      end
+    end
+  end
+
+  # DRC.bput hands back the first match among all the lines that arrive after the
+  # send, other scripts' output and other players' speech included. This answers the
+  # get the same way: each line in turn, each of the script's patterns in turn.
+  describe 'when other game output arrives before the reply to the get' do
+    let(:stowed) do
+      crystal.tap { |c| c.instance_variable_set(:@worn_crystal, false) }
+    end
+
+    def first_match(lines, patterns)
+      lines.each do |line|
+        patterns.each do |pattern|
+          found = line.match(pattern.is_a?(Regexp) ? pattern : /#{pattern}/i)
+          return found[0] if found
+        end
+      end
+      ''
+    end
+
+    def get_answered_by(*lines)
+      allow(DRC).to receive(:bput).with('get my sanowret crystal', any_args) do |_command, *patterns|
+        first_match(lines, patterns)
+      end
+    end
+
+    before do
+      allow(DRC).to receive(:bput).with('tap my sanowret crystal', any_args)
+                                  .and_return('You tap a sanowret crystal inside your leather backpack.')
+      allow(DRC).to receive(:bput).with('stow my sanowret crystal', any_args).and_return('You put')
+      in_room('[[Crossing, Market]]', id: 10)
+    end
+
+    it "does not take another script's pickup for the crystal's" do
+      get_answered_by('You get a battered strongbox from inside your leather backpack.',
+                      'You need a free hand to pick that up.')
+
+      stowed.check_crystal
+
+      expect(uses).to be_empty
+      expect(DRC).not_to have_received(:bput).with('stow my sanowret crystal', any_args)
+    end
+
+    it "does not take a player's quoted refusal for the reply" do
+      get_answered_by('Bob says, "You need a free hand to pick that up."',
+                      'You get an argent sanowret crystal set within a silversteel blade spider from inside your leather backpack.')
 
       stowed.check_crystal
 

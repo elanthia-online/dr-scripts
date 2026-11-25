@@ -6,6 +6,10 @@ class SanowretCrystal
   # Longest wait, in one-second pauses, for the character to leave a room where the
   # crystal can't be tapped. After that the passive loop simply tries again.
   ROOM_CHANGE_WAIT_PAUSES = 300
+  # A crystal last found stowed while both hands were full is tapped again only on every
+  # this-many such passes (about a minute in the passive loop), not on every one. It may
+  # have been worn or picked up meanwhile; worn, it can be used with full hands.
+  STOWED_RECHECK_PASSES = 6
 
   # Gaze and exhale are sent by send_use, not DRC.bput. After some replies DRC.bput sends
   # the command again by itself, without asking skip_use? again, so a go2 started (or a
@@ -38,6 +42,8 @@ class SanowretCrystal
       ]
     ]
     @worn_crystal = false
+    @stowed_crystal = false
+    @skipped_stowed_taps = 0
     args = parse_args(arg_definitions)
     settings = get_settings
     @adjective = settings.sanowret_adjective
@@ -60,8 +66,8 @@ class SanowretCrystal
   end
 
   def use_crystal
-    # Asked again here, not only in check_crystal: getting a stowed crystal can wait for
-    # a free hand, and the character may walk into a no-use room (a bank, say) meanwhile.
+    # Asked again here, not only in check_crystal: the tap and the get are round trips,
+    # and the character may walk into a no-use room (a bank, say) meanwhile.
     return if skip_use?
 
     if DRSkill.getxp('Arcana') <= 30 && @force_exhale
@@ -138,18 +144,20 @@ class SanowretCrystal
     if @worn_crystal
       use_crystal
     else
+      return if skip_stowed_tap?
+
       tap_room = room_key
       case DRC.bput("tap my #{@adjective} crystal", /^You tap (?:a|an) .*sanowret crystal.* inside your .*.$/, /^You tap (?:a|an) .*sanowret crystal.* that you are wearing.$/, /^You tap (?:a|an) .*sanowret crystal.* that you are holding.$/, 'I could not find what you were referring to.', 'Not here, ', 'a wave of Corruption magic')
       when /You tap (?:a|an) .*sanowret crystal.* inside your/
-        # We need to retrieve the crystal but if it's not in your hands and your hands are full then wait
-        pause 1 until DRCI.in_hands?("#{@adjective} crystal") || DRC.left_hand.nil? || DRC.right_hand.nil?
-        DRC.bput("get my #{@adjective} crystal", 'You get', 'What were you referring to', 'You need a free hand')
-        use_crystal
-        DRC.bput("stow my #{@adjective} crystal", 'You put', 'Stow what')
+        @stowed_crystal = true
+        @skipped_stowed_taps = 0
+        use_stowed_crystal
       when /^You tap (?:a|an) .*sanowret crystal.* that you are wearing\.$/
         @worn_crystal = true
+        @stowed_crystal = false
         use_crystal
       when /^You tap (?:a|an) .*sanowret crystal.* that you are holding\.$/
+        @stowed_crystal = false
         use_crystal
         DRC.bput("stow my #{@adjective} crystal", 'You put', 'Stow what')
       when /Not here, /, /a wave of Corruption magic/
@@ -159,6 +167,48 @@ class SanowretCrystal
         exit
       end
     end
+  end
+
+  # Gets the crystal out of its container, uses it and stows it again. With both hands
+  # full it returns at once and the passive loop tries again on its next pass. It used
+  # to wait here, without a limit, for a hand to come free: a single run (which
+  # crossing-training waits on) never ended, and the passive loop stopped too.
+  def use_stowed_crystal
+    if hands_full?
+      DRC.message('Both hands are full, so the sanowret crystal stays stowed.') if @run_once
+      return
+    end
+    # Used and stowed only once it is in hand: after a failed get, "stow my crystal"
+    # has nothing to put away. DRC.bput returns the first match in all game output, so
+    # the replies are anchored to the start of a line, and a pickup must name a crystal:
+    # another script's "You get a strongbox" or a player quoting "You need a free hand"
+    # is not this get's reply.
+    return unless DRC.bput("get my #{@adjective} crystal", /^You get .*crystal/i, /^What were you referring to/, /^You need a free hand/) =~ /\AYou get/i
+
+    use_crystal
+    DRC.bput("stow my #{@adjective} crystal", 'You put', 'Stow what')
+  end
+
+  # True when the crystal was last found stowed and both hands are still full, so a tap
+  # would only find that out again, unless this is the pass that rechecks it (see
+  # STOWED_RECHECK_PASSES).
+  def skip_stowed_tap?
+    return false unless @stowed_crystal && hands_full?
+
+    @skipped_stowed_taps += 1
+    return true if @skipped_stowed_taps < STOWED_RECHECK_PASSES
+
+    # Counted from here whatever the tap finds, so a reply other than "inside your ..."
+    # (a room that refuses taps, say) doesn't bring back a tap on every pass.
+    @skipped_stowed_taps = 0
+    false
+  end
+
+  # True when both hands hold something other than the crystal.
+  def hands_full?
+    return false if DRCI.in_hands?("#{@adjective} crystal")
+
+    !DRC.left_hand.nil? && !DRC.right_hand.nil?
   end
 
   # True when the crystal mustn't be used right now: the character is hidden, a
