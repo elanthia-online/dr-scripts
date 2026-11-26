@@ -9444,6 +9444,111 @@ RSpec.describe LootProcess do
       expect(lp.instance_variable_get(:@skinned_corpse_ids)).to include(111)
     end
   end
+
+  # The first skin of a run makes a bundle from the rope and wears it. When
+  # the game refuses ("You can't wear any more items like that."), the bundle
+  # used to stay in hand, so the hand cleanup at the end of check_skinning
+  # dropped it with the skin inside, and every later skin followed it with
+  # no message.
+  describe 'bundle that cannot be worn' do
+    let(:events) { [] }
+
+    def bundle_game_state
+      gs = double('GameState', skinnable?: true, necro_casting?: false, need_bundle: true)
+      allow(gs).to receive(:need_bundle=)
+      allow(gs).to receive(:summoned_info).and_return(nil)
+      allow(gs).to receive(:weapon_skill).and_return('Small Edged')
+      allow(gs).to receive(:weapon_name).and_return('steel iltesh')
+      allow(gs).to receive(:next_clean_up_step)
+      gs
+    end
+
+    def build_bundle_loot(**overrides)
+      lp = LootProcess.allocate
+      equipment = double('EquipmentManager', is_listed_item?: false)
+      allow(equipment).to receive(:stow_weapon) { $right_hand = nil }
+      allow(equipment).to receive(:wield_weapon?) { $right_hand = 'steel iltesh' }
+      { skin: true, tie_bundle: true, skinned_corpse_ids: [], loot_bodies: false, equipment_manager: equipment }
+        .merge(overrides).each { |k, v| lp.instance_variable_set(:"@#{k}", v) }
+      lp
+    end
+
+    # The game's side of the first kill in the report's log: no bundle yet,
+    # the hide lands in the free hand, BUNDLE wraps it with the rope.
+    def play_first_skin(wear_reply_ok:, stow_ok: true)
+      events.clear
+      allow(DRC).to receive(:bput) do |command, *_patterns|
+        case command
+        when 'tap my bundle' then 'I could not find what you were referring to'
+        when /\Askin #/
+          $left_hand = 'marble hide'
+          'Roundtime'
+        when 'bundle'
+          $left_hand = 'lumpy bundle'
+          $right_hand = nil
+          'You bundle'
+        when 'tie my bundle'
+          events << :tie
+          $left_hand = 'tight bundle' if $left_hand == 'lumpy bundle'
+          'you tie the bundle'
+        else 'You adjust'
+        end
+      end
+      allow(DRCI).to receive(:get_item_if_not_held?).with('bundling rope') { $right_hand = 'bundling rope' }
+      allow(DRCI).to receive(:wear_item?).with('bundle') do
+        $left_hand = nil if wear_reply_ok
+        wear_reply_ok
+      end
+      allow(DRCI).to receive(:put_away_item?).with('bundle') do
+        events << :stow
+        $left_hand = nil if stow_ok
+        stow_ok
+      end
+      allow(DRCI).to receive(:dispose_trash)
+    end
+
+    before(:each) do
+      Lich::DragonRealms::Creature._set_room([corpse])
+      DRRoom.dead_npcs = ['rat']
+      $left_hand = nil
+      $right_hand = 'steel iltesh'
+      allow(self).to receive(:pause)
+      allow(self).to receive(:waitrt?)
+    end
+
+    it 'stows the bundle instead of dropping it when the game will not let it be worn' do
+      play_first_skin(wear_reply_ok: false)
+      build_bundle_loot.send(:check_skinning, 'rat', bundle_game_state, corpse)
+      expect(DRCI).to have_received(:put_away_item?).with('bundle')
+      expect(DRCI).not_to have_received(:dispose_trash)
+    end
+
+    it 'says why skins will be left behind' do
+      play_first_skin(wear_reply_ok: false)
+      build_bundle_loot.send(:check_skinning, 'rat', bundle_game_state, corpse)
+      expect(DRC).to have_received(:message).with(/Could not wear your bundle.*Stowed the bundle instead.*WEAR BUNDLE/)
+    end
+
+    it 'ties the bundle before stowing it when tie_bundle is set' do
+      play_first_skin(wear_reply_ok: false)
+      build_bundle_loot.send(:check_skinning, 'rat', bundle_game_state, corpse)
+      expect(events).to eq(%i[tie tie stow])
+    end
+
+    it 'says the bundle will be dropped when it cannot be stowed either' do
+      play_first_skin(wear_reply_ok: false, stow_ok: false)
+      build_bundle_loot.send(:check_skinning, 'rat', bundle_game_state, corpse)
+      expect(DRC).to have_received(:message).with(/Could not stow it either, so it will be dropped/)
+    end
+
+    it 'neither stows nor warns when the bundle is worn' do
+      play_first_skin(wear_reply_ok: true)
+      build_bundle_loot.send(:check_skinning, 'rat', bundle_game_state, corpse)
+      expect(DRCI).not_to have_received(:put_away_item?)
+      expect(DRC).not_to have_received(:message).with(/bundle/)
+      expect(DRCI).not_to have_received(:dispose_trash)
+    end
+  end
 end
 
 # TrainerProcess#observe: reads the telescope's lines from DRCMM.peer_telescope
