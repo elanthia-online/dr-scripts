@@ -9,6 +9,14 @@
 =end
 
 class DRYamlValidator
+  # Top-level keys the profile loader reads itself, not any script.
+  LOADER_KEYS = %w[include union_keys].freeze
+
+  # How code reads a top-level setting: settings.key, settings['key'],
+  # settings[:key], settings.dig('key' / :key, or get_settings(...).key. The
+  # receiver only has to end in "settings" (@settings, settings_set, ...).
+  SETTING_REFERENCE = /settings(?:\([^()]*\))?(?:\.dig\(\s*['":]|\[\s*['":]|\.)([A-Za-z_]\w*)/
+
   def initialize
     arg_definitions = [[
       { name: 'verbose', regex: /verbose/i, optional: true }
@@ -61,6 +69,7 @@ class DRYamlValidator
     }
 
     warn_custom_scripts
+    warn_unknown_keys
 
     respond("")
     respond("  CHECKING: #{assertions.size} different potential errors in [#{checkname}-setup.yaml]")
@@ -1178,6 +1187,140 @@ class DRYamlValidator
       respond("  NOTE: The following curated scripts are in your custom folder and will not receive updates.")
       respond("  #{include_list}") unless include_list.empty?
     end
+  end
+
+  # Reports top-level keys in the character's yaml files that no script reads.
+  # A misspelt setting name is ignored without a word and the script falls
+  # back to the default, which looks like the setting "not working" (for
+  # example spare_pouch_container for spare_gem_pouch_container leaves every
+  # gem on the ground once the pouch is full). A key close to a known one is a
+  # warning with the likely spelling; any other unknown key is only a note,
+  # since a custom script may read it.
+  def warn_unknown_keys
+    respond("")
+    respond("  CHECKING: That every top-level setting in your yaml files is one a script reads.")
+    known = known_setting_keys
+    findings = Dir.glob(File.join(SCRIPT_DIR, "profiles/#{checkname}-*.yaml")).sort.flat_map do |file|
+      unknown_setting_keys(profile_keys(file), known).map { |key, suggestion| [File.basename(file), key, suggestion] }
+    end
+
+    if findings.empty?
+      respond("   PASSED")
+      return
+    end
+
+    findings.each do |file, key, suggestion|
+      next unless suggestion
+
+      warn("#{file}: '#{key}' is not a setting any script reads, so it is ignored. Did you mean '#{suggestion}'?")
+    end
+    findings.reject(&:last).group_by(&:first).each do |file, unmatched|
+      respond("   NOTE: #{file} has settings no script reads: #{unmatched.map { |_, key, _| key }.join(', ')}. " \
+              "Check their spelling; ignore this for YAML anchors and for settings a script of your own reads.")
+    end
+  end
+
+  # Unknown keys among keys, each paired with the closest known key (or nil).
+  #
+  # @param keys [Array<String>] top-level keys of one yaml file
+  # @param known [Array<String>] every key a script or base.yaml knows
+  # @return [Array<Array(String, String)>, Array<Array(String, nil)>] [key, suggestion] pairs
+  def unknown_setting_keys(keys, known)
+    (keys - known - LOADER_KEYS).map { |key| [key, setting_suggestion(key, known)] }
+  end
+
+  # The known key a misspelt key most likely meant, or nil when none is close.
+  #
+  # @param key [String]
+  # @param known [Array<String>]
+  # @return [String, nil]
+  def setting_suggestion(key, known)
+    known.select { |candidate| likely_misspelling?(key, candidate) }
+         .min_by { |candidate| [edit_distance(key, candidate), candidate] }
+  end
+
+  # Whether key looks like a misspelling of candidate: a typo of at most two
+  # characters in a key of six or more, or one word left out of (or added to)
+  # an underscore-separated name, such as spare_pouch_container for
+  # spare_gem_pouch_container. Looser matching pairs unrelated keys (pack and
+  # pick, burgle_room and burgle_town), and a wrong guess is worse than none.
+  #
+  # @param key [String]
+  # @param candidate [String]
+  # @return [Boolean]
+  def likely_misspelling?(key, candidate)
+    return false if key == candidate
+    return true if key.length >= 6 && (key.length - candidate.length).abs <= 2 && edit_distance(key, candidate) <= 2
+
+    one_word_apart?(key.split('_'), candidate.split('_'))
+  end
+
+  # Whether one word list is the other with exactly one word inserted. The
+  # shorter list needs two or more words, so a single word isn't matched to
+  # every longer name that starts or ends with it.
+  #
+  # @param words [Array<String>]
+  # @param other [Array<String>]
+  # @return [Boolean]
+  def one_word_apart?(words, other)
+    shorter, longer = [words, other].sort_by(&:size)
+    return false unless longer.size == shorter.size + 1 && shorter.size >= 2
+
+    longer.each_index.any? { |i| longer[0...i] + longer[(i + 1)..] == shorter }
+  end
+
+  # Edit distance between two strings, counting a swap of two neighbouring
+  # characters as one edit (optimal string alignment).
+  #
+  # @param a [String]
+  # @param b [String]
+  # @return [Integer]
+  def edit_distance(a, b)
+    rows = Array.new(a.length + 1) { |i| Array.new(b.length + 1) { |j| i.zero? ? j : (j.zero? ? i : 0) } }
+    (1..a.length).each do |i|
+      (1..b.length).each do |j|
+        cost = a[i - 1] == b[j - 1] ? 0 : 1
+        rows[i][j] = [rows[i - 1][j] + 1, rows[i][j - 1] + 1, rows[i - 1][j - 1] + cost].min
+        rows[i][j] = [rows[i][j], rows[i - 2][j - 2] + 1].min if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1]
+      end
+    end
+    rows[a.length][b.length]
+  end
+
+  # Every top-level key a script can read: the keys base.yaml declares, plus
+  # every key referenced in the dr-scripts, custom scripts and lich-5 code,
+  # since many settings are read without being declared in base.yaml.
+  #
+  # @return [Array<String>]
+  def known_setting_keys
+    declared = %w[base.yaml base-empty.yaml].flat_map { |name| profile_keys(File.join(SCRIPT_DIR, 'profiles', name)) }
+    sources = Dir.glob(File.join(SCRIPT_DIR, '*.lic')) + Dir.glob(File.join(SCRIPT_DIR, 'custom', '**', '*.lic'))
+    sources += Dir.glob(File.join(LIB_DIR, '**', '*.rb')) if defined?(LIB_DIR)
+    (declared + referenced_setting_keys(sources)).uniq
+  end
+
+  # Setting keys the given source files read, per SETTING_REFERENCE.
+  #
+  # @param paths [Array<String>]
+  # @return [Array<String>]
+  def referenced_setting_keys(paths)
+    paths.flat_map do |path|
+      File.binread(path).scan(SETTING_REFERENCE).flatten
+    rescue SystemCallError
+      []
+    end.uniq
+  end
+
+  # The top-level keys of a yaml file, as strings; [] when it doesn't parse to
+  # a mapping (parse errors are reported by the YAML check earlier on).
+  #
+  # @param path [String]
+  # @return [Array<String>]
+  def profile_keys(path)
+    data = YAML.unsafe_load_file(path)
+    data.is_a?(Hash) ? data.keys.map(&:to_s) : []
+  rescue Psych::Exception, SystemCallError
+    []
   end
 
   def warn(message)
