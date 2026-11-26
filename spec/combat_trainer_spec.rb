@@ -9454,8 +9454,10 @@ RSpec.describe LootProcess do
     let(:events) { [] }
 
     def bundle_game_state
-      gs = double('GameState', skinnable?: true, necro_casting?: false, need_bundle: true)
-      allow(gs).to receive(:need_bundle=)
+      need_bundle = true
+      gs = double('GameState', skinnable?: true, necro_casting?: false)
+      allow(gs).to receive(:need_bundle) { need_bundle }
+      allow(gs).to receive(:need_bundle=) { |value| need_bundle = value }
       allow(gs).to receive(:summoned_info).and_return(nil)
       allow(gs).to receive(:weapon_skill).and_return('Small Edged')
       allow(gs).to receive(:weapon_name).and_return('steel iltesh')
@@ -9475,11 +9477,17 @@ RSpec.describe LootProcess do
 
     # The game's side of the first kill in the report's log: no bundle yet,
     # the hide lands in the free hand, BUNDLE wraps it with the rope.
-    def play_first_skin(wear_reply_ok:, stow_ok: true)
+    # tap_line is the game's reply to TAP MY BUNDLE. It is matched against the
+    # patterns the code passes, as lich-5's bput does; a line none of them
+    # matches returns '' as a bput timeout would (recorded as :tap_timeout).
+    def play_first_skin(wear_reply_ok: true, stow_ok: true, tap_line: 'I could not find what you were referring to.')
       events.clear
-      allow(DRC).to receive(:bput) do |command, *_patterns|
+      allow(DRC).to receive(:bput) do |command, *patterns|
         case command
-        when 'tap my bundle' then 'I could not find what you were referring to'
+        when 'tap my bundle'
+          match = patterns.flatten.lazy.map { |p| tap_line.match(p.is_a?(Regexp) ? p : /#{p}/i) }.find(&:itself)
+          events << :tap_timeout unless match
+          match ? match[0] : ''
         when /\Askin #/
           $left_hand = 'marble hide'
           'Roundtime'
@@ -9491,7 +9499,8 @@ RSpec.describe LootProcess do
           events << :tie
           $left_hand = 'tight bundle' if $left_hand == 'lumpy bundle'
           'you tie the bundle'
-        else 'You adjust'
+        when 'adjust my bundle' then 'You adjust your tight bundle so that you can more easily and more quickly fit in additional skins.'
+        else 'Roundtime'
         end
       end
       allow(DRCI).to receive(:get_item_if_not_held?).with('bundling rope') { $right_hand = 'bundling rope' }
@@ -9547,6 +9556,50 @@ RSpec.describe LootProcess do
       expect(DRCI).not_to have_received(:put_away_item?)
       expect(DRC).not_to have_received(:message).with(/bundle/)
       expect(DRCI).not_to have_received(:dispose_trash)
+    end
+
+    it 'names TOGGLE BUNDLE for a taken shoulder' do
+      play_first_skin(wear_reply_ok: false)
+      build_bundle_loot.send(:check_skinning, 'rat', bundle_game_state, corpse)
+      expect(DRC).to have_received(:message).with(/TOGGLE BUNDLE/)
+    end
+
+    # The next run starts with need_bundle again and taps the bundle the last
+    # run stowed. That reply matched none of the patterns, so the tap waited
+    # out bput's timeout mid-combat, and with a rope at hand another one-skin
+    # bundle was made and stowed beside it; a stowed tight bundle cleared
+    # need_bundle silently, and every skin was dropped with no word.
+    context 'on a later run, with the bundle in a container' do
+      ['You tap a lumpy bundle inside your heavy silk duffel bag.',
+       'You tap a tight bundle inside your multi-strapped carryall.'].each do |line|
+        it "answers \"#{line}\" without waiting out a timeout" do
+          play_first_skin(tap_line: line)
+          build_bundle_loot.send(:check_skinning, 'rat', bundle_game_state, corpse)
+          expect(events).not_to include(:tap_timeout)
+        end
+
+        it "says the bundle is in a container for \"#{line}\"" do
+          play_first_skin(tap_line: line)
+          build_bundle_loot.send(:check_skinning, 'rat', bundle_game_state, corpse)
+          expect(DRC).to have_received(:message).with(/Your bundle is in a container, not worn.*WEAR BUNDLE/)
+        end
+
+        it "makes no new bundle beside it for \"#{line}\"" do
+          gs = bundle_game_state
+          play_first_skin(tap_line: line)
+          build_bundle_loot.send(:check_skinning, 'rat', gs, corpse)
+          expect(gs.need_bundle).to be false
+          expect(DRC).not_to have_received(:bput).with('bundle', any_args)
+          expect(DRCI).not_to have_received(:get_item_if_not_held?)
+        end
+      end
+
+      it 'still ties a worn lumpy bundle rather than treating it as stowed' do
+        play_first_skin(tap_line: 'You tap a lumpy bundle that you are wearing.')
+        build_bundle_loot.send(:check_skinning, 'rat', bundle_game_state, corpse)
+        expect(events).to include(:tie)
+        expect(DRC).not_to have_received(:message).with(/in a container/)
+      end
     end
   end
 end
