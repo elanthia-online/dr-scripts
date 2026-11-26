@@ -363,27 +363,50 @@ RSpec.describe DRYamlValidator do
         end
       end
 
-      # clerk-tools reads blacksmithing_tools and the like through
-      # settings.send(symbol) from its TOOLSETS table.
-      it 'counts the symbols of a file that reads settings by a computed name' do
+      # Counting every symbol of such a file made ~268 non-settings known
+      # (missing_tools, name, town, ...), offered as spellings.
+      it 'does not count symbols, even in a file that reads settings by a computed name' do
         Dir.mktmpdir do |dir|
           path = File.join(dir, 'tools.lic')
           File.write(path, <<~RUBY)
-            TOOLSETS = { 'tailoring' => { tools: :tailoring_tools, belt: :outfitting_belt } }.freeze
-            LISTS = %i[remedies_tools artificing_tools].freeze
+            TOOLSETS = { 'tailoring' => { tools: :tailoring_tools } }.freeze
+            survey = { missing_tools: [] }
+            x = settings.plain_key
             tools = settings.send(TOOLSETS['tailoring'][:tools])
           RUBY
-          expect(instance.send(:referenced_setting_keys, [path]))
-            .to include('tailoring_tools', 'outfitting_belt', 'remedies_tools', 'artificing_tools')
+          keys = instance.send(:referenced_setting_keys, [path])
+          expect(keys).to include('plain_key')
+          expect(keys).not_to include('tailoring_tools', 'missing_tools')
         end
       end
+    end
 
-      it 'does not count symbols in a file that only reads settings by name' do
-        Dir.mktmpdir do |dir|
-          path = File.join(dir, 'plain.lic')
-          File.write(path, "x = settings.plain_key\ny = { kind: :not_a_setting }\n")
-          expect(instance.send(:referenced_setting_keys, [path])).to eq(['plain_key'])
-        end
+    # Against the repo's own scripts and base.yaml (lich-5 isn't in this
+    # checkout, so LIB_DIR is an empty directory).
+    describe 'known keys of this repo' do
+      let(:repo) { File.expand_path('..', __dir__) }
+
+      before do
+        @lib = Dir.mktmpdir('validate-no-lib')
+        stub_const('SCRIPT_DIR', repo)
+        stub_const('LIB_DIR', @lib)
+      end
+
+      after { FileUtils.rm_rf(@lib) }
+
+      # clerk-tools reads these through settings.send(symbol) from TOOLSETS,
+      # which no reference scan sees, so base.yaml has to declare them. A new
+      # toolset without a base.yaml entry fails here.
+      it 'knows every setting clerk-tools\' TOOLSETS names' do
+        table = File.read(File.join(repo, 'clerk-tools.lic'))[/TOOLSETS = \{.*?\}\.freeze/m]
+        names = table.scan(/\b(?:tools|tools_fallback|belt|belt_override): :(\w+)/).flatten.uniq
+        expect(names).to include('blacksmithing_tools', 'tailoring_tools', 'remedies_tools', 'artificing_tools')
+        expect(names - instance.send(:known_setting_keys)).to be_empty
+      end
+
+      it 'offers no spelling for missing_tool and lists name as unread' do
+        found = instance.send(:unknown_setting_keys, %w[missing_tool name], instance.send(:known_setting_keys))
+        expect(found).to eq([['missing_tool', :unread, nil], ['name', :unread, nil]])
       end
 
       it 'skips a file it cannot read' do

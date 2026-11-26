@@ -15,15 +15,10 @@ class DRYamlValidator
   # How code reads a top-level setting: settings.key, settings['key'],
   # settings[:key], settings.dig('key' / :key, or get_settings(...).key. The
   # receiver only has to end in "settings" (@settings, get_settings(...)).
+  # A setting read only by a computed name (clerk-tools reaches
+  # blacksmithing_tools through its TOOLSETS symbol table) isn't seen here;
+  # declare it, value-less, in base.yaml instead.
   SETTING_REFERENCE = /settings(?:\([^()]*\))?(?:\.dig\(\s*['":]|\[\s*['":]|\.)([A-Za-z_]\w*)/
-
-  # Code that reads settings by a computed name: settings.send(name),
-  # settings.public_send(name), settings[name]. Such a file names its keys as
-  # symbols elsewhere (clerk-tools' TOOLSETS: blacksmithing_tools, ...), so
-  # its symbol literals count as known keys too.
-  DYNAMIC_SETTING_READ = /settings&?\.(?:public_)?send\(|settings\[(?!\s*['":])/
-  SYMBOL_LITERAL = /(?<![:\w]):([a-z_]\w*)/
-  SYMBOL_ARRAY = /%i[\[(]([^\])]*)[\])]/
 
   # Settings no script reads any more, with what replaced them (#7303, the
   # pick.lic rewrite). A spelling suggestion would point at an unrelated live
@@ -1360,19 +1355,13 @@ class DRYamlValidator
     (declared + referenced_setting_keys(sources)).uniq
   end
 
-  # Setting keys the given source files read, per SETTING_REFERENCE, plus the
-  # symbol literals of files that read settings by a computed name
-  # (DYNAMIC_SETTING_READ).
+  # Setting keys the given source files read, per SETTING_REFERENCE.
   #
   # @param paths [Array<String>]
   # @return [Array<String>]
   def referenced_setting_keys(paths)
     paths.flat_map do |path|
-      text = File.binread(path)
-      keys = text.scan(SETTING_REFERENCE).flatten
-      next keys unless text.match?(DYNAMIC_SETTING_READ)
-
-      keys + text.scan(SYMBOL_LITERAL).flatten + text.scan(SYMBOL_ARRAY).flatten.flat_map(&:split)
+      File.binread(path).scan(SETTING_REFERENCE).flatten
     rescue SystemCallError
       []
     end.uniq
