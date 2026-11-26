@@ -490,6 +490,12 @@ class LootProcess
   FLAG_LINE_START = '^(?:<[^>]+>)*'
   FLAG_NO_QUOTE = '^(?:<[^>]*>|[^"<])*?'
 
+  # What a player can do when skins are left behind because the bundle isn't
+  # worn. A bundle goes on the shoulder by default; TOGGLE BUNDLE picks
+  # another place when the shoulder is taken (#3953).
+  BUNDLE_WEAR_HINT = 'WEAR BUNDLE to collect them again; if the shoulder is taken, TOGGLE BUNDLE ' \
+                     'chooses another place to wear it.'
+
   # Replies to "stow <item>" and "stow other <item>".
   STOW_LOOT_REPLIES = [
     '^You pick up', '^You put', '^You open', '^You get', '^You need a free hand',
@@ -1429,7 +1435,13 @@ class LootProcess
     end
 
     if game_state.need_bundle
-      case DRC.bput('tap my bundle', '^You tap a \w+ bundle\b.*that you are wearing', '^I could not find what you were referring to', '^You tap a tight bundle inside')
+      case DRC.bput('tap my bundle', '^You tap a \w+ bundle\b.*that you are wearing', '^I could not find what you were referring to', '^You tap a \w+ bundle\b.*inside')
+      when /inside/
+        # A bundle in a container, not worn: often one make_bundle stowed on
+        # an earlier run because it couldn't be worn. Say so once and don't
+        # make another one; skins go to the ground until it is worn.
+        DRC.message("***STATUS*** Your bundle is in a container, not worn, so skins will be left behind. #{BUNDLE_WEAR_HINT}")
+        game_state.need_bundle = false
       when /lumpy/
         if @tie_bundle
           lowered_item = nil
@@ -1500,13 +1512,7 @@ class LootProcess
       end
 
       if DRCI.get_item_if_not_held?('bundling rope')
-        DRC.bput('bundle', 'You bundle')
-        DRCI.wear_item?('bundle')
-        if @tie_bundle
-          DRC.bput('tie my bundle', 'TIE the bundle again')
-          DRC.bput('tie my bundle', 'you tie the bundle')
-          DRC.bput('adjust my bundle', 'You adjust')
-        end
+        make_bundle
       else
         DRCI.dispose_trash(DRC.left_hand) if snap.first != DRC.left_hand && !@equipment_manager.is_listed_item?(DRC.left_hand)
         DRCI.dispose_trash(DRC.right_hand) if snap.last != DRC.right_hand && !@equipment_manager.is_listed_item?(DRC.right_hand)
@@ -1522,6 +1528,33 @@ class LootProcess
     end
     DRCI.dispose_trash(DRC.left_hand) if snap.first != DRC.left_hand && !@equipment_manager.is_listed_item?(DRC.left_hand)
     DRCI.dispose_trash(DRC.right_hand) if snap.last != DRC.right_hand && !@equipment_manager.is_listed_item?(DRC.right_hand)
+  end
+
+  # Bundles the skin in hand with the bundling rope and wears the bundle, so
+  # later skins go straight into it.
+  #
+  # When the game won't let the bundle be worn (for example "You can't wear
+  # any more items like that." because something worn already takes its
+  # slot), the bundle is stowed instead. Left in hand, the hand cleanup at the
+  # end of {#check_skinning} would drop it, skin and all, and every later skin
+  # would follow it onto the ground with no word as to why.
+  #
+  # @return [void]
+  def make_bundle
+    DRC.bput('bundle', 'You bundle')
+    worn = DRCI.wear_item?('bundle')
+    if @tie_bundle
+      DRC.bput('tie my bundle', 'TIE the bundle again')
+      DRC.bput('tie my bundle', 'you tie the bundle')
+      DRC.bput('adjust my bundle', 'You adjust')
+    end
+    return if worn
+
+    stowed = DRCI.put_away_item?('bundle')
+    DRC.message('***STATUS*** Could not wear your bundle -- if the game said "You can\'t wear any more items ' \
+                'like that", something you are wearing takes the slot a bundle uses. ' \
+                "#{stowed ? 'Stowed the bundle instead' : 'Could not stow it either, so it will be dropped'}; " \
+                "skins will be left behind. #{BUNDLE_WEAR_HINT}")
   end
 end
 
