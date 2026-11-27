@@ -1,0 +1,158 @@
+=begin
+  Plays a festival raffle for you. Stand in the raffle room and run ;raffle.
+
+  - When the attendant puts out a new roll of tickets, tears one off the
+    counter, unless you already hold a raffle ticket or both hands are full.
+  - Tells you when your name appears on the result board.
+  - When the drawing ends ("Congratulations to all our winners!"), hands your
+    ticket in on the counter. A winning ticket is swapped for the prize, which
+    stays in your hand; a losing ticket goes in the trash (the bucket of gloop).
+  - Stops after the attendant announces the last raffle of the evening.
+
+  The ticket is handled by its item id, so another ticket you carry (a repair
+  ticket, say) is never handed in or thrown away.
+
+  Original author: Bombcat.
+=end
+
+class Raffle
+  # The attendant as the game names it: "Attendant Tizzeg" when the roll goes
+  # out, "Raffle Attendant Tizzeg" when it speaks. Every pattern below starts
+  # with it at the start of the line, so another player's speech, whisper or
+  # ESP repeating the words never matches.
+  ATTENDANT = '(?:Raffle )?Attendant [A-Z][a-z]+'
+
+  # A new roll goes out. Closing picks says "places a roll of raffle tickets
+  # in a small counter" instead, which must not match.
+  TICKETS_OUT = /^#{ATTENDANT} places a roll of raffle tickets out on a small counter\./
+
+  # Said in the same second as TICKETS_OUT.
+  PICKS_OPEN = /^#{ATTENDANT} says, "Raffle picks are now available for the next drawing!"/
+
+  # Said once every prize of a drawing is claimed or drawn, including the last
+  # drawing of the evening (see LAST_RAFFLE).
+  DRAWING_OVER = /^#{ATTENDANT} exclaims, "Congratulations to all our winners!/
+
+  # Ends the DRAWING_OVER line after the evening's final drawing.
+  LAST_RAFFLE = /That will be our last raffle/
+
+  # Replies to "get ... on counter". Only the first one means a ticket was taken.
+  GET_TICKET_REPLIES = [
+    /^You tear off/,
+    /^You need a free hand/,
+    /^What were you referring to/
+  ].freeze
+
+  # Replies to handing the ticket in. CLAIM_WON captures the prize.
+  CLAIM_WON = /^#{ATTENDANT} examines your ticket and exclaims, "Congratulations!"\s+\w+ smiles broadly as \w+ takes the ticket and hands you (.+?)\.?$/
+  CLAIM_LOST = /^#{ATTENDANT} examines your ticket but shakes \w+ head, "I'm sorry this isn't a winning ticket/
+  CLAIM_NO_TICKET = /^What were you referring to/
+
+  # A raffle ticket as the hands show it, e.g. "sky blue raffle ticket".
+  RAFFLE_TICKET_NAME = /\braffle ticket\z/
+
+  # @param name [String] the character whose name the result board shows
+  def initialize(name = checkname)
+    @name_drawn = /^#{Regexp.escape(name)}'s name appears on the result board!/
+    @ticket_round = false
+    @won = false
+  end
+
+  # Watches the game until the evening's last drawing is settled.
+  def run
+    DRC.message('raffle: watching for raffle tickets. Stays running until the last raffle of the evening.')
+    loop do
+      line = get
+      next unless line
+      break if handle(line) == :done
+    end
+  end
+
+  # Acts on one game line.
+  #
+  # @param line [String]
+  # @return [Symbol, nil] :done once the evening's last drawing is settled
+  def handle(line)
+    case line
+    when TICKETS_OUT, PICKS_OPEN
+      take_ticket
+    when @name_drawn
+      note_drawn
+    when DRAWING_OVER
+      settle_ticket
+      if line.match?(LAST_RAFFLE)
+        DRC.message('raffle: that was the last raffle of the evening. Stopping.')
+        return :done
+      end
+    end
+    nil
+  end
+
+  private
+
+  # The raffle ticket in either hand, as a GameObj, or nil.
+  def held_ticket
+    [GameObj.right_hand, GameObj.left_hand].find { |hand| hand.name.to_s.match?(RAFFLE_TICKET_NAME) }
+  end
+
+  # How to address the held ticket: by id when the game gave one.
+  def ticket_ref(ticket)
+    ticket.id ? "##{ticket.id}" : 'raffle ticket'
+  end
+
+  # Tears a ticket off the roll, once per drawing (TICKETS_OUT and PICKS_OPEN
+  # both announce the same roll).
+  def take_ticket
+    return if @ticket_round
+
+    @ticket_round = true
+    if held_ticket
+      DRC.message('raffle: already holding a raffle ticket, not taking another.')
+    elsif DRC.left_hand && DRC.right_hand
+      DRC.message("raffle: new tickets are out but both hands are full (#{DRC.right_hand}, #{DRC.left_hand}). Free a hand and GET TICKET ON COUNTER.")
+    else
+      DRC.bput('get ticket on counter', *GET_TICKET_REPLIES)
+      DRC.message('raffle: could not take a raffle ticket from the counter.') unless held_ticket
+    end
+  end
+
+  def note_drawn
+    @won = true
+    if held_ticket
+      DRC.message('raffle: your name is on the result board! The ticket goes on the counter when the drawing ends.')
+    else
+      DRC.message("raffle: your name is on the result board, but you aren't holding a raffle ticket! Hold it and PUT TICKET ON COUNTER.")
+    end
+  end
+
+  # Hands the ticket in when the drawing ends: a winner gets the prize, a
+  # loser's ticket goes in the trash.
+  def settle_ticket
+    won = @won
+    @won = false
+    @ticket_round = false
+
+    ticket = held_ticket
+    unless ticket
+      DRC.message("raffle: your name was drawn but you aren't holding a raffle ticket. Hold it and PUT TICKET ON COUNTER to claim the prize.") if won
+      return
+    end
+
+    ref = ticket_ref(ticket)
+    command_ref = ticket.id ? ref : "my #{ref}"
+    reply = DRC.bput("put #{command_ref} on counter", CLAIM_WON, CLAIM_LOST, CLAIM_NO_TICKET)
+    case reply
+    when CLAIM_WON
+      DRC.message("raffle: you won #{reply[CLAIM_WON, 1]}! It's in your hand.")
+    when CLAIM_LOST
+      DRCI.dispose_trash(ref)
+    else
+      DRC.message('raffle: could not hand the ticket in. If your name was drawn, PUT TICKET ON COUNTER.')
+    end
+  end
+end
+
+arg_definitions = [[]]
+parse_args(arg_definitions, true)
+
+Raffle.new.run
