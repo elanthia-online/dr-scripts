@@ -2592,7 +2592,8 @@ RSpec.describe TaskMaster do
         let(:boosted) { "You've activated the Task Master boost" }
         let(:no_boosts) { "You don't have enough credits for the Task Master boost.  You currently have 0 available but need 1." }
 
-        # Plays the replies in order and records each search, ask, pause and
+        # Plays the replies in order (each through the ask's matchers, as DRC.bput
+        # would) and records each search, ask, pause and
         # command, BOOST TASK answered with boost_reply. Accepting returns
         # finish's (stubbed) result; an ongoing task calls the stubbed
         # resume_task, and get_task then returns nil. Returns get_task's
@@ -2613,13 +2614,14 @@ RSpec.describe TaskMaster do
             :resumed
           end
           allow(DRC).to receive(:message) { |text| events << [:message, text] }
-          ask = lambda do |*|
+          ask = lambda do |_command, *matchers|
             events << :ask
             # A loop that asks past the last reply fails here instead of
             # hanging the suite.
             raise 'asked again after the last reply' if replies.empty?
 
-            replies.shift
+            # What DRC.bput returns: '' for a line no matcher takes.
+            bput_match(replies.shift, matchers)
           end
           accept = lambda do |*|
             events << :accept
@@ -2641,7 +2643,7 @@ RSpec.describe TaskMaster do
           asking([offer])
           expect(DRC).to have_received(:bput).with('ask zasele for task', /if you agree to (his|her) terms/, /You may accept by typing ACCEPT TASK/, /utterly ignoring you/,
                                                    /you must wait before I can give you a task/, /You are already on a task/, /give you a chance a little later/,
-                                                   TaskMaster::TASK_UNRELIABLE, TaskMaster::TASK_DAILY_MAX, /^To whom are you speaking/)
+                                                   TaskMaster::TASK_UNRELIABLE, TaskMaster::TASK_BUSY, TaskMaster::TASK_DAILY_MAX, /^To whom are you speaking/)
           expect(DRC).to have_received(:bput).with('accept task', /You can check your progress with the TASK verb/)
         end
 
@@ -2712,6 +2714,49 @@ RSpec.describe TaskMaster do
         it 'mixes replies in any order, asking until there is an offer' do
           expect(asking([terms, ignored, wait, nobody, offer], boost: true)[1])
             .to eq([:find, :ask, :find, :ask, cooldown_message, [:pause, 7], :find, :ask, :boost, [:pause, 2], :find, :ask, *accepted])
+        end
+
+        # Nezhiri turning everyone away for about ten minutes (Byd and Nelis,
+        # 2026-11-28 00:14-00:24; Berimeg and Evro, 2026-11-20 20:07-20:16).
+        # Before TASK_BUSY it was an unknown reply: three in a row stopped
+        # the run, and t2 started it again a minute later, all stretch long.
+        describe 'a taskmaster saying it is busy' do
+          let(:busy) { %(Potion Peddler Nezhiri shoots you a chilly glance.  "I'm a bit busy just now.  Come back later.") }
+          let(:busy_message) { [:message, 'Nezhiri is too busy to give out tasks just now; asking again every 15 seconds until that lifts.'] }
+          let(:busy_ask) { [:find, :ask, [:pause, 15]] }
+
+          it 'is matched by the ask, with or without the apostrophe the line carries' do
+            expect(bput_match(busy, [TaskMaster::TASK_BUSY])).to eq('a bit busy just now')
+            expect(busy.sub("I'm", 'I am')).to match(TaskMaster::TASK_BUSY)
+          end
+
+          it 'waits TASK_BUSY_POLL seconds and asks again, saying so once, then accepts the offer that follows' do
+            result, events, = asking([busy, busy, busy, offer], npc: 'nezhiri')
+            expect([result, events]).to eq([:accepted, [:find, :ask, busy_message, [:pause, 15], *busy_ask, *busy_ask, *accepted]])
+          end
+
+          it 'never stops the run however long it lasts (more than MAX_UNKNOWN_TASK_REPLIES in a row)' do
+            result, events, = asking([*Array.new(40, busy), offer], npc: 'nezhiri')
+            expect(result).to eq(:accepted)
+            expect(events.count { |event| event == [:pause, 15] }).to eq(40)
+            expect(events.count { |event| event.is_a?(Array) && event.first == :message }).to eq(1)
+          end
+
+          it 'waits the poll interval instead when task_cooldown_poll is longer' do
+            _, events, = asking([busy, offer], npc: 'nezhiri') { |run| run.instance_variable_set(:@cooldown_poll, 30) }
+            expect(events).to eq([:find, :ask, [:message, 'Nezhiri is too busy to give out tasks just now; asking again every 30 seconds until that lifts.'], [:pause, 30], *accepted])
+          end
+
+          it 'says so again for a new busy stretch after another reply' do
+            _, events, = asking([busy, wait, busy, offer], npc: 'nezhiri')
+            expect(events.count(busy_message)).to eq(2)
+          end
+
+          it 'counts as an answer: unknown replies either side of it are not three in a row' do
+            result, events, = asking(['', '', busy, '', '', offer], npc: 'nezhiri')
+            expect(result).to eq(:accepted)
+            expect(events).not_to include(:chores)
+          end
         end
 
         describe 'with no credits for the task boost' do
