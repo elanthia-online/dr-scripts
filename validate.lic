@@ -9,6 +9,26 @@
 =end
 
 class DRYamlValidator
+  # Top-level keys the profile loader reads itself, not any script.
+  LOADER_KEYS = %w[include union_keys].freeze
+
+  # How code reads a top-level setting: settings.key, settings['key'],
+  # settings[:key], settings.dig('key' / :key, or get_settings(...).key. The
+  # receiver only has to end in "settings" (@settings, get_settings(...)).
+  # A setting read only by a computed name (clerk-tools reaches
+  # blacksmithing_tools through its TOOLSETS symbol table) isn't seen here;
+  # declare it, value-less, in base.yaml instead.
+  SETTING_REFERENCE = /settings(?:\([^()]*\))?(?:\.dig\(\s*['":]|\[\s*['":]|\.)([A-Za-z_]\w*)/
+
+  # Settings no script reads any more, with what replaced them (#7303, the
+  # pick.lic rewrite). A spelling suggestion would point at an unrelated live
+  # key instead (always_pick_blind at pick_blind).
+  RETIRED_KEYS = {
+    'always_pick_blind'   => 'pick: pick_quick_threshold: 16',
+    'never_pick_blind'    => 'pick: pick_quick_threshold: 0',
+    'picking_box_storage' => 'pick: too_hard_container and/or pick: blacklist_container'
+  }.freeze
+
   def initialize
     arg_definitions = [[
       { name: 'verbose', regex: /verbose/i, optional: true }
@@ -61,6 +81,7 @@ class DRYamlValidator
     }
 
     warn_custom_scripts
+    warn_unknown_keys
 
     respond("")
     respond("  CHECKING: #{assertions.size} different potential errors in [#{checkname}-setup.yaml]")
@@ -745,7 +766,7 @@ class DRYamlValidator
   def assert_that_pick_blind_is_deprecated(settings)
     return unless settings.pick_blind
 
-    warn('The pick_blind settings is deprecated and is now always_pick_blind, please adjust your YAML, support for pick_blind will be removed in the future.')
+    warn('pick_blind is only read by ulfhara now; pick.lic ignores it. For pick.lic, set pick: pick_quick_threshold: 16 to always pick blind.')
   end
 
   def assert_that_check_discern_timer_is_deprecated(settings)
@@ -1178,6 +1199,192 @@ class DRYamlValidator
       respond("  NOTE: The following curated scripts are in your custom folder and will not receive updates.")
       respond("  #{include_list}") unless include_list.empty?
     end
+  end
+
+  # Reports top-level keys in the character's yaml files (and the include
+  # files they name) that no script reads. A misspelt setting name is ignored
+  # without a word and the script falls back to the default, which looks like
+  # the setting "not working" (for example spare_pouch_container for
+  # spare_gem_pouch_container leaves every gem on the ground once the pouch is
+  # full). A retired key is a warning naming its replacement, a key close to
+  # known ones a warning naming them; any other unknown key is only a note,
+  # since a custom script may read it.
+  def warn_unknown_keys
+    respond("")
+    respond("  CHECKING: That every top-level setting in your yaml files is one a script reads.")
+    known = known_setting_keys
+    findings = checked_profile_files.flat_map do |file|
+      unknown_setting_keys(profile_keys(file), known).map { |finding| [File.basename(file), *finding] }
+    end
+
+    if findings.empty?
+      respond("   PASSED")
+      return
+    end
+
+    findings.each do |file, key, kind, detail|
+      case kind
+      when :retired
+        warn("#{file}: '#{key}' was retired and is ignored; set #{detail} instead.")
+      when :misspelt
+        warn("#{file}: '#{key}' is not a setting any script reads, so it is ignored. " \
+             "Did you mean #{detail.size == 1 ? '' : 'one of '}#{detail.map { |name| "'#{name}'" }.join(', ')}?")
+      end
+    end
+    findings.select { |finding| finding[2] == :unread }.group_by(&:first).each do |file, unread|
+      respond("   NOTE: #{file} has settings no script reads: #{unread.map { |finding| finding[1] }.join(', ')}. " \
+              "Check their spelling; ignore this for YAML anchors and for settings a script of your own reads.")
+    end
+  end
+
+  # The character's profile files, then every include file they name, the
+  # way the profile loader resolves includes (nested includes too).
+  #
+  # @return [Array<String>] paths
+  def checked_profile_files
+    profiles = File.join(SCRIPT_DIR, 'profiles')
+    files = Dir.glob(File.join(profiles, "#{checkname}-*.yaml")).sort
+    queue = files.dup
+    until queue.empty?
+      Array(profile_data(queue.shift)['include']).each do |suffix|
+        path = File.join(profiles, "include-#{suffix}.yaml")
+        next if files.include?(path) || !File.exist?(path)
+
+        files << path
+        queue << path
+      end
+    end
+    files
+  end
+
+  # What to say about each unknown key among keys.
+  #
+  # @param keys [Array<String>] top-level keys of one yaml file
+  # @param known [Array<String>] every key a script or base.yaml knows
+  # @return [Array<Array>] [key, :retired, replacement], [key, :misspelt,
+  #   candidates] or [key, :unread, nil]
+  def unknown_setting_keys(keys, known)
+    (keys - known - LOADER_KEYS).map do |key|
+      next [key, :retired, RETIRED_KEYS[key]] if RETIRED_KEYS.key?(key)
+
+      candidates = setting_suggestions(key, known)
+      candidates.empty? ? [key, :unread, nil] : [key, :misspelt, candidates]
+    end
+  end
+
+  # The known keys a misspelt key most likely meant; [] when none is close.
+  #
+  # A typo is one character edit in a key of six or more, or two when one key
+  # just extends the other (tie_gem_pouch for tie_gem_pouches); two edits
+  # anywhere else turn one real word into another (mining_tools and
+  # missing_tools, sell_pouch_container and full_pouch_container). Failing that, a key with one word left out of an
+  # underscore-separated name (spare_pouch_container for
+  # spare_gem_pouch_container) names every such key: the length of the
+  # missing word says nothing about which was meant, so no_use_rooms names
+  # play_no_use_rooms and almanac_no_use_rooms alike.
+  #
+  # A key with a word *added* to a known one is usually a custom script's own
+  # setting (get2_safe_room, my_safe_room), and pointing it at the live key
+  # (safe_room) would change a room every script uses. Looser matching pairs
+  # unrelated keys (pack and pick, burgle_room and burgle_town), and a wrong
+  # guess is worse than none.
+  #
+  # @param key [String]
+  # @param known [Array<String>]
+  # @return [Array<String>]
+  def setting_suggestions(key, known)
+    typos = known.select { |candidate| typo_of?(key, candidate) }.group_by { |candidate| edit_distance(key, candidate) }
+    return typos.min_by(&:first).last.sort unless typos.empty?
+
+    words = key.split('_')
+    known.select { |candidate| one_word_missing?(words, candidate.split('_')) }.sort
+  end
+
+  # Whether key is candidate with a typo (see {#setting_suggestions}).
+  #
+  # @param key [String]
+  # @param candidate [String]
+  # @return [Boolean]
+  def typo_of?(key, candidate)
+    return false if key == candidate || key.length < 6 || (key.length - candidate.length).abs > 2
+
+    distance = edit_distance(key, candidate)
+    distance == 1 || (distance == 2 && (candidate.start_with?(key) || key.start_with?(candidate)))
+  end
+
+  # Whether name is full_name with exactly one word left out. name needs two
+  # or more words, so a single word isn't matched to every longer name that
+  # starts or ends with it.
+  #
+  # @param name [Array<String>] words of the unknown key
+  # @param full_name [Array<String>] words of a known key
+  # @return [Boolean]
+  def one_word_missing?(name, full_name)
+    return false unless full_name.size == name.size + 1 && name.size >= 2
+
+    full_name.each_index.any? { |i| full_name[0...i] + full_name[(i + 1)..] == name }
+  end
+
+  # Edit distance between two strings, counting a swap of two neighbouring
+  # characters as one edit (optimal string alignment).
+  #
+  # @param a [String]
+  # @param b [String]
+  # @return [Integer]
+  def edit_distance(a, b)
+    rows = Array.new(a.length + 1) { |i| Array.new(b.length + 1) { |j| i.zero? ? j : (j.zero? ? i : 0) } }
+    (1..a.length).each do |i|
+      (1..b.length).each do |j|
+        cost = a[i - 1] == b[j - 1] ? 0 : 1
+        rows[i][j] = [rows[i - 1][j] + 1, rows[i][j - 1] + 1, rows[i - 1][j - 1] + cost].min
+        rows[i][j] = [rows[i][j], rows[i - 2][j - 2] + 1].min if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1]
+      end
+    end
+    rows[a.length][b.length]
+  end
+
+  # Every top-level key a script can read: the keys base.yaml declares, plus
+  # every key referenced in the dr-scripts, custom scripts and lich-5 code,
+  # since many settings are read without being declared in base.yaml.
+  #
+  # @return [Array<String>]
+  def known_setting_keys
+    declared = %w[base.yaml base-empty.yaml].flat_map { |name| profile_keys(File.join(SCRIPT_DIR, 'profiles', name)) }
+    sources = Dir.glob(File.join(SCRIPT_DIR, '*.lic')) + Dir.glob(File.join(SCRIPT_DIR, 'custom', '**', '*.lic'))
+    sources += Dir.glob(File.join(LIB_DIR, '**', '*.rb')) if defined?(LIB_DIR)
+    (declared + referenced_setting_keys(sources)).uniq
+  end
+
+  # Setting keys the given source files read, per SETTING_REFERENCE.
+  #
+  # @param paths [Array<String>]
+  # @return [Array<String>]
+  def referenced_setting_keys(paths)
+    paths.flat_map do |path|
+      File.binread(path).scan(SETTING_REFERENCE).flatten
+    rescue SystemCallError
+      []
+    end.uniq
+  end
+
+  # The top-level keys of a yaml file, as strings.
+  #
+  # @param path [String]
+  # @return [Array<String>]
+  def profile_keys(path)
+    profile_data(path).keys.map(&:to_s)
+  end
+
+  # A yaml file's top-level mapping; {} when it doesn't parse to a mapping
+  # (parse errors are reported by the YAML check earlier on).
+  #
+  # @param path [String]
+  # @return [Hash]
+  def profile_data(path)
+    data = YAML.unsafe_load_file(path)
+    data.is_a?(Hash) ? data : {}
+  rescue Psych::Exception, SystemCallError
+    {}
   end
 
   def warn(message)

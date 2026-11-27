@@ -1147,6 +1147,18 @@ enchanting_tools:
   - brazier
   - burin
 
+# Per-discipline tool lists for clerk-tools. Leave them unset to use the shared
+# list: blacksmithing, weaponsmithing and armorsmithing fall back to
+# forging_tools, tailoring to outfitting_tools, remedies to alchemy_tools and
+# artificing to enchanting_tools. Keep these value-less here: a default would
+# replace the fallback.
+blacksmithing_tools:
+weaponsmithing_tools:
+armorsmithing_tools:
+tailoring_tools:
+remedies_tools:
+artificing_tools:
+
 # setup custom toolsets to get from clerk-tools.  example of format listed below
 custom_clerk_tools:
   # mining:                   # name of the toolset to use custom=mining in this case
