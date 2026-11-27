@@ -601,6 +601,9 @@ class Aesthene
   REDEEMED_PATTERN = /You have just redeemed 1 instance of access/
   NO_REPRESENTATIVE_PATTERN = /isn't here!/
   ESCORTED_PATTERN = /The apprentice Timekeeper shows you to a time lock/
+  # The Timekeeper's answer to ASK ABOUT ACCESS with no charge: a welcome and
+  # a note about the store pass, and no escort.
+  NO_ACCESS_PATTERN = /requires an active pass from the Simucoins store/
   TOUCH_CONFIRM_PATTERN = /This will consume a pass for Aesthene's Close/
   ATTUNED_PATTERN = /alarming pulse of energy surges from it and through you/
   ALREADY_ATTUNED_PATTERN = /already connected to the lock/
@@ -790,8 +793,10 @@ class Aesthene
 
   # @return [true] once shown to a lock; stops the script otherwise
   def ask_for_access
-    return true if DRC.bput('ask timekeeper about access', ESCORTED_PATTERN).match?(ESCORTED_PATTERN)
+    response = DRC.bput('ask timekeeper about access', ESCORTED_PATTERN, NO_ACCESS_PATTERN)
+    return true if response.match?(ESCORTED_PATTERN)
 
+    abort_with("aesthene: the Timekeeper says you have no Aesthene's Close charge to use.") if response.match?(NO_ACCESS_PATTERN)
     abort_with('aesthene: the Timekeeper did not take you to a lock.')
   end
 

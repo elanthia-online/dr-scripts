@@ -94,6 +94,15 @@ AESTHENE_POACH_PROBE_ROWS = [
 # interleaved with every grid, as they were in the logs.
 class AestheneFakeLock
   NOISE = ['A traveler just arrived.', '[multi]>get my multiplier'].freeze
+  # The Timekeeper's reply to ASK ABOUT ACCESS with no charge, from a live log.
+  NO_ACCESS_REPLY = [
+    '"Welcome, we can use all the help we can get!  Aesthene\'s device has malfunctioned, and we need to get all the locks reset, or the past will be making a come back!" explains the apprentice.',
+    '- - - - -',
+    "Note: This NPC provides access to a special area that requires an active pass from the Simucoins store.  To participate, check the store for the Aesthene's Close pass:",
+    '    https://store.play.net/store/purchase/dr',
+    'You must activate the pass while present with this NPC, then ASK about ACCESS to be moved to the special area.',
+    '- - - - -'
+  ].freeze
   # Marks as the game prints them: hit +X+, present _X_, absent *X*.
   TILE_MARKS = { hit: '+', present: '_', absent: '*' }.freeze
 
@@ -137,6 +146,14 @@ class AestheneFakeLock
   # @return [Integer] passes the character holds now
   attr_reader :passes
 
+  # Makes INFO show +count+ charges whatever the character holds, as a stale
+  # or misread INFO would.
+  #
+  # @param count [Integer]
+  def misreport_charges(count)
+    @reported_charges = count
+  end
+
   # INFO as Lich::Util.issue_command returns it: from the Name line to the
   # prompt. Lines copied from a live INFO; the Aesthene's Close line is left
   # out at 0 charges, as the game does.
@@ -148,7 +165,8 @@ class AestheneFakeLock
              'You have 3 active purchases:',
              '  Urchin Guides, charges remaining: 408',
              '  Faster HE Trips, expiring Fri Dec 11 15:21:08 ET']
-    lines << "  Aesthene's Close, charges remaining: #{@passes}" if @passes.positive?
+    charges = @reported_charges || @passes
+    lines << "  Aesthene's Close, charges remaining: #{charges}" if charges.positive?
     lines + ['<prompt time="1795751116">&gt;</prompt>']
   end
 
@@ -210,7 +228,10 @@ class AestheneFakeLock
      "[You have just redeemed 1 instance of access to a task to earn chronocoins from the Timekeepers at Aesthene's Close.  Be sure to ASK TIMEKEEPER ABOUT ACCESS to be moved in!]"]
   end
 
+  # With no charge the Timekeeper only welcomes you (live log, 2026-11-27).
   def ask_access
+    return NO_ACCESS_REPLY if @passes.zero?
+
     ['"Yes, yes, let me show you the way."  The apprentice leads you away.',
      "[Aesthene's Close, Chronoscape] (**)",
      'The apprentice Timekeeper shows you to a time lock, and explains "There are thousands of these throughout the area."']
@@ -1158,6 +1179,14 @@ RSpec.describe 'aesthene.lic' do
         expect { instance.redeem_slip }.to raise_error(SystemExit)
       end
 
+      it 'says there is no charge when the Timekeeper answers with the store note' do
+        allow(DRC).to receive(:message)
+        allow(DRC).to receive(:bput).and_return(AestheneFakeLock::NO_ACCESS_REPLY[2])
+        expect { instance.walk_and_ask_for_access }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:bput).with('ask timekeeper about access', Aesthene::ESCORTED_PATTERN, Aesthene::NO_ACCESS_PATTERN)
+        expect(DRC).to have_received(:message).with("aesthene: the Timekeeper says you have no Aesthene's Close charge to use.")
+      end
+
       it 'redeems again when the confirming redeem is asked to confirm again' do
         allow(DRC).to receive(:bput).and_return(confirm, confirm, redeemed, escorted)
         expect(instance.redeem_slip).to be(true)
@@ -1826,6 +1855,14 @@ RSpec.describe 'aesthene.lic' do
       expect(lock.passes).to eq(0)
       expect(DRCI).to have_received(:stow_item?).with('time slip')
       expect(messages).to include('aesthene: the Timekeeper did not take the slip.')
+    end
+
+    it 'stops at once, spending nothing, when INFO showed a charge the character does not have' do
+      lock = AestheneFakeLock.new('POACH')
+      lock.misreport_charges(1)
+      expect { run_script(lock, :full, exits: true) }.to raise_error(SystemExit)
+      expect(lock.commands).to eq(['info', 'ask timekeeper about access'])
+      expect(messages.last).to eq("aesthene: the Timekeeper says you have no Aesthene's Close charge to use.")
     end
 
     it 'stops with a message when there is no pass to attune with' do
