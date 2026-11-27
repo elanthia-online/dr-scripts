@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+require 'fileutils'
+require 'tmpdir'
+require 'yaml'
 require_relative 'spec_helper'
 
 # Load the DRYamlValidator class (the trailing DRYamlValidator.new is not
@@ -263,6 +266,252 @@ RSpec.describe DRYamlValidator do
       check('locksmithing' => 600, 'Lockpicking' => 600)
       expect($error_msgs.size).to eq(1)
       expect($error_msgs.first).to include('not valid: Lockpicking')
+    end
+  end
+
+  # A misspelt setting name is ignored without a word, so the script quietly
+  # falls back to the default. Seen with spare_pouch_container (for
+  # spare_gem_pouch_container): no spare pouches, so every gem after the first
+  # full pouch was left on the ground, and validate passed.
+  describe 'unknown top-level keys' do
+    let(:instance) { build }
+    let(:known) do
+      %w[spare_gem_pouch_container gem_pouch_adjective pick burgle_town gear_sets skinning safe_room pick_blind
+         play_no_use_rooms almanac_no_use_rooms tessera_no_use_rooms]
+    end
+
+    # { key => candidates (misspelt), replacement (retired) or nil (unread) }
+    def suggestions(keys)
+      instance.send(:unknown_setting_keys, keys, known).to_h { |key, _kind, detail| [key, detail] }
+    end
+
+    def kinds(keys)
+      instance.send(:unknown_setting_keys, keys, known).to_h { |key, kind, _detail| [key, kind] }
+    end
+
+    it 'suggests the key with the missing word for spare_pouch_container' do
+      expect(suggestions(['spare_pouch_container'])).to eq('spare_pouch_container' => ['spare_gem_pouch_container'])
+    end
+
+    it 'suggests the key a small typo was meant to be' do
+      expect(suggestions(%w[gem_pouch_adjectiv skining gear_set])).to eq(
+        'gem_pouch_adjectiv' => ['gem_pouch_adjective'], 'skining' => ['skinning'], 'gear_set' => ['gear_sets']
+      )
+    end
+
+    it 'counts a swap of two neighbouring letters as one typo' do
+      expect(suggestions(['skinnnig'])).to eq('skinnnig' => ['skinning'])
+    end
+
+    it 'does not take two edits that turn one word into another for a typo' do
+      checker = instance
+      expect(checker.send(:unknown_setting_keys, %w[mining_tools sell_pouch_container tie_gem_pouch],
+                          %w[missing_tools full_pouch_container tie_gem_pouches]).to_h { |key, _k, detail| [key, detail] })
+        .to eq('mining_tools' => nil, 'sell_pouch_container' => nil, 'tie_gem_pouch' => ['tie_gem_pouches'])
+    end
+
+    it 'names every equally close key instead of picking the shortest' do
+      expect(suggestions(['no_use_rooms'])).to eq(
+        'no_use_rooms' => %w[almanac_no_use_rooms play_no_use_rooms tessera_no_use_rooms]
+      )
+    end
+
+    it 'does not point a key with a word added (a custom script\'s own) at the live key' do
+      expect(kinds(%w[get2_safe_room my_safe_room])).to eq('get2_safe_room' => :unread, 'my_safe_room' => :unread)
+    end
+
+    # #7303 retired always_pick_blind; the spelling rule would have offered
+    # pick_blind, which validate's own deprecation check sends back here.
+    it 'names the replacement of a retired key rather than a look-alike live key' do
+      expect(kinds(['always_pick_blind'])).to eq('always_pick_blind' => :retired)
+      expect(suggestions(%w[always_pick_blind never_pick_blind])).to eq(
+        'always_pick_blind' => 'pick: pick_quick_threshold: 16', 'never_pick_blind' => 'pick: pick_quick_threshold: 0'
+      )
+    end
+
+    it 'suggests nothing for a short key one letter off a known one' do
+      expect(suggestions(['pack'])).to eq('pack' => nil)
+    end
+
+    it 'suggests nothing for a key with a different word in it' do
+      expect(suggestions(['burgle_room'])).to eq('burgle_room' => nil)
+    end
+
+    it 'does not match a single word to a longer name that ends with it' do
+      expect(suggestions(['rooms'])).to eq('rooms' => nil)
+    end
+
+    it 'leaves known keys and the loader keys include and union_keys alone' do
+      expect(suggestions(%w[skinning gem_pouch_adjective include union_keys])).to be_empty
+    end
+
+    describe '#referenced_setting_keys' do
+      it 'finds each way code reads a top-level setting' do
+        Dir.mktmpdir do |dir|
+          path = File.join(dir, 'reader.lic')
+          File.write(path, <<~RUBY)
+            a = settings.dotted_key
+            b = @settings['quoted_key']
+            c = settings[:symbol_key]
+            d = settings.dig('dug_key', 'nested')
+            e = get_settings('triggers').called_key
+            f = UserVars.not_a_setting
+          RUBY
+          expect(instance.send(:referenced_setting_keys, [path])).to contain_exactly(
+            'dotted_key', 'quoted_key', 'symbol_key', 'dug_key', 'called_key'
+          )
+        end
+      end
+
+      # Counting every symbol of such a file made ~268 non-settings known
+      # (missing_tools, name, town, ...), offered as spellings.
+      it 'does not count symbols, even in a file that reads settings by a computed name' do
+        Dir.mktmpdir do |dir|
+          path = File.join(dir, 'tools.lic')
+          File.write(path, <<~RUBY)
+            TOOLSETS = { 'tailoring' => { tools: :tailoring_tools } }.freeze
+            survey = { missing_tools: [] }
+            x = settings.plain_key
+            tools = settings.send(TOOLSETS['tailoring'][:tools])
+          RUBY
+          keys = instance.send(:referenced_setting_keys, [path])
+          expect(keys).to include('plain_key')
+          expect(keys).not_to include('tailoring_tools', 'missing_tools')
+        end
+      end
+    end
+
+    # Against the repo's own scripts and base.yaml (lich-5 isn't in this
+    # checkout, so LIB_DIR is an empty directory).
+    describe 'known keys of this repo' do
+      let(:repo) { File.expand_path('..', __dir__) }
+
+      before do
+        @lib = Dir.mktmpdir('validate-no-lib')
+        stub_const('SCRIPT_DIR', repo)
+        stub_const('LIB_DIR', @lib)
+      end
+
+      after { FileUtils.rm_rf(@lib) }
+
+      # clerk-tools reads these through settings.send(symbol) from TOOLSETS,
+      # which no reference scan sees, so base.yaml has to declare them. A new
+      # toolset without a base.yaml entry fails here.
+      it 'knows every setting clerk-tools\' TOOLSETS names' do
+        table = File.read(File.join(repo, 'clerk-tools.lic'))[/TOOLSETS = \{.*?\}\.freeze/m]
+        names = table.scan(/\b(?:tools|tools_fallback|belt|belt_override): :(\w+)/).flatten.uniq
+        expect(names).to include('blacksmithing_tools', 'tailoring_tools', 'remedies_tools', 'artificing_tools')
+        expect(names - instance.send(:known_setting_keys)).to be_empty
+      end
+
+      it 'offers no spelling for missing_tool and lists name as unread' do
+        found = instance.send(:unknown_setting_keys, %w[missing_tool name], instance.send(:known_setting_keys))
+        expect(found).to eq([['missing_tool', :unread, nil], ['name', :unread, nil]])
+      end
+
+      it 'skips a file it cannot read' do
+        expect(instance.send(:referenced_setting_keys, ['/nonexistent/reader.lic'])).to eq([])
+      end
+    end
+
+    describe '#warn_unknown_keys' do
+      before do
+        @dir = Dir.mktmpdir('validate-unknown-keys')
+        FileUtils.mkdir_p(File.join(@dir, 'profiles'))
+        FileUtils.mkdir_p(File.join(@dir, 'custom'))
+        FileUtils.mkdir_p(File.join(@dir, 'lib', 'dragonrealms'))
+        File.write(File.join(@dir, 'profiles', 'base.yaml'),
+                   "spare_gem_pouch_container:\ngem_pouch_adjective:\nplay_no_use_rooms:\nalmanac_no_use_rooms:\n")
+        File.write(File.join(@dir, 'sell-loot.lic'), "x = settings.sell_loot_pouch\n")
+        File.write(File.join(@dir, 'custom', 'mine.lic'), "x = settings.my_custom_key\n")
+        File.write(File.join(@dir, 'lib', 'dragonrealms', 'items.rb'), "x = settings.worn_trashcan\n")
+        stub_const('SCRIPT_DIR', @dir)
+        stub_const('LIB_DIR', File.join(@dir, 'lib'))
+      end
+
+      after { FileUtils.rm_rf(@dir) }
+
+      def write_profile(suffix, body)
+        File.write(File.join(@dir, 'profiles', "#{checkname}-#{suffix}.yaml"), body)
+      end
+
+      it 'warns with the likely spelling for the reported misspelt key' do
+        write_profile('setup', "spare_pouch_container: bag\ngem_pouch_adjective: dark\n")
+        instance.send(:warn_unknown_keys)
+        expect($warn_msgs.size).to eq(1)
+        expect($warn_msgs.first).to include("#{checkname}-setup.yaml: 'spare_pouch_container'")
+          .and include("Did you mean 'spare_gem_pouch_container'?")
+      end
+
+      it 'passes keys read by scripts, custom scripts and lich-5 even when base.yaml lacks them' do
+        write_profile('setup', "sell_loot_pouch: true\nmy_custom_key: 1\nworn_trashcan: bin\n")
+        instance.send(:warn_unknown_keys)
+        expect($warn_msgs).to be_empty
+        expect(displayed_messages).to include('   PASSED')
+      end
+
+      it 'checks every profile file of the character, not only setup' do
+        write_profile('setup', "gem_pouch_adjective: dark\n")
+        write_profile('hunt', "gem_pouch_adjectiv: dark\n")
+        instance.send(:warn_unknown_keys)
+        expect($warn_msgs.join).to include("#{checkname}-hunt.yaml: 'gem_pouch_adjectiv'")
+      end
+
+      it 'lists keys with no likely spelling on one note per file, without counting them as warnings' do
+        write_profile('setup', "pack: &pack [a]\nburgle_room: 5\n")
+        instance.send(:warn_unknown_keys)
+        expect($warn_msgs).to be_empty
+        expect(instance.instance_variable_get(:@warning_count)).to eq(0)
+        notes = displayed_messages.grep(/NOTE:/)
+        expect(notes.size).to eq(1)
+        expect(notes.first).to include("#{checkname}-setup.yaml has settings no script reads: pack, burgle_room")
+      end
+
+      it 'names every equally close key in one warning' do
+        write_profile('setup', "no_use_rooms: []\n")
+        instance.send(:warn_unknown_keys)
+        expect($warn_msgs.join).to include("Did you mean one of 'almanac_no_use_rooms', 'play_no_use_rooms'?")
+      end
+
+      it 'warns with the replacement for a retired key' do
+        write_profile('setup', "always_pick_blind: true\n")
+        instance.send(:warn_unknown_keys)
+        expect($warn_msgs.join).to include("'always_pick_blind' was retired and is ignored; set pick: pick_quick_threshold: 16 instead.")
+      end
+
+      it 'checks the include files a profile names, nested ones too' do
+        write_profile('setup', "include:\n  - hunting\n")
+        File.write(File.join(@dir, 'profiles', 'include-hunting.yaml'), "include: shared\ngem_pouch_adjectiv: dark\n")
+        File.write(File.join(@dir, 'profiles', 'include-shared.yaml'), "spare_pouch_container: bag\n")
+        instance.send(:warn_unknown_keys)
+        expect($warn_msgs.join).to include("include-hunting.yaml: 'gem_pouch_adjectiv'")
+          .and include("include-shared.yaml: 'spare_pouch_container'")
+      end
+
+      it 'skips a named include file that does not exist, and include loops' do
+        write_profile('setup', "include: [missing, loop]\n")
+        File.write(File.join(@dir, 'profiles', 'include-loop.yaml'), "include: [loop]\n")
+        instance.send(:warn_unknown_keys)
+        expect($warn_msgs).to be_empty
+        expect(displayed_messages).to include('   PASSED')
+      end
+
+      it 'ignores a profile that does not parse to a mapping' do
+        write_profile('setup', "- just\n- a list\n")
+        write_profile('broken', "key: [unclosed\n")
+        instance.send(:warn_unknown_keys)
+        expect($warn_msgs).to be_empty
+      end
+    end
+  end
+
+  # #7303 stopped pick.lic reading pick_blind and always_pick_blind; ulfhara
+  # still reads pick_blind.
+  describe '#assert_that_pick_blind_is_deprecated' do
+    it 'points at pick_quick_threshold, not the retired always_pick_blind' do
+      build.assert_that_pick_blind_is_deprecated(OpenStruct.new(pick_blind: true))
+      expect($warn_msgs.join).to include('pick_quick_threshold: 16').and include('ulfhara')
+      expect($warn_msgs.join).not_to include('always_pick_blind')
     end
   end
 end
