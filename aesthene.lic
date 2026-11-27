@@ -913,6 +913,10 @@ class Aesthene
   # Sends a command and collects the game's lock output until it is settled
   # or the read times out.
   #
+  # Lines already in the buffer are read even past the deadline: another
+  # script can pause this one while the reply arrives (almanac, for 12
+  # seconds), and the reply is then waiting, complete, once it is unpaused.
+  #
   # @param command [String]
   # @return [AestheneGrid::Reading]
   def read_lock(command)
@@ -921,9 +925,11 @@ class Aesthene
     clear
     put(command)
     deadline = Time.now + READ_TIMEOUT
-    while Time.now < deadline
+    loop do
       line = get?
       if line.nil?
+        break if Time.now >= deadline
+
         pause 0.1
         next
       end

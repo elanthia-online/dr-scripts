@@ -1446,6 +1446,17 @@ RSpec.describe 'aesthene.lic' do
         expect($history).to eq(['Unrelated line after the look.'])
       end
 
+      # Mahtra's live run, 2026-11-27: almanac paused the script 60 ms after
+      # a whisper, for 12 seconds. The solved reply arrived in the meantime,
+      # but the read had timed out by the time it ran again, and the run
+      # stopped on a lock it had solved.
+      it 'still reads a reply that arrived while the script was paused past the deadline' do
+        start = Time.now
+        allow(Time).to receive(:now).and_return(start, start + 12)
+        $history = AESTHENE_SOLVED_TRANSCRIPT.dup
+        expect(instance.read_lock('whisper time lock light')).to be_solved
+      end
+
       it 'returns an incomplete reading when the game says nothing' do
         $history = []
         expect(instance.read_lock('look lock')).not_to be_grid_complete
