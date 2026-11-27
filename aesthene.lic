@@ -5,13 +5,15 @@
   guesses, with Wordle-style feedback on every row.
 
   Usage:
-    ;aesthene full   - walk to the apprentice Timekeeper, redeem one time slip,
-                       ask for access, attune to the lock you are shown and
-                       solve it.
-    ;aesthene full 5 - do that five times in a row, one slip at a time.
-    ;aesthene full all - keep going until you have no time slips left.
-                       A run of several slips stops early at a lock it can't
-                       solve, so no more slips are spent on it.
+    ;aesthene full   - walk to the apprentice Timekeeper, ask for access,
+                       attune to the lock you are shown and solve it. It uses
+                       a charge you already have (slips you redeemed earlier,
+                       shown in INFO as "Aesthene's Close, charges remaining")
+                       and redeems one time slip only when you have none.
+    ;aesthene full 5 - do that five times in a row, one lock at a time.
+    ;aesthene full all - keep going until your charges and time slips run out.
+                       A run of several locks stops early at a lock it can't
+                       solve, so no more charges or slips are spent on it.
                      When a full run ends, the script walks you back to the
                      room you started it in. It stays put after a lock it
                      couldn't solve, so you can finish that lock by hand.
@@ -552,13 +554,13 @@ class AestheneSolver
   end
 end
 
-# Runs the Aesthene's Close time-lock event: redeems a slip, attunes to a lock
-# and solves it.
+# Runs the Aesthene's Close time-lock event: uses a stored charge or redeems a
+# slip, attunes to a lock and solves it.
 #
 # @note Optional setting: `aesthene_lock_answers` [Array<String>] answers to
 #   add to the built-in list in data/base-aesthene.yaml.
 #
-# @example Redeem a slip and solve one lock
+# @example Use a charge (or redeem a slip) and solve one lock
 #   ;aesthene full
 # @example Solve the lock in your room with a pass you already redeemed
 #   ;aesthene solve
@@ -581,11 +583,27 @@ class Aesthene
   LIST_LIMIT = 40
   # Whispers in a row that may add no row before the script gives up.
   STALL_LIMIT = 2
+  # Extra sends of a confirming REDEEM or TOUCH when the game asks to confirm
+  # again. That happens when the confirm window (10 seconds for REDEEM, 15 for
+  # TOUCH) ran out while the script was held up, for example paused by another
+  # script; nothing is spent until a confirm lands inside the window.
+  CONFIRM_RETRIES = 2
+  # Seconds to wait for INFO to arrive in full.
+  INFO_TIMEOUT = 5
 
+  # INFO starts with this line; it ends at the next prompt.
+  INFO_START_PATTERN = /Name: .+ Race: /
+  # Passes already redeemed and not yet used, in INFO's purchases list. The
+  # line is left out when there are none. INFO is read as raw XML, which
+  # could carry the apostrophe as an entity.
+  CHARGES_PATTERN = /Aesthene(?:'|&apos;)s Close, charges remaining: (\d+)/
   REDEEM_CONFIRM_PATTERN = /Once you redeem this, you'll have 1 instance access/
   REDEEMED_PATTERN = /You have just redeemed 1 instance of access/
   NO_REPRESENTATIVE_PATTERN = /isn't here!/
   ESCORTED_PATTERN = /The apprentice Timekeeper shows you to a time lock/
+  # The Timekeeper's answer to ASK ABOUT ACCESS with no charge: a welcome and
+  # a note about the store pass, and no escort.
+  NO_ACCESS_PATTERN = /requires an active pass from the Simucoins store/
   TOUCH_CONFIRM_PATTERN = /This will consume a pass for Aesthene's Close/
   ATTUNED_PATTERN = /alarming pulse of energy surges from it and through you/
   ALREADY_ATTUNED_PATTERN = /already connected to the lock/
@@ -612,8 +630,8 @@ class Aesthene
   # @return [Array<Array<Hash>>] argument definitions for parse_args
   def arg_definitions
     [
-      [{ name: 'full', regex: /^full$/i, description: 'Redeem a time slip, attune to the lock you are shown and solve it.' },
-       { name: 'count', regex: /^([1-9]\d*|all)$/i, optional: true, description: 'How many slips to run, one after another, or all. Default 1.' }],
+      [{ name: 'full', regex: /^full$/i, description: 'Use a charge, or redeem a time slip when you have none, then attune to the lock you are shown and solve it.' },
+       { name: 'count', regex: /^([1-9]\d*|all)$/i, optional: true, description: 'How many locks to run, one after another, or all. Default 1.' }],
       [{ name: 'solve', regex: /^solve$/i, description: 'Attune to (or resume) the lock in this room and solve it.' }],
       [{ name: 'check', regex: /^check$/i, description: 'List the answers still possible for the lock in this room.' }]
     ]
@@ -651,7 +669,7 @@ class Aesthene
   end
 
   # @param count [String, nil] the count argument: digits, 'all' or nil
-  # @return [Integer, Float] slips to run; Float::INFINITY for all
+  # @return [Integer, Float] locks to run; Float::INFINITY for all
   def slip_limit(count)
     return 1 if count.nil?
     return Float::INFINITY if count == 'all'
@@ -659,28 +677,37 @@ class Aesthene
     count.to_i
   end
 
-  # Redeems a slip and solves the lock it opens, again and again, until
-  # `limit` locks are solved, the slips run out, or a lock is not solved.
+  # Gets shown to a lock and solves it, again and again, until `limit` locks
+  # are solved, the charges and slips run out, or a lock is not solved.
+  #
+  # Charges the character already has (slips redeemed earlier) are used
+  # first, counted from INFO once at the start; a time slip is redeemed only
+  # when none are left. Each lock touched uses one charge.
   #
   # Stopping at an unsolved lock matters. The character may still be attuned
   # to it, and the next lock touched would then resume it, fail again and
-  # spend another slip each time round.
+  # spend another charge each time round.
   #
-  # @param limit [Integer, Float] slips to run; Float::INFINITY for all
+  # @param limit [Integer, Float] locks to run; Float::INFINITY for all
   # @return [Boolean] false when the run stopped at a lock it could not solve
   def run_slips(limit)
     solved = 0
     stop = nil
     unsolved = false
+    charges = stored_charges
+    DRC.message("aesthene: using your #{charges} Aesthene's Close #{charges == 1 ? 'charge' : 'charges'} before any time slips.") if charges.positive?
     begin
       while solved < limit
-        unless redeem_slip(first: solved.zero?)
-          stop = 'no time slips left'
+        if charges.positive?
+          charges -= 1
+          walk_and_ask_for_access
+        elsif !redeem_slip(first: solved.zero?)
+          stop = 'no charges or time slips left'
           break
         end
         unless attune_and_solve
           unsolved = true
-          stop = "stopped at a lock it couldn't solve, so no more slips are spent"
+          stop = "stopped at a lock it couldn't solve, so no more charges or slips are spent"
           break
         end
         solved += 1
@@ -707,32 +734,90 @@ class Aesthene
     DRC.message("aesthene: couldn't walk back to room #{room}, where you started.") unless DRCT.walk_to(room)
   end
 
+  # Reads the Aesthene's Close charges the character already has from INFO,
+  # without showing the INFO output.
+  #
+  # The charges line is used whenever it was captured. Lich versions differ
+  # in what else a capture holds: from 5.25.1 a text-mode capture leaves out
+  # the closing prompt, so INFO is read as XML, where every version keeps it,
+  # and the prompt only decides whether a missing charges line means none.
+  #
+  # @return [Integer] charges left; 0 when INFO lists none, and when INFO did
+  #   not arrive in full (then the run redeems slips, as it always did)
+  def stored_charges
+    waitrt?
+    lines = Lich::Util.issue_command('info', INFO_START_PATTERN, timeout: INFO_TIMEOUT, usexml: true, silent: true, quiet: true)
+    lines.each { |line| return Regexp.last_match(1).to_i if line =~ CHARGES_PATTERN }
+    DRC.message("aesthene: couldn't read INFO, so only time slips are used.") unless lines.any? { |line| line.include?('<prompt') }
+    0
+  end
+
   # Walks to the Timekeeper, redeems one time slip and asks to be shown to a
   # lock. Stops the script if any step fails, except when a later slip of a
   # run finds none left.
   #
-  # @param first [Boolean] false for the second and later slips of a run
+  # @param first [Boolean] false once a run has solved a lock
   # @return [Boolean] true once shown to a lock; false when a later slip
   #   finds no time slip
   def redeem_slip(first: true)
     unless DRCI.in_hands?('time slip') || DRCI.get_item?('time slip')
       return false unless first
 
-      abort_with('aesthene: no time slip found.')
+      abort_with("aesthene: no time slip found, and INFO shows no Aesthene's Close charges.")
     end
-    abort_with("aesthene: couldn't reach the apprentice Timekeeper (room #{TIMEKEEPER_ROOM}).") unless DRCT.walk_to(TIMEKEEPER_ROOM)
+    walk_to_timekeeper
 
     # The first REDEEM asks for confirmation; the second spends the slip.
-    response = DRC.bput('redeem my slip', REDEEM_CONFIRM_PATTERN, REDEEMED_PATTERN, NO_REPRESENTATIVE_PATTERN)
-    response = DRC.bput('redeem my slip', REDEEMED_PATTERN, NO_REPRESENTATIVE_PATTERN) if response.match?(REDEEM_CONFIRM_PATTERN)
+    response = confirmed('redeem my slip', REDEEM_CONFIRM_PATTERN, REDEEMED_PATTERN, NO_REPRESENTATIVE_PATTERN)
     unless response.match?(REDEEMED_PATTERN)
       DRCI.stow_item?('time slip')
       abort_with('aesthene: the Timekeeper did not take the slip.')
     end
 
-    return true if DRC.bput('ask timekeeper about access', ESCORTED_PATTERN).match?(ESCORTED_PATTERN)
+    ask_for_access
+  end
 
+  # Walks to the Timekeeper and asks to be shown to a lock, using a charge the
+  # character already has.
+  #
+  # @return [true] once shown to a lock; stops the script otherwise
+  def walk_and_ask_for_access
+    walk_to_timekeeper
+    ask_for_access
+  end
+
+  # @return [void] stops the script when the walk fails
+  def walk_to_timekeeper
+    abort_with("aesthene: couldn't reach the apprentice Timekeeper (room #{TIMEKEEPER_ROOM}).") unless DRCT.walk_to(TIMEKEEPER_ROOM)
+  end
+
+  # @return [true] once shown to a lock; stops the script otherwise
+  def ask_for_access
+    response = DRC.bput('ask timekeeper about access', ESCORTED_PATTERN, NO_ACCESS_PATTERN)
+    return true if response.match?(ESCORTED_PATTERN)
+
+    abort_with("aesthene: the Timekeeper says you have no Aesthene's Close charge to use.") if response.match?(NO_ACCESS_PATTERN)
     abort_with('aesthene: the Timekeeper did not take you to a lock.')
+  end
+
+  # Sends a command the game makes you repeat to confirm (REDEEM, TOUCH), then
+  # the confirming repeat. When the repeat is asked to confirm again, its
+  # window ran out before it landed, so nothing was spent; it is sent again,
+  # up to {CONFIRM_RETRIES} more times.
+  #
+  # @param command [String] the command to send
+  # @param confirm_pattern [Regexp] the game asking you to repeat the command
+  # @param outcomes [Array<Regexp>] every other reply to wait for
+  # @return [String] the last reply; still the confirm prompt when every
+  #   repeat was asked to confirm again
+  def confirmed(command, confirm_pattern, *outcomes)
+    response = DRC.bput(command, confirm_pattern, *outcomes)
+    (CONFIRM_RETRIES + 1).times do
+      break unless response.match?(confirm_pattern)
+
+      response = DRC.bput(command, confirm_pattern, *outcomes)
+    end
+    response
   end
 
   # Attunes to the lock in this room, then guesses until it is solved.
@@ -749,9 +834,7 @@ class Aesthene
   # @return [AestheneGrid::Reading] the lock's state: empty for a fresh lock,
   #   the current grid when resuming one
   def attune_to_lock
-    outcomes = [TOUCH_CONFIRM_PATTERN, ATTUNED_PATTERN, ALREADY_ATTUNED_PATTERN, AestheneGrid::NO_PASS_PATTERN]
-    response = DRC.bput("touch #{LOCK}", *outcomes)
-    response = DRC.bput("touch #{LOCK}", *outcomes.drop(1)) if response.match?(TOUCH_CONFIRM_PATTERN)
+    response = confirmed("touch #{LOCK}", TOUCH_CONFIRM_PATTERN, ATTUNED_PATTERN, ALREADY_ATTUNED_PATTERN, AestheneGrid::NO_PASS_PATTERN)
 
     case response
     when ATTUNED_PATTERN then AestheneGrid::Reading.new
@@ -830,6 +913,10 @@ class Aesthene
   # Sends a command and collects the game's lock output until it is settled
   # or the read times out.
   #
+  # Lines already in the buffer are read even past the deadline: another
+  # script can pause this one while the reply arrives (almanac, for 12
+  # seconds), and the reply is then waiting, complete, once it is unpaused.
+  #
   # @param command [String]
   # @return [AestheneGrid::Reading]
   def read_lock(command)
@@ -838,9 +925,11 @@ class Aesthene
     clear
     put(command)
     deadline = Time.now + READ_TIMEOUT
-    while Time.now < deadline
+    loop do
       line = get?
       if line.nil?
+        break if Time.now >= deadline
+
         pause 0.1
         next
       end
@@ -869,7 +958,7 @@ class Aesthene
     DRC.message("aesthene: until then, add #{word} to aesthene_lock_answers in your YAML.") if @solver.fallback?
   end
 
-  # Sums up a run of several slips.
+  # Sums up a run of several locks.
   #
   # @param solved [Integer] locks solved
   # @param stop [String, nil] why the run ended early; nil when it finished
