@@ -1199,9 +1199,24 @@ RSpec.describe 'aesthene.lic' do
       end
 
       it 'is 0, and says so, when INFO did not arrive in full' do
-        allow(Lich::Util).to receive(:issue_command).and_return(info("  Aesthene's Close, charges remaining: 12")[0..-2])
+        allow(Lich::Util).to receive(:issue_command).and_return(info('  Faster HE Trips, expiring Fri Dec 11 15:21:08 ET')[0..-2])
         expect(instance.stored_charges).to eq(0)
         expect(DRC).to have_received(:message).with("aesthene: couldn't read INFO, so only time slips are used.")
+      end
+
+      # Mahtra's live run, 2026-11-27, on Lich 5.25.1: a text-mode capture
+      # ended on the charges line, without the prompt, and the charge was
+      # thrown away. The charges line counts whatever else was captured.
+      it 'reads the charges from a capture that has no prompt line' do
+        allow(Lich::Util).to receive(:issue_command).and_return(info("  Aesthene's Close, charges remaining: 1")[0..-2])
+        expect(instance.stored_charges).to eq(1)
+        expect(DRC).not_to have_received(:message)
+      end
+
+      it 'reads INFO as raw XML, and the charges with an escaped apostrophe' do
+        allow(Lich::Util).to receive(:issue_command).and_return(info('  Aesthene&apos;s Close, charges remaining: 3'))
+        expect(instance.stored_charges).to eq(3)
+        expect(Lich::Util).to have_received(:issue_command).with('info', Aesthene::INFO_START_PATTERN, hash_including(usexml: true, quiet: true))
       end
     end
 

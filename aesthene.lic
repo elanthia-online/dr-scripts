@@ -594,8 +594,9 @@ class Aesthene
   # INFO starts with this line; it ends at the next prompt.
   INFO_START_PATTERN = /Name: .+ Race: /
   # Passes already redeemed and not yet used, in INFO's purchases list. The
-  # line is left out when there are none.
-  CHARGES_PATTERN = /Aesthene's Close, charges remaining: (\d+)/
+  # line is left out when there are none. INFO is read as raw XML, which
+  # could carry the apostrophe as an entity.
+  CHARGES_PATTERN = /Aesthene(?:'|&apos;)s Close, charges remaining: (\d+)/
   REDEEM_CONFIRM_PATTERN = /Once you redeem this, you'll have 1 instance access/
   REDEEMED_PATTERN = /You have just redeemed 1 instance of access/
   NO_REPRESENTATIVE_PATTERN = /isn't here!/
@@ -733,17 +734,18 @@ class Aesthene
   # Reads the Aesthene's Close charges the character already has from INFO,
   # without showing the INFO output.
   #
+  # The charges line is used whenever it was captured. Lich versions differ
+  # in what else a capture holds: from 5.25.1 a text-mode capture leaves out
+  # the closing prompt, so INFO is read as XML, where every version keeps it,
+  # and the prompt only decides whether a missing charges line means none.
+  #
   # @return [Integer] charges left; 0 when INFO lists none, and when INFO did
   #   not arrive in full (then the run redeems slips, as it always did)
   def stored_charges
     waitrt?
-    lines = Lich::Util.issue_command('info', INFO_START_PATTERN, timeout: INFO_TIMEOUT, usexml: false, silent: true, quiet: true)
-    unless lines.last.to_s.include?('<prompt')
-      DRC.message("aesthene: couldn't read INFO, so only time slips are used.")
-      return 0
-    end
-
+    lines = Lich::Util.issue_command('info', INFO_START_PATTERN, timeout: INFO_TIMEOUT, usexml: true, silent: true, quiet: true)
     lines.each { |line| return Regexp.last_match(1).to_i if line =~ CHARGES_PATTERN }
+    DRC.message("aesthene: couldn't read INFO, so only time slips are used.") unless lines.any? { |line| line.include?('<prompt') }
     0
   end
 
