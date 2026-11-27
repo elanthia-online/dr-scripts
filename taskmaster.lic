@@ -39,7 +39,7 @@
 
 class TaskMaster
   # Printed (bold) each time taskmaster starts, so a log shows which copy ran.
-  VERSION = '2026.11.25.1'
+  VERSION = '2026.11.28.1'
 
   # Stock base => [stock name, room to order it in]. restock tops up cloth,
   # leather, yarn and thread for marathon runs; thread is the cotton spool
@@ -4524,6 +4524,17 @@ class TaskMaster
   # "you a chance a little later." (Zasele, 2026-11-03), so the older
   # one-line "give you a chance a little later" never matched it.
   TASK_UNRELIABLE = /You are unreliable/
+  # A taskmaster turning everyone away for a while: 'Potion Peddler Nezhiri
+  # shoots you a chilly glance.  "I'm a bit busy just now.  Come back
+  # later."' (Byd and Nelis, 2026-11-28 00:14-00:24, 110 lines; Berimeg and
+  # Evro, 2026-11-20 20:07-20:16, 124 lines). Each stretch lasted about ten
+  # minutes and ended in the same second for every character that got it,
+  # so it is the game's state, not this character's. Not a cooldown: asked
+  # again every TASK_BUSY_POLL seconds (or task_cooldown_poll if longer)
+  # until it lifts. Matched without the apostrophe.
+  TASK_BUSY = /a bit busy just now/
+  # Seconds between asks while the taskmaster says it is busy (TASK_BUSY).
+  TASK_BUSY_POLL = 15
   # A taskmaster's daily limit, the bracketed line after its speech: "[You
   # have reached the maximum number of TASKs you may complete for Nezhiri
   # today.  Please try again tomorrow.]" (a player's report, 2026-11-18,
@@ -5008,7 +5019,10 @@ class TaskMaster
   # The first "you must wait" boosts (BOOST TASK) when the run has the task
   # boost armed; without one, or with no credits for it, Nezhiri's first
   # one is spent on her supplies (nezhiri_wait_chores) and the others, like
-  # every other taskmaster's, wait the poll interval.
+  # every other taskmaster's, wait the poll interval. A taskmaster saying it
+  # is busy (TASK_BUSY) is asked again every TASK_BUSY_POLL seconds (or the
+  # poll interval if longer), with one message per busy stretch; it is not
+  # an unknown reply, so it never stops the run.
   # A while loop, not Kernel#loop: loop would swallow a StopIteration raised
   # inside it and return nil, where the old recursion let it propagate.
   #
@@ -5025,14 +5039,17 @@ class TaskMaster
   #   MAX_UNKNOWN_TASK_REPLIES replies in a row it does not know
   def get_task(exit_after_resume: true)
     unknown_replies = 0
+    busy_noted = false
     @stock_survey = nil
     chores_done = false
     while true
       find_npc(@rooms, @npc)
-      reply = DRC.bput("ask #{@npc} for task", /if you agree to (his|her) terms/, /You may accept by typing ACCEPT TASK/, /utterly ignoring you/, /you must wait before I can give you a task/, /You are already on a task/, /give you a chance a little later/, TASK_UNRELIABLE, TASK_DAILY_MAX, /^To whom are you speaking/)
+      reply = DRC.bput("ask #{@npc} for task", /if you agree to (his|her) terms/, /You may accept by typing ACCEPT TASK/, /utterly ignoring you/, /you must wait before I can give you a task/, /You are already on a task/, /give you a chance a little later/, TASK_UNRELIABLE, TASK_BUSY, TASK_DAILY_MAX, /^To whom are you speaking/)
       # Another taskmaster's limit is no answer from this one: counted as none.
       reply = '' if reply.match?(TASK_DAILY_MAX) && !daily_limit_for_asked?(reply)
       unknown_replies = 0 unless reply.empty?
+      # One message per busy stretch, not one per ask.
+      busy_noted = false unless reply.match?(TASK_BUSY)
       case reply
       when /if you agree to (his|her) terms/, /To whom are you speaking/
         next
@@ -5048,6 +5065,11 @@ class TaskMaster
       when /utterly ignoring you/, /give you a chance a little later/, TASK_UNRELIABLE
         DRC.message("Task on cooldown or recently canceled a task, either way, going to have to wait.")
         pause @cooldown_poll
+      when TASK_BUSY
+        poll = [@cooldown_poll, TASK_BUSY_POLL].max
+        DRC.message("#{@npc.capitalize} is too busy to give out tasks just now; asking again every #{poll} seconds until that lifts.") unless busy_noted
+        busy_noted = true
+        pause poll
       when /you must wait before I can give you a task/
         if @boost && !boost_spent?('task') && boost_task
           pause 2
