@@ -102,7 +102,8 @@ class AestheneFakeLock
 
   # @param answer [String, Array<String>] the lock's answer; several for a
   #   run of slips, one per lock in turn
-  # @param passes [Integer] redeemed passes the character already holds
+  # @param passes [Integer] redeemed passes (INFO's Aesthene's Close charges)
+  #   the character already holds
   # @param attuned_rows [Array<String>, nil] guesses already on a lock the
   #   character is attuned to; nil when not attuned
   # @param carrying [String, nil] an item the character carries whose noun
@@ -120,6 +121,35 @@ class AestheneFakeLock
     @touch_confirmed = false
     @drop_row_once = false
     @whispers_to_ignore = 0
+    @expired = { redeem: 0, touch: 0 }
+  end
+
+  # Makes the next confirming REDEEM or TOUCH arrive after its window ran out,
+  # as when another script paused aesthene in between (a live run, 2026-11-27):
+  # the game asks to confirm again, and a repeat inside the new window lands.
+  #
+  # @param command [Symbol] :redeem or :touch
+  # @param times [Integer] confirms in a row that arrive too late
+  def expire_confirm(command, times = 1)
+    @expired[command] = times
+  end
+
+  # @return [Integer] passes the character holds now
+  attr_reader :passes
+
+  # INFO as Lich::Util.issue_command returns it: from the Name line to the
+  # prompt. Lines copied from a live INFO; the Aesthene's Close line is left
+  # out at 0 charges, as the game does.
+  #
+  # @return [Array<String>]
+  def info
+    @commands << 'info'
+    lines = ['Name: Emerald Knight Testchar Tester   Race: Elf   Guild: Ranger',
+             'You have 3 active purchases:',
+             '  Urchin Guides, charges remaining: 408',
+             '  Faster HE Trips, expiring Fri Dec 11 15:21:08 ET']
+    lines << "  Aesthene's Close, charges remaining: #{@passes}" if @passes.positive?
+    lines + ['<prompt time="1795751116">&gt;</prompt>']
   end
 
   # Makes the next whisper reply leave out one grid row, as if it were missed.
@@ -167,10 +197,13 @@ class AestheneFakeLock
   end
 
   def redeem
+    prompt = ["Once you redeem this, you'll have 1 instance access to the Aesthene's Close.  If you're prepared to immediately begin, repeat the command within 10 seconds."]
     unless @redeem_confirmed
       @redeem_confirmed = true
-      return ["Once you redeem this, you'll have 1 instance access to the Aesthene's Close.  If you're prepared to immediately begin, repeat the command within 10 seconds."]
+      return prompt
     end
+    return prompt if late_confirm?(:redeem)
+
     @redeem_confirmed = false
     @passes += 1
     ['The apprentice Timekeeper takes one of your slips.',
@@ -187,15 +220,27 @@ class AestheneFakeLock
     return ['You are already connected to the lock.'] if @rows
     return ['[To interact with the lock, you must redeem a pass for the event.  Passes are available in the SimuCoin store via the website.  Once redeemed, simply TOUCH the lock!]'] if @passes.zero?
 
+    prompt = ['You reach towards the lock, but pause to consider.',
+              "[This will consume a pass for Aesthene's Close.  If you're sure you want to do this, TOUCH the lock again within 15 seconds.]"]
     unless @touch_confirmed
       @touch_confirmed = true
-      return ['You reach towards the lock, but pause to consider.',
-              "[This will consume a pass for Aesthene's Close.  If you're sure you want to do this, TOUCH the lock again within 15 seconds.]"]
+      return prompt
     end
+    return prompt if late_confirm?(:touch)
+
     @passes -= 1
     @rows = []
     ['You reach out and touch the lock, and an alarming pulse of energy surges from it and through you.',
      '[LOOK at the lock to see your progress.  STUDY the lock for more information.]']
+  end
+
+  # Whether this confirm arrives after its window ran out ({expire_confirm}).
+  # The game then asks again and opens a new window.
+  def late_confirm?(command)
+    return false unless @expired[command].positive?
+
+    @expired[command] -= 1
+    true
   end
 
   def look
@@ -874,6 +919,7 @@ RSpec.describe 'aesthene.lic' do
         allow(instance).to receive(:check_lock)
         allow(instance).to receive(:attune_and_solve).and_return(true)
         allow(instance).to receive(:redeem_slip).and_return(true)
+        allow(instance).to receive(:stored_charges).and_return(0)
       end
 
       it 'only reads the lock for check' do
@@ -1111,10 +1157,81 @@ RSpec.describe 'aesthene.lic' do
         allow(DRC).to receive(:bput).and_return(confirm, redeemed, '')
         expect { instance.redeem_slip }.to raise_error(SystemExit)
       end
+
+      it 'redeems again when the confirming redeem is asked to confirm again' do
+        allow(DRC).to receive(:bput).and_return(confirm, confirm, redeemed, escorted)
+        expect(instance.redeem_slip).to be(true)
+        expect(DRC).to have_received(:bput).with('redeem my slip', any_args).exactly(3).times
+      end
+
+      it 'stows the slip and stops after the retries are used up' do
+        allow(DRCI).to receive(:stow_item?)
+        allow(DRC).to receive(:bput).and_return(confirm)
+        expect { instance.redeem_slip }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:bput).with('redeem my slip', any_args).exactly(2 + Aesthene::CONFIRM_RETRIES).times
+        expect(DRCI).to have_received(:stow_item?).with('time slip')
+      end
+    end
+
+    describe '#stored_charges' do
+      before { allow(DRC).to receive(:message) }
+
+      # A live INFO's purchases list, from the Name line to the prompt.
+      def info(*purchases)
+        ['Name: Emerald Knight Mahtra Rotschreck   Race: Elf   Guild: Ranger',
+         "You have #{purchases.size + 2} active purchases:",
+         '  Urchin Guides, charges remaining: 408',
+         '  Urchin Runners (limited use), charges remaining: 263',
+         *purchases,
+         '<prompt time="1795751116">&gt;</prompt>']
+      end
+
+      it 'reads the Aesthene charges, not another purchase' do
+        allow(Lich::Util).to receive(:issue_command).and_return(info("  Aesthene's Close, charges remaining: 12"))
+        expect(instance.stored_charges).to eq(12)
+        expect(Lich::Util).to have_received(:issue_command).with('info', Aesthene::INFO_START_PATTERN, hash_including(quiet: true))
+      end
+
+      it 'is 0 when INFO lists no Aesthene charges' do
+        allow(Lich::Util).to receive(:issue_command).and_return(info('  Faster HE Trips, expiring Fri Dec 11 15:21:08 ET'))
+        expect(instance.stored_charges).to eq(0)
+        expect(DRC).not_to have_received(:message)
+      end
+
+      it 'is 0, and says so, when INFO did not arrive in full' do
+        allow(Lich::Util).to receive(:issue_command).and_return(info("  Aesthene's Close, charges remaining: 12")[0..-2])
+        expect(instance.stored_charges).to eq(0)
+        expect(DRC).to have_received(:message).with("aesthene: couldn't read INFO, so only time slips are used.")
+      end
     end
 
     describe '#run_slips' do
-      before { allow(DRC).to receive(:message) }
+      before do
+        allow(DRC).to receive(:message)
+        allow(instance).to receive(:stored_charges).and_return(0)
+      end
+
+      it 'uses the stored charges before redeeming a slip' do
+        allow(instance).to receive(:stored_charges).and_return(2)
+        allow(instance).to receive(:walk_and_ask_for_access).and_return(true)
+        allow(instance).to receive(:redeem_slip).and_return(true)
+        allow(instance).to receive(:attune_and_solve).and_return(true)
+        instance.run_slips(3)
+        expect(instance).to have_received(:walk_and_ask_for_access).twice
+        expect(instance).to have_received(:redeem_slip).once.with(first: false)
+        expect(DRC).to have_received(:message).with("aesthene: using your 2 Aesthene's Close charges before any time slips.")
+        expect(DRC).to have_received(:message).with('aesthene: solved 3 locks.')
+      end
+
+      it 'stops without an error when the charges run out and there is no slip' do
+        allow(instance).to receive(:stored_charges).and_return(1)
+        allow(instance).to receive(:walk_and_ask_for_access).and_return(true)
+        allow(instance).to receive(:redeem_slip).and_return(false)
+        allow(instance).to receive(:attune_and_solve).and_return(true)
+        expect(instance.run_slips(Float::INFINITY)).to be(true)
+        expect(DRC).to have_received(:message).with("aesthene: using your 1 Aesthene's Close charge before any time slips.")
+        expect(DRC).to have_received(:message).with('aesthene: solved 1 lock; no charges or time slips left.')
+      end
 
       it 'runs one slip and sums nothing up for a single slip' do
         allow(instance).to receive(:redeem_slip).and_return(true)
@@ -1138,7 +1255,7 @@ RSpec.describe 'aesthene.lic' do
         allow(instance).to receive(:attune_and_solve).and_return(true)
         instance.run_slips(Float::INFINITY)
         expect(instance).to have_received(:attune_and_solve).twice
-        expect(DRC).to have_received(:message).with('aesthene: solved 2 locks; no time slips left.')
+        expect(DRC).to have_received(:message).with('aesthene: solved 2 locks; no charges or time slips left.')
       end
 
       it 'reports a finished run, and one that ran out of slips, as not stuck' do
@@ -1153,14 +1270,14 @@ RSpec.describe 'aesthene.lic' do
         allow(instance).to receive(:attune_and_solve).and_return(true, false)
         expect(instance.run_slips(5)).to be(false)
         expect(instance).to have_received(:redeem_slip).twice
-        expect(DRC).to have_received(:message).with("aesthene: solved 1 lock; stopped at a lock it couldn't solve, so no more slips are spent.")
+        expect(DRC).to have_received(:message).with("aesthene: solved 1 lock; stopped at a lock it couldn't solve, so no more charges or slips are spent.")
       end
 
       it 'sums up even a run whose first lock is not solved' do
         allow(instance).to receive(:redeem_slip).and_return(true)
         allow(instance).to receive(:attune_and_solve).and_return(false)
         instance.run_slips(5)
-        expect(DRC).to have_received(:message).with("aesthene: solved 0 locks; stopped at a lock it couldn't solve, so no more slips are spent.")
+        expect(DRC).to have_received(:message).with("aesthene: solved 0 locks; stopped at a lock it couldn't solve, so no more charges or slips are spent.")
       end
 
       it 'still reports the count when a later step stops the script' do
@@ -1232,6 +1349,18 @@ RSpec.describe 'aesthene.lic' do
         expect(DRC).to have_received(:bput).with('touch time lock', any_args).twice
         expect(reading.rows).to be_empty
         expect(reading.rows_left).to eq(6)
+      end
+
+      it 'touches again when the confirming touch is asked to confirm again' do
+        allow(DRC).to receive(:bput).and_return(confirm, confirm, attuned)
+        expect(instance.attune_to_lock.rows).to be_empty
+        expect(DRC).to have_received(:bput).with('touch time lock', any_args).exactly(3).times
+      end
+
+      it 'stops when every touch is asked to confirm again' do
+        allow(DRC).to receive(:bput).and_return(confirm)
+        expect { instance.attune_to_lock }.to raise_error(SystemExit)
+        expect(DRC).to have_received(:bput).with('touch time lock', any_args).exactly(2 + Aesthene::CONFIRM_RETRIES).times
       end
 
       it 'reads the grid when already attuned, to resume the lock' do
@@ -1499,6 +1628,7 @@ RSpec.describe 'aesthene.lic' do
         lock.reply(command).find { |line| patterns.any? { |pattern| line.match?(pattern) } } || ''
       end
       allow(DRC).to receive(:message) { |text| messages << text }
+      allow(Lich::Util).to receive(:issue_command) { lock.info }
       begin
         script.send(:initialize)
       rescue SystemExit
@@ -1527,7 +1657,7 @@ RSpec.describe 'aesthene.lic' do
     it 'redeems, attunes and solves a known answer with ;aesthene full' do
       lock = AestheneFakeLock.new('POACH')
       run_script(lock, :full)
-      expect(lock.commands.first(5)).to eq(['redeem my slip', 'redeem my slip', 'ask timekeeper about access', 'touch time lock', 'touch time lock'])
+      expect(lock.commands.first(6)).to eq(['info', 'redeem my slip', 'redeem my slip', 'ask timekeeper about access', 'touch time lock', 'touch time lock'])
       expect(whispers(lock).last).to eq('whisper time lock poach')
       expect(messages).to include('aesthene: solved! The word was POACH.')
       expect(messages.grep(/lich discord/)).to be_empty
@@ -1552,7 +1682,7 @@ RSpec.describe 'aesthene.lic' do
       run_script(lock, :full, count: 'all')
       expect(lock.commands.grep('redeem my slip').size).to eq(4)
       expect(messages.grep(/solved! The word was/).size).to eq(2)
-      expect(messages.last).to eq('aesthene: solved 2 locks; no time slips left.')
+      expect(messages.last).to eq('aesthene: solved 2 locks; no charges or time slips left.')
     end
 
     it 'stops a run at a lock it cannot solve and redeems nothing more' do
@@ -1561,7 +1691,7 @@ RSpec.describe 'aesthene.lic' do
       run_script(lock, :full, count: 'all')
       expect(lock.commands.grep('redeem my slip').size).to eq(4)
       expect(messages).to include('aesthene: solved! The word was POACH.')
-      expect(messages.last).to eq("aesthene: solved 1 lock; stopped at a lock it couldn't solve, so no more slips are spent.")
+      expect(messages.last).to eq("aesthene: solved 1 lock; stopped at a lock it couldn't solve, so no more charges or slips are spent.")
     end
 
     it 'leaves the character at the lock it could not solve' do
@@ -1632,6 +1762,55 @@ RSpec.describe 'aesthene.lic' do
       expect(whispers(lock).uniq.size).to eq(1)
       expect(messages.grep(/couldn't solve the lock: 2 whispers in a row added no row to the lock\./)).not_to be_empty
       expect(messages.grep(/possible known answers: CLOAK, CORAL/)).not_to be_empty
+    end
+
+    # A player report (2026-11-27): slips redeemed earlier are charges, and a
+    # character with charges but no slips could not run the script at all.
+    it 'runs on charges already redeemed, with no time slips' do
+      allow(DRCI).to receive(:get_item?).and_return(false)
+      lock = AestheneFakeLock.new(%w[CLOAK CORAL], passes: 2)
+      run_script(lock, :full, count: 'all')
+      expect(lock.commands.grep('redeem my slip')).to be_empty
+      expect(lock.commands.grep('ask timekeeper about access').size).to eq(2)
+      expect(messages.first).to eq("aesthene: using your 2 Aesthene's Close charges before any time slips.")
+      expect(messages.last).to eq('aesthene: solved 2 locks; no charges or time slips left.')
+      expect(lock.passes).to eq(0)
+    end
+
+    it 'uses the charges first, then redeems slips' do
+      lock = AestheneFakeLock.new(%w[POACH THROW HYDRA], passes: 1)
+      run_script(lock, :full, count: '3')
+      expect(lock.commands.grep('info').size).to eq(1)
+      expect(lock.commands.grep('redeem my slip').size).to eq(4)
+      expect(lock.commands.index('redeem my slip')).to be > lock.commands.index('whisper time lock poach')
+      expect(messages.last).to eq('aesthene: solved 3 locks.')
+    end
+
+    it 'confirms the redeem again when its window ran out, and spends one slip' do
+      lock = AestheneFakeLock.new('POACH')
+      lock.expire_confirm(:redeem)
+      run_script(lock, :full)
+      expect(lock.commands.first(5)).to eq(['info', 'redeem my slip', 'redeem my slip', 'redeem my slip', 'ask timekeeper about access'])
+      expect(messages).to include('aesthene: solved! The word was POACH.')
+    end
+
+    it 'confirms the touch again when its window ran out' do
+      lock = AestheneFakeLock.new('POACH', passes: 1)
+      lock.expire_confirm(:touch)
+      run_script(lock, :full)
+      expect(lock.commands.grep('touch time lock').size).to eq(3)
+      expect(messages).to include('aesthene: solved! The word was POACH.')
+    end
+
+    it 'gives up on a redeem that keeps being asked to confirm, without spending the slip' do
+      allow(DRCI).to receive(:stow_item?)
+      lock = AestheneFakeLock.new('POACH')
+      lock.expire_confirm(:redeem, 10)
+      expect { run_script(lock, :full, exits: true) }.to raise_error(SystemExit)
+      expect(lock.commands.grep('redeem my slip').size).to eq(2 + Aesthene::CONFIRM_RETRIES)
+      expect(lock.passes).to eq(0)
+      expect(DRCI).to have_received(:stow_item?).with('time slip')
+      expect(messages).to include('aesthene: the Timekeeper did not take the slip.')
     end
 
     it 'stops with a message when there is no pass to attune with' do
